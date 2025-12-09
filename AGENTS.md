@@ -1,5 +1,10 @@
 # Rules of Engagement
 
+## CRITICAL: Type-Checking & Dependency Discipline
+- Do **NOT** suppress `import-not-found` or `import-untyped` errors by weakening `mypy.ini` or adding blanket `# type: ignore` markers.
+- When mypy reports missing stubs (e.g., `Library stubs not installed for "aiofiles"`), add the matching `types-*` package to `requirements_dev.txt` so the environment is fixed instead of the diagnostics being hidden.
+- When mypy reports `import-not-found` for a library (e.g., `habluetooth`), ensure the package is declared in `requirements_test.txt` or `requirements.txt` and installed; assume the environment is incomplete before assuming the code is wrong.
+
 ## Primary Directive
 - Always read README.md and manifest.json first to understand the integration's purpose and dependencies.
 - Review docs/ for any technical documentation relevant to the change.
@@ -52,3 +57,10 @@
 - **Guardrails:** Validate inputs, ranges, and resolved paths; enforce safe timeouts/backoff for network calls; ensure decrypted payload helpers return `bytes`.
 - **Home Assistant specifics:** Inject the shared session via `async_get_clientsession(hass)`, use `get_url` helpers, centralize fetches in `DataUpdateCoordinator`, provide repairs/diagnostics with redaction, and store tokens/state via `helpers.storage.Store` with throttled writes.
 - **Testing & local checks:** Add regression tests for fixes (under `tests/`); run `python -m ruff check --fix`, `python -m mypy --strict --install-types --non-interactive`, and `python -m pytest --cov -q` before committing.
+
+## Environment prerequisites (typing/tests)
+- Install development dependencies with `python -m pip install -r requirements_dev.txt` so `homeassistant` and `pytest-homeassistant-custom-component` are available.
+- Run mypy with `--install-types --non-interactive` if new stubs are needed; missing type stubs will otherwise cause failures.
+- Pytest relies on Home Assistant test helpers; ensure the packages from `requirements_test.txt` are present before running isolated tests.
+- When exercising optional integrations (e.g., googlefindmy), ensure their dependencies are installed locally or use the absence-safe code paths and associated tests so mypy/pytest do not fail when the provider is missing.
+- Do not hide type or test failures with `ignore_errors` or similar blanket suppressions in tooling configs; fix or narrowly annotate issues so CI reflects real coverage.

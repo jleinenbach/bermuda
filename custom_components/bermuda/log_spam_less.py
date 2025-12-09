@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, TypedDict
 
 from bluetooth_data_tools import monotonic_time_coarse
 
 if TYPE_CHECKING:
     import logging
+
+
+class _CacheEntry(TypedDict):
+    stamp: float
+    count: int
 
 
 class BermudaLogSpamLess:
@@ -20,13 +25,13 @@ class BermudaLogSpamLess:
 
     _logger: logging.Logger
     _interval: float
-    _keycache = {}
+    _keycache: dict[str, _CacheEntry] = {}
 
     def __init__(self, logger: logging.Logger, spam_interval: float) -> None:
         self._logger = logger
         self._interval = spam_interval
 
-    def _check_key(self, key):
+    def _check_key(self, key: str) -> int:
         """
         Check if the given key has been used recently.
 
@@ -54,7 +59,7 @@ class BermudaLogSpamLess:
             }
             return 0
 
-    def _prep_message(self, key, msg):
+    def _prep_message(self, key: str, msg: str) -> str | None:
         """
         Checks if message should be logged and returns the message reformatted
         to indicate how many previous messages were supressed.
@@ -67,25 +72,25 @@ class BermudaLogSpamLess:
             return f"{msg} ({count} previous messages suppressed)"
         return None
 
-    def debug(self, key, msg, *args, **kwargs):
+    def debug(self, key: str, msg: str, *args: Any, **kwargs: Any) -> None:
         """Send log message, if no log was issued with the same key recently."""
         newmsg = self._prep_message(key, msg)
         if newmsg is not None:
             self._logger.debug(newmsg, *args, **kwargs)
 
-    def info(self, key, msg, *args, **kwargs):
+    def info(self, key: str, msg: str, *args: Any, **kwargs: Any) -> None:
         """Send log message, if no log was issued with the same key recently."""
         newmsg = self._prep_message(key, msg)
         if newmsg is not None:
             self._logger.info(newmsg, *args, **kwargs)
 
-    def warning(self, key, msg, *args, **kwargs):
+    def warning(self, key: str, msg: str, *args: Any, **kwargs: Any) -> None:
         """Send log message, if no log was issued with the same key recently."""
         newmsg = self._prep_message(key, msg)
         if newmsg is not None:
             self._logger.warning(newmsg, *args, **kwargs)
 
-    def error(self, key, msg, *args, **kwargs):
+    def error(self, key: str, msg: str, *args: Any, **kwargs: Any) -> None:
         """Send log message, if no log was issued with the same key recently."""
         newmsg = self._prep_message(key, msg)
         if newmsg is not None:

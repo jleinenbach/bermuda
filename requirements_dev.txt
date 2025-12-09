@@ -1,2 +1,4 @@
 -r requirements.txt
 -r requirements_test.txt
+types-aiofiles
+types-PyYAML

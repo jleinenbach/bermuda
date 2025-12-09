@@ -449,3 +449,24 @@ For maximum robustness:
 * Guard access to the resolver (feature-detection).
 * Do not rely on internal attributes or undocumented behavior.
 * Treat failure to resolve as “no match” rather than an error.
+
+---
+
+## Bermuda integration notes
+
+### Architecture
+
+* **Bermuda** is responsible for scanning BLE advertisements (including FMDN frames) and extracting the raw EID bytes.
+* **googlefindmy** is responsible for all cryptographic work and exposes the `eid_resolver` object via `hass.data["googlefindmy"]["eid_resolver"]`.
+* When Bermuda detects the FMDN Service UUID (`0000feaa-0000-1000-8000-00805f9b34fb`), it parses the frame, hands the EID to the resolver, and maps the rotating source MAC to a stable Bermuda *Metadevice* representing the resolved Home Assistant device.
+
+### Prerequisites
+
+* The `googlefindmy` integration must be installed and configured with at least one account and active trackers.
+* Bermuda will auto-detect the resolver when it is present; there is no additional Bermuda configuration required.
+* The recommended `after_dependencies` manifest setting ensures the resolver is ready before Bermuda attempts to read it.
+
+### Entities and naming
+
+* Metadevices created from Google Find My resolutions inherit their friendly name from the Device Registry entry (if available); otherwise a Bermuda-generated name is used.
+* The rotating FMDN MAC addresses are treated as sources for the metadevice. Bermuda aggregates RSSI and distance information across these sources so your sensors and device tracker reflect the stable Find My device rather than the transient MAC.

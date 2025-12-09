@@ -60,6 +60,10 @@ class BermudaAdvert(dict):
     A BermudaDevice's "adverts" property will contain one of these for each
     scanner that has "seen" it.
 
+    The advert object only stores signal history and metadata; resolution of
+    protocol-specific payloads (such as Google FMDN EIDs) is performed in the
+    coordinator to avoid redundant parsing on the hot path.
+
     """
 
     def __hash__(self) -> int:
