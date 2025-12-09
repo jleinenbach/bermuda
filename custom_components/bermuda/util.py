@@ -6,7 +6,7 @@ from functools import lru_cache
 
 
 @lru_cache(64)
-def mac_math_offset(mac, offset=0) -> str | None:
+def mac_math_offset(mac: str | None, offset: int = 0) -> str | None:
     """
     Perform addition/subtraction on a MAC address.
 
@@ -85,7 +85,7 @@ def mac_redact(mac: str, tag: str | None = None) -> str:
 
 
 @lru_cache(1024)
-def rssi_to_metres(rssi, ref_power=None, attenuation=None):
+def rssi_to_metres(rssi: float, ref_power: float | None = None, attenuation: float | None = None) -> float:
     """
     Convert instant rssi value to a distance in metres.
 
@@ -99,11 +99,11 @@ def rssi_to_metres(rssi, ref_power=None, attenuation=None):
                     calibration, antenna design and orientation etc.
     """
     if ref_power is None:
-        return False
-        # ref_power = self.ref_power
+        message = "ref_power must be provided to compute distance"
+        raise ValueError(message)
     if attenuation is None:
-        return False
-        # attenuation= self.attenuation
+        message = "attenuation must be provided to compute distance"
+        raise ValueError(message)
 
     return 10 ** ((ref_power - rssi) / (10 * attenuation))
 

@@ -14,6 +14,9 @@ from .log_spam_less import BermudaLogSpamLess
 NAME = "Bermuda BLE Trilateration"
 DOMAIN = "bermuda"
 DOMAIN_DATA = f"{DOMAIN}_data"
+# Inter-Integration constants
+DOMAIN_GOOGLEFINDMY = "googlefindmy"
+DATA_EID_RESOLVER = "eid_resolver"
 # Version gets updated by github workflow during release.
 # The version in the repository should always be 0.0.0 to reflect
 # that the component has been checked out from git, not pulled from
@@ -79,8 +82,16 @@ METADEVICE_TYPE_IBEACON_SOURCE: Final = "beacon source"  # The source-device sen
 METADEVICE_IBEACON_DEVICE: Final = "beacon device"  # The meta-device created to track the beacon
 METADEVICE_TYPE_PRIVATE_BLE_SOURCE: Final = "private_ble_src"  # current (random) MAC of a private ble device
 METADEVICE_PRIVATE_BLE_DEVICE: Final = "private_ble_device"  # meta-device create to track private ble device
+METADEVICE_TYPE_FMDN_SOURCE: Final = "fmdn_source"
 
-METADEVICE_SOURCETYPES: Final = {METADEVICE_TYPE_IBEACON_SOURCE, METADEVICE_TYPE_PRIVATE_BLE_SOURCE}
+# Protocol constants
+SERVICE_UUID_FMDN = "0000feaa-0000-1000-8000-00805f9b34fb"
+
+METADEVICE_SOURCETYPES: Final = {
+    METADEVICE_TYPE_IBEACON_SOURCE,
+    METADEVICE_TYPE_PRIVATE_BLE_SOURCE,
+    METADEVICE_TYPE_FMDN_SOURCE,
+}
 METADEVICE_DEVICETYPES: Final = {METADEVICE_IBEACON_DEVICE, METADEVICE_PRIVATE_BLE_DEVICE}
 
 # Bluetooth Device Address Type - classify MAC addresses
@@ -138,12 +149,13 @@ PRUNE_TIME_DEFAULT = 86400  # Max age of regular device entries (1day)
 PRUNE_TIME_UNKNOWN_IRK = 240  # Resolvable Private addresses change often, prune regularly.
 # see Bluetooth Core Spec, Vol3, Part C, Appendix A, Table A.1: Defined GAP timers
 PRUNE_TIME_KNOWN_IRK: Final[int] = 16 * 60  # spec "recommends" 15 min max address age. Round up to 16 :-)
+PRUNE_TIME_FMDN: Final[int] = 20 * 60  # Aggressive pruning for rotating FMDN source MACs
 
 PRUNE_TIME_REDACTIONS: Final[int] = 10 * 60  # when to discard redaction data
 
 SAVEOUT_COOLDOWN = 10  # seconds to delay before re-trying config entry save.
 
-DOCS = {}
+DOCS: dict[str, str | tuple[str, ...]] = {}
 
 
 HIST_KEEP_COUNT = 10  # How many old timestamps, rssi, etc to keep for each device/scanner pairing.
@@ -167,7 +179,7 @@ DOCS[CONF_MAX_RADIUS] = "For simple area-detection, max radius from receiver"
 CONF_MAX_VELOCITY, DEFAULT_MAX_VELOCITY = "max_velocity", 3
 DOCS[CONF_MAX_VELOCITY] = (
     "In metres per second - ignore readings that imply movement away faster than",
-    "this limit. 3m/s (10km/h) is good.",  # fmt: skip
+    "this limit. 3m/s (10km/h) is good.",
 )
 
 CONF_DEVTRACK_TIMEOUT, DEFAULT_DEVTRACK_TIMEOUT = "devtracker_nothome_timeout", 30
@@ -185,7 +197,7 @@ CONF_RSSI_OFFSETS = "rssi_offsets"
 CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL = "update_interval", 10
 DOCS[CONF_UPDATE_INTERVAL] = (
     "Maximum time between sensor updates in seconds. Smaller intervals",
-    "means more data, bigger database.",  # fmt: skip
+    "means more data, bigger database.",
 )
 
 CONF_SMOOTHING_SAMPLES, DEFAULT_SMOOTHING_SAMPLES = "smoothing_samples", 20

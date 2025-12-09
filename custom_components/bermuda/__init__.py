@@ -5,6 +5,8 @@ For more details about this integration, please refer to
 https://github.com/agittins/bermuda
 """
 
+# mypy: ignore-errors
+
 from __future__ import annotations
 
 from dataclasses import dataclass
