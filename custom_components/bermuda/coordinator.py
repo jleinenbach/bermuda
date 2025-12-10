@@ -852,6 +852,16 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                 if not advertisementdata.service_data:
                     continue
 
+                for service_uuid, service_data in advertisementdata.service_data.items():
+                    if "feaa" not in str(service_uuid).lower():
+                        continue
+                    _LOGGER.warning(
+                        "FMDN DEBUG: Scanner %s saw device %s with data: %s",
+                        scanner_device.name,
+                        device.address,
+                        service_data.hex(),
+                    )
+
                 if device_id := self._process_fmdn_resolution(
                     device.address, advertisementdata.service_data
                 ):
