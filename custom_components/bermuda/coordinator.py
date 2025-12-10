@@ -836,6 +836,18 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
             # Now go through the scanner's adverts and send them to our device objects.
             for bledevice, advertisementdata in ha_scanner.discovered_devices_and_advertisement_data.values():
+                service_data = advertisementdata.service_data or {}
+                fmdn_payload = service_data.get(0xFEAA) or service_data.get(
+                    "0000feaa-0000-1000-8000-00805f9b34fb"
+                )
+                if fmdn_payload:
+                    _LOGGER.warning(
+                        "FMDN RAW SPY: Scanner %s -> %s | Data: %s",
+                        scanner_device.name,
+                        bledevice.address,
+                        fmdn_payload.hex(),
+                    )
+
                 if adstamp := scanner_device.async_as_scanner_get_stamp(bledevice.address):
                     if adstamp < self.stamp_last_update_started - 3:
                         # skip older adverts that should already have been processed
@@ -851,22 +863,6 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                     continue
                 if not advertisementdata.service_data:
                     continue
-
-                fmdn_payload = None
-                if METADEVICE_TYPE_FMDN_SOURCE not in device.metadevice_type:
-                    fmdn_payload = advertisementdata.service_data.get(0xFEAA)
-                    if fmdn_payload is None:
-                        fmdn_payload = advertisementdata.service_data.get(
-                            "0000feaa-0000-1000-8000-00805f9b34fb"
-                        )
-
-                    if fmdn_payload:
-                        _LOGGER.warning(
-                            "FMDN SPY: Scanner '%s' saw device %s. Payload: %s",
-                            scanner_device.name,
-                            device.address,
-                            fmdn_payload.hex(),
-                        )
 
                 if device_id := self._process_fmdn_resolution(
                     device.address, advertisementdata.service_data
