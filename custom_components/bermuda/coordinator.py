@@ -836,6 +836,18 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
             # Now go through the scanner's adverts and send them to our device objects.
             for bledevice, advertisementdata in ha_scanner.discovered_devices_and_advertisement_data.values():
+                service_data = advertisementdata.service_data or {}
+                fmdn_payload = service_data.get(0xFEAA) or service_data.get(
+                    "0000feaa-0000-1000-8000-00805f9b34fb"
+                )
+                if fmdn_payload:
+                    _LOGGER.warning(
+                        "FMDN RAW SPY: Scanner %s -> %s | Data: %s",
+                        scanner_device.name,
+                        bledevice.address,
+                        fmdn_payload.hex(),
+                    )
+
                 if adstamp := scanner_device.async_as_scanner_get_stamp(bledevice.address):
                     if adstamp < self.stamp_last_update_started - 3:
                         # skip older adverts that should already have been processed
@@ -851,16 +863,6 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                     continue
                 if not advertisementdata.service_data:
                     continue
-
-                for service_uuid, service_data in advertisementdata.service_data.items():
-                    if "feaa" not in str(service_uuid).lower():
-                        continue
-                    _LOGGER.warning(
-                        "FMDN DEBUG: Scanner %s saw device %s with data: %s",
-                        scanner_device.name,
-                        device.address,
-                        service_data.hex(),
-                    )
 
                 if device_id := self._process_fmdn_resolution(
                     device.address, advertisementdata.service_data
