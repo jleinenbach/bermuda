@@ -19,6 +19,7 @@ from .const import (
     DOMAIN,
     DOMAIN_PRIVATE_BLE_DEVICE,
 )
+from .util import is_mac_address, normalize_mac
 
 if TYPE_CHECKING:
     from . import BermudaConfigEntry
@@ -124,12 +125,13 @@ class BermudaEntity(CoordinatorEntity):
         if self._device.is_scanner:
             # ESPHome proxies prior to 2025.3 report their WIFI MAC for any address,
             # except for received iBeacons.
-            connections = {
-                # Keeps the distance_to entities the same across pre/post 2025.3
-                (dr.CONNECTION_NETWORK_MAC, (self._device.address_wifi_mac or self._device.address).lower()),
-                # Ensures we can also match the Bluetooth integration entities.
-                (dr.CONNECTION_BLUETOOTH, (self._device.address_ble_mac or self._device.address).upper()),
-            }
+            connections = set()
+            wifi_address = self._device.address_wifi_mac or self._device.address
+            if wifi_address and is_mac_address(wifi_address):
+                connections.add((dr.CONNECTION_NETWORK_MAC, normalize_mac(wifi_address)))
+            ble_address = self._device.address_ble_mac or self._device.address
+            if ble_address and is_mac_address(ble_address):
+                connections.add((dr.CONNECTION_BLUETOOTH, normalize_mac(ble_address)))
         elif self._device.address_type == ADDR_TYPE_IBEACON:
             # ibeacon doesn't (yet) actually set a "connection", but
             # this "matches" what it stores for identifier.
@@ -150,8 +152,10 @@ class BermudaEntity(CoordinatorEntity):
             # if dr_device is not None:
             #    existing_device_id = dr_device.id
             domain_name = DOMAIN_PRIVATE_BLE_DEVICE
+        elif is_mac_address(self._device.address):
+            connections = {(dr.CONNECTION_BLUETOOTH, normalize_mac(self._device.address))}
         else:
-            connections = {(dr.CONNECTION_BLUETOOTH, self._device.address.upper())}
+            connections = set()
             # No need to set model, since MAC address will be shown via connection.
             # model = f"Bermuda: {self._device.address.lower()}"
 

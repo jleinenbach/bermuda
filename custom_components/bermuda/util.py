@@ -2,7 +2,18 @@
 
 from __future__ import annotations
 
+import re
 from functools import lru_cache
+from typing import Final
+
+from homeassistant.helpers.device_registry import format_mac
+
+MAC_PAIR_PATTERN: Final = re.compile(r"^[0-9A-Fa-f]{2}([:\-_][0-9A-Fa-f]{2}){5}$")
+MAC_DOTTED_PATTERN: Final = re.compile(r"^[0-9A-Fa-f]{4}\.[0-9A-Fa-f]{4}\.[0-9A-Fa-f]{4}$")
+MAC_BARE_PATTERN: Final = re.compile(r"^[0-9A-Fa-f]{12}$")
+UUID_WITH_SUFFIX_PATTERN: Final = re.compile(
+    r"([0-9A-Fa-f]{32}|[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})(.*)"
+)
 
 
 @lru_cache(64)
@@ -29,38 +40,76 @@ def mac_math_offset(mac: str | None, offset: int = 0) -> str | None:
 
 
 @lru_cache(1024)
+def _mac_hex(mac: str) -> str | None:
+    """Return hex-only mac string when the input matches a MAC format."""
+    to_test = mac.strip()
+    if MAC_PAIR_PATTERN.fullmatch(to_test):
+        return re.sub(r"[^0-9A-Fa-f]", "", to_test).lower()
+    if MAC_DOTTED_PATTERN.fullmatch(to_test):
+        return to_test.replace(".", "").lower()
+    if MAC_BARE_PATTERN.fullmatch(to_test):
+        return to_test.lower()
+    return None
+
+
+@lru_cache(512)
+def is_mac_address(mac: str) -> bool:
+    """Return True when the provided string is a MAC-48 address."""
+    return _mac_hex(mac) is not None
+
+
+@lru_cache(512)
+def normalize_mac(mac: str) -> str:
+    """
+    Format the mac address string using Home Assistant's canonical rules.
+
+    Always returns lower-case, colon-delimited MACs or raises ValueError for
+    non-MAC inputs.
+    """
+    formatted = format_mac(mac.strip())
+    hex_only = _mac_hex(formatted)
+    if hex_only is None:
+        msg = f"'{mac}' is not a valid MAC address"
+        raise ValueError(msg)
+    return ":".join(hex_only[i : i + 2] for i in range(0, 12, 2))
+
+
+@lru_cache(1024)
+def normalize_identifier(identifier: str) -> str:
+    """
+    Canonicalise non-MAC identifiers (UUIDs, iBeacon ids, metadevice keys).
+
+    UUIDs are lower-cased, hyphens are removed, and any suffix is preserved in
+    lower-case. All other identifiers are lower-cased verbatim.
+    """
+    to_test = identifier.strip()
+    match = UUID_WITH_SUFFIX_PATTERN.fullmatch(to_test)
+    if match:
+        uuid_hex = match.group(1).replace("-", "").lower()
+        suffix = match.group(2).lower()
+        return f"{uuid_hex}{suffix}"
+    return to_test.lower()
+
+
+@lru_cache(1024)
 def mac_norm(mac: str) -> str:
     """
-    Format the mac address string for entry into dev reg.
+    Backwards-compatible address canonicaliser.
 
-    What is returned is always lowercased, regardless of
-    detected form.
-    If mac is an identifiable MAC-address, it's returned
-    in the xx:xx:xx:xx:xx:xx form.
-
-    This is copied from the HA device_registry's
-    format_mac, but with a bigger lru cache and some
-    tweaks, since we're often dealing with many addresses.
+    Dispatches to normalize_mac for true MAC addresses, otherwise falls back to
+    normalize_identifier for UUID-like and other pseudo identifiers.
     """
-    to_test = mac
+    if is_mac_address(mac):
+        return normalize_mac(mac)
+    return normalize_identifier(mac)
 
-    if len(to_test) == 17:
-        if to_test.count(":") == 5:
-            return to_test.lower()
-        if to_test.count("-") == 5:
-            return to_test.replace("-", ":").lower()
-        if to_test.count("_") == 5:
-            return to_test.replace("_", ":").lower()
 
-    elif len(to_test) == 14 and to_test.count(".") == 2:
-        to_test = to_test.replace(".", "")
-
-    if len(to_test) == 12:
-        # no : included
-        return ":".join(to_test.lower()[i : i + 2] for i in range(0, 12, 2))
-
-    # Not sure how formatted, return original
-    return mac.lower()
+@lru_cache(1024)
+def normalize_address(address: str) -> str:
+    """Canonicalise addresses that may be MACs or pseudo identifiers."""
+    if is_mac_address(address):
+        return normalize_mac(address)
+    return normalize_identifier(address)
 
 
 @lru_cache(2048)
@@ -69,11 +118,18 @@ def mac_explode_formats(mac: str) -> set[str]:
     Take a formatted mac address and return the formats
     likely to be found in our device info, adverts etc
     by replacing ":" with each of "", "-", "_", ".".
+
+    For non-MAC identifiers, return only the canonicalised identifier.
     """
     altmacs = set()
-    altmacs.add(mac)
+    if not is_mac_address(mac):
+        altmacs.add(normalize_identifier(mac))
+        return altmacs
+
+    _norm = normalize_mac(mac)
+    altmacs.add(_norm)
     for newsep in ["", "-", "_", "."]:
-        altmacs.add(mac.replace(":", newsep))
+        altmacs.add(_norm.replace(":", newsep))
     return altmacs
 
 

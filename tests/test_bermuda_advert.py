@@ -6,6 +6,14 @@ import pytest
 from unittest.mock import MagicMock, patch
 from custom_components.bermuda.bermuda_advert import BermudaAdvert
 from custom_components.bermuda.bermuda_device import BermudaDevice
+from custom_components.bermuda.const import (
+    CONF_ATTENUATION,
+    CONF_MAX_VELOCITY,
+    CONF_REF_POWER,
+    CONF_RSSI_OFFSETS,
+    CONF_SMOOTHING_SAMPLES,
+)
+from custom_components.bermuda.util import normalize_mac
 from bleak.backends.scanner import AdvertisementData
 
 
@@ -13,7 +21,7 @@ from bleak.backends.scanner import AdvertisementData
 def mock_parent_device():
     """Fixture for mocking the parent BermudaDevice."""
     device = MagicMock(spec=BermudaDevice)
-    device.address = "aa:bb:cc:dd:ee:ff"
+    device.address = normalize_mac("aa:bb:cc:dd:ee:ff")
     device.ref_power = -59
     device.name_bt_local_name = None
     device.name = "mock parent name"
@@ -24,13 +32,13 @@ def mock_parent_device():
 def mock_scanner_device():
     """Fixture for mocking the scanner BermudaDevice."""
     scanner = MagicMock(spec=BermudaDevice)
-    scanner.address = "11:22:33:44:55:66"
+    scanner.address = normalize_mac("11:22:33:44:55:66")
     scanner.name = "Mock Scanner"
     scanner.area_id = "server_room"
     scanner.area_name = "server room"
     scanner.is_remote_scanner = True
     scanner.last_seen = 0.0
-    scanner.stamps = {"AA:BB:CC:DD:EE:FF": 123.45}
+    scanner.stamps = {normalize_mac("aa:bb:cc:dd:ee:ff"): 123.45}
     scanner.async_as_scanner_get_stamp.return_value = 123.45
     return scanner
 
@@ -53,11 +61,11 @@ def mock_advertisement_data():
 def bermuda_advert(mock_parent_device, mock_advertisement_data, mock_scanner_device):
     """Fixture for creating a BermudaAdvert instance."""
     options = {
-        "CONF_RSSI_OFFSETS": {"11:22:33:44:55:66": 5},
-        "CONF_REF_POWER": -59,
-        "CONF_ATTENUATION": 2.0,
-        "CONF_MAX_VELOCITY": 3.0,
-        "CONF_SMOOTHING_SAMPLES": 5,
+        CONF_RSSI_OFFSETS: {normalize_mac("11:22:33:44:55:66"): 5},
+        CONF_REF_POWER: -59,
+        CONF_ATTENUATION: 2.0,
+        CONF_MAX_VELOCITY: 3.0,
+        CONF_SMOOTHING_SAMPLES: 5,
     }
     ba = BermudaAdvert(
         parent_device=mock_parent_device,
@@ -71,8 +79,8 @@ def bermuda_advert(mock_parent_device, mock_advertisement_data, mock_scanner_dev
 
 def test_bermuda_advert_initialization(bermuda_advert):
     """Test BermudaAdvert initialization."""
-    assert bermuda_advert.device_address == "aa:bb:cc:dd:ee:ff"
-    assert bermuda_advert.scanner_address == "11:22:33:44:55:66"
+    assert bermuda_advert.device_address == normalize_mac("aa:bb:cc:dd:ee:ff")
+    assert bermuda_advert.scanner_address == normalize_mac("11:22:33:44:55:66")
     assert bermuda_advert.ref_power == -59
     assert bermuda_advert.stamp == 123.45
     assert bermuda_advert.rssi == -70
@@ -122,11 +130,11 @@ def test_to_dict(bermuda_advert):
     """Test to_dict method."""
     advert_dict = bermuda_advert.to_dict()
     assert isinstance(advert_dict, dict)
-    assert advert_dict["device_address"] == "aa:bb:cc:dd:ee:ff"
-    assert advert_dict["scanner_address"] == "11:22:33:44:55:66"
+    assert advert_dict["device_address"] == normalize_mac("aa:bb:cc:dd:ee:ff")
+    assert advert_dict["scanner_address"] == normalize_mac("11:22:33:44:55:66")
 
 
 def test_repr(bermuda_advert):
     """Test __repr__ method."""
     repr_str = repr(bermuda_advert)
-    assert repr_str == "aa:bb:cc:dd:ee:ff__Mock Scanner"
+    assert repr_str == f"{normalize_mac('aa:bb:cc:dd:ee:ff')}__Mock Scanner"

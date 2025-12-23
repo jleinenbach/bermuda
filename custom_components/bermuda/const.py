@@ -83,6 +83,7 @@ METADEVICE_IBEACON_DEVICE: Final = "beacon device"  # The meta-device created to
 METADEVICE_TYPE_PRIVATE_BLE_SOURCE: Final = "private_ble_src"  # current (random) MAC of a private ble device
 METADEVICE_PRIVATE_BLE_DEVICE: Final = "private_ble_device"  # meta-device create to track private ble device
 METADEVICE_TYPE_FMDN_SOURCE: Final = "fmdn_source"
+METADEVICE_FMDN_DEVICE: Final = "fmdn_device"
 
 # Protocol constants
 SERVICE_UUID_FMDN = "0000feaa-0000-1000-8000-00805f9b34fb"
@@ -92,7 +93,7 @@ METADEVICE_SOURCETYPES: Final = {
     METADEVICE_TYPE_PRIVATE_BLE_SOURCE,
     METADEVICE_TYPE_FMDN_SOURCE,
 }
-METADEVICE_DEVICETYPES: Final = {METADEVICE_IBEACON_DEVICE, METADEVICE_PRIVATE_BLE_DEVICE}
+METADEVICE_DEVICETYPES: Final = {METADEVICE_IBEACON_DEVICE, METADEVICE_PRIVATE_BLE_DEVICE, METADEVICE_FMDN_DEVICE}
 
 # Bluetooth Device Address Type - classify MAC addresses
 BDADDR_TYPE_UNKNOWN: Final = "bd_addr_type_unknown"  # uninitialised
@@ -172,6 +173,25 @@ DOCS[CONF_DEVICES] = "Identifies which bluetooth devices we wish to expose"
 
 CONF_SCANNERS = "configured_scanners"
 
+CONF_FMDN_MODE = "fmdn_mode"
+FMDN_MODE_RESOLVED_ONLY = "resolved_only"
+FMDN_MODE_SOURCES_ONLY = "sources_only"
+FMDN_MODE_BOTH = "both"
+DEFAULT_FMDN_MODE = FMDN_MODE_RESOLVED_ONLY
+DOCS[CONF_FMDN_MODE] = (
+    "FMDN exposure mode. resolved_only hides ephemeral sources and exposes only the resolved device; "
+    "sources_only surfaces only rotating source MACs; both exposes both."
+)
+CONF_FMDN_EID_FORMAT = "fmdn_eid_format"
+FMDN_EID_FORMAT_STRIP_FRAME_20 = "strip_frame_20"
+FMDN_EID_FORMAT_STRIP_FRAME_ALL = "strip_frame_all"
+FMDN_EID_FORMAT_AUTO = "auto"
+DEFAULT_FMDN_EID_FORMAT = FMDN_EID_FORMAT_STRIP_FRAME_20
+DOCS[CONF_FMDN_EID_FORMAT] = (
+    "FMDN EID extraction strategy. strip_frame_20 keeps the first 20 bytes after the 0x40 frame; "
+    "strip_frame_all keeps all bytes after the frame; auto trims a trailing checksum byte when present."
+)
+FMDN_EID_CANDIDATE_LENGTHS: Final[tuple[int, ...]] = (20, 32)
 
 CONF_MAX_RADIUS, DEFAULT_MAX_RADIUS = "max_area_radius", 20
 DOCS[CONF_MAX_RADIUS] = "For simple area-detection, max radius from receiver"

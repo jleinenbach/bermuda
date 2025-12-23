@@ -27,6 +27,8 @@ from .const import (
     CONF_ATTENUATION,
     CONF_DEVICES,
     CONF_DEVTRACK_TIMEOUT,
+    CONF_FMDN_EID_FORMAT,
+    CONF_FMDN_MODE,
     CONF_MAX_RADIUS,
     CONF_MAX_VELOCITY,
     CONF_REF_POWER,
@@ -38,6 +40,8 @@ from .const import (
     CONF_UPDATE_INTERVAL,
     DEFAULT_ATTENUATION,
     DEFAULT_DEVTRACK_TIMEOUT,
+    DEFAULT_FMDN_EID_FORMAT,
+    DEFAULT_FMDN_MODE,
     DEFAULT_MAX_RADIUS,
     DEFAULT_MAX_VELOCITY,
     DEFAULT_REF_POWER,
@@ -46,9 +50,17 @@ from .const import (
     DISTANCE_INFINITE,
     DOMAIN,
     DOMAIN_PRIVATE_BLE_DEVICE,
+    FMDN_EID_FORMAT_AUTO,
+    FMDN_EID_FORMAT_STRIP_FRAME_20,
+    FMDN_EID_FORMAT_STRIP_FRAME_ALL,
+    FMDN_MODE_BOTH,
+    FMDN_MODE_RESOLVED_ONLY,
+    FMDN_MODE_SOURCES_ONLY,
+    METADEVICE_FMDN_DEVICE,
+    METADEVICE_TYPE_FMDN_SOURCE,
     NAME,
 )
-from .util import mac_redact, rssi_to_metres
+from .util import mac_redact, normalize_address, rssi_to_metres
 
 if TYPE_CHECKING:
     from homeassistant.components.bluetooth import BluetoothServiceInfoBleak
@@ -200,6 +212,17 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
             self.options.update(user_input)
             return await self._update_options()
 
+        fmdn_mode_options = [
+            SelectOptionDict(value=FMDN_MODE_RESOLVED_ONLY, label="FMDN resolved devices only (default)"),
+            SelectOptionDict(value=FMDN_MODE_BOTH, label="FMDN resolved + sources (advanced)"),
+            SelectOptionDict(value=FMDN_MODE_SOURCES_ONLY, label="FMDN sources only (advanced)"),
+        ]
+        fmdn_eid_format_options = [
+            SelectOptionDict(value=FMDN_EID_FORMAT_STRIP_FRAME_20, label="Strip frame byte, first 20 bytes"),
+            SelectOptionDict(value=FMDN_EID_FORMAT_STRIP_FRAME_ALL, label="Strip frame byte, keep all payload bytes"),
+            SelectOptionDict(value=FMDN_EID_FORMAT_AUTO, label="Auto-trim trailing checksum if present"),
+        ]
+
         data_schema = {
             vol.Required(
                 CONF_MAX_RADIUS,
@@ -229,6 +252,18 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
                 CONF_REF_POWER,
                 default=self.options.get(CONF_REF_POWER, DEFAULT_REF_POWER),
             ): vol.Coerce(float),
+            vol.Required(
+                CONF_FMDN_MODE,
+                default=self.options.get(CONF_FMDN_MODE, DEFAULT_FMDN_MODE),
+            ): SelectSelector(
+                SelectSelectorConfig(options=fmdn_mode_options, multiple=False, mode=SelectSelectorMode.DROPDOWN)
+            ),
+            vol.Required(
+                CONF_FMDN_EID_FORMAT,
+                default=self.options.get(CONF_FMDN_EID_FORMAT, DEFAULT_FMDN_EID_FORMAT),
+            ): SelectSelector(
+                SelectSelectorConfig(options=fmdn_eid_format_options, multiple=False, mode=SelectSelectorMode.DROPDOWN)
+            ),
         }
 
         return self.async_show_form(step_id="globalopts", data_schema=vol.Schema(data_schema))
@@ -236,14 +271,27 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
     async def async_step_selectdevices(self, user_input=None):
         """Handle a flow initialized by the user."""
         if user_input is not None:
+            if user_input.get(CONF_DEVICES):
+                user_input[CONF_DEVICES] = [
+                    normalize_address(addr) for addr in user_input[CONF_DEVICES] if isinstance(addr, str)
+                ]
             self.options.update(user_input)
             return await self._update_options()
 
         # Grab the co-ordinator's device list so we can build a selector from it.
         self.devices = self.config_entry.runtime_data.coordinator.devices
+        configured_devices_option = self.options.get(CONF_DEVICES, [])
+        if not isinstance(configured_devices_option, list):
+            configured_devices_option = []
+        configured_devices = {
+            normalize_address(address) for address in configured_devices_option if isinstance(address, str)
+        }
+        fmdn_mode = self.options.get(CONF_FMDN_MODE, DEFAULT_FMDN_MODE)
 
         # Where we store the options before building the selector
         options_list = []
+        options_fmdn_resolved = []
+        options_fmdn_sources = []
         options_metadevices = []  # These will be first in the list
         options_otherdevices = []  # These will be last.
         options_randoms = []  # Random MAC addresses - very last!
@@ -255,6 +303,27 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
 
             if device.is_scanner:
                 # We don't "track" scanner devices, per se
+                continue
+            if METADEVICE_FMDN_DEVICE in device.metadevice_type:
+                if fmdn_mode != FMDN_MODE_SOURCES_ONLY:
+                    options_fmdn_resolved.append(
+                        SelectOptionDict(
+                            value=device.address,
+                            label=(
+                                f"FMDN resolved: [{device.address}] {name} "
+                                f"(sources: {len(device.metadevice_sources)})"
+                            ),
+                        )
+                    )
+                continue
+            if METADEVICE_TYPE_FMDN_SOURCE in device.metadevice_type:
+                if fmdn_mode in (FMDN_MODE_BOTH, FMDN_MODE_SOURCES_ONLY):
+                    options_fmdn_sources.append(
+                        SelectOptionDict(
+                            value=device.address,
+                            label=f"FMDN source: [{device.address}] {name}",
+                        )
+                    )
                 continue
             if device.address_type == ADDR_TYPE_PRIVATE_BLE_DEVICE:
                 # Private BLE Devices get configured automagically, skip
@@ -268,7 +337,7 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
 
                 options_metadevices.append(
                     SelectOptionDict(
-                        value=device.address.upper(),
+                        value=device.address,
                         label=f"iBeacon: {device.address.upper()} {source_mac} "
                         f"{name if device.address.upper() != name.upper() else ''}",
                     )
@@ -284,7 +353,7 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
 
                 options_randoms.append(
                     SelectOptionDict(
-                        value=device.address.upper(),
+                        value=device.address,
                         label=f"[{device.address.upper()}] {name} (Random MAC)",
                     )
                 )
@@ -293,31 +362,35 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
             # Default, unremarkable devices, just pop them in the list.
             options_otherdevices.append(
                 SelectOptionDict(
-                    value=device.address.upper(),
+                    value=device.address,
                     label=f"[{device.address.upper()}] {name}",
                 )
             )
 
         # build the final list with "preferred" devices first.
+        options_fmdn_resolved.sort(key=lambda item: item["label"])
         options_metadevices.sort(key=lambda item: item["label"])
         options_otherdevices.sort(key=lambda item: item["label"])
         options_randoms.sort(key=lambda item: item["label"])
+        options_fmdn_sources.sort(key=lambda item: item["label"])
+        options_list.extend(options_fmdn_resolved)
         options_list.extend(options_metadevices)
         options_list.extend(options_otherdevices)
         options_list.extend(options_randoms)
+        options_list.extend(options_fmdn_sources)
 
-        for address in self.options.get(CONF_DEVICES, []):
+        for address in sorted(configured_devices):
             # Now check for any configured devices that weren't discovered, and add them
             if not next(
-                (item for item in options_list if item["value"] == address.upper()),
+                (item for item in options_list if normalize_address(item["value"]) == address),
                 False,
             ):
-                options_list.append(SelectOptionDict(value=address.upper(), label=f"[{address}] (saved)"))
+                options_list.append(SelectOptionDict(value=address, label=f"[{address}] (saved)"))
 
         data_schema = {
             vol.Optional(
                 CONF_DEVICES,
-                default=self.options.get(CONF_DEVICES, []),
+                default=sorted(configured_devices),
             ): SelectSelector(SelectSelectorConfig(options=options_list, multiple=True)),
         }
 

@@ -12,6 +12,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.bermuda.const import DOMAIN
 from custom_components.bermuda.const import NAME
+from custom_components.bermuda.const import CONF_DEVICES
 
 # from .const import MOCK_OPTIONS
 from .const import MOCK_CONFIG
@@ -90,4 +91,28 @@ async def test_options_flow(hass: HomeAssistant, setup_bermuda_entry: MockConfig
     assert result.get("title") == NAME
 
     # Verify that the options were updated
-    assert setup_bermuda_entry.options == MOCK_OPTIONS_GLOBALS
+    for key, value in MOCK_OPTIONS_GLOBALS.items():
+        assert setup_bermuda_entry.options[key] == value
+
+
+async def test_selectdevices_normalizes_addresses(hass: HomeAssistant, setup_bermuda_entry: MockConfigEntry):
+    """Ensure selectdevices saves canonical MAC addresses."""
+
+    coordinator = setup_bermuda_entry.runtime_data.coordinator
+    coordinator._get_or_create_device("AA:BB:CC:DD:EE:FF")
+    hass.config_entries.async_update_entry(setup_bermuda_entry, options={CONF_DEVICES: ["AA-BB-CC-DD-EE-FF"]})
+    await hass.async_block_till_done()
+
+    result = await hass.config_entries.options.async_init(setup_bermuda_entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={"next_step_id": "selectdevices"}
+    )
+
+    assert result.get("step_id") == "selectdevices"
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={CONF_DEVICES: ["aa:bb:cc:dd:ee:ff"]}
+    )
+
+    assert result.get("type") == FlowResultType.CREATE_ENTRY
+    assert setup_bermuda_entry.options[CONF_DEVICES] == ["aa:bb:cc:dd:ee:ff"]
