@@ -8,13 +8,21 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import floor_registry as fr
 
 from custom_components.bermuda.const import (
+    CONF_FMDN_EID_FORMAT,
+    CONF_FMDN_MODE,
     DATA_EID_RESOLVER,
+    DEFAULT_FMDN_EID_FORMAT,
+    DEFAULT_FMDN_MODE,
     DOMAIN_GOOGLEFINDMY,
+    FMDN_EID_FORMAT_AUTO,
+    FMDN_EID_FORMAT_STRIP_FRAME_ALL,
+    FMDN_EID_FORMAT_STRIP_FRAME_20,
     METADEVICE_TYPE_FMDN_SOURCE,
     SERVICE_UUID_FMDN,
 )
 from custom_components.bermuda.coordinator import BermudaDataUpdateCoordinator
-from custom_components.bermuda.fmdn import extract_fmdn_eid
+from custom_components.bermuda.fmdn import extract_fmdn_eids
+from custom_components.bermuda.util import normalize_address, normalize_mac
 
 
 @pytest.fixture
@@ -23,7 +31,10 @@ def coordinator(hass):
 
     coordinator = BermudaDataUpdateCoordinator.__new__(BermudaDataUpdateCoordinator)
     coordinator.hass = hass
-    coordinator.options = {}
+    coordinator.options = {
+        CONF_FMDN_MODE: DEFAULT_FMDN_MODE,
+        CONF_FMDN_EID_FORMAT: DEFAULT_FMDN_EID_FORMAT,
+    }
     coordinator.devices = {}
     coordinator.metadevices = {}
     coordinator._seed_configured_devices_done = False
@@ -39,29 +50,40 @@ def coordinator(hass):
     return coordinator
 
 
+def test_format_fmdn_metadevice_key_stable(coordinator):
+    """Ensure FMDN metadevice keys remain identifier-based."""
+
+    key = coordinator._format_fmdn_metadevice_address("DEVICE-ID", "CANONICAL-01")
+    assert key == "fmdn:canonical-01"
+    assert key.startswith("fmdn:")
+
+    fallback_key = coordinator._format_fmdn_metadevice_address("Device-Only", None)
+    assert fallback_key == "fmdn:device-only"
+
 def test_fmdn_resolution_registers_metadevice(hass, coordinator):
     """Resolve an FMDN frame and register the rotating source."""
 
     resolver = MagicMock()
-    match = SimpleNamespace(device_id="fmdn-device-id")
+    match = SimpleNamespace(device_id="fmdn-device-id", canonical_id="canon-1")
     resolver.resolve_eid.return_value = match
     hass.data[DOMAIN_GOOGLEFINDMY] = {DATA_EID_RESOLVER: resolver}
 
     service_data = {SERVICE_UUID_FMDN: bytes([0x40]) + b"\x01" * 20}
 
-    device_id = coordinator._process_fmdn_resolution("aa:bb:cc:dd:ee:ff", service_data)
+    source_device = coordinator._get_or_create_device("aa:bb:cc:dd:ee:ff")
+    coordinator._handle_fmdn_advertisement(source_device, service_data)
 
     resolver.resolve_eid.assert_called_once_with(b"\x01" * 20)
-    assert device_id == match.device_id
 
-    coordinator._register_fmdn_source("aa:bb:cc:dd:ee:ff", device_id)
+    metadevice_key = coordinator._format_fmdn_metadevice_address(match.device_id, match.canonical_id)
+    metadevice = coordinator.metadevices[metadevice_key]
+    assert metadevice.create_sensor is False
+    assert metadevice.fmdn_device_id == match.device_id
+    assert normalize_mac("aa:bb:cc:dd:ee:ff") in metadevice.metadevice_sources
 
-    metadevice = coordinator.metadevices[device_id]
-    assert metadevice.create_sensor is True
-    assert "aa:bb:cc:dd:ee:ff" in metadevice.metadevice_sources
-
-    source_device = coordinator.devices["aa:bb:cc:dd:ee:ff"]
-    assert METADEVICE_TYPE_FMDN_SOURCE in source_device.metadevice_type
+    created_source = coordinator._get_device("aa:bb:cc:dd:ee:ff")
+    assert created_source is not None
+    assert METADEVICE_TYPE_FMDN_SOURCE in created_source.metadevice_type
 
 
 def test_fmdn_resolution_without_googlefindmy(hass, coordinator):
@@ -69,10 +91,12 @@ def test_fmdn_resolution_without_googlefindmy(hass, coordinator):
 
     service_data = {SERVICE_UUID_FMDN: bytes([0x40]) + b"\x02" * 20}
 
-    device_id = coordinator._process_fmdn_resolution("11:22:33:44:55:66", service_data)
+    source_device = coordinator._get_or_create_device("11:22:33:44:55:66")
+    coordinator._handle_fmdn_advertisement(source_device, service_data)
 
-    assert device_id is None
+    assert coordinator.metadevices == {}
     assert DOMAIN_GOOGLEFINDMY not in hass.data
+    assert METADEVICE_TYPE_FMDN_SOURCE in source_device.metadevice_type
 
 
 def test_fmdn_resolution_handles_missing_resolver_api(hass, coordinator):
@@ -81,15 +105,117 @@ def test_fmdn_resolution_handles_missing_resolver_api(hass, coordinator):
     hass.data[DOMAIN_GOOGLEFINDMY] = {DATA_EID_RESOLVER: object()}
     service_data = {SERVICE_UUID_FMDN: bytes([0x40]) + b"\x03" * 20}
 
-    device_id = coordinator._process_fmdn_resolution("22:33:44:55:66:77", service_data)
+    source_device = coordinator._get_or_create_device("22:33:44:55:66:77")
+    coordinator._handle_fmdn_advertisement(source_device, service_data)
 
-    assert device_id is None
+    assert coordinator.metadevices == {}
 
 
 def test_extract_fmdn_eid_ignores_unknown_frame_types():
-    """Return None for unsupported or malformed FMDN frames."""
+    """Return candidates even when frame types are unexpected."""
 
-    assert (
-        extract_fmdn_eid({SERVICE_UUID_FMDN: bytes([0x41]) + b"\x04" * 20})
-        is None
-    )
+    payload = bytes([0x41]) + b"\x04" * 20
+    candidates = extract_fmdn_eids({SERVICE_UUID_FMDN: payload}, mode=DEFAULT_FMDN_EID_FORMAT)
+    assert bytes([0x04] * 20) in candidates
+
+
+def test_extract_fmdn_eid_supports_strip_frame_all():
+    """Return the full payload after removing the frame byte."""
+
+    payload = bytes([0x40]) + b"\x05\x06\x07"
+    assert extract_fmdn_eids({SERVICE_UUID_FMDN: payload}, mode=FMDN_EID_FORMAT_STRIP_FRAME_ALL) == {b"\x05\x06\x07"}
+
+
+def test_extract_fmdn_eid_auto_trims_checksum_byte():
+    """Drop a trailing checksum-like byte when the payload length matches 21 bytes after the frame."""
+
+    payload = bytes([0x40]) + b"\x08" * 21
+    candidates = extract_fmdn_eids({SERVICE_UUID_FMDN: payload}, mode=FMDN_EID_FORMAT_AUTO)
+    assert b"\x08" * 20 in candidates
+
+
+def test_extract_fmdn_eid_auto_falls_back_to_twenty_bytes():
+    """Return the first 20 bytes when the payload is exactly 20 bytes after the frame."""
+
+    payload = bytes([0x40]) + bytes(range(1, 21))
+    candidates = extract_fmdn_eids({SERVICE_UUID_FMDN: payload}, mode=FMDN_EID_FORMAT_AUTO)
+    assert bytes(range(1, 21)) in candidates
+
+
+def test_extract_fmdn_eid_rejects_short_payload():
+    """Return None for payloads without enough data after the frame byte."""
+
+    assert extract_fmdn_eids({SERVICE_UUID_FMDN: b"\x40"}, mode=FMDN_EID_FORMAT_STRIP_FRAME_20) == set()
+
+
+def test_normalize_address_collapses_duplicate_formats(coordinator):
+    """Ensure coordinator keys devices by canonical MAC addresses."""
+
+    first = coordinator._get_or_create_device("aa:bb:cc:dd:ee:ff")
+    second = coordinator._get_or_create_device("AA-BB-CC-DD-EE-FF")
+
+    assert first is second
+    assert first.address == "aa:bb:cc:dd:ee:ff"
+    assert normalize_address("aabbccddeeff") == "aa:bb:cc:dd:ee:ff"
+
+
+def test_extract_fmdn_eids_handles_embedded_lengths():
+    """Generate candidates for embedded 20- and 32-byte payloads."""
+
+    eid20 = bytes(range(1, 21))
+    eid32 = bytes(range(1, 33))
+    payload = b"\x40" + b"\xAA\xBB" + eid20 + b"\xCC" + eid32 + b"\xDD"
+
+    candidates = extract_fmdn_eids({SERVICE_UUID_FMDN: payload}, mode=FMDN_EID_FORMAT_AUTO)
+
+    assert eid20 in candidates
+    assert eid32 in candidates
+
+
+def test_extract_fmdn_eids_sliding_window_without_frame():
+    """Ensure sliding window detection finds EIDs even without frame byte."""
+
+    eid20 = b"\x12" * 20
+    payload = b"\x99" + eid20 + b"\x00\x01"
+
+    candidates = extract_fmdn_eids({SERVICE_UUID_FMDN: payload}, mode=FMDN_EID_FORMAT_AUTO)
+    assert eid20 in candidates
+
+
+def test_shared_match_without_identifiers_skipped(hass, coordinator):
+    """Shared matches lacking identifiers should not create metadevices."""
+
+    resolver = MagicMock()
+    resolver.resolve_eid.return_value = SimpleNamespace(shared=True, device_id=None, canonical_id=None)
+    hass.data[DOMAIN_GOOGLEFINDMY] = {DATA_EID_RESOLVER: resolver}
+
+    source_device = coordinator._get_or_create_device("33:44:55:66:77:88")
+    service_data = {SERVICE_UUID_FMDN: bytes([0x40]) + b"\x09" * 20}
+
+    coordinator._handle_fmdn_advertisement(source_device, service_data)
+
+    assert coordinator.metadevices == {}
+    assert METADEVICE_TYPE_FMDN_SOURCE in source_device.metadevice_type
+
+
+def test_deduplicates_metadevices_by_canonical_id(hass, coordinator):
+    """Ensure multiple sources map to the same canonical metadevice."""
+
+    resolver = MagicMock()
+
+    def _resolver(payload):
+        return SimpleNamespace(device_id="owned", canonical_id="shared-uuid")
+
+    resolver.resolve_eid.side_effect = _resolver
+    hass.data[DOMAIN_GOOGLEFINDMY] = {DATA_EID_RESOLVER: resolver}
+
+    first_source = coordinator._get_or_create_device("00:11:22:33:44:55")
+    second_source = coordinator._get_or_create_device("00:11:22:33:44:56")
+    service_data = {SERVICE_UUID_FMDN: bytes([0x40]) + b"\xAA" * 20}
+
+    coordinator._handle_fmdn_advertisement(first_source, service_data)
+    coordinator._handle_fmdn_advertisement(second_source, service_data)
+
+    assert len(coordinator.metadevices) == 1
+    metadevice = next(iter(coordinator.metadevices.values()))
+    assert set(metadevice.metadevice_sources) == {first_source.address, second_source.address}

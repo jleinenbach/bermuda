@@ -63,6 +63,8 @@ from .const import (
     CONF_ATTENUATION,
     CONF_DEVICES,
     CONF_DEVTRACK_TIMEOUT,
+    CONF_FMDN_EID_FORMAT,
+    CONF_FMDN_MODE,
     CONF_MAX_RADIUS,
     CONF_MAX_VELOCITY,
     CONF_REF_POWER,
@@ -72,6 +74,8 @@ from .const import (
     DATA_EID_RESOLVER,
     DEFAULT_ATTENUATION,
     DEFAULT_DEVTRACK_TIMEOUT,
+    DEFAULT_FMDN_EID_FORMAT,
+    DEFAULT_FMDN_MODE,
     DEFAULT_MAX_RADIUS,
     DEFAULT_MAX_VELOCITY,
     DEFAULT_REF_POWER,
@@ -80,6 +84,7 @@ from .const import (
     DOMAIN,
     DOMAIN_GOOGLEFINDMY,
     DOMAIN_PRIVATE_BLE_DEVICE,
+    METADEVICE_FMDN_DEVICE,
     METADEVICE_IBEACON_DEVICE,
     METADEVICE_TYPE_FMDN_SOURCE,
     METADEVICE_TYPE_IBEACON_SOURCE,
@@ -97,8 +102,8 @@ from .const import (
     SIGNAL_SCANNERS_CHANGED,
     UPDATE_INTERVAL,
 )
-from .fmdn import extract_fmdn_eid
-from .util import mac_explode_formats, mac_norm
+from .fmdn import extract_fmdn_eids
+from .util import mac_explode_formats, normalize_address, normalize_identifier, normalize_mac
 
 Cancellable = Callable[[], None]
 
@@ -259,6 +264,8 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         self.options[CONF_SMOOTHING_SAMPLES] = DEFAULT_SMOOTHING_SAMPLES
         self.options[CONF_UPDATE_INTERVAL] = DEFAULT_UPDATE_INTERVAL
         self.options[CONF_RSSI_OFFSETS] = {}
+        self.options[CONF_FMDN_MODE] = DEFAULT_FMDN_MODE
+        self.options[CONF_FMDN_EID_FORMAT] = DEFAULT_FMDN_EID_FORMAT
 
         if hasattr(entry, "options"):
             # Firstly, on some calls (specifically during reload after settings changes)
@@ -270,6 +277,8 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                     CONF_ATTENUATION,
                     CONF_DEVICES,
                     CONF_DEVTRACK_TIMEOUT,
+                    CONF_FMDN_EID_FORMAT,
+                    CONF_FMDN_MODE,
                     CONF_MAX_RADIUS,
                     CONF_MAX_VELOCITY,
                     CONF_REF_POWER,
@@ -616,16 +625,14 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         ]
 
     def _get_device(self, address: str) -> BermudaDevice | None:
-        """Search for a device entry based on mac address."""
-        # mac_norm tries to return a lower-cased, colon-separated mac address.
-        # failing that, it returns the original, lower-cased.
+        """Search for a device entry based on address."""
         try:
-            return self.devices[mac_norm(address)]
+            return self.devices[normalize_address(address)]
         except KeyError:
             return None
 
     def _get_or_create_device(self, address: str) -> BermudaDevice:
-        mac = mac_norm(address)
+        mac = normalize_address(address)
         try:
             return self.devices[mac]
         except KeyError:
@@ -648,48 +655,80 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
         return cast("EidResolver", resolver)
 
-    def _process_fmdn_resolution(
-        self, _device_address: str, service_data: Mapping[str, bytes]
-    ) -> str | None:
-        """Resolve an EID payload to a Home Assistant device registry id."""
-        if not service_data:
-            return None
+    def _format_fmdn_metadevice_address(self, device_id: str, canonical_id: str | None) -> str:
+        """Return the canonical key for an FMDN metadevice."""
+        base = canonical_id or device_id
+        return normalize_identifier(f"fmdn:{base}")
 
-        device_id: str | None = None
-        eid_bytes = extract_fmdn_eid(cast("Mapping[str | int, Any]", service_data))
+    def _extract_fmdn_eids(self, service_data: Mapping[str | int, Any]) -> set[bytes]:
+        """Extract an FMDN EID using the configured format."""
+        eid_format = self.options.get(CONF_FMDN_EID_FORMAT, DEFAULT_FMDN_EID_FORMAT)
+        return extract_fmdn_eids(service_data, mode=str(eid_format))
+
+    def _process_fmdn_resolution(self, eid_bytes: bytes) -> Any | None:
+        """Resolve an EID payload to a Home Assistant device registry id."""
         resolver = self._get_fmdn_resolver()
 
-        if eid_bytes is None or resolver is None:
+        if resolver is None:
             return None
 
         try:
-            match = resolver.resolve_eid(eid_bytes)
+            return resolver.resolve_eid(eid_bytes)
         except Exception:  # noqa: BLE001
             _LOGGER.debug("Resolver raised while processing EID payload", exc_info=True)
-        else:
-            if match is not None:
-                device_id = getattr(match, "device_id", None)
+        return None
 
-        return device_id
-
-    def _register_fmdn_source(self, source_address: str, fmdn_device_id: str) -> None:
+    def _register_fmdn_source(self, source_device: BermudaDevice, metadevice_address: str, match: Any) -> None:
         """Attach a rotating FMDN source MAC to its stable metadevice container."""
-        metadevice = self._get_or_create_device(fmdn_device_id)
-        metadevice.create_sensor = True
+        metadevice = self._get_or_create_device(metadevice_address)
+        metadevice.metadevice_type.add(METADEVICE_FMDN_DEVICE)
+        metadevice.address_type = BDADDR_TYPE_NOT_MAC48
+        metadevice.fmdn_device_id = getattr(match, "device_id", None)
+        metadevice.fmdn_canonical_id = getattr(match, "canonical_id", None)
 
         if metadevice.address not in self.metadevices:
             self.metadevices[metadevice.address] = metadevice
 
-        if device_entry := self.dr.async_get(fmdn_device_id):
+        if metadevice.fmdn_device_id and (device_entry := self.dr.async_get(metadevice.fmdn_device_id)):
             metadevice.name_devreg = device_entry.name
             metadevice.name_by_user = device_entry.name_by_user
             metadevice.make_name()
 
-        source_device = self._get_or_create_device(source_address)
         source_device.metadevice_type.add(METADEVICE_TYPE_FMDN_SOURCE)
 
-        if source_address not in metadevice.metadevice_sources:
-            metadevice.metadevice_sources.insert(0, source_address)
+        if source_device.address not in metadevice.metadevice_sources:
+            metadevice.metadevice_sources.insert(0, source_device.address)
+
+    def _handle_fmdn_advertisement(self, device: BermudaDevice, service_data: Mapping[str | int, Any]) -> None:
+        """Process FMDN payloads for an advertisement."""
+        if not service_data:
+            return
+
+        candidates = self._extract_fmdn_eids(service_data)
+        if not candidates:
+            return
+
+        device.metadevice_type.add(METADEVICE_TYPE_FMDN_SOURCE)
+
+        for eid_bytes in candidates:
+            match = self._process_fmdn_resolution(eid_bytes)
+            if match is None:
+                continue
+
+            resolved_device_id = getattr(match, "device_id", None)
+            canonical_id = getattr(match, "canonical_id", None)
+            is_shared = bool(getattr(match, "shared", False))
+
+            if is_shared and resolved_device_id is None and canonical_id is None:
+                _LOGGER.debug("Skipping shared FMDN match without identifiers")
+                continue
+            if resolved_device_id is None:
+                _LOGGER.debug("Resolver returned match without device_id for candidate length %d", len(eid_bytes))
+                continue
+
+            metadevice_address = self._format_fmdn_metadevice_address(str(resolved_device_id), canonical_id)
+            self._register_fmdn_source(device, metadevice_address, match)
+            break
 
     def _maybe_prune_fmdn_source(
         self, device: BermudaDevice, stamp_fmdn: float, prune_list: list[str]
@@ -804,9 +843,6 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
     def _async_gather_advert_data(self):
         """Perform the gathering of backend Bluetooth Data and updating scanners and devices."""
-        nowstamp = monotonic_time_coarse()
-        _timestamp_cutoff = nowstamp - min(PRUNE_TIME_DEFAULT, PRUNE_TIME_UNKNOWN_IRK)
-
         # Initialise ha_scanners if we haven't already
         if self._scanner_init_pending:
             self._refresh_scanners(force=True)
@@ -836,18 +872,6 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
             # Now go through the scanner's adverts and send them to our device objects.
             for bledevice, advertisementdata in ha_scanner.discovered_devices_and_advertisement_data.values():
-                service_data = advertisementdata.service_data or {}
-                fmdn_payload = service_data.get(0xFEAA) or service_data.get(
-                    "0000feaa-0000-1000-8000-00805f9b34fb"
-                )
-                if fmdn_payload:
-                    _LOGGER.warning(
-                        "FMDN RAW SPY: Scanner %s -> %s | Data: %s",
-                        scanner_device.name,
-                        bledevice.address,
-                        fmdn_payload.hex(),
-                    )
-
                 if adstamp := scanner_device.async_as_scanner_get_stamp(bledevice.address):
                     if adstamp < self.stamp_last_update_started - 3:
                         # skip older adverts that should already have been processed
@@ -859,15 +883,9 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                 device = self._get_or_create_device(bledevice.address)
                 device.process_advertisement(scanner_device, advertisementdata)
 
-                if METADEVICE_TYPE_FMDN_SOURCE in device.metadevice_type:
-                    continue
-                if not advertisementdata.service_data:
-                    continue
-
-                if device_id := self._process_fmdn_resolution(
-                    device.address, advertisementdata.service_data
-                ):
-                    self._register_fmdn_source(device.address, device_id)
+                service_data_raw = advertisementdata.service_data or {}
+                service_data = cast("Mapping[str | int, Any]", service_data_raw)
+                self._handle_fmdn_advertisement(device, service_data)
 
         # end of for ha_scanner loop
         return True
@@ -1119,18 +1137,23 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
                         if pb_source_address is not None:
                             # We've got a source MAC address!
-                            pb_source_address = mac_norm(pb_source_address)
+                            try:
+                                pb_source_address = normalize_mac(pb_source_address)
+                            except ValueError:
+                                _LOGGER.debug("Skipping invalid PB source address: %s", pb_source_address)
+                                pb_source_address = None
 
-                            # Set up and tag the source device entry
-                            source_device = self._get_or_create_device(pb_source_address)
-                            source_device.metadevice_type.add(METADEVICE_TYPE_PRIVATE_BLE_SOURCE)
+                            if pb_source_address is not None:
+                                # Set up and tag the source device entry
+                                source_device = self._get_or_create_device(pb_source_address)
+                                source_device.metadevice_type.add(METADEVICE_TYPE_PRIVATE_BLE_SOURCE)
 
-                            # Add source address. Don't remove anything, as pruning takes care of that.
-                            if pb_source_address not in metadevice.metadevice_sources:
-                                metadevice.metadevice_sources.insert(0, pb_source_address)
+                                # Add source address. Don't remove anything, as pruning takes care of that.
+                                if pb_source_address not in metadevice.metadevice_sources:
+                                    metadevice.metadevice_sources.insert(0, pb_source_address)
 
-                            # Update state_sources so we can track when it changes
-                            self.pb_state_sources[pb_entity.entity_id] = pb_source_address
+                                # Update state_sources so we can track when it changes
+                                self.pb_state_sources[pb_entity.entity_id] = pb_source_address
 
                         else:
                             _LOGGER.debug(
@@ -1178,7 +1201,8 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                 configured_devices_option = self.options.get(CONF_DEVICES, [])
                 if not isinstance(configured_devices_option, list):
                     configured_devices_option = []
-                if metadevice.address.upper() in configured_devices_option:
+                configured_devices = {normalize_address(addr) for addr in configured_devices_option}
+                if metadevice.address in configured_devices:
                     # This is a meta-device we track. Flag it for set-up:
                     metadevice.create_sensor = True
 
@@ -1636,7 +1660,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         # authoritative source of truth.
         #
         for hascanner in self._hascanners:
-            scanner_address = mac_norm(hascanner.source)
+            scanner_address = normalize_address(hascanner.source)
             bermuda_scanner = self._get_or_create_device(scanner_address)
             bermuda_scanner.async_as_scanner_init(hascanner)
 
@@ -1648,7 +1672,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         """Demotes any devices that are no longer scanners based on new self.hascanners."""
         _scanners = [device.address for device in self.devices.values() if device.is_scanner]
         for ha_scanner in self._hascanners:
-            scanner_address = mac_norm(ha_scanner.source)
+            scanner_address = normalize_address(ha_scanner.source)
             if scanner_address in _scanners:
                 # This is still an extant HA Scanner, so we'll keep it.
                 _scanners.remove(scanner_address)

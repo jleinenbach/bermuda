@@ -6,14 +6,33 @@ import pytest
 from unittest.mock import MagicMock, patch
 from homeassistant.components.bluetooth import BaseHaScanner, BaseHaRemoteScanner
 from custom_components.bermuda.bermuda_device import BermudaDevice
-from custom_components.bermuda.const import ICON_DEFAULT_AREA, ICON_DEFAULT_FLOOR
+from custom_components.bermuda.const import (
+    CONF_ATTENUATION,
+    CONF_MAX_VELOCITY,
+    CONF_REF_POWER,
+    CONF_RSSI_OFFSETS,
+    CONF_SMOOTHING_SAMPLES,
+    DEFAULT_ATTENUATION,
+    DEFAULT_MAX_VELOCITY,
+    DEFAULT_REF_POWER,
+    DEFAULT_SMOOTHING_SAMPLES,
+    ICON_DEFAULT_AREA,
+    ICON_DEFAULT_FLOOR,
+)
+from custom_components.bermuda.util import normalize_mac
 
 
 @pytest.fixture
 def mock_coordinator():
     """Fixture for mocking BermudaDataUpdateCoordinator."""
     coordinator = MagicMock()
-    coordinator.options = {}
+    coordinator.options = {
+        CONF_ATTENUATION: DEFAULT_ATTENUATION,
+        CONF_REF_POWER: DEFAULT_REF_POWER,
+        CONF_MAX_VELOCITY: DEFAULT_MAX_VELOCITY,
+        CONF_SMOOTHING_SAMPLES: DEFAULT_SMOOTHING_SAMPLES,
+        CONF_RSSI_OFFSETS: {},
+    }
     coordinator.hass_version_min_2025_4 = True
     return coordinator
 
@@ -50,7 +69,7 @@ def bermuda_scanner(mock_coordinator):
 
 def test_bermuda_device_initialization(bermuda_device):
     """Test BermudaDevice initialization."""
-    assert bermuda_device.address == "aa:bb:cc:dd:ee:ff"
+    assert bermuda_device.address == normalize_mac("aa:bb:cc:dd:ee:ff")
     assert bermuda_device.name.startswith("bermuda_")
     assert bermuda_device.area_icon == ICON_DEFAULT_AREA
     assert bermuda_device.floor_icon == ICON_DEFAULT_FLOOR
@@ -74,7 +93,7 @@ def test_async_as_scanner_update(bermuda_scanner, mock_scanner):
 def test_async_as_scanner_get_stamp(bermuda_scanner, mock_scanner, mock_remote_scanner):
     """Test async_as_scanner_get_stamp method."""
     bermuda_scanner.async_as_scanner_init(mock_scanner)
-    bermuda_scanner.stamps = {"AA:BB:CC:DD:EE:FF": 123.45}
+    bermuda_scanner.stamps = {normalize_mac("aa:bb:cc:dd:ee:ff"): 123.45}
 
     stamp = bermuda_scanner.async_as_scanner_get_stamp("AA:bb:CC:DD:EE:FF")
     assert stamp is None
@@ -116,7 +135,7 @@ def test_to_dict(bermuda_device):
     """Test to_dict method."""
     device_dict = bermuda_device.to_dict()
     assert isinstance(device_dict, dict)
-    assert device_dict["address"] == "aa:bb:cc:dd:ee:ff"
+    assert device_dict["address"] == normalize_mac("aa:bb:cc:dd:ee:ff")
 
 
 def test_repr(bermuda_device):

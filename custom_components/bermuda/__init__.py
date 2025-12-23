@@ -19,7 +19,7 @@ from homeassistant.helpers.entity_registry import async_migrate_entries
 
 from .const import _LOGGER, DOMAIN, PLATFORMS, STARTUP_MESSAGE
 from .coordinator import BermudaDataUpdateCoordinator
-from .util import mac_math_offset, mac_norm
+from .util import mac_math_offset, normalize_address
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -117,7 +117,7 @@ async def async_remove_config_entry_device(
             pass
     if address is not None:
         try:
-            coordinator.devices[mac_norm(address)].create_sensor = False
+            coordinator.devices[normalize_address(address)].create_sensor = False
         except KeyError:
             _LOGGER.warning("Failed to locate device entry for %s", address)
         return True

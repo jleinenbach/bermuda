@@ -44,15 +44,21 @@ from .const import (
     BDADDR_TYPE_UNKNOWN,
     CONF_DEVICES,
     CONF_DEVTRACK_TIMEOUT,
+    CONF_FMDN_MODE,
     DEFAULT_DEVTRACK_TIMEOUT,
+    DEFAULT_FMDN_MODE,
     DOMAIN,
+    FMDN_MODE_BOTH,
+    FMDN_MODE_RESOLVED_ONLY,
+    FMDN_MODE_SOURCES_ONLY,
     ICON_DEFAULT_AREA,
     ICON_DEFAULT_FLOOR,
     METADEVICE_IBEACON_DEVICE,
     METADEVICE_PRIVATE_BLE_DEVICE,
+    METADEVICE_TYPE_FMDN_SOURCE,
     METADEVICE_TYPE_IBEACON_SOURCE,
 )
-from .util import mac_math_offset, mac_norm
+from .util import mac_math_offset, normalize_address, normalize_mac
 
 if TYPE_CHECKING:
     from bleak.backends.scanner import AdvertisementData
@@ -78,7 +84,7 @@ class BermudaDevice(dict):
 
     def __init__(self, address: str, coordinator: BermudaDataUpdateCoordinator) -> None:
         """Initial (empty) data."""
-        _address = mac_norm(address)
+        _address = normalize_address(address)
         self.name: str = f"{DOMAIN}_{slugify(_address)}"  # "preferred" name built by Bermuda.
         self.name_bt_serviceinfo: str | None = None  # From serviceinfo.device.name
         self.name_bt_local_name: str | None = None  # From service_info.advertisement.local_name
@@ -118,6 +124,8 @@ class BermudaDevice(dict):
 
         self.zone: str = STATE_NOT_HOME  # STATE_HOME or STATE_NOT_HOME
         self.manufacturer: str | None = None
+        self.fmdn_device_id: str | None = None
+        self.fmdn_canonical_id: str | None = None
         self._hascanner: BaseHaRemoteScanner | BaseHaScanner | None = None  # HA's scanner
         self._is_scanner: bool = False
         self._is_remote_scanner: bool | None = None
@@ -510,10 +518,23 @@ class BermudaDevice(dict):
             # that ha_scanner is a BaseHaRemoteScanner.
             # New API in 2025.4.0
             if self._coordinator.hass_version_min_2025_4:
-                self.stamps = self._hascanner.discovered_device_timestamps  # type: ignore
+                raw_stamps = self._hascanner.discovered_device_timestamps  # type: ignore
             else:
                 # pylint: disable=W0212,C0301
-                self.stamps = self._hascanner._discovered_device_timestamps  # type: ignore # noqa: SLF001
+                raw_stamps = self._hascanner._discovered_device_timestamps  # type: ignore # noqa: SLF001
+
+            if raw_stamps is not None:
+                normalized: dict[str, float] = {}
+                for addr, stamp in raw_stamps.items():
+                    if not isinstance(stamp, (int, float)):
+                        continue
+                    try:
+                        normalized_addr = normalize_mac(str(addr))
+                    except ValueError:
+                        # Some backends may report non-MAC keys; ignore those.
+                        continue
+                    normalized[normalized_addr] = float(stamp)
+                self.stamps = normalized
 
     def async_as_scanner_get_stamp(self, address: str) -> float | None:
         """
@@ -536,10 +557,10 @@ class BermudaDevice(dict):
                 )
                 return None
             try:
-                return self.stamps[address.upper()]
-            except (KeyError, AttributeError):
-                # No current record, device might have "stale"d out.
+                normalized_address = normalize_mac(address)
+            except ValueError:
                 return None
+            return self.stamps.get(normalized_address)
         # Probably a usb / BlueZ device.
         return None
 
@@ -556,7 +577,7 @@ class BermudaDevice(dict):
         and will be called each time that its co-ordinator sees a new MAC address
         for this IRK.
         """
-        address = mac_norm(service_info.address)
+        address = normalize_mac(service_info.address)
         if address not in self.metadevice_sources:
             self.metadevice_sources.insert(0, address)
             _LOGGER.debug("Got %s callback for new IRK address on %s of %s", change, self.name, address)
@@ -699,9 +720,21 @@ class BermudaDevice(dict):
         else:
             self.zone = STATE_NOT_HOME
 
-        if self.address.upper() in self.options.get(CONF_DEVICES, []):
-            # We are a device we track. Flag for set-up:
-            self.create_sensor = True
+        configured_devices_option = self.options.get(CONF_DEVICES, [])
+        if not isinstance(configured_devices_option, list):
+            configured_devices_option = []
+        configured_devices = {normalize_address(addr) for addr in configured_devices_option if isinstance(addr, str)}
+        self.create_sensor = self.address in configured_devices
+
+        fmdn_mode = self.options.get(CONF_FMDN_MODE, DEFAULT_FMDN_MODE)
+        if fmdn_mode not in (FMDN_MODE_RESOLVED_ONLY, FMDN_MODE_BOTH, FMDN_MODE_SOURCES_ONLY):
+            fmdn_mode = DEFAULT_FMDN_MODE
+        if (
+            METADEVICE_TYPE_FMDN_SOURCE in self.metadevice_type
+            and fmdn_mode == FMDN_MODE_RESOLVED_ONLY
+            and self.address not in configured_devices
+        ):
+            self.create_sensor = False
 
     def process_advertisement(self, scanner_device: BermudaDevice, advertisementdata: AdvertisementData):
         """
@@ -712,7 +745,7 @@ class BermudaDevice(dict):
         with calculate_data()
 
         """
-        scanner_address = mac_norm(scanner_device.address)
+        scanner_address = normalize_address(scanner_device.address)
         device_address = self.address
         # Ensure this is used for referencing self.scanners[], as self.address might point elsewhere!
         advert_tuple = (device_address, scanner_address)
