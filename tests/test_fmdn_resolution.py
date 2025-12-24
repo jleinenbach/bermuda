@@ -6,13 +6,11 @@ from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import floor_registry as fr
+from homeassistant.core import HomeAssistant
 
 from custom_components.bermuda.const import (
-    CONF_FMDN_EID_FORMAT,
-    CONF_FMDN_MODE,
     DATA_EID_RESOLVER,
     DEFAULT_FMDN_EID_FORMAT,
-    DEFAULT_FMDN_MODE,
     DOMAIN_GOOGLEFINDMY,
     FMDN_EID_FORMAT_AUTO,
     FMDN_EID_FORMAT_STRIP_FRAME_ALL,
@@ -26,15 +24,12 @@ from custom_components.bermuda.util import normalize_address, normalize_mac
 
 
 @pytest.fixture
-def coordinator(hass):
+def coordinator(hass: HomeAssistant) -> BermudaDataUpdateCoordinator:
     """Create a lightweight coordinator for testing."""
 
     coordinator = BermudaDataUpdateCoordinator.__new__(BermudaDataUpdateCoordinator)
     coordinator.hass = hass
-    coordinator.options = {
-        CONF_FMDN_MODE: DEFAULT_FMDN_MODE,
-        CONF_FMDN_EID_FORMAT: DEFAULT_FMDN_EID_FORMAT,
-    }
+    coordinator.options = {}
     coordinator.devices = {}
     coordinator.metadevices = {}
     coordinator._seed_configured_devices_done = False
@@ -50,7 +45,7 @@ def coordinator(hass):
     return coordinator
 
 
-def test_format_fmdn_metadevice_key_stable(coordinator):
+def test_format_fmdn_metadevice_key_stable(coordinator: BermudaDataUpdateCoordinator) -> None:
     """Ensure FMDN metadevice keys remain identifier-based."""
 
     key = coordinator._format_fmdn_metadevice_address("DEVICE-ID", "CANONICAL-01")
@@ -60,7 +55,9 @@ def test_format_fmdn_metadevice_key_stable(coordinator):
     fallback_key = coordinator._format_fmdn_metadevice_address("Device-Only", None)
     assert fallback_key == "fmdn:device-only"
 
-def test_fmdn_resolution_registers_metadevice(hass, coordinator):
+def test_fmdn_resolution_registers_metadevice(
+    hass: HomeAssistant, coordinator: BermudaDataUpdateCoordinator
+) -> None:
     """Resolve an FMDN frame and register the rotating source."""
 
     resolver = MagicMock()
@@ -86,7 +83,9 @@ def test_fmdn_resolution_registers_metadevice(hass, coordinator):
     assert METADEVICE_TYPE_FMDN_SOURCE in created_source.metadevice_type
 
 
-def test_fmdn_resolution_without_googlefindmy(hass, coordinator):
+def test_fmdn_resolution_without_googlefindmy(
+    hass: HomeAssistant, coordinator: BermudaDataUpdateCoordinator
+) -> None:
     """Ignore FMDN adverts when the resolver integration is absent."""
 
     service_data = {SERVICE_UUID_FMDN: bytes([0x40]) + b"\x02" * 20}
@@ -99,7 +98,9 @@ def test_fmdn_resolution_without_googlefindmy(hass, coordinator):
     assert METADEVICE_TYPE_FMDN_SOURCE in source_device.metadevice_type
 
 
-def test_fmdn_resolution_handles_missing_resolver_api(hass, coordinator):
+def test_fmdn_resolution_handles_missing_resolver_api(
+    hass: HomeAssistant, coordinator: BermudaDataUpdateCoordinator
+) -> None:
     """Return None when a resolver object lacks the expected API."""
 
     hass.data[DOMAIN_GOOGLEFINDMY] = {DATA_EID_RESOLVER: object()}
@@ -111,7 +112,7 @@ def test_fmdn_resolution_handles_missing_resolver_api(hass, coordinator):
     assert coordinator.metadevices == {}
 
 
-def test_extract_fmdn_eid_ignores_unknown_frame_types():
+def test_extract_fmdn_eid_ignores_unknown_frame_types() -> None:
     """Return candidates even when frame types are unexpected."""
 
     payload = bytes([0x41]) + b"\x04" * 20
@@ -119,14 +120,14 @@ def test_extract_fmdn_eid_ignores_unknown_frame_types():
     assert bytes([0x04] * 20) in candidates
 
 
-def test_extract_fmdn_eid_supports_strip_frame_all():
+def test_extract_fmdn_eid_supports_strip_frame_all() -> None:
     """Return the full payload after removing the frame byte."""
 
     payload = bytes([0x40]) + b"\x05\x06\x07"
     assert extract_fmdn_eids({SERVICE_UUID_FMDN: payload}, mode=FMDN_EID_FORMAT_STRIP_FRAME_ALL) == {b"\x05\x06\x07"}
 
 
-def test_extract_fmdn_eid_auto_trims_checksum_byte():
+def test_extract_fmdn_eid_auto_trims_checksum_byte() -> None:
     """Drop a trailing checksum-like byte when the payload length matches 21 bytes after the frame."""
 
     payload = bytes([0x40]) + b"\x08" * 21
@@ -134,7 +135,7 @@ def test_extract_fmdn_eid_auto_trims_checksum_byte():
     assert b"\x08" * 20 in candidates
 
 
-def test_extract_fmdn_eid_auto_falls_back_to_twenty_bytes():
+def test_extract_fmdn_eid_auto_falls_back_to_twenty_bytes() -> None:
     """Return the first 20 bytes when the payload is exactly 20 bytes after the frame."""
 
     payload = bytes([0x40]) + bytes(range(1, 21))
@@ -142,13 +143,13 @@ def test_extract_fmdn_eid_auto_falls_back_to_twenty_bytes():
     assert bytes(range(1, 21)) in candidates
 
 
-def test_extract_fmdn_eid_rejects_short_payload():
+def test_extract_fmdn_eid_rejects_short_payload() -> None:
     """Return None for payloads without enough data after the frame byte."""
 
     assert extract_fmdn_eids({SERVICE_UUID_FMDN: b"\x40"}, mode=FMDN_EID_FORMAT_STRIP_FRAME_20) == set()
 
 
-def test_normalize_address_collapses_duplicate_formats(coordinator):
+def test_normalize_address_collapses_duplicate_formats(coordinator: BermudaDataUpdateCoordinator) -> None:
     """Ensure coordinator keys devices by canonical MAC addresses."""
 
     first = coordinator._get_or_create_device("aa:bb:cc:dd:ee:ff")
@@ -159,7 +160,7 @@ def test_normalize_address_collapses_duplicate_formats(coordinator):
     assert normalize_address("aabbccddeeff") == "aa:bb:cc:dd:ee:ff"
 
 
-def test_extract_fmdn_eids_handles_embedded_lengths():
+def test_extract_fmdn_eids_handles_embedded_lengths() -> None:
     """Generate candidates for embedded 20- and 32-byte payloads."""
 
     eid20 = bytes(range(1, 21))
@@ -172,7 +173,7 @@ def test_extract_fmdn_eids_handles_embedded_lengths():
     assert eid32 in candidates
 
 
-def test_extract_fmdn_eids_sliding_window_without_frame():
+def test_extract_fmdn_eids_sliding_window_without_frame() -> None:
     """Ensure sliding window detection finds EIDs even without frame byte."""
 
     eid20 = b"\x12" * 20
@@ -182,7 +183,9 @@ def test_extract_fmdn_eids_sliding_window_without_frame():
     assert eid20 in candidates
 
 
-def test_shared_match_without_identifiers_skipped(hass, coordinator):
+def test_shared_match_without_identifiers_skipped(
+    hass: HomeAssistant, coordinator: BermudaDataUpdateCoordinator
+) -> None:
     """Shared matches lacking identifiers should not create metadevices."""
 
     resolver = MagicMock()

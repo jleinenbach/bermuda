@@ -50,6 +50,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: BermudaConfigEntry) -> b
         _LOGGER.debug("Coordinator last update failed, rasing ConfigEntryNotReady")
         raise ConfigEntryNotReady
 
+    await coordinator.async_cleanup_device_registry_connections()
+
     try:
         await coordinator.async_refresh()
     except Exception as ex:  # noqa: BLE001
