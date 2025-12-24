@@ -1,4 +1,23 @@
 -r requirements.txt
 -r requirements_test.txt
+pandas-stubs
+scipy-stubs
+types-PyMySQL
+types-Pygments
+types-PySocks
 types-aiofiles
+types-cffi
+types-greenlet
+types-objgraph
+types-openpyxl
 types-PyYAML
+types-pexpect
+types-psutil
+types-psycopg2
+types-pyserial
+types-python-dateutil
+types-pytz
+types-regex
+types-requests
+types-setuptools
+types-xlrd

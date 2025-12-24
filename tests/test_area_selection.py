@@ -10,6 +10,7 @@ from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import floor_registry as fr
 
 from custom_components.bermuda.const import (
+    AREA_MAX_AD_AGE,
     CONF_MAX_RADIUS,
     DEFAULT_ATTENUATION,
     DEFAULT_DEVTRACK_TIMEOUT,
@@ -17,6 +18,7 @@ from custom_components.bermuda.const import (
     DEFAULT_MAX_VELOCITY,
     DEFAULT_REF_POWER,
     DEFAULT_SMOOTHING_SAMPLES,
+    CROSS_FLOOR_STREAK,
 )
 from custom_components.bermuda.coordinator import BermudaDataUpdateCoordinator
 from custom_components.bermuda.bermuda_irk import BermudaIrkManager
@@ -43,7 +45,14 @@ def _make_coordinator(hass) -> BermudaDataUpdateCoordinator:
     return coordinator
 
 
-def _make_scanner(name: str, area_id: str, stamp: float) -> SimpleNamespace:
+def _make_scanner(
+    name: str,
+    area_id: str,
+    stamp: float,
+    *,
+    floor_id: str | None = None,
+    floor_level: int | None = None,
+) -> SimpleNamespace:
     """Create a minimal scanner-like object."""
     return SimpleNamespace(
         address=f"scanner-{name}",
@@ -51,14 +60,26 @@ def _make_scanner(name: str, area_id: str, stamp: float) -> SimpleNamespace:
         area_id=area_id,
         area_name=area_id,
         last_seen=stamp,
+        floor_id=floor_id,
+        floor_level=floor_level,
     )
 
 
-def _make_advert(name: str, area_id: str, distance: float, age: float = 0.0) -> SimpleNamespace:
+def _make_advert(
+    name: str,
+    area_id: str,
+    distance: float | None,
+    age: float = 0.0,
+    *,
+    hist_distance_by_interval: list[float] | None = None,
+    floor_id: str | None = None,
+    floor_level: int | None = None,
+) -> SimpleNamespace:
     """Create a minimal advert-like object with distance metadata."""
     now = monotonic_time_coarse()
     stamp = now - age
-    scanner_device = _make_scanner(name, area_id, stamp)
+    hist = list(hist_distance_by_interval) if hist_distance_by_interval is not None else []
+    scanner_device = _make_scanner(name, area_id, stamp, floor_id=floor_id, floor_level=floor_level)
     return SimpleNamespace(
         name=name,
         area_id=area_id,
@@ -67,7 +88,7 @@ def _make_advert(name: str, area_id: str, distance: float, age: float = 0.0) -> 
         rssi=-50.0,
         stamp=stamp,
         scanner_device=scanner_device,
-        hist_distance_by_interval=[],
+        hist_distance_by_interval=hist,
     )
 
 
@@ -141,7 +162,8 @@ def test_near_field_absolute_improvement_wins(coordinator: BermudaDataUpdateCoor
     device.area_advert = incumbent
     device.adverts = {"incumbent": incumbent, "challenger": challenger}
 
-    coordinator._refresh_area_by_min_distance(device)
+    for _ in range(CROSS_FLOOR_STREAK):
+        coordinator._refresh_area_by_min_distance(device)
 
     assert device.area_advert is challenger
 
@@ -176,3 +198,199 @@ def test_far_field_small_relative_change_sticks(coordinator: BermudaDataUpdateCo
     coordinator._refresh_area_by_min_distance(device)
 
     assert device.area_advert is incumbent
+
+
+def test_transient_missing_distance_does_not_switch(coordinator: BermudaDataUpdateCoordinator):
+    """A fresh but distance-less incumbent should not be replaced immediately."""
+    device = _configure_device(coordinator, "55:66:77:88:99:AA")
+
+    incumbent = _make_advert(
+        "inc",
+        "area-stable",
+        distance=None,
+        hist_distance_by_interval=[2.0],
+    )
+    # Preserve the last known applied distance
+    device.area_distance = 2.0
+
+    challenger = _make_advert("chal", "area-new", distance=1.9)
+
+    device.area_advert = incumbent
+    device.adverts = {"incumbent": incumbent, "challenger": challenger}
+
+    coordinator._refresh_area_by_min_distance(device)
+
+    assert device.area_advert is incumbent
+
+
+def test_stale_incumbent_allows_switch(coordinator: BermudaDataUpdateCoordinator):
+    """A stale incumbent should be replaced by a valid challenger."""
+    device = _configure_device(coordinator, "66:77:88:99:AA:BB")
+
+    stale_age = AREA_MAX_AD_AGE + 1
+    stale_incumbent = _make_advert("inc", "area-old", distance=2.0, age=stale_age)
+    challenger = _make_advert("chal", "area-new", distance=1.0)
+
+    device.area_advert = stale_incumbent
+    device.adverts = {"incumbent": stale_incumbent, "challenger": challenger}
+
+    coordinator._refresh_area_by_min_distance(device)
+
+    assert device.area_advert is challenger
+
+
+def test_legitimate_move_switches_to_better_challenger(coordinator: BermudaDataUpdateCoordinator):
+    """A meaningfully closer challenger should still win."""
+    device = _configure_device(coordinator, "77:88:99:AA:BB:CC")
+
+    incumbent = _make_advert("inc", "area-old", distance=6.0)
+    challenger = _make_advert("chal", "area-new", distance=2.5)
+
+    device.area_advert = incumbent
+    device.adverts = {"incumbent": incumbent, "challenger": challenger}
+
+    for _ in range(CROSS_FLOOR_STREAK):
+        coordinator._refresh_area_by_min_distance(device)
+
+    assert device.area_advert is challenger
+
+
+def test_jitter_and_gaps_do_not_oscillate_selection(coordinator: BermudaDataUpdateCoordinator):
+    """Minor jitter and a short gap should not cause rapid area flipping."""
+    device = _configure_device(coordinator, "88:99:AA:BB:CC:DD")
+
+    incumbent = _make_advert("inc", "area-stable", distance=2.0)
+    challenger = _make_advert("chal", "area-new", distance=1.95)
+
+    device.area_advert = incumbent
+    device.adverts = {"incumbent": incumbent, "challenger": challenger}
+
+    coordinator._refresh_area_by_min_distance(device)
+    assert device.area_advert is incumbent
+    assert device.area_distance == 2.0
+
+    # Simulate a transient missing distance reading while still recent.
+    incumbent.rssi_distance = None
+    incumbent.hist_distance_by_interval = [2.0]
+    incumbent.stamp = monotonic_time_coarse()
+    coordinator._refresh_area_by_min_distance(device)
+
+    assert device.area_advert is incumbent
+
+    # Jitter returns but stays within hysteresis margin.
+    incumbent.rssi_distance = 1.98
+    coordinator._refresh_area_by_min_distance(device)
+
+    assert device.area_advert is incumbent
+
+
+def test_same_floor_switch_behaviour_unaffected(coordinator: BermudaDataUpdateCoordinator):
+    """Switching on the same floor should behave as before."""
+    device = _configure_device(coordinator, "99:AA:BB:CC:DD:EE")
+
+    incumbent = _make_advert(
+        "inc",
+        "area-same",
+        distance=6.0,
+        hist_distance_by_interval=[6.2, 6.1, 6.3, 6.0, 6.1],
+        floor_id="floor-same",
+    )
+    challenger = _make_advert(
+        "chal",
+        "area-same",
+        distance=4.0,
+        hist_distance_by_interval=[4.3, 4.1, 4.2, 4.0, 4.2],
+        floor_id="floor-same",
+    )
+
+    device.area_advert = incumbent
+    device.adverts = {"incumbent": incumbent, "challenger": challenger}
+
+    for _ in range(CROSS_FLOOR_STREAK):
+        coordinator._refresh_area_by_min_distance(device)
+
+    assert device.area_advert is challenger
+
+
+def test_cross_floor_switch_blocked_without_history(coordinator: BermudaDataUpdateCoordinator):
+    """Cross-floor changes should not occur on weak evidence."""
+    device = _configure_device(coordinator, "AA:BB:CC:DD:EE:FF")
+
+    incumbent = _make_advert(
+        "inc",
+        "area-floor-a",
+        distance=3.0,
+        hist_distance_by_interval=[3.0],
+        floor_id="floor-a",
+    )
+    challenger = _make_advert(
+        "chal",
+        "area-floor-b",
+        distance=2.0,
+        hist_distance_by_interval=[2.0],
+        floor_id="floor-b",
+    )
+
+    device.area_advert = incumbent
+    device.adverts = {"incumbent": incumbent, "challenger": challenger}
+
+    coordinator._refresh_area_by_min_distance(device)
+
+    assert device.area_advert is incumbent
+
+
+def test_cross_floor_switch_requires_sustained_advantage(coordinator: BermudaDataUpdateCoordinator):
+    """Cross-floor switches should happen only with sustained superiority."""
+    device = _configure_device(coordinator, "BB:CC:DD:EE:FF:00")
+
+    incumbent = _make_advert(
+        "inc",
+        "area-floor-a",
+        distance=5.0,
+        hist_distance_by_interval=[5.0, 5.1, 5.2, 5.1, 5.0, 5.2, 5.1, 5.0, 5.0, 5.1],
+        floor_id="floor-a",
+    )
+    challenger = _make_advert(
+        "chal",
+        "area-floor-b",
+        distance=2.5,
+        hist_distance_by_interval=[2.4, 2.5, 2.5, 2.6, 2.4, 2.5, 2.4, 2.6, 2.5, 2.4],
+        floor_id="floor-b",
+    )
+
+    device.area_advert = incumbent
+    device.adverts = {"incumbent": incumbent, "challenger": challenger}
+
+    for _ in range(CROSS_FLOOR_STREAK):
+        coordinator._refresh_area_by_min_distance(device)
+
+    assert device.area_advert is challenger
+
+
+def test_floor_level_populated_from_floor_registry(coordinator: BermudaDataUpdateCoordinator):
+    """Ensure floor_level is sourced from the floor registry when available."""
+    device = _configure_device(coordinator, "CC:DD:EE:FF:00:11")
+
+    class DummyFloor:
+        def __init__(self) -> None:
+            self.floor_id = "floor-l1"
+            self.name = "Level 1"
+            self.icon = "mdi:home-floor-1"
+            self.level = 1
+
+    class DummyArea:
+        def __init__(self) -> None:
+            self.floor_id = "floor-l1"
+            self.name = "Kitchen"
+            self.icon = "mdi:home"
+
+    dummy_floor = DummyFloor()
+    dummy_area = DummyArea()
+
+    device.fr = SimpleNamespace(async_get_floor=lambda floor_id: dummy_floor if floor_id == dummy_floor.floor_id else None)
+    device.ar = SimpleNamespace(async_get_area=lambda area_id: dummy_area if area_id == "area-kitchen" else None)
+
+    device._update_area_and_floor("area-kitchen")
+
+    assert device.floor_level == 1
+    assert device.floor_name == "Level 1"

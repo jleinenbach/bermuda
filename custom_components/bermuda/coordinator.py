@@ -71,6 +71,8 @@ from .const import (
     CONF_RSSI_OFFSETS,
     CONF_SMOOTHING_SAMPLES,
     CONF_UPDATE_INTERVAL,
+    CROSS_FLOOR_MIN_HISTORY,
+    CROSS_FLOOR_STREAK,
     DATA_EID_RESOLVER,
     DEFAULT_ATTENUATION,
     DEFAULT_DEVTRACK_TIMEOUT,
@@ -96,6 +98,7 @@ from .const import (
     PRUNE_TIME_REDACTIONS,
     PRUNE_TIME_UNKNOWN_IRK,
     REPAIR_SCANNER_WITHOUT_AREA,
+    SAME_FLOOR_STREAK,
     SAVEOUT_COOLDOWN,
     SIGNAL_DEVICE_NEW,
     SIGNAL_SCANNERS_CHANGED,
@@ -1469,6 +1472,8 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         this_ad_age: tuple[float, float] = (0, 0)  # how old the *current* advert is on this scanner
         distance: tuple[float, float] = (0, 0)
         hist_min_max: tuple[float, float] = (0, 0)  # min/max distance from history
+        floors: tuple[str | None, str | None] = (None, None)
+        floor_levels: tuple[str | int | None, str | int | None] = (None, None)
         # velocity: tuple[float, float] = (0, 0)
         # last_closer: tuple[float, float] = (0, 0)  # since old was closer and how long new has been closer
         reason: str | None = None  # reason/result
@@ -1513,10 +1518,11 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                     out += f"{val}\n"
             return out
 
-    def _refresh_area_by_min_distance(self, device: BermudaDevice) -> None:
+    def _refresh_area_by_min_distance(self, device: BermudaDevice) -> None:  # noqa: C901
         """Very basic Area setting by finding closest proxy to a given device."""
         # The current area_scanner (which might be None) is the one to beat.
         incumbent: BermudaAdvert | None = device.area_advert
+        soft_incumbent: BermudaAdvert | None = None
 
         _max_radius = self.options.get(CONF_MAX_RADIUS, DEFAULT_MAX_RADIUS)
         nowstamp = monotonic_time_coarse()
@@ -1527,6 +1533,12 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         _superchatty = False  # Set to true for very verbose logging about area wins
         # if device.name in ("Ash Pixel IRK", "Garage", "Melinda iPhone"):
         #     _superchatty = True
+
+        def _advert_distance(advert: BermudaAdvert | None) -> float | None:
+            """Return the best available distance estimate for an advert."""
+            if advert is None:
+                return None
+            return advert.rssi_distance
 
         def _is_valid_contender(advert: BermudaAdvert | None) -> bool:
             """Return True when the advert can legitimately compete for area selection."""
@@ -1543,7 +1555,24 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             )
 
         if not _is_valid_contender(incumbent):
+            if (
+                incumbent is not None
+                and incumbent.rssi_distance is None
+                and incumbent.area_id is not None
+                and incumbent in device.adverts.values()
+                and incumbent.stamp >= nowstamp - AREA_MAX_AD_AGE
+            ):
+                soft_incumbent = incumbent
             incumbent = None
+
+        if incumbent is None and soft_incumbent is not None and soft_incumbent.rssi_distance is None:
+            # We have no valid incumbent reading; hold position until a fresh advert arrives.
+            device.pending_area_id = None
+            device.pending_floor_id = None
+            device.pending_streak = 0
+            device.diag_area_switch = tests.sensortext()
+            device.apply_scanner_selection(device.area_advert)
+            return
 
         for challenger in device.adverts.values():
             # Check each scanner and any time one is found to be closer / better than
@@ -1558,7 +1587,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             # Is the challenger an invalid contender?
             if (
                 # no competing against ourselves...
-                incumbent is challenger  # no competing against ourselves.
+                (incumbent or soft_incumbent) is challenger  # no competing against ourselves.
             ):
                 continue
 
@@ -1585,17 +1614,30 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             # At this point the challenger is a vaild contender...
 
             # Is the incumbent a valid contender?
+            current_incumbent = incumbent or soft_incumbent
+            challenger_scanner = challenger.scanner_device
+            if challenger_scanner is None:
+                tests.reason = "LOSS - challenger missing scanner metadata"
+                continue
+
+            incumbent_scanner = current_incumbent.scanner_device if current_incumbent else None
+            inc_floor_id = getattr(incumbent_scanner, "floor_id", None) if incumbent_scanner else None
+            inc_floor_level = (
+                getattr(incumbent_scanner, "floor_level", None) if incumbent_scanner else None
+            )
+            chal_floor_id = challenger_scanner.floor_id
+            chal_floor_level = challenger_scanner.floor_level
+            tests.floors = (inc_floor_id, chal_floor_id)
+            tests.floor_levels = (inc_floor_level, chal_floor_level)
+            cross_floor = (
+                inc_floor_id is not None and chal_floor_id is not None and inc_floor_id != chal_floor_id
+            )
 
             # If closest scanner lacks critical data, we win.
-            if (
-                incumbent is None
-                or incumbent.rssi_distance is None
-                or incumbent.area_id is None
-                # Extra checks that are redundant but make linting easier later...
-                # or closest_advert.hist_distance_by_interval is None
-            ):
+            if current_incumbent is None:
                 # Default Instawin!
                 incumbent = challenger
+                soft_incumbent = None
                 if _superchatty:
                     _LOGGER.debug(
                         "%s IS closesr to %s: Encumbant is invalid",
@@ -1604,21 +1646,41 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                     )
                 continue
 
+            if incumbent_scanner is None:
+                tests.reason = "LOSS - incumbent missing scanner metadata"
+                continue
+
+            if current_incumbent.rssi_distance is None:
+                tests.reason = "LOSS - incumbent distance unavailable"
+                continue
+
+            incumbent_distance = _advert_distance(current_incumbent)
+
+            if current_incumbent.area_id is None:
+                incumbent = challenger
+                soft_incumbent = None
+                continue
+
+            if incumbent_distance is None:
+                # Hold the existing area until a valid reading or staleness.
+                tests.reason = "LOSS - incumbent distance unavailable"
+                continue
+
             # NOTE:
             # From here on in, don't award a win directly. Instead award a loss if the new scanner is
             # not a contender, but otherwise build a set of test scores and make a determination at the
             # end.
 
             # If we ARE NOT ACTUALLY CLOSER(!) we can not win.
-            if incumbent.rssi_distance < challenger.rssi_distance:
+            if incumbent_distance < challenger.rssi_distance:
                 # we are not even closer!
                 continue
 
             tests.reason = None  # ensure we don't trigger logging if no decision was made.
-            tests.same_area = incumbent.area_id == challenger.area_id
-            tests.areas = (incumbent.area_name or "", challenger.area_name or "")
-            tests.scannername = (incumbent.name, challenger.name)
-            tests.distance = (incumbent.rssi_distance, challenger.rssi_distance)
+            tests.same_area = current_incumbent.area_id == challenger.area_id
+            tests.areas = (current_incumbent.area_name or "", challenger.area_name or "")
+            tests.scannername = (current_incumbent.name, challenger.name)
+            tests.distance = (incumbent_distance, challenger.rssi_distance)
             # tests.velocity = (
             #     next((val for val in closest_scanner.hist_velocity), 0),
             #     next((val for val in scanner.hist_velocity), 0),
@@ -1626,22 +1688,26 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
             # How recently have we heard from the scanners themselves (not just for this device's adverts)?
             tests.last_ad_age = (
-                nowstamp - incumbent.scanner_device.last_seen,
-                nowstamp - challenger.scanner_device.last_seen,
+                nowstamp - incumbent_scanner.last_seen,
+                nowstamp - challenger_scanner.last_seen,
             )
 
             # How old are the ads?
             tests.this_ad_age = (
-                nowstamp - incumbent.stamp,
+                nowstamp - current_incumbent.stamp,
                 nowstamp - challenger.stamp,
             )
 
             # Calculate the percentage difference between the challenger and incumbent's distances
             _pda = challenger.rssi_distance
-            _pdb = incumbent.rssi_distance
+            _pdb = incumbent_distance
             tests.pcnt_diff = abs(_pda - _pdb) / ((_pda + _pdb) / 2)
             abs_diff = abs(_pda - _pdb)
             avg_dist = (_pda + _pdb) / 2
+            cross_floor_margin = 0.25
+            cross_floor_escape = 0.45
+            history_window = 5  # the time period to compare between us and incumbent
+            cross_floor_min_history = CROSS_FLOOR_MIN_HISTORY  # Require longer history before cross-floor wins
 
             # Same area. Confirm freshness and distance.
             if (
@@ -1658,12 +1724,19 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             # in that time, and we are over a PD threshold, we win.
             #
             min_history = 3  # we must have at least this much history
-            history_window = 5  # the time period to compare between us and incumbent
             pdiff_outright = 0.30  # Percentage difference to win outright / instantly
             pdiff_historical = 0.15  # Percentage difference required to win on historical test
+            incumbent_hist_all = current_incumbent.hist_distance_by_interval
+            challenger_hist_all = challenger.hist_distance_by_interval
+            if cross_floor:
+                if len(challenger_hist_all) < cross_floor_min_history or len(
+                    incumbent_hist_all
+                ) < cross_floor_min_history:
+                    tests.reason = "LOSS - cross-floor history too short"
+                    continue
+            incumbent_history: list[float] = incumbent_hist_all[:history_window]
+            challenger_history: list[float] = challenger_hist_all[:history_window]
             if len(challenger.hist_distance_by_interval) > min_history:  # we have enough history, let's go..
-                incumbent_history = incumbent.hist_distance_by_interval[:history_window]
-                challenger_history = challenger.hist_distance_by_interval[:history_window]
                 if incumbent_history and challenger_history:
                     # The closest that the incumbent has been, vs the furthest we have been in that time window
                     tests.hist_min_max = (
@@ -1677,6 +1750,20 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                         tests.reason = "WIN on historical min/max"
                         incumbent = challenger
                         continue
+
+            if cross_floor:
+                challenger_history_ready = len(challenger_history) >= history_window
+                incumbent_history_ready = len(incumbent_history) >= history_window
+                sustained_cross_floor = (
+                    challenger_history_ready
+                    and incumbent_history_ready
+                    and tests.hist_min_max != (0, 0)
+                    and tests.hist_min_max[1] < tests.hist_min_max[0]
+                    and tests.pcnt_diff > cross_floor_margin
+                )
+                if not (sustained_cross_floor or tests.pcnt_diff >= cross_floor_escape):
+                    tests.reason = "LOSS - cross-floor evidence insufficient"
+                    continue
 
             if tests.pcnt_diff < pdiff_outright:
                 # Allow a near-field absolute improvement to win even when percent diff is small.
@@ -1693,6 +1780,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             tests.reason = "WIN by not losing!"
 
             incumbent = challenger
+            soft_incumbent = None
 
         if _superchatty and tests.reason is not None:
             _LOGGER.info(
@@ -1703,11 +1791,51 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
         _superchatty = False
 
-        if device.area_advert != incumbent and tests.reason is not None:
+        winner = incumbent or soft_incumbent
+
+        if device.area_advert != winner and tests.reason is not None:
             device.diag_area_switch = tests.sensortext()
 
         # Apply the newly-found closest scanner (or apply None if we didn't find one)
-        device.apply_scanner_selection(incumbent)
+        def _resolve_cross_floor(current: BermudaAdvert | None, candidate: BermudaAdvert | None) -> bool:
+            cur_floor = getattr(current.scanner_device, "floor_id", None) if current else None
+            cand_floor = getattr(candidate.scanner_device, "floor_id", None) if candidate else None
+            return cur_floor is not None and cand_floor is not None and cur_floor != cand_floor
+
+        if winner is None:
+            device.pending_area_id = None
+            device.pending_floor_id = None
+            device.pending_streak = 0
+            device.apply_scanner_selection(None)
+            return
+
+        if device.area_advert is winner:
+            device.pending_area_id = None
+            device.pending_floor_id = None
+            device.pending_streak = 0
+            device.apply_scanner_selection(winner)
+            return
+
+        cross_floor = _resolve_cross_floor(device.area_advert, winner)
+        streak_target = CROSS_FLOOR_STREAK if cross_floor else SAME_FLOOR_STREAK
+        if (
+            device.pending_area_id == winner.area_id
+            and device.pending_floor_id == getattr(winner.scanner_device, "floor_id", None)
+        ):
+            device.pending_streak += 1
+        else:
+            device.pending_area_id = winner.area_id
+            device.pending_floor_id = getattr(winner.scanner_device, "floor_id", None)
+            device.pending_streak = 1
+
+        if device.pending_streak >= streak_target:
+            device.pending_area_id = None
+            device.pending_floor_id = None
+            device.pending_streak = 0
+            device.apply_scanner_selection(winner)
+        else:
+            device.diag_area_switch = tests.sensortext()
+            device.apply_scanner_selection(device.area_advert)
 
     def _refresh_scanners(self, force=False):
         """

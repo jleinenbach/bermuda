@@ -73,6 +73,9 @@ DISTANCE_INFINITE = 999  # arbitrary distance for infinite/unknown rssi range
 
 AREA_MAX_AD_AGE: Final = max(DISTANCE_TIMEOUT / 3, UPDATE_INTERVAL * 2)
 # Adverts older than this can not win an area contest.
+CROSS_FLOOR_MIN_HISTORY: Final = 8  # Minimum history length before cross-floor wins via historical checks.
+SAME_FLOOR_STREAK: Final = 1  # Consecutive wins needed before applying a same-floor switch.
+CROSS_FLOOR_STREAK: Final = 3  # Consecutive wins needed before applying a cross-floor switch.
 
 # Beacon-handling constants. Source devices are tracked by MAC-address and are the
 # originators of beacon-like data. We then create a "meta-device" for the beacon's

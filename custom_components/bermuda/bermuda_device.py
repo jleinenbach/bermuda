@@ -151,6 +151,9 @@ class BermudaDevice(dict):
         self.adverts: dict[
             tuple[str, str], BermudaAdvert
         ] = {}  # str will be a scanner address OR a deviceaddress__scanneraddress
+        self.pending_area_id: str | None = None
+        self.pending_floor_id: str | None = None
+        self.pending_streak: int = 0
         self._async_process_address_type()
 
     def _async_process_address_type(self):
@@ -463,7 +466,7 @@ class BermudaDevice(dict):
                 if self.floor is not None:
                     self.floor_name = self.floor.name
                     self.floor_icon = self.floor.icon or ICON_DEFAULT_FLOOR
-                    self.floor_level = self.floor_level
+                    self.floor_level = getattr(self.floor, "level", None)
                 else:
                     # floor_id was invalid
                     _LOGGER_SPAM_LESS.warning(
@@ -664,21 +667,35 @@ class BermudaDevice(dict):
         Used to apply a "winning" scanner's data to the device for setting closest Area.
         """
         old_area = self.area_name
-        if bermuda_advert is not None and bermuda_advert.rssi_distance is not None:
-            # We found a winner
-            self.area_advert = bermuda_advert
-            self._update_area_and_floor(bermuda_advert.area_id)
-            self.area_distance = bermuda_advert.rssi_distance
-            self.area_rssi = bermuda_advert.rssi
-            self.area_last_seen = self.area_name
-            self.area_last_seen_id = self.area_id
-            self.area_last_seen_icon = self.area_icon
-        else:
-            # Not close to any scanners, or closest scanner has timed out!
-            self.area_advert = None
-            self._update_area_and_floor(None)
-            self.area_distance = None
-            self.area_rssi = None
+        if bermuda_advert is not None:
+            distance = bermuda_advert.rssi_distance
+            if distance is None and bermuda_advert is self.area_advert and self.area_distance is not None:
+                distance = self.area_distance
+            if distance is None:
+                bermuda_advert = None
+            else:
+                # We found a winner
+                self.area_advert = bermuda_advert
+                self._update_area_and_floor(bermuda_advert.area_id)
+                self.area_distance = distance
+                self.area_rssi = bermuda_advert.rssi
+                self.area_last_seen = self.area_name
+                self.area_last_seen_id = self.area_id
+                self.area_last_seen_icon = self.area_icon
+                if (old_area != self.area_name) and self.create_sensor:
+                    _LOGGER.debug(
+                        "Device %s was in '%s', now '%s'",
+                        self.name,
+                        old_area,
+                        self.area_name,
+                    )
+                return
+
+        # Not close to any scanners, or closest scanner has timed out!
+        self.area_advert = None
+        self._update_area_and_floor(None)
+        self.area_distance = None
+        self.area_rssi = None
 
         if (old_area != self.area_name) and self.create_sensor:
             _LOGGER.debug(
