@@ -27,6 +27,7 @@ from homeassistant.components.private_ble_device import coordinator as pble_coor
 from homeassistant.const import STATE_HOME, STATE_NOT_HOME
 from homeassistant.core import callback
 from homeassistant.helpers import area_registry as ar
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import floor_registry as fr
 from homeassistant.util import slugify
 
@@ -321,9 +322,22 @@ class BermudaDevice(dict):
         # on the *assumption* that there won't be overlap between devices.
         for offset in range(-3, 3):
             if (altmac := mac_math_offset(self.address, offset)) is not None:
-                connlist.add(("bluetooth", altmac.upper()))
-                connlist.add(("mac", altmac))
-                maclist.add(altmac)
+                try:
+                    altmac_norm = normalize_mac(altmac)
+                except ValueError:
+                    continue
+
+                connlist.add((dr.CONNECTION_BLUETOOTH, altmac_norm))
+                connlist.add((dr.CONNECTION_NETWORK_MAC, altmac_norm))
+
+                # Legacy/lookup-only variants: do not store these, but include for matching
+                # existing registry entries that may have inconsistent casing.
+                connlist.add((dr.CONNECTION_BLUETOOTH, altmac_norm.upper()))
+                connlist.add((dr.CONNECTION_NETWORK_MAC, altmac_norm.upper()))
+                connlist.add(("mac", altmac_norm))
+                connlist.add(("mac", altmac_norm.upper()))
+
+                maclist.add(altmac_norm)
 
         # Requires 2025.3
         devreg_devices = self._coordinator.dr.devices.get_entries(None, connections=connlist)

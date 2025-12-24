@@ -27,8 +27,6 @@ from .const import (
     CONF_ATTENUATION,
     CONF_DEVICES,
     CONF_DEVTRACK_TIMEOUT,
-    CONF_FMDN_EID_FORMAT,
-    CONF_FMDN_MODE,
     CONF_MAX_RADIUS,
     CONF_MAX_VELOCITY,
     CONF_REF_POWER,
@@ -40,7 +38,6 @@ from .const import (
     CONF_UPDATE_INTERVAL,
     DEFAULT_ATTENUATION,
     DEFAULT_DEVTRACK_TIMEOUT,
-    DEFAULT_FMDN_EID_FORMAT,
     DEFAULT_FMDN_MODE,
     DEFAULT_MAX_RADIUS,
     DEFAULT_MAX_VELOCITY,
@@ -50,11 +47,7 @@ from .const import (
     DISTANCE_INFINITE,
     DOMAIN,
     DOMAIN_PRIVATE_BLE_DEVICE,
-    FMDN_EID_FORMAT_AUTO,
-    FMDN_EID_FORMAT_STRIP_FRAME_20,
-    FMDN_EID_FORMAT_STRIP_FRAME_ALL,
     FMDN_MODE_BOTH,
-    FMDN_MODE_RESOLVED_ONLY,
     FMDN_MODE_SOURCES_ONLY,
     METADEVICE_FMDN_DEVICE,
     METADEVICE_TYPE_FMDN_SOURCE,
@@ -212,17 +205,6 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
             self.options.update(user_input)
             return await self._update_options()
 
-        fmdn_mode_options = [
-            SelectOptionDict(value=FMDN_MODE_RESOLVED_ONLY, label="FMDN resolved devices only (default)"),
-            SelectOptionDict(value=FMDN_MODE_BOTH, label="FMDN resolved + sources (advanced)"),
-            SelectOptionDict(value=FMDN_MODE_SOURCES_ONLY, label="FMDN sources only (advanced)"),
-        ]
-        fmdn_eid_format_options = [
-            SelectOptionDict(value=FMDN_EID_FORMAT_STRIP_FRAME_20, label="Strip frame byte, first 20 bytes"),
-            SelectOptionDict(value=FMDN_EID_FORMAT_STRIP_FRAME_ALL, label="Strip frame byte, keep all payload bytes"),
-            SelectOptionDict(value=FMDN_EID_FORMAT_AUTO, label="Auto-trim trailing checksum if present"),
-        ]
-
         data_schema = {
             vol.Required(
                 CONF_MAX_RADIUS,
@@ -252,18 +234,6 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
                 CONF_REF_POWER,
                 default=self.options.get(CONF_REF_POWER, DEFAULT_REF_POWER),
             ): vol.Coerce(float),
-            vol.Required(
-                CONF_FMDN_MODE,
-                default=self.options.get(CONF_FMDN_MODE, DEFAULT_FMDN_MODE),
-            ): SelectSelector(
-                SelectSelectorConfig(options=fmdn_mode_options, multiple=False, mode=SelectSelectorMode.DROPDOWN)
-            ),
-            vol.Required(
-                CONF_FMDN_EID_FORMAT,
-                default=self.options.get(CONF_FMDN_EID_FORMAT, DEFAULT_FMDN_EID_FORMAT),
-            ): SelectSelector(
-                SelectSelectorConfig(options=fmdn_eid_format_options, multiple=False, mode=SelectSelectorMode.DROPDOWN)
-            ),
         }
 
         return self.async_show_form(step_id="globalopts", data_schema=vol.Schema(data_schema))
@@ -286,7 +256,7 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
         configured_devices = {
             normalize_address(address) for address in configured_devices_option if isinstance(address, str)
         }
-        fmdn_mode = self.options.get(CONF_FMDN_MODE, DEFAULT_FMDN_MODE)
+        fmdn_mode = DEFAULT_FMDN_MODE
 
         # Where we store the options before building the selector
         options_list = []

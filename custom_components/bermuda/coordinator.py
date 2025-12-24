@@ -75,7 +75,6 @@ from .const import (
     DEFAULT_ATTENUATION,
     DEFAULT_DEVTRACK_TIMEOUT,
     DEFAULT_FMDN_EID_FORMAT,
-    DEFAULT_FMDN_MODE,
     DEFAULT_MAX_RADIUS,
     DEFAULT_MAX_VELOCITY,
     DEFAULT_REF_POWER,
@@ -103,7 +102,7 @@ from .const import (
     UPDATE_INTERVAL,
 )
 from .fmdn import extract_fmdn_eids
-from .util import mac_explode_formats, normalize_address, normalize_identifier, normalize_mac
+from .util import is_mac_address, mac_explode_formats, normalize_address, normalize_identifier, normalize_mac
 
 Cancellable = Callable[[], None]
 
@@ -264,8 +263,6 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         self.options[CONF_SMOOTHING_SAMPLES] = DEFAULT_SMOOTHING_SAMPLES
         self.options[CONF_UPDATE_INTERVAL] = DEFAULT_UPDATE_INTERVAL
         self.options[CONF_RSSI_OFFSETS] = {}
-        self.options[CONF_FMDN_MODE] = DEFAULT_FMDN_MODE
-        self.options[CONF_FMDN_EID_FORMAT] = DEFAULT_FMDN_EID_FORMAT
 
         if hasattr(entry, "options"):
             # Firstly, on some calls (specifically during reload after settings changes)
@@ -502,6 +499,44 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         # will skip an update cycle if it detects one already in progress.
         # FIXME: self._async_update_data_internal()
 
+    async def async_cleanup_device_registry_connections(self) -> None:
+        """Canonicalise and deduplicate device registry connections for Bermuda devices."""
+        mac_connection_types = {dr.CONNECTION_BLUETOOTH, dr.CONNECTION_NETWORK_MAC, "mac"}
+        scanned = 0
+        updated = 0
+        registry = self.dr
+
+        for device in list(registry.devices.values()):
+            if not any(ident_domain == DOMAIN for ident_domain, _ in device.identifiers):
+                continue
+
+            scanned += 1
+            original_connections = set(device.connections or set())
+            normalized_connections: set[tuple[str, str]] = set()
+
+            for conn_type, conn_value in original_connections:
+                normalized_type = dr.CONNECTION_NETWORK_MAC if conn_type == "mac" else conn_type
+                normalized_value = conn_value
+
+                if normalized_type in mac_connection_types or is_mac_address(conn_value):
+                    try:
+                        normalized_value = normalize_mac(conn_value)
+                    except ValueError:
+                        normalized_value = conn_value
+
+                normalized_connections.add((normalized_type, normalized_value))
+
+            if normalized_connections != original_connections:
+                registry.async_update_device(device.id, new_connections=normalized_connections)
+                updated += 1
+
+        if updated:
+            _LOGGER.debug(
+                "Normalized device registry connections for %d Bermuda devices (scanned %d)",
+                updated,
+                scanned,
+            )
+
     @callback
     def async_handle_advert(
         self,
@@ -660,10 +695,29 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         base = canonical_id or device_id
         return normalize_identifier(f"fmdn:{base}")
 
+    @staticmethod
+    def _normalize_eid_bytes(eid_data: bytes | bytearray | memoryview | str | None) -> bytes | None:
+        """Return EID payload as bytes, accepting raw bytes or hex strings."""
+        if eid_data is None:
+            return None
+
+        if isinstance(eid_data, (bytes, bytearray, memoryview)):
+            return bytes(eid_data)
+
+        if isinstance(eid_data, str):
+            cleaned = eid_data.replace("0x", "").replace(":", "").replace(" ", "")
+            try:
+                return bytes.fromhex(cleaned)
+            except ValueError:
+                _LOGGER.debug("Failed to parse EID hex string: %s", eid_data)
+                return None
+
+        _LOGGER.debug("Unsupported EID payload type: %s", type(eid_data))
+        return None
+
     def _extract_fmdn_eids(self, service_data: Mapping[str | int, Any]) -> set[bytes]:
         """Extract an FMDN EID using the configured format."""
-        eid_format = self.options.get(CONF_FMDN_EID_FORMAT, DEFAULT_FMDN_EID_FORMAT)
-        return extract_fmdn_eids(service_data, mode=str(eid_format))
+        return extract_fmdn_eids(service_data, mode=DEFAULT_FMDN_EID_FORMAT)
 
     def _process_fmdn_resolution(self, eid_bytes: bytes) -> Any | None:
         """Resolve an EID payload to a Home Assistant device registry id."""
@@ -672,8 +726,12 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         if resolver is None:
             return None
 
+        normalized_eid = self._normalize_eid_bytes(eid_bytes)
+        if normalized_eid is None:
+            return None
+
         try:
-            return resolver.resolve_eid(eid_bytes)
+            return resolver.resolve_eid(normalized_eid)
         except Exception:  # noqa: BLE001
             _LOGGER.debug("Resolver raised while processing EID payload", exc_info=True)
         return None

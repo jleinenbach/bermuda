@@ -115,10 +115,10 @@ class BermudaEntity(CoordinatorEntity):
         and also for matching up to device entries for other integrations.
         """
         # Match up our entity with any existing device entries.
-        # For scanners we use ethernet MAC, which looks like they are
-        # normally stored lowercased, otherwise we use our btmac, which
-        # seem to be stored uppercased.
-        # existing_device_id = None
+        # Canonicalization note:
+        # Bermuda uses util.normalize_mac() for MAC connections, which yields
+        # lower-case, colon-delimited MACs. Device registry connections must
+        # remain consistent to avoid duplicates that render identically in the UI.
         domain_name = DOMAIN
         model = None
 
