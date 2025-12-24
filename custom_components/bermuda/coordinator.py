@@ -105,6 +105,7 @@ from .fmdn import extract_fmdn_eids
 from .util import is_mac_address, mac_explode_formats, normalize_address, normalize_identifier, normalize_mac
 
 Cancellable = Callable[[], None]
+DUMP_DEVICE_SOFT_LIMIT = 1200
 
 # Protocol definition kept small to avoid cross-integration dependency imports.
 class EidResolver(Protocol):
@@ -805,7 +806,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
     async def _async_update_data(self):
         """Implementation of DataUpdateCoordinator update_data function."""
         # return False
-        self._async_update_data_internal()
+        return self._async_update_data_internal()
 
     def _async_update_data_internal(self):
         """
@@ -950,7 +951,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         # end of for ha_scanner loop
         return True
 
-    def prune_devices(self, force_pruning=False):
+    def prune_devices(self, force_pruning=False):  # noqa: C901
         """
         Scan through all collected devices, and remove those that meet Pruning criteria.
 
@@ -1069,14 +1070,15 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                 sorted_addresses = sorted([(v, k) for k, v in prunable_stamps.items()])
                 cutoff_index = min(len(sorted_addresses), prune_quota_shortfall)
 
-                _LOGGER.debug(
-                    "Prune quota short by %d. Pruning %d extra devices (down to age %0.2f seconds)",
-                    prune_quota_shortfall,
-                    cutoff_index,
-                    nowstamp - sorted_addresses[prune_quota_shortfall - 1][0],
-                )
+                if cutoff_index > 0:
+                    _LOGGER.debug(
+                        "Prune quota short by %d. Pruning %d extra devices (down to age %0.2f seconds)",
+                        prune_quota_shortfall,
+                        cutoff_index,
+                        nowstamp - sorted_addresses[cutoff_index - 1][0],
+                    )
                 # pylint: disable-next=unused-variable
-                for _stamp, address in sorted_addresses[: prune_quota_shortfall - 1]:
+                for _stamp, address in sorted_addresses[:cutoff_index]:
                     prune_list.append(address)
             else:
                 _LOGGER.warning(
@@ -1660,18 +1662,21 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             pdiff_outright = 0.30  # Percentage difference to win outright / instantly
             pdiff_historical = 0.15  # Percentage difference required to win on historical test
             if len(challenger.hist_distance_by_interval) > min_history:  # we have enough history, let's go..
-                # The closest that the incumbent has been, vs the furthest we have been in that time window
-                tests.hist_min_max = (
-                    min(incumbent.hist_distance_by_interval[:history_window]),
-                    max(challenger.hist_distance_by_interval[:history_window]),
-                )
-                if (
-                    tests.hist_min_max[1] < tests.hist_min_max[0]
-                    and tests.pcnt_diff > pdiff_historical  # and we're significantly closer.
-                ):
-                    tests.reason = "WIN on historical min/max"
-                    incumbent = challenger
-                    continue
+                incumbent_history = incumbent.hist_distance_by_interval[:history_window]
+                challenger_history = challenger.hist_distance_by_interval[:history_window]
+                if incumbent_history and challenger_history:
+                    # The closest that the incumbent has been, vs the furthest we have been in that time window
+                    tests.hist_min_max = (
+                        min(incumbent_history),
+                        max(challenger_history),
+                    )
+                    if (
+                        tests.hist_min_max[1] < tests.hist_min_max[0]
+                        and tests.pcnt_diff > pdiff_historical  # and we're significantly closer.
+                    ):
+                        tests.reason = "WIN on historical min/max"
+                        incumbent = challenger
+                        continue
 
             if tests.pcnt_diff < pdiff_outright:
                 # Allow a near-field absolute improvement to win even when percent diff is small.
@@ -1819,6 +1824,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         addresses_input = call.data.get("addresses", "")
         redact = call.data.get("redact", False)
         configured_devices = call.data.get("configured_devices", False)
+        summary: dict[str, Any] | None = None
 
         # Choose filter for device/address selection
         addresses: list[str] = []
@@ -1834,6 +1840,28 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             # known IRK/Private BLE Devices
             addresses += list(self.pb_state_sources)
 
+        dump_all_devices = addresses_input == "" and not configured_devices
+        if dump_all_devices and len(self.devices) > DUMP_DEVICE_SOFT_LIMIT:
+            fallback_addresses: set[str] = set(self.scanner_list)
+            configured_devices_option = self.options.get(CONF_DEVICES, [])
+            if isinstance(configured_devices_option, list):
+                fallback_addresses.update(str(device) for device in configured_devices_option)
+            fallback_addresses.update(
+                str(source_address)
+                for source_address in self.pb_state_sources.values()
+                if source_address is not None
+            )
+            addresses = list(map(str.lower, fallback_addresses))
+            summary = {
+                "limited": True,
+                "reason": (
+                    f"Device dump limited to configured devices because total devices "
+                    f"({len(self.devices)}) exceeded soft cap ({DUMP_DEVICE_SOFT_LIMIT})."
+                ),
+                "requested_devices": len(self.devices),
+                "returned_devices": len(addresses),
+            }
+
         # lowercase all the addresses for matching
         addresses = list(map(str.lower, addresses))
 
@@ -1841,6 +1869,9 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         for address, device in self.devices.items():
             if len(addresses) == 0 or address.lower() in addresses:
                 out[address] = device.to_dict()
+
+        if summary is not None:
+            out = {"summary": summary, "devices": out}
 
         if redact:
             _stamp_redact = monotonic_time_coarse()
@@ -1940,7 +1971,8 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                 data = self.redactions[datalower]
             else:
                 # Search for any of the redaction strings in the data.
-                for find, fix in list(self.redactions.items()):
+                items = tuple(self.redactions.items())
+                for find, fix in items:
                     if find in datalower:
                         data = datalower.replace(find, fix)
                         # don't break out because there might be multiple fixes required.
