@@ -178,19 +178,11 @@ FMDN_MODE_RESOLVED_ONLY = "resolved_only"
 FMDN_MODE_SOURCES_ONLY = "sources_only"
 FMDN_MODE_BOTH = "both"
 DEFAULT_FMDN_MODE = FMDN_MODE_RESOLVED_ONLY
-DOCS[CONF_FMDN_MODE] = (
-    "FMDN exposure mode. resolved_only hides ephemeral sources and exposes only the resolved device; "
-    "sources_only surfaces only rotating source MACs; both exposes both."
-)
 CONF_FMDN_EID_FORMAT = "fmdn_eid_format"
 FMDN_EID_FORMAT_STRIP_FRAME_20 = "strip_frame_20"
 FMDN_EID_FORMAT_STRIP_FRAME_ALL = "strip_frame_all"
 FMDN_EID_FORMAT_AUTO = "auto"
-DEFAULT_FMDN_EID_FORMAT = FMDN_EID_FORMAT_STRIP_FRAME_20
-DOCS[CONF_FMDN_EID_FORMAT] = (
-    "FMDN EID extraction strategy. strip_frame_20 keeps the first 20 bytes after the 0x40 frame; "
-    "strip_frame_all keeps all bytes after the frame; auto trims a trailing checksum byte when present."
-)
+DEFAULT_FMDN_EID_FORMAT = FMDN_EID_FORMAT_AUTO
 FMDN_EID_CANDIDATE_LENGTHS: Final[tuple[int, ...]] = (20, 32)
 
 CONF_MAX_RADIUS, DEFAULT_MAX_RADIUS = "max_area_radius", 20

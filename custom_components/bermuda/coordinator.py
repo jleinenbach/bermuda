@@ -75,7 +75,6 @@ from .const import (
     DEFAULT_ATTENUATION,
     DEFAULT_DEVTRACK_TIMEOUT,
     DEFAULT_FMDN_EID_FORMAT,
-    DEFAULT_FMDN_MODE,
     DEFAULT_MAX_RADIUS,
     DEFAULT_MAX_VELOCITY,
     DEFAULT_REF_POWER,
@@ -103,7 +102,7 @@ from .const import (
     UPDATE_INTERVAL,
 )
 from .fmdn import extract_fmdn_eids
-from .util import mac_explode_formats, normalize_address, normalize_identifier, normalize_mac
+from .util import is_mac_address, mac_explode_formats, normalize_address, normalize_identifier, normalize_mac
 
 Cancellable = Callable[[], None]
 
@@ -264,8 +263,6 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         self.options[CONF_SMOOTHING_SAMPLES] = DEFAULT_SMOOTHING_SAMPLES
         self.options[CONF_UPDATE_INTERVAL] = DEFAULT_UPDATE_INTERVAL
         self.options[CONF_RSSI_OFFSETS] = {}
-        self.options[CONF_FMDN_MODE] = DEFAULT_FMDN_MODE
-        self.options[CONF_FMDN_EID_FORMAT] = DEFAULT_FMDN_EID_FORMAT
 
         if hasattr(entry, "options"):
             # Firstly, on some calls (specifically during reload after settings changes)
@@ -502,6 +499,46 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         # will skip an update cycle if it detects one already in progress.
         # FIXME: self._async_update_data_internal()
 
+    async def async_cleanup_device_registry_connections(self) -> None:
+        """Canonicalise and deduplicate device registry connections for Bermuda devices."""
+        mac_connection_types = {dr.CONNECTION_BLUETOOTH, dr.CONNECTION_NETWORK_MAC, "mac"}
+        scanned = 0
+        updated = 0
+        registry = self.dr
+
+        for device in list(registry.devices.values()):
+            if not any(ident_domain == DOMAIN for ident_domain, _ in device.identifiers):
+                continue
+
+            scanned += 1
+            original_connections = set(device.connections or set())
+            normalized_connections: set[tuple[str, str]] = set()
+
+            for conn_type, conn_value in original_connections:
+                normalized_type = dr.CONNECTION_NETWORK_MAC if conn_type == "mac" else conn_type
+                normalized_value = conn_value
+
+                if normalized_type in mac_connection_types or is_mac_address(conn_value):
+                    try:
+                        normalized_value = normalize_mac(conn_value)
+                    except ValueError:
+                        normalized_value = conn_value
+
+                normalized_connections.add((normalized_type, normalized_value))
+
+            if normalized_connections != original_connections:
+                # new_connections replaces the existing set (it is not merged), so legacy/duplicated
+                # tuples are dropped when we write the canonicalized set back.
+                registry.async_update_device(device.id, new_connections=normalized_connections)
+                updated += 1
+
+        if updated:
+            _LOGGER.debug(
+                "Normalized device registry connections for %d Bermuda devices (scanned %d)",
+                updated,
+                scanned,
+            )
+
     @callback
     def async_handle_advert(
         self,
@@ -660,10 +697,29 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         base = canonical_id or device_id
         return normalize_identifier(f"fmdn:{base}")
 
+    @staticmethod
+    def _normalize_eid_bytes(eid_data: bytes | bytearray | memoryview | str | None) -> bytes | None:
+        """Return EID payload as bytes, accepting raw bytes or hex strings."""
+        if eid_data is None:
+            return None
+
+        if isinstance(eid_data, (bytes, bytearray, memoryview)):
+            return bytes(eid_data)
+
+        if isinstance(eid_data, str):
+            cleaned = eid_data.replace("0x", "").replace(":", "").replace(" ", "")
+            try:
+                return bytes.fromhex(cleaned)
+            except ValueError:
+                _LOGGER.debug("Failed to parse EID hex string: %s", eid_data)
+                return None
+
+        _LOGGER.debug("Unsupported EID payload type: %s", type(eid_data))
+        return None
+
     def _extract_fmdn_eids(self, service_data: Mapping[str | int, Any]) -> set[bytes]:
         """Extract an FMDN EID using the configured format."""
-        eid_format = self.options.get(CONF_FMDN_EID_FORMAT, DEFAULT_FMDN_EID_FORMAT)
-        return extract_fmdn_eids(service_data, mode=str(eid_format))
+        return extract_fmdn_eids(service_data, mode=DEFAULT_FMDN_EID_FORMAT)
 
     def _process_fmdn_resolution(self, eid_bytes: bytes) -> Any | None:
         """Resolve an EID payload to a Home Assistant device registry id."""
@@ -672,8 +728,12 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         if resolver is None:
             return None
 
+        normalized_eid = self._normalize_eid_bytes(eid_bytes)
+        if normalized_eid is None:
+            return None
+
         try:
-            return resolver.resolve_eid(eid_bytes)
+            return resolver.resolve_eid(normalized_eid)
         except Exception:  # noqa: BLE001
             _LOGGER.debug("Resolver raised while processing EID payload", exc_info=True)
         return None
@@ -1466,6 +1526,23 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         # if device.name in ("Ash Pixel IRK", "Garage", "Melinda iPhone"):
         #     _superchatty = True
 
+        def _is_valid_contender(advert: BermudaAdvert | None) -> bool:
+            """Return True when the advert can legitimately compete for area selection."""
+            if advert is None:
+                return False
+            if advert not in device.adverts.values():
+                return False
+            if advert.stamp < nowstamp - AREA_MAX_AD_AGE:
+                return False
+            return (
+                advert.area_id is not None
+                and advert.rssi_distance is not None
+                and advert.rssi_distance <= _max_radius
+            )
+
+        if not _is_valid_contender(incumbent):
+            incumbent = None
+
         for challenger in device.adverts.values():
             # Check each scanner and any time one is found to be closer / better than
             # the existing closest_scanner, replace it. At the end we should have the
@@ -1561,6 +1638,8 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             _pda = challenger.rssi_distance
             _pdb = incumbent.rssi_distance
             tests.pcnt_diff = abs(_pda - _pdb) / ((_pda + _pdb) / 2)
+            abs_diff = abs(_pda - _pdb)
+            avg_dist = (_pda + _pdb) / 2
 
             # Same area. Confirm freshness and distance.
             if (
@@ -1595,9 +1674,14 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                     continue
 
             if tests.pcnt_diff < pdiff_outright:
-                # Didn't make the cut. We're not "different enough" given how
-                # recently the previous nearest was updated.
-                tests.reason = "LOSS - failed on percentage_difference"
+                # Allow a near-field absolute improvement to win even when percent diff is small.
+                near_field_cutoff = 1.0
+                abs_win_meters = 0.08
+                if not (avg_dist <= near_field_cutoff and abs_diff >= abs_win_meters):
+                    tests.reason = "LOSS - failed on percentage_difference"
+                    continue
+                tests.reason = "WIN on near-field absolute improvement"
+                incumbent = challenger
                 continue
 
             # If we made it through all of that, we're winning, so far!
