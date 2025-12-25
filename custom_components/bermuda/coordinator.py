@@ -1582,9 +1582,6 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                 device.apply_scanner_selection(device.area_advert)
                 return
 
-            # Allow challengers to compete normally.
-            soft_incumbent = None
-
         for challenger in device.adverts.values():
             # Check each scanner and any time one is found to be closer / better than
             # the existing closest_scanner, replace it. At the end we should have the
@@ -1626,6 +1623,15 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
             # Is the incumbent a valid contender?
             current_incumbent = incumbent or soft_incumbent
+            incumbent_distance = _advert_distance(current_incumbent)
+            if (
+                incumbent_distance is None
+                and current_incumbent is soft_incumbent
+                and getattr(device, "area_advert", None) is soft_incumbent
+                and getattr(device, "area_distance", None) is not None
+                and current_incumbent.stamp >= nowstamp - AREA_MAX_AD_AGE
+            ):
+                incumbent_distance = device.area_distance
             challenger_scanner = challenger.scanner_device
             if challenger_scanner is None:
                 tests.reason = "LOSS - challenger missing scanner metadata"
@@ -1636,8 +1642,8 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             inc_floor_level = (
                 getattr(incumbent_scanner, "floor_level", None) if incumbent_scanner else None
             )
-            chal_floor_id = challenger_scanner.floor_id
-            chal_floor_level = challenger_scanner.floor_level
+            chal_floor_id = getattr(challenger_scanner, "floor_id", None)
+            chal_floor_level = getattr(challenger_scanner, "floor_level", None)
             tests.floors = (inc_floor_id, chal_floor_id)
             tests.floor_levels = (inc_floor_level, chal_floor_level)
             cross_floor = (
@@ -1661,20 +1667,16 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                 tests.reason = "LOSS - incumbent missing scanner metadata"
                 continue
 
-            if current_incumbent.rssi_distance is None:
-                tests.reason = "LOSS - incumbent distance unavailable"
-                continue
-
-            incumbent_distance = _advert_distance(current_incumbent)
-
             if current_incumbent.area_id is None:
                 incumbent = challenger
                 soft_incumbent = None
                 continue
 
             if incumbent_distance is None:
-                # Hold the existing area until a valid reading or staleness.
-                tests.reason = "LOSS - incumbent distance unavailable"
+                # No incumbent distance available; allow the challenger to compete to avoid deadlocks.
+                tests.reason = "WIN - incumbent distance unavailable"
+                incumbent = challenger
+                soft_incumbent = None
                 continue
 
             # NOTE:

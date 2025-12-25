@@ -201,7 +201,7 @@ def test_far_field_small_relative_change_sticks(coordinator: BermudaDataUpdateCo
 
 
 def test_transient_missing_distance_does_not_switch(coordinator: BermudaDataUpdateCoordinator):
-    """A fresh but distance-less incumbent should not be replaced immediately."""
+    """A fresh but distance-less incumbent should not flip for a marginal challenger."""
     device = _configure_device(coordinator, "55:66:77:88:99:AA")
 
     incumbent = _make_advert(
