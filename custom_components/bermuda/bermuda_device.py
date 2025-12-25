@@ -677,11 +677,11 @@ class BermudaDevice(dict):
             and bermuda_advert.stamp >= stamp_now - AREA_MAX_AD_AGE
         ):
             distance = bermuda_advert.rssi_distance
+            # Allow stale distances from the previous winning advert to bridge gaps in broadcasts.
             if (
                 distance is None
                 and bermuda_advert is self.area_advert
                 and self.area_distance is not None
-                and bermuda_advert.stamp >= stamp_now - (AREA_MAX_AD_AGE * 1.5)
             ):
                 distance = self.area_distance
             # We found a winner

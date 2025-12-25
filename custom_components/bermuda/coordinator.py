@@ -1912,6 +1912,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         streak_target = CROSS_FLOOR_STREAK if cross_floor else SAME_FLOOR_STREAK
 
         if device.area_advert is None and winner is not None:
+            # Bootstrap immediately when we have no area yet; don't wait for streak logic.
             device.pending_area_id = None
             device.pending_floor_id = None
             device.pending_streak = 0
