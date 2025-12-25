@@ -1860,6 +1860,9 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             cand_floor = getattr(candidate.scanner_device, "floor_id", None) if candidate else None
             return cur_floor is not None and cand_floor is not None and cur_floor != cand_floor
 
+        def _apply_selection(advert: BermudaAdvert | None) -> None:
+            device.apply_scanner_selection(advert, nowstamp=nowstamp)
+
         if winner is None:
             if _LOGGER.isEnabledFor(logging.DEBUG):
                 fresh_adverts = [adv for adv in device.adverts.values() if _is_fresh(adv)]
@@ -1895,14 +1898,14 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             device.pending_area_id = None
             device.pending_floor_id = None
             device.pending_streak = 0
-            device.apply_scanner_selection(None, nowstamp=nowstamp)
+            _apply_selection(None)
             return
 
         if device.area_advert is winner:
             device.pending_area_id = None
             device.pending_floor_id = None
             device.pending_streak = 0
-            device.apply_scanner_selection(winner, nowstamp=nowstamp)
+            _apply_selection(winner)
             return
 
         cross_floor = _resolve_cross_floor(device.area_advert, winner)
@@ -1912,7 +1915,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             device.pending_area_id = None
             device.pending_floor_id = None
             device.pending_streak = 0
-            device.apply_scanner_selection(winner, nowstamp=nowstamp)
+            _apply_selection(winner)
             return
 
         if (
@@ -1929,10 +1932,10 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             device.pending_area_id = None
             device.pending_floor_id = None
             device.pending_streak = 0
-            device.apply_scanner_selection(winner, nowstamp=nowstamp)
+            _apply_selection(winner)
         else:
             device.diag_area_switch = tests.sensortext()
-            device.apply_scanner_selection(device.area_advert, nowstamp=nowstamp)
+            _apply_selection(device.area_advert)
 
     def _refresh_scanners(self, force=False):
         """
