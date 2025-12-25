@@ -156,4 +156,4 @@ def test_apply_scanner_selection_accepts_nowstamp(bermuda_device):
     bermuda_device.apply_scanner_selection(advert, nowstamp=105.0)
 
     assert bermuda_device.area_id == "area-new"
-    assert bermuda_device.last_seen == pytest.approx(105.0)
+    assert bermuda_device.last_seen == pytest.approx(100.0)

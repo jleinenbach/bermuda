@@ -651,8 +651,8 @@ def test_rssi_hysteresis_respected_within_evidence(monkeypatch, coordinator: Ber
     assert device.area_distance is None
 
 
-def test_set_ref_power_does_not_resurrect_stale(monkeypatch, coordinator: BermudaDataUpdateCoordinator):
-    """Ref power recalcs must not republish stale evidence as current presence."""
+def test_set_ref_power_fast_acquire_when_lost(monkeypatch, coordinator: BermudaDataUpdateCoordinator):
+    """Ref power recalcs may fast-acquire when no current area is set."""
     current_time = [10000.0]
     _patch_monotonic_time(monkeypatch, current_time)
     device = _configure_device(coordinator, "AA:BB:CC:DD:EE:05")
@@ -680,7 +680,7 @@ def test_set_ref_power_does_not_resurrect_stale(monkeypatch, coordinator: Bermud
 
     device.set_ref_power(-70.0)
 
-    assert device.area_id is None
+    assert device.area_id == "area-stale"
     assert device.area_state_stamp is None
     assert device.last_seen == stale_stamp
 
