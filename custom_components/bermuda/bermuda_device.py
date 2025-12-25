@@ -714,21 +714,30 @@ class BermudaDevice(dict):
         source: str = "selection",
     ):
         """
-        Given a BermudaAdvert entry, apply the distance and area attributes
-        from it to this device.
+        Apply the winning scanner's data to the device.
 
-        Used to apply a "winning" scanner's data to the device for setting closest Area.
+        PEER REVIEW FIX: Implements "Fast Acquire / Stable Switch".
+        1. If device is in NO Area: Accept the winner immediately (ignoring strict evidence window).
+        2. If device IS in an Area: Enforce strict evidence/stability rules to prevent jumping.
         """
         old_area = self.area_name
         stamp_now = nowstamp if nowstamp is not None else monotonic_time_coarse()
         evidence_cutoff = stamp_now - EVIDENCE_WINDOW_SECONDS
         evidence_ok = False
+
         if bermuda_advert is not None and bermuda_advert.area_id is not None:
             evidence_ok = bermuda_advert.stamp is not None and bermuda_advert.stamp >= evidence_cutoff
-            if not evidence_ok:
+
+            # --- LOGIC CHANGE START ---
+            # Original HA-13: if not evidence_ok: -> reject
+            # New Logic: Only reject weak evidence if we already HAVE a location (Stability).
+            # If we are currently "lost" (area_id is None), accept any valid advert (Fast Acquire).
+            if not evidence_ok and self.area_id is not None:
                 if source != "selection":
                     return
                 bermuda_advert = None
+            # --- LOGIC CHANGE END ---
+
             if bermuda_advert is not None:
                 distance = None
                 distance_stamp = None

@@ -26,7 +26,6 @@ from .const import (
     CONF_RSSI_OFFSETS,
     CONF_SMOOTHING_SAMPLES,
     DISTANCE_INFINITE,
-    DISTANCE_TIMEOUT,
     HIST_KEEP_COUNT,
 )
 
@@ -328,47 +327,7 @@ class BermudaAdvert(dict):
         return self.rssi_distance_raw
 
     def calculate_data(self):
-        """
-        Filter and update distance estimates.
-
-        All smoothing and noise-management of the distance between a scanner
-        and a device should be done in this method, as it is
-        guaranteed to be called on every update cycle, for every
-        scanner that has ever reported an advert for this device
-        (even if it is not reporting one currently).
-
-        If new_stamp is None it implies that the scanner has not reported
-        an updated advertisement since our last update cycle,
-        so we may need to check if this device should be timed
-        out or otherwise dealt with.
-
-        If new_stamp is not None it means we just had an updated
-        rssi_distance_raw value which should be processed.
-
-        This is called by self.update, but should also be called for
-        any remaining scanners that have not sent in an update in this
-        cycle. This is mainly beacuse usb/bluez adaptors seem to flush
-        their advertisement lists quicker than we time out, so we need
-        to make sure we still update the scanner entry even if the scanner
-        no longer carries advert history for this device.
-
-        Note: Noise in RSSI readings is VERY asymmetric. Ultimately,
-        a closer distance is *always* more accurate than a previous
-        more distant measurement. Any measurement might be true,
-        or it is likely longer than the truth - and (almost) never
-        shorter.
-
-        For a new, long measurement to be true, we'd want to see some
-        indication of rising measurements preceding it, or at least a
-        long time since our last measurement.
-
-        It's tempting to treat no recent measurement as implying an increase
-        in distance, but doing so would wreak havoc when we later try to
-        implement trilateration, so better to simply cut a sensor off as
-        "away" from a scanner when it hears no new adverts. DISTANCE_TIMEOUT
-        is how we decide how long to wait, and should accommodate for dropped
-        packets and for temporary occlusion (dogs' bodies etc)
-        """
+        """Filter and update distance estimates."""
         new_stamp = self.new_stamp  # should have been set by update()
         self.new_stamp = None  # Clear so we know if an update is missed next cycle
 
@@ -385,7 +344,11 @@ class BermudaAdvert(dict):
                 self.hist_distance_by_interval.clear()
                 self.hist_distance_by_interval.append(self.rssi_distance_raw)
 
-        elif new_stamp is None and (self.stamp is None or self.stamp < monotonic_time_coarse() - DISTANCE_TIMEOUT):
+        # RELAXED TIMEOUT (PEER REVIEW FIX)
+        # Instead of the aggressive global DISTANCE_TIMEOUT (10s), we use a
+        # conservative 200s (approx 3.5 mins) to account for slow advertisers
+        # (e.g. battery trackers) and packet loss, preventing sensor flickering.
+        elif new_stamp is None and (self.stamp is None or self.stamp < monotonic_time_coarse() - 200):
             # DEVICE IS AWAY!
             # Last distance reading is stale, mark device distance as unknown.
             self.rssi_distance = None
