@@ -291,7 +291,7 @@ def test_distance_fallback_requires_fresh_advert(coordinator: BermudaDataUpdateC
     """Cached distance should only be reused for fresh adverts."""
     device = _configure_device(coordinator, "77:88:99:AA:BB:CC")
 
-    stale_soft = _make_advert("stale", "area-stale", distance=None, age=AREA_MAX_AD_AGE + 1)
+    stale_soft = _make_advert("stale", "area-stale", distance=None, age=(AREA_MAX_AD_AGE * 2))
     device.area_advert = stale_soft
     device.area_distance = 3.0
 

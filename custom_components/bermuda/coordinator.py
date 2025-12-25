@@ -1572,6 +1572,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                 if advert is not soft_incumbent
             )
 
+            # Only freeze when there is no viable contender; otherwise, allow challengers to compete.
             if not has_valid_challenger:
                 # We have no valid incumbent reading and nobody else can win; hold position until a fresh advert
                 # arrives to avoid flapping to unknown.
@@ -1626,6 +1627,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             incumbent_distance = _advert_distance(current_incumbent)
             if (
                 incumbent_distance is None
+                and current_incumbent is not None
                 and current_incumbent is soft_incumbent
                 and getattr(device, "area_advert", None) is soft_incumbent
                 and getattr(device, "area_distance", None) is not None
@@ -1831,6 +1833,14 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
         cross_floor = _resolve_cross_floor(device.area_advert, winner)
         streak_target = CROSS_FLOOR_STREAK if cross_floor else SAME_FLOOR_STREAK
+
+        if device.area_advert is None and winner is not None:
+            device.pending_area_id = None
+            device.pending_floor_id = None
+            device.pending_streak = 0
+            device.apply_scanner_selection(winner)
+            return
+
         if (
             device.pending_area_id == winner.area_id
             and device.pending_floor_id == getattr(winner.scanner_device, "floor_id", None)

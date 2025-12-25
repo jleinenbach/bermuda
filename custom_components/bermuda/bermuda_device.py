@@ -674,7 +674,7 @@ class BermudaDevice(dict):
                 distance is None
                 and bermuda_advert is self.area_advert
                 and self.area_distance is not None
-                and bermuda_advert.stamp >= monotonic_time_coarse() - AREA_MAX_AD_AGE
+                and bermuda_advert.stamp >= monotonic_time_coarse() - (AREA_MAX_AD_AGE * 1.5)
             ):
                 distance = self.area_distance
             if distance is None:
