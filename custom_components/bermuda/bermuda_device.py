@@ -719,14 +719,32 @@ class BermudaDevice(dict):
         PEER REVIEW FIX: Implements "Fast Acquire / Stable Switch".
         1. If device is in NO Area: Accept the winner immediately (ignoring strict evidence window).
         2. If device IS in an Area: Enforce strict evidence/stability rules to prevent jumping.
+        3. Source of truth is the scanner's current area, not the advert's cached copy.
         """
         old_area = self.area_name
         stamp_now = nowstamp if nowstamp is not None else monotonic_time_coarse()
         evidence_cutoff = stamp_now - EVIDENCE_WINDOW_SECONDS
         evidence_ok = False
+        winner_area_id = None
+        winner_area_name = None
+        scanner_address = None
+        if bermuda_advert is not None:
+            scanner_device = getattr(bermuda_advert, "scanner_device", None)
+            if scanner_device is not None:
+                scanner_area_id = getattr(scanner_device, "area_id", None)
+                if isinstance(scanner_area_id, str):
+                    winner_area_id = scanner_area_id
+                scanner_area_name = getattr(scanner_device, "area_name", None)
+                if isinstance(scanner_area_name, str):
+                    winner_area_name = scanner_area_name
+            if winner_area_id is None:
+                winner_area_id = getattr(bermuda_advert, "area_id", None)
+                winner_area_name = getattr(bermuda_advert, "area_name", None)
+            scanner_address = getattr(bermuda_advert, "scanner_address", None)
 
-        if bermuda_advert is not None and bermuda_advert.area_id is not None:
-            evidence_ok = bermuda_advert.stamp is not None and bermuda_advert.stamp >= evidence_cutoff
+        if winner_area_id is not None:
+            evidence_ok = bermuda_advert is not None and bermuda_advert.stamp is not None
+            evidence_ok = bool(evidence_ok and bermuda_advert.stamp >= evidence_cutoff)
 
             # --- LOGIC CHANGE START ---
             # Original HA-13: if not evidence_ok: -> reject
@@ -739,19 +757,28 @@ class BermudaDevice(dict):
             # --- LOGIC CHANGE END ---
 
             if bermuda_advert is not None:
+                new_area_id = winner_area_id
                 distance = None
                 distance_stamp = None
-                same_area = self.area_advert is not None and (
-                    bermuda_advert.area_id == self.area_advert.area_id
-                    and getattr(bermuda_advert, "scanner_address", None)
-                    == getattr(self.area_advert, "scanner_address", None)
+                previous_area_id = None
+                previous_scanner_address = None
+                if self.area_advert is not None:
+                    previous_area_id = (
+                        getattr(self.area_advert.scanner_device, "area_id", None)
+                        or getattr(self.area_advert, "area_id", None)
+                    )
+                    previous_scanner_address = getattr(self.area_advert, "scanner_address", None)
+                same_area = (
+                    previous_area_id is not None
+                    and new_area_id == previous_area_id
+                    and scanner_address == previous_scanner_address
                 )
                 advert_age = stamp_now - bermuda_advert.stamp if bermuda_advert.stamp is not None else None
                 if advert_age is not None and advert_age > AREA_MAX_AD_AGE:
                     _LOGGER.debug(
                         "Applying stale area advert for %s: area=%s age=%.1fs",
                         self.name,
-                        bermuda_advert.area_id,
+                        new_area_id,
                         advert_age,
                     )
                 if bermuda_advert.rssi_distance is not None:
@@ -774,9 +801,13 @@ class BermudaDevice(dict):
                         stamp_now - self.area_distance_stamp if self.area_distance_stamp else -1,
                     )
 
+                # Keep advert metadata aligned with the scanner's current location.
+                bermuda_advert.area_id = new_area_id
+                bermuda_advert.area_name = winner_area_name
+
                 # We found a winner
                 self.area_advert = bermuda_advert
-                self._update_area_and_floor(bermuda_advert.area_id)
+                self._update_area_and_floor(new_area_id)
                 self.area_distance = distance
                 if distance is not None:
                     self.area_distance_stamp = distance_stamp or bermuda_advert.stamp or stamp_now
