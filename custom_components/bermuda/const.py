@@ -73,6 +73,13 @@ DISTANCE_INFINITE = 999  # arbitrary distance for infinite/unknown rssi range
 
 AREA_MAX_AD_AGE: Final = max(DISTANCE_TIMEOUT / 3, UPDATE_INTERVAL * 2)
 # Adverts older than this can not win an area contest.
+AREA_RETENTION_SECONDS: Final = 15 * 60
+# Keep the last known area/distance/floor for low-advertising trackers for a reasonable
+# window, independent of selection freshness.
+DISTANCE_RETENTION_SECONDS: Final = AREA_RETENTION_SECONDS
+# Distance is retained only when the winning scanner/area remain the same within this window.
+# Evidence window for adverts to participate in selection/fallback. Prevents immortal stale adverts.
+EVIDENCE_WINDOW_SECONDS: Final = AREA_RETENTION_SECONDS
 CROSS_FLOOR_MIN_HISTORY: Final = 8  # Minimum history length before cross-floor wins via historical checks.
 SAME_FLOOR_STREAK: Final = 1  # Consecutive wins needed before applying a same-floor switch.
 CROSS_FLOOR_STREAK: Final = 3  # Consecutive wins needed before applying a cross-floor switch.
