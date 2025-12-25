@@ -74,6 +74,7 @@ def _make_advert(
     hist_distance_by_interval: list[float] | None = None,
     floor_id: str | None = None,
     floor_level: int | None = None,
+    rssi: float | None = -50.0,
 ) -> SimpleNamespace:
     """Create a minimal advert-like object with distance metadata."""
     now = monotonic_time_coarse()
@@ -85,7 +86,7 @@ def _make_advert(
         area_id=area_id,
         area_name=area_id,
         rssi_distance=distance,
-        rssi=-50.0,
+        rssi=rssi,
         stamp=stamp,
         scanner_device=scanner_device,
         hist_distance_by_interval=hist,
@@ -131,6 +132,22 @@ def test_out_of_radius_incumbent_is_dropped(coordinator: BermudaDataUpdateCoordi
     coordinator._refresh_area_by_min_distance(device)
 
     assert device.area_advert is near_challenger
+
+
+def test_area_selected_when_only_rssi_available(coordinator: BermudaDataUpdateCoordinator):
+    """Area should be chosen even when distances are unavailable."""
+    device = _configure_device(coordinator, "AA:BB:CC:DD:EE:00")
+
+    weaker = _make_advert("weak", "area-weak", distance=None, rssi=-80.0)
+    stronger = _make_advert("strong", "area-strong", distance=None, rssi=-55.0)
+
+    device.adverts = {"weak": weaker, "strong": stronger}
+
+    coordinator._refresh_area_by_min_distance(device)
+
+    assert device.area_advert is stronger
+    assert device.area_distance is None
+    assert device.area_id == "area-strong"
 
 
 def test_out_of_radius_incumbent_without_valid_challenger_clears_selection(
@@ -223,6 +240,28 @@ def test_transient_missing_distance_does_not_switch(coordinator: BermudaDataUpda
     assert device.area_advert is incumbent
 
 
+def test_history_distance_used_when_rssi_distance_none(coordinator: BermudaDataUpdateCoordinator):
+    """Historical distance should allow a challenger to win when live distance is missing."""
+    device = _configure_device(coordinator, "55:66:77:88:99:AD")
+
+    incumbent = _make_advert("inc", "area-old", distance=6.0, hist_distance_by_interval=[6.0])
+    challenger = _make_advert(
+        "chal",
+        "area-new",
+        distance=None,
+        hist_distance_by_interval=[3.0],
+        rssi=-45.0,
+    )
+
+    device.area_advert = incumbent
+    device.adverts = {"incumbent": incumbent, "challenger": challenger}
+
+    coordinator._refresh_area_by_min_distance(device)
+
+    assert device.area_advert is challenger
+    assert device.area_distance is None
+
+
 def test_soft_incumbent_does_not_block_valid_challenger(coordinator: BermudaDataUpdateCoordinator):
     """A soft incumbent with no distance should not prevent a valid challenger from winning."""
     device = _configure_device(coordinator, "55:66:77:88:99:AB")
@@ -244,6 +283,22 @@ def test_soft_incumbent_does_not_block_valid_challenger(coordinator: BermudaData
     coordinator._refresh_area_by_min_distance(device)
 
     assert device.area_advert is challenger
+
+
+def test_soft_incumbent_no_distance_does_not_block_rssi_fallback(coordinator: BermudaDataUpdateCoordinator):
+    """Soft incumbents without distance should yield to stronger RSSI challengers."""
+    device = _configure_device(coordinator, "55:66:77:88:99:AC")
+
+    soft_incumbent = _make_advert("soft", "area-soft", distance=None, rssi=-70.0)
+    challenger = _make_advert("chal", "area-new", distance=None, rssi=-50.0)
+
+    device.area_advert = soft_incumbent
+    device.adverts = {"soft": soft_incumbent, "challenger": challenger}
+
+    coordinator._refresh_area_by_min_distance(device)
+
+    assert device.area_advert is challenger
+    assert device.area_distance is None
 
 
 def test_soft_incumbent_holds_when_no_valid_challenger(coordinator: BermudaDataUpdateCoordinator):

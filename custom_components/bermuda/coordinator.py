@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Hashable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Protocol, cast
@@ -1428,6 +1429,33 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         """Convert monotonic timestamp to age (eg: "6 seconds ago")."""
         return get_age(self.dt_mono_to_datetime(stamp))
 
+    def effective_distance(self, advert: BermudaAdvert | None, nowstamp: float) -> float | None:
+        """
+        Calculate the best available distance estimate for an advert.
+
+        Rules:
+        1) If advert.rssi_distance is present, prefer it (smoothed distance).
+        2) If the advert is fresh and has historical distance samples, return the most recent
+           historical value to preserve the last known proximity when smoothing yields None.
+        3) Otherwise return None.
+        """
+        if advert is None:
+            return None
+
+        if advert.rssi_distance is not None:
+            return advert.rssi_distance
+
+        if advert.stamp < nowstamp - AREA_MAX_AD_AGE:
+            return None
+
+        hist_distances = [
+            value for value in getattr(advert, "hist_distance_by_interval", []) if isinstance(value, (int, float))
+        ]
+        if hist_distances:
+            return hist_distances[0]
+
+        return None
+
     def resolve_area_name(self, area_id: str | None) -> str | None:
         """
         Given an area_id, return the current area name.
@@ -1534,54 +1562,40 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         # if device.name in ("Ash Pixel IRK", "Garage", "Melinda iPhone"):
         #     _superchatty = True
 
-        def _advert_distance(advert: BermudaAdvert | None) -> float | None:
-            """Return the best available distance estimate for an advert."""
+        effective_cache: dict[BermudaAdvert, float | None] = {}
+
+        def _effective_distance(advert: BermudaAdvert | None) -> float | None:
+            """Return cached effective distance for an advert."""
             if advert is None:
                 return None
-            return advert.rssi_distance
+            if isinstance(advert, Hashable):
+                if advert not in effective_cache:
+                    effective_cache[advert] = self.effective_distance(advert, nowstamp)
+                return effective_cache[advert]
+            return self.effective_distance(advert, nowstamp)
 
-        def _is_valid_contender(advert: BermudaAdvert | None) -> bool:
-            """Return True when the advert can legitimately compete for area selection."""
-            if advert is None:
-                return False
-            if advert not in device.adverts.values():
-                return False
-            if advert.stamp < nowstamp - AREA_MAX_AD_AGE:
-                return False
-            return (
-                advert.area_id is not None
-                and advert.rssi_distance is not None
-                and advert.rssi_distance <= _max_radius
-            )
+        def _belongs(advert: BermudaAdvert | None) -> bool:
+            return advert is not None and advert in device.adverts.values()
 
-        if not _is_valid_contender(incumbent):
-            if (
-                incumbent is not None
-                and incumbent.rssi_distance is None
-                and incumbent.area_id is not None
-                and incumbent in device.adverts.values()
-                and incumbent.stamp >= nowstamp - AREA_MAX_AD_AGE
-            ):
+        def _is_fresh(advert: BermudaAdvert | None) -> bool:
+            return advert is not None and advert.stamp >= nowstamp - AREA_MAX_AD_AGE
+
+        def _has_area(advert: BermudaAdvert | None) -> bool:
+            return advert is not None and advert.area_id is not None
+
+        def _area_candidate(advert: BermudaAdvert | None) -> bool:
+            return _belongs(advert) and _is_fresh(advert) and _has_area(advert)
+
+        def _is_distance_contender(advert: BermudaAdvert | None) -> bool:
+            effective_distance = _effective_distance(advert)
+            return _area_candidate(advert) and effective_distance is not None and effective_distance <= _max_radius
+
+        has_distance_contender = any(_is_distance_contender(advert) for advert in device.adverts.values())
+
+        if not _is_distance_contender(incumbent):
+            if _area_candidate(incumbent):
                 soft_incumbent = incumbent
             incumbent = None
-
-        if incumbent is None and soft_incumbent is not None and soft_incumbent.rssi_distance is None:
-            has_valid_challenger = any(
-                _is_valid_contender(advert)
-                for advert in device.adverts.values()
-                if advert is not soft_incumbent
-            )
-
-            # Only freeze when there is no viable contender; otherwise, allow challengers to compete.
-            if not has_valid_challenger:
-                # We have no valid incumbent reading and nobody else can win; hold position until a fresh advert
-                # arrives to avoid flapping to unknown.
-                device.pending_area_id = None
-                device.pending_floor_id = None
-                device.pending_streak = 0
-                device.diag_area_switch = tests.sensortext()
-                device.apply_scanner_selection(device.area_advert)
-                return
 
         for challenger in device.adverts.values():
             # Check each scanner and any time one is found to be closer / better than
@@ -1608,30 +1622,21 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             # ignoring valid reports from slow proxies (or if our processing loop is
             # delayed / lengthened). Too long and we add needless jumping around for a
             # device that isn't actually being actively detected.
-            if challenger.stamp < nowstamp - AREA_MAX_AD_AGE:
-                # our ad is too old.
-                continue
-
-            # If we are too far away or don't have an area, we cannot win...
-            if (
-                challenger.rssi_distance is None
-                or challenger.rssi_distance > _max_radius
-                or challenger.area_id is None
-            ):
+            if not _is_distance_contender(challenger):
                 continue
 
             # At this point the challenger is a vaild contender...
 
             # Is the incumbent a valid contender?
             current_incumbent = incumbent or soft_incumbent
-            incumbent_distance = _advert_distance(current_incumbent)
+            incumbent_distance = _effective_distance(current_incumbent)
             if (
                 incumbent_distance is None
                 and current_incumbent is not None
                 and current_incumbent is soft_incumbent
                 and getattr(device, "area_advert", None) is soft_incumbent
                 and getattr(device, "area_distance", None) is not None
-                and current_incumbent.stamp >= nowstamp - AREA_MAX_AD_AGE
+                and _is_fresh(current_incumbent)
             ):
                 incumbent_distance = device.area_distance
             challenger_scanner = challenger.scanner_device
@@ -1687,7 +1692,11 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             # end.
 
             # If we ARE NOT ACTUALLY CLOSER(!) we can not win.
-            if incumbent_distance < challenger.rssi_distance:
+            challenger_distance = _effective_distance(challenger)
+            if challenger_distance is None:
+                continue
+
+            if incumbent_distance < challenger_distance:
                 # we are not even closer!
                 continue
 
@@ -1695,7 +1704,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             tests.same_area = current_incumbent.area_id == challenger.area_id
             tests.areas = (current_incumbent.area_name or "", challenger.area_name or "")
             tests.scannername = (current_incumbent.name, challenger.name)
-            tests.distance = (incumbent_distance, challenger.rssi_distance)
+            tests.distance = (incumbent_distance, challenger_distance)
             # tests.velocity = (
             #     next((val for val in closest_scanner.hist_velocity), 0),
             #     next((val for val in scanner.hist_velocity), 0),
@@ -1714,7 +1723,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             )
 
             # Calculate the percentage difference between the challenger and incumbent's distances
-            _pda = challenger.rssi_distance
+            _pda = challenger_distance
             _pdb = incumbent_distance
             tests.pcnt_diff = abs(_pda - _pdb) / ((_pda + _pdb) / 2)
             abs_diff = abs(_pda - _pdb)
@@ -1806,7 +1815,41 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
         _superchatty = False
 
+        rssi_fallback_margin = 3.0
         winner = incumbent or soft_incumbent
+
+        if not has_distance_contender:
+            fallback_candidates: list[BermudaAdvert] = []
+            for adv in device.adverts.values():
+                if not _area_candidate(adv):
+                    continue
+                adv_effective = _effective_distance(adv)
+                if adv_effective is None or adv_effective <= _max_radius:
+                    fallback_candidates.append(adv)
+            if fallback_candidates:
+                best_by_rssi = max(
+                    fallback_candidates,
+                    key=lambda adv: (
+                        adv.rssi if adv.rssi is not None else float("-inf"),
+                        adv.stamp if adv.stamp is not None else 0,
+                    ),
+                )
+                incumbent_candidate = device.area_advert if _area_candidate(device.area_advert) else None
+                best_rssi = best_by_rssi.rssi
+                incumbent_rssi = incumbent_candidate.rssi if incumbent_candidate is not None else None
+                if incumbent_candidate is None or best_by_rssi is incumbent_candidate:
+                    winner = best_by_rssi
+                    tests.reason = "WIN via RSSI fallback (no distance contenders)"
+                elif best_rssi is not None and (
+                    incumbent_rssi is None or best_rssi >= incumbent_rssi + rssi_fallback_margin
+                ):
+                    winner = best_by_rssi
+                    tests.reason = "WIN via RSSI fallback margin"
+                else:
+                    winner = incumbent_candidate
+                    tests.reason = "HOLD via RSSI fallback hysteresis"
+            else:
+                winner = None
 
         if device.area_advert != winner and tests.reason is not None:
             device.diag_area_switch = tests.sensortext()
@@ -1818,17 +1861,48 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             return cur_floor is not None and cand_floor is not None and cur_floor != cand_floor
 
         if winner is None:
+            if _LOGGER.isEnabledFor(logging.DEBUG):
+                fresh_adverts = [adv for adv in device.adverts.values() if _is_fresh(adv)]
+                fresh_with_area = [adv for adv in fresh_adverts if _has_area(adv)]
+                with_effective = [adv for adv in fresh_with_area if _effective_distance(adv) is not None]
+                top_candidates = sorted(
+                    fresh_with_area,
+                    key=lambda adv: (
+                        adv.rssi if adv.rssi is not None else float("-inf"),
+                        adv.stamp if adv.stamp is not None else 0,
+                    ),
+                    reverse=True,
+                )[:3]
+                top_summary = [
+                    f"(age={nowstamp - adv.stamp:.1f}s area={adv.area_id} rssi={adv.rssi} "
+                    f"rssi_dist={adv.rssi_distance} hist_len={len(getattr(adv, 'hist_distance_by_interval', []))})"
+                    for adv in top_candidates
+                ]
+                last_log_age = nowstamp - getattr(device, "last_no_winner_log", 0)
+                if last_log_age > AREA_MAX_AD_AGE:
+                    device.last_no_winner_log = nowstamp
+                    _LOGGER.debug(
+                        "Area selection cleared for %s: adverts=%d fresh=%d fresh_with_area=%d "
+                        "with_effective=%d max_radius=%.2f top=%s",
+                        device.name,
+                        len(device.adverts),
+                        len(fresh_adverts),
+                        len(fresh_with_area),
+                        len(with_effective),
+                        _max_radius,
+                        top_summary,
+                    )
             device.pending_area_id = None
             device.pending_floor_id = None
             device.pending_streak = 0
-            device.apply_scanner_selection(None)
+            device.apply_scanner_selection(None, nowstamp=nowstamp)
             return
 
         if device.area_advert is winner:
             device.pending_area_id = None
             device.pending_floor_id = None
             device.pending_streak = 0
-            device.apply_scanner_selection(winner)
+            device.apply_scanner_selection(winner, nowstamp=nowstamp)
             return
 
         cross_floor = _resolve_cross_floor(device.area_advert, winner)
@@ -1838,7 +1912,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             device.pending_area_id = None
             device.pending_floor_id = None
             device.pending_streak = 0
-            device.apply_scanner_selection(winner)
+            device.apply_scanner_selection(winner, nowstamp=nowstamp)
             return
 
         if (
@@ -1855,10 +1929,10 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             device.pending_area_id = None
             device.pending_floor_id = None
             device.pending_streak = 0
-            device.apply_scanner_selection(winner)
+            device.apply_scanner_selection(winner, nowstamp=nowstamp)
         else:
             device.diag_area_switch = tests.sensortext()
-            device.apply_scanner_selection(device.area_advert)
+            device.apply_scanner_selection(device.area_advert, nowstamp=nowstamp)
 
     def _refresh_scanners(self, force=False):
         """

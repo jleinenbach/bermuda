@@ -66,7 +66,7 @@ class FakeDevice:
         self.floor_id = incumbent.scanner_device.floor_id
         self.floor_name = incumbent.scanner_device.floor_name
 
-    def apply_scanner_selection(self, selected: FakeAdvert | None) -> None:
+    def apply_scanner_selection(self, selected: FakeAdvert | None, nowstamp: float | None = None) -> None:
         if selected is None or selected.scanner_device is None:
             self.area_advert = None
             self.area_id = None
