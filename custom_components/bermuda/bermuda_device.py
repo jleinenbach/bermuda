@@ -148,6 +148,7 @@ class BermudaDevice(dict):
         self.create_button_done: bool = False
         self.create_all_done: bool = False  # All platform entities are done and ready.
         self.last_seen: float = 0  # stamp from most recent scanner spotting. monotonic_time_coarse
+        self.last_no_winner_log: float = 0.0
         self.diag_area_switch: str | None = None  # saves output of AreaTests
         self.adverts: dict[
             tuple[str, str], BermudaAdvert
@@ -493,6 +494,7 @@ class BermudaDevice(dict):
                 area_id,
             )
             self.area = None
+            self.area_id = area_id
             self.area_name = f"Invalid Area for {self.name}"
             self.area_icon = ICON_DEFAULT_AREA
             self.floor = None
@@ -660,7 +662,7 @@ class BermudaDevice(dict):
             # new measurement(s) immediately.
             self.ref_power_changed = monotonic_time_coarse()
 
-    def apply_scanner_selection(self, bermuda_advert: BermudaAdvert | None):
+    def apply_scanner_selection(self, bermuda_advert: BermudaAdvert | None, *, nowstamp: float | None = None):
         """
         Given a BermudaAdvert entry, apply the distance and area attributes
         from it to this device.
@@ -668,34 +670,36 @@ class BermudaDevice(dict):
         Used to apply a "winning" scanner's data to the device for setting closest Area.
         """
         old_area = self.area_name
-        if bermuda_advert is not None:
+        stamp_now = nowstamp or monotonic_time_coarse()
+        if (
+            bermuda_advert is not None
+            and bermuda_advert.area_id is not None
+            and bermuda_advert.stamp >= stamp_now - AREA_MAX_AD_AGE
+        ):
             distance = bermuda_advert.rssi_distance
             if (
                 distance is None
                 and bermuda_advert is self.area_advert
                 and self.area_distance is not None
-                and bermuda_advert.stamp >= monotonic_time_coarse() - (AREA_MAX_AD_AGE * 1.5)
+                and bermuda_advert.stamp >= stamp_now - (AREA_MAX_AD_AGE * 1.5)
             ):
                 distance = self.area_distance
-            if distance is None:
-                bermuda_advert = None
-            else:
-                # We found a winner
-                self.area_advert = bermuda_advert
-                self._update_area_and_floor(bermuda_advert.area_id)
-                self.area_distance = distance
-                self.area_rssi = bermuda_advert.rssi
-                self.area_last_seen = self.area_name
-                self.area_last_seen_id = self.area_id
-                self.area_last_seen_icon = self.area_icon
-                if (old_area != self.area_name) and self.create_sensor:
-                    _LOGGER.debug(
-                        "Device %s was in '%s', now '%s'",
-                        self.name,
-                        old_area,
-                        self.area_name,
-                    )
-                return
+            # We found a winner
+            self.area_advert = bermuda_advert
+            self._update_area_and_floor(bermuda_advert.area_id)
+            self.area_distance = distance
+            self.area_rssi = bermuda_advert.rssi
+            self.area_last_seen = self.area_name
+            self.area_last_seen_id = self.area_id
+            self.area_last_seen_icon = self.area_icon
+            if (old_area != self.area_name) and self.create_sensor:
+                _LOGGER.debug(
+                    "Device %s was in '%s', now '%s'",
+                    self.name,
+                    old_area,
+                    self.area_name,
+                )
+            return
 
         # Not close to any scanners, or closest scanner has timed out!
         self.area_advert = None
