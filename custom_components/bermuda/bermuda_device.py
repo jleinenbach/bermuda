@@ -37,6 +37,7 @@ from .const import (
     _LOGGER_SPAM_LESS,
     ADDR_TYPE_IBEACON,
     ADDR_TYPE_PRIVATE_BLE_DEVICE,
+    AREA_MAX_AD_AGE,
     BDADDR_TYPE_NOT_MAC48,
     BDADDR_TYPE_OTHER,
     BDADDR_TYPE_RANDOM_RESOLVABLE,
@@ -669,7 +670,12 @@ class BermudaDevice(dict):
         old_area = self.area_name
         if bermuda_advert is not None:
             distance = bermuda_advert.rssi_distance
-            if distance is None and bermuda_advert is self.area_advert and self.area_distance is not None:
+            if (
+                distance is None
+                and bermuda_advert is self.area_advert
+                and self.area_distance is not None
+                and bermuda_advert.stamp >= monotonic_time_coarse() - AREA_MAX_AD_AGE
+            ):
                 distance = self.area_distance
             if distance is None:
                 bermuda_advert = None

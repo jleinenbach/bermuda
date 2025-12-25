@@ -1566,13 +1566,24 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             incumbent = None
 
         if incumbent is None and soft_incumbent is not None and soft_incumbent.rssi_distance is None:
-            # We have no valid incumbent reading; hold position until a fresh advert arrives.
-            device.pending_area_id = None
-            device.pending_floor_id = None
-            device.pending_streak = 0
-            device.diag_area_switch = tests.sensortext()
-            device.apply_scanner_selection(device.area_advert)
-            return
+            has_valid_challenger = any(
+                _is_valid_contender(advert)
+                for advert in device.adverts.values()
+                if advert is not soft_incumbent
+            )
+
+            if not has_valid_challenger:
+                # We have no valid incumbent reading and nobody else can win; hold position until a fresh advert
+                # arrives to avoid flapping to unknown.
+                device.pending_area_id = None
+                device.pending_floor_id = None
+                device.pending_streak = 0
+                device.diag_area_switch = tests.sensortext()
+                device.apply_scanner_selection(device.area_advert)
+                return
+
+            # Allow challengers to compete normally.
+            soft_incumbent = None
 
         for challenger in device.adverts.values():
             # Check each scanner and any time one is found to be closer / better than
