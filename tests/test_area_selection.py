@@ -19,6 +19,8 @@ from custom_components.bermuda.const import (
     DEFAULT_REF_POWER,
     DEFAULT_SMOOTHING_SAMPLES,
     CROSS_FLOOR_STREAK,
+    AREA_RETENTION_SECONDS,
+    EVIDENCE_WINDOW_SECONDS,
 )
 from custom_components.bermuda.coordinator import BermudaDataUpdateCoordinator
 from custom_components.bermuda.bermuda_irk import BermudaIrkManager
@@ -85,12 +87,21 @@ def _make_advert(
         name=name,
         area_id=area_id,
         area_name=area_id,
+        scanner_address=scanner_device.address,
         rssi_distance=distance,
         rssi=rssi,
         stamp=stamp,
         scanner_device=scanner_device,
         hist_distance_by_interval=hist,
     )
+
+
+def _patch_monotonic_time(monkeypatch, current_time: list[float]) -> None:
+    """Patch monotonic_time_coarse across modules for deterministic timing."""
+    monkeypatch.setattr("bluetooth_data_tools.monotonic_time_coarse", lambda: current_time[0])
+    monkeypatch.setattr("custom_components.bermuda.coordinator.monotonic_time_coarse", lambda: current_time[0])
+    monkeypatch.setattr("custom_components.bermuda.bermuda_device.monotonic_time_coarse", lambda: current_time[0])
+    monkeypatch.setattr("tests.test_area_selection.monotonic_time_coarse", lambda: current_time[0])
 
 
 @pytest.fixture
@@ -274,6 +285,7 @@ def test_soft_incumbent_does_not_block_valid_challenger(coordinator: BermudaData
     )
     soft_incumbent.stamp = now
     device.area_distance = 2.0
+    device.area_distance_stamp = now
 
     challenger = _make_advert("chal", "area-new", distance=1.0)
 
@@ -313,9 +325,10 @@ def test_soft_incumbent_holds_when_no_valid_challenger(coordinator: BermudaDataU
     )
     soft_incumbent.stamp = now
     device.area_distance = 2.0
+    device.area_distance_stamp = now
 
     # Challenger is invalid (no distance) and should not win.
-    invalid_challenger = _make_advert("invalid", area_id="area-soft", distance=None)
+    invalid_challenger = _make_advert("invalid", area_id="area-soft", distance=None, rssi=-80.0)
     invalid_challenger.stamp = now
     device.area_advert = soft_incumbent
     device.adverts = {"soft": soft_incumbent, "invalid": invalid_challenger}
@@ -352,8 +365,10 @@ def test_distance_fallback_requires_fresh_advert(coordinator: BermudaDataUpdateC
 
     device.apply_scanner_selection(stale_soft)
 
-    assert device.area_advert is None
+    assert device.area_id == "area-stale"
     assert device.area_distance is None
+    metadata = device.area_state_metadata(stamp_now=monotonic_time_coarse())
+    assert metadata["area_is_stale"] is True
 
 
 def test_legitimate_move_switches_to_better_challenger(coordinator: BermudaDataUpdateCoordinator):
@@ -482,6 +497,252 @@ def test_cross_floor_switch_requires_sustained_advantage(coordinator: BermudaDat
         coordinator._refresh_area_by_min_distance(device)
 
     assert device.area_advert is challenger
+
+
+def test_area_selection_retained_when_no_winner(monkeypatch, coordinator: BermudaDataUpdateCoordinator):
+    """Last known area should be retained across gaps shorter than the retention window."""
+    current_time = [1000.0]
+    _patch_monotonic_time(monkeypatch, current_time)
+    device = _configure_device(coordinator, "DD:EE:FF:00:11:22")
+
+    incumbent = _make_advert("inc", "area-stable", distance=2.5)
+    device.adverts = {"incumbent": incumbent}
+    coordinator._refresh_area_by_min_distance(device)
+
+    assert device.area_id == "area-stable"
+    current_time[0] += AREA_MAX_AD_AGE + 1
+    device.adverts = {}
+    coordinator._refresh_area_by_min_distance(device)
+
+    assert device.area_id == "area-stable"
+    metadata = device.area_state_metadata()
+    assert metadata["area_retained"] is True
+    assert metadata["last_good_area_age_s"] == pytest.approx(AREA_MAX_AD_AGE + 1)
+
+
+def test_retained_area_expires_after_window(monkeypatch, coordinator: BermudaDataUpdateCoordinator):
+    """Retained selections must eventually clear when the retention window elapses."""
+    current_time = [2000.0]
+    _patch_monotonic_time(monkeypatch, current_time)
+    device = _configure_device(coordinator, "EE:FF:00:11:22:33")
+
+    incumbent = _make_advert("inc", "area-once", distance=3.0)
+    device.adverts = {"incumbent": incumbent}
+    coordinator._refresh_area_by_min_distance(device)
+
+    current_time[0] += AREA_RETENTION_SECONDS + 5
+    coordinator._refresh_area_by_min_distance(device)
+
+    assert device.area_id is None
+    metadata = device.area_state_metadata()
+    assert metadata["area_retained"] is False
+    assert metadata["last_good_area_age_s"] is None
+
+
+def test_fresh_advert_replaces_retained_state(monkeypatch, coordinator: BermudaDataUpdateCoordinator):
+    """A new contender should override retained state and reset staleness metadata."""
+    current_time = [3000.0]
+    _patch_monotonic_time(monkeypatch, current_time)
+    device = _configure_device(coordinator, "FF:00:11:22:33:44")
+
+    incumbent = _make_advert("inc", "area-old", distance=4.0)
+    device.adverts = {"incumbent": incumbent}
+    coordinator._refresh_area_by_min_distance(device)
+
+    current_time[0] += AREA_MAX_AD_AGE + 2
+    coordinator._refresh_area_by_min_distance(device)
+    assert device.area_state_metadata()["area_retained"] is True
+
+    challenger = _make_advert("chal", "area-new", distance=1.2)
+    device.adverts = {"incumbent": incumbent, "challenger": challenger}
+    coordinator._refresh_area_by_min_distance(device)
+
+    assert device.area_id == "area-new"
+    metadata = device.area_state_metadata()
+    assert metadata["area_retained"] is False
+    assert metadata["last_good_area_age_s"] == pytest.approx(0.0)
+
+
+def test_rssi_winner_does_not_keep_old_distance(coordinator: BermudaDataUpdateCoordinator):
+    """RSSI-only switches must not carry distance from the prior area."""
+    device = _configure_device(coordinator, "FD:FE:FF:00:11:22")
+
+    incumbent = _make_advert("inc", "area-old", distance=None, rssi=-70.0)
+    challenger = _make_advert("chal", "area-new", distance=None, rssi=-40.0)
+
+    device.area_advert = incumbent
+    device.area_distance = 3.0
+    device.adverts = {"inc": incumbent, "chal": challenger}
+
+    coordinator._refresh_area_by_min_distance(device)
+
+    assert device.area_advert is challenger
+    assert device.area_distance is None
+
+
+def test_stale_advert_still_applies_area(monkeypatch, coordinator: BermudaDataUpdateCoordinator):
+    """Initial stale adverts should still populate area/floor and mark stale metadata."""
+    current_time = [5000.0]
+    _patch_monotonic_time(monkeypatch, current_time)
+    device = _configure_device(coordinator, "AA:00:00:00:00:01")
+
+    stale_age = AREA_MAX_AD_AGE + 5
+    stale_advert = _make_advert("stale", "area-stale", distance=None, age=stale_age)
+    device.adverts = {"stale": stale_advert}
+
+    coordinator._refresh_area_by_min_distance(device)
+
+    assert device.area_id == "area-stale"
+    metadata = device.area_state_metadata(stamp_now=current_time[0])
+    assert metadata["area_is_stale"] is True
+
+
+def test_stale_incumbent_ignored_by_rssi_fallback(monkeypatch, coordinator: BermudaDataUpdateCoordinator):
+    """Stale incumbent should not block a fresh RSSI-only challenger within evidence window."""
+    current_time = [7000.0]
+    _patch_monotonic_time(monkeypatch, current_time)
+    device = _configure_device(coordinator, "AA:BB:CC:DD:EE:02")
+
+    stale_age = EVIDENCE_WINDOW_SECONDS + 5
+    stale_incumbent = _make_advert("stale", "area-stale", distance=None, rssi=-40.0, age=stale_age)
+    fresh_challenger = _make_advert("fresh", "area-fresh", distance=None, rssi=-35.0)
+
+    device.area_advert = stale_incumbent
+    device.adverts = {"stale": stale_incumbent, "fresh": fresh_challenger}
+
+    coordinator._refresh_area_by_min_distance(device)
+
+    assert device.area_id == "area-fresh"
+    assert device.area_distance is None
+
+
+def test_all_stale_adverts_result_in_no_winner(monkeypatch, coordinator: BermudaDataUpdateCoordinator):
+    """When all adverts are outside the evidence window, winner should be None."""
+    current_time = [8000.0]
+    _patch_monotonic_time(monkeypatch, current_time)
+    device = _configure_device(coordinator, "AA:BB:CC:DD:EE:03")
+
+    stale = _make_advert("stale", "area-stale", distance=None, rssi=-50.0, age=EVIDENCE_WINDOW_SECONDS + 20)
+    device.area_advert = stale
+    device.adverts = {"stale": stale}
+
+    coordinator._refresh_area_by_min_distance(device)
+
+    assert device.area_id is None
+    metadata = device.area_state_metadata(stamp_now=current_time[0])
+    assert metadata["area_retained"] is False
+
+
+def test_rssi_hysteresis_respected_within_evidence(monkeypatch, coordinator: BermudaDataUpdateCoordinator):
+    """RSSI hysteresis should keep the incumbent when both adverts are fresh and close."""
+    current_time = [9000.0]
+    _patch_monotonic_time(monkeypatch, current_time)
+    device = _configure_device(coordinator, "AA:BB:CC:DD:EE:04")
+
+    incumbent = _make_advert("inc", "area-inc", distance=None, rssi=-50.0)
+    challenger = _make_advert("chal", "area-chal", distance=None, rssi=-48.5)
+    device.area_advert = incumbent
+    device.adverts = {"inc": incumbent, "chal": challenger}
+
+    coordinator._refresh_area_by_min_distance(device)
+
+    assert device.area_id == "area-inc"
+    assert device.area_distance is None
+
+
+def test_set_ref_power_does_not_resurrect_stale(monkeypatch, coordinator: BermudaDataUpdateCoordinator):
+    """Ref power recalcs must not republish stale evidence as current presence."""
+    current_time = [10000.0]
+    _patch_monotonic_time(monkeypatch, current_time)
+    device = _configure_device(coordinator, "AA:BB:CC:DD:EE:05")
+
+    stale_stamp = current_time[0] - (EVIDENCE_WINDOW_SECONDS + 100)
+
+    class DummyAdvert(SimpleNamespace):
+        def set_ref_power(self, new_ref_power: float) -> float | None:
+            return self.rssi_distance
+
+    stale = DummyAdvert(
+        name="stale",
+        area_id="area-stale",
+        area_name="area-stale",
+        rssi_distance=2.5,
+        rssi=-60.0,
+        stamp=stale_stamp,
+        scanner_address="scanner-stale",
+        scanner_device=None,
+    )
+    device.adverts = {"stale": stale}
+    device.area_advert = None
+    device.area_state_stamp = None
+    device.last_seen = stale_stamp
+
+    device.set_ref_power(-70.0)
+
+    assert device.area_id is None
+    assert device.area_state_stamp is None
+    assert device.last_seen == stale_stamp
+
+
+def test_set_ref_power_updates_distance_only_with_evidence(monkeypatch, coordinator: BermudaDataUpdateCoordinator):
+    """Ref power recalcs may refresh distance when evidence is fresh without minting new presence."""
+    current_time = [11000.0]
+    _patch_monotonic_time(monkeypatch, current_time)
+    device = _configure_device(coordinator, "AA:BB:CC:DD:EE:06")
+
+    class DummyAdvert(SimpleNamespace):
+        def set_ref_power(self, new_ref_power: float) -> float | None:
+            self.rssi_distance = 1.5
+            return self.rssi_distance
+
+    fresh_stamp = current_time[0] - 5
+    advert = DummyAdvert(
+        name="fresh",
+        area_id="area-fresh",
+        area_name="area-fresh",
+        rssi_distance=2.5,
+        rssi=-55.0,
+        stamp=fresh_stamp,
+        scanner_address="scanner-fresh",
+        scanner_device=None,
+    )
+    device.adverts = {"fresh": advert}
+    device.apply_scanner_selection(advert)
+    assert device.area_id == "area-fresh"
+    assert device.area_distance == 2.5
+    baseline_last_seen = device.last_seen
+    baseline_stamp = device.area_state_stamp
+
+    device.set_ref_power(-65.0)
+
+    assert device.area_id == "area-fresh"
+    assert device.area_distance == 1.5
+    assert device.last_seen == baseline_last_seen
+    assert device.area_state_stamp == baseline_stamp
+
+
+def test_stale_advert_expires_after_evidence_window(monkeypatch, coordinator: BermudaDataUpdateCoordinator):
+    """Stale adverts left in memory must not prevent expiry after retention window."""
+    current_time = [6000.0]
+    _patch_monotonic_time(monkeypatch, current_time)
+    device = _configure_device(coordinator, "AA:BB:CC:DD:EE:01")
+
+    advert = _make_advert("inc", "area-once", distance=3.0)
+    device.adverts = {"inc": advert}
+    coordinator._refresh_area_by_min_distance(device)
+
+    initial_stamp = device.area_state_stamp
+    assert device.area_id == "area-once"
+
+    current_time[0] += AREA_RETENTION_SECONDS + 10
+    coordinator._refresh_area_by_min_distance(device)
+
+    assert device.area_id is None
+    if device.area_state_stamp is not None:
+        assert device.area_state_stamp == pytest.approx(initial_stamp)
+    metadata = device.area_state_metadata(stamp_now=current_time[0])
+    assert metadata["area_retained"] is False
+    assert metadata["last_good_area_age_s"] is None
 
 
 def test_floor_level_populated_from_floor_registry(coordinator: BermudaDataUpdateCoordinator):
