@@ -231,6 +231,8 @@ class BermudaSensor(BermudaEntity, SensorEntity):
             attribs["floor_id"] = self._device.floor_id
             attribs["floor_name"] = self._device.floor_name
             attribs["floor_level"] = self._device.floor_level
+        if self.name in ["Area", "Floor", "Distance"]:
+            attribs.update(self._device.area_state_metadata())
         attribs["current_mac"] = current_mac
 
         return attribs

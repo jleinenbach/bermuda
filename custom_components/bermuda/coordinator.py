@@ -1584,11 +1584,17 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             return advert is not None and advert.area_id is not None
 
         def _area_candidate(advert: BermudaAdvert | None) -> bool:
-            return _belongs(advert) and _is_fresh(advert) and _has_area(advert)
+            return _belongs(advert) and _has_area(advert)
 
         def _is_distance_contender(advert: BermudaAdvert | None) -> bool:
             effective_distance = _effective_distance(advert)
-            return _area_candidate(advert) and effective_distance is not None and effective_distance <= _max_radius
+            return (
+                _area_candidate(advert)
+                and advert is not None
+                and _is_fresh(advert)
+                and effective_distance is not None
+                and effective_distance <= _max_radius
+            )
 
         has_distance_contender = any(_is_distance_contender(advert) for advert in device.adverts.values())
 
