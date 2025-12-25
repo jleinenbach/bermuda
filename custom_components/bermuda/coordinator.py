@@ -86,6 +86,7 @@ from .const import (
     DOMAIN,
     DOMAIN_GOOGLEFINDMY,
     DOMAIN_PRIVATE_BLE_DEVICE,
+    EVIDENCE_WINDOW_SECONDS,
     METADEVICE_FMDN_DEVICE,
     METADEVICE_IBEACON_DEVICE,
     METADEVICE_TYPE_FMDN_SOURCE,
@@ -1554,6 +1555,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
         _max_radius = self.options.get(CONF_MAX_RADIUS, DEFAULT_MAX_RADIUS)
         nowstamp = monotonic_time_coarse()
+        evidence_cutoff = nowstamp - EVIDENCE_WINDOW_SECONDS
 
         tests = self.AreaTests()
         tests.device = device.name
@@ -1577,23 +1579,29 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         def _belongs(advert: BermudaAdvert | None) -> bool:
             return advert is not None and advert in device.adverts.values()
 
-        def _is_fresh(advert: BermudaAdvert | None) -> bool:
-            return advert is not None and advert.stamp >= nowstamp - AREA_MAX_AD_AGE
+        def _within_evidence(advert: BermudaAdvert | None) -> bool:
+            return advert is not None and advert.stamp is not None and advert.stamp >= evidence_cutoff
 
         def _has_area(advert: BermudaAdvert | None) -> bool:
             return advert is not None and advert.area_id is not None
 
         def _area_candidate(advert: BermudaAdvert | None) -> bool:
-            return _belongs(advert) and _is_fresh(advert) and _has_area(advert)
+            return _belongs(advert) and _has_area(advert)
 
         def _is_distance_contender(advert: BermudaAdvert | None) -> bool:
             effective_distance = _effective_distance(advert)
-            return _area_candidate(advert) and effective_distance is not None and effective_distance <= _max_radius
+            return (
+                _area_candidate(advert)
+                and advert is not None
+                and _within_evidence(advert)
+                and effective_distance is not None
+                and effective_distance <= _max_radius
+            )
 
         has_distance_contender = any(_is_distance_contender(advert) for advert in device.adverts.values())
 
         if not _is_distance_contender(incumbent):
-            if _area_candidate(incumbent):
+            if _area_candidate(incumbent) and _within_evidence(incumbent):
                 soft_incumbent = incumbent
             incumbent = None
 
@@ -1606,6 +1614,9 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             # reading was old enough that our algo decides it's "away".
             #
             # Every loop, every test is just a two-way race.
+
+            if not _within_evidence(challenger):
+                continue
 
             # Is the challenger an invalid contender?
             if (
@@ -1636,7 +1647,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                 and current_incumbent is soft_incumbent
                 and getattr(device, "area_advert", None) is soft_incumbent
                 and getattr(device, "area_distance", None) is not None
-                and _is_fresh(current_incumbent)
+                and _within_evidence(current_incumbent)
             ):
                 incumbent_distance = device.area_distance
             challenger_scanner = challenger.scanner_device
@@ -1821,7 +1832,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         if not has_distance_contender:
             fallback_candidates: list[BermudaAdvert] = []
             for adv in device.adverts.values():
-                if not _area_candidate(adv):
+                if not _area_candidate(adv) or not _within_evidence(adv):
                     continue
                 adv_effective = _effective_distance(adv)
                 if adv_effective is None or adv_effective <= _max_radius:
@@ -1865,7 +1876,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
         if winner is None:
             if _LOGGER.isEnabledFor(logging.DEBUG):
-                fresh_adverts = [adv for adv in device.adverts.values() if _is_fresh(adv)]
+                fresh_adverts = [adv for adv in device.adverts.values() if _within_evidence(adv)]
                 fresh_with_area = [adv for adv in fresh_adverts if _has_area(adv)]
                 with_effective = [adv for adv in fresh_with_area if _effective_distance(adv) is not None]
                 top_candidates = sorted(
