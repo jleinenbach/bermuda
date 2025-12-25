@@ -56,6 +56,7 @@ class FakeDevice:
         self.area_advert: FakeAdvert | None = incumbent
         self.adverts = adverts
         self.diag_area_switch: str | None = None
+        self.area_distance: float | None = None
         self.pending_area_id: str | None = None
         self.pending_floor_id: str | None = None
         self.pending_streak: int = 0
@@ -70,6 +71,7 @@ class FakeDevice:
             self.area_advert = None
             self.area_id = None
             self.area_name = None
+            self.area_distance = None
             self.floor_id = None
             self.floor_name = None
             return
@@ -78,6 +80,7 @@ class FakeDevice:
         self.area_advert = selected
         self.area_id = selected.area_id
         self.area_name = selected.area_name
+        self.area_distance = selected.rssi_distance
         self.floor_id = selected.scanner_device.floor_id
         self.floor_name = selected.scanner_device.floor_name
 
@@ -221,8 +224,8 @@ def test_cross_floor_switch_allowed_with_long_history(monkeypatch):
     assert device.area_advert is challenger
 
 
-def test_transient_gap_does_not_switch(monkeypatch):
-    """A transient missing incumbent distance must not trigger a cross-floor flip."""
+def test_transient_gap_still_allows_cross_floor_switch(monkeypatch):
+    """A transient missing incumbent distance should not block a justified cross-floor switch."""
     now = [3000.0]
 
     def _fake_time() -> float:
@@ -275,18 +278,20 @@ def test_transient_gap_does_not_switch(monkeypatch):
         adverts={"a": incumbent, "b": challenger},
     )
 
+    switch_cycle: int | None = None
     for idx, inc_distance in enumerate([2.2, None, 2.1, 2.0]):
         now[0] += 0.5
         incumbent.stamp = _fake_time()
         challenger.stamp = _fake_time()
         incumbent.rssi_distance = inc_distance
         coord._refresh_area_by_min_distance(device)
-        if device.area_advert is not incumbent:
-            pytest.fail(
-                f"Unexpected switch at cycle {idx}: "
-                f"inc_dist={inc_distance} chal_dist={challenger.rssi_distance} "
-                f"diag={device.diag_area_switch}"
-            )
+        if device.area_advert is challenger:
+            switch_cycle = idx
+            break
+        assert device.area_advert is incumbent
+
+    assert switch_cycle is not None, "Challenger never applied"
+    assert switch_cycle >= CROSS_FLOOR_STREAK - 1
 
 
 def test_missing_scanner_device_does_not_crash(monkeypatch):

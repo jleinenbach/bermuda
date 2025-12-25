@@ -201,7 +201,7 @@ def test_far_field_small_relative_change_sticks(coordinator: BermudaDataUpdateCo
 
 
 def test_transient_missing_distance_does_not_switch(coordinator: BermudaDataUpdateCoordinator):
-    """A fresh but distance-less incumbent should not be replaced immediately."""
+    """A fresh but distance-less incumbent should not flip for a marginal challenger."""
     device = _configure_device(coordinator, "55:66:77:88:99:AA")
 
     incumbent = _make_advert(
@@ -223,6 +223,54 @@ def test_transient_missing_distance_does_not_switch(coordinator: BermudaDataUpda
     assert device.area_advert is incumbent
 
 
+def test_soft_incumbent_does_not_block_valid_challenger(coordinator: BermudaDataUpdateCoordinator):
+    """A soft incumbent with no distance should not prevent a valid challenger from winning."""
+    device = _configure_device(coordinator, "55:66:77:88:99:AB")
+    now = monotonic_time_coarse()
+
+    soft_incumbent = _make_advert(
+        "soft",
+        "area-soft",
+        distance=None,
+    )
+    soft_incumbent.stamp = now
+    device.area_distance = 2.0
+
+    challenger = _make_advert("chal", "area-new", distance=1.0)
+
+    device.area_advert = soft_incumbent
+    device.adverts = {"soft": soft_incumbent, "challenger": challenger}
+
+    coordinator._refresh_area_by_min_distance(device)
+
+    assert device.area_advert is challenger
+
+
+def test_soft_incumbent_holds_when_no_valid_challenger(coordinator: BermudaDataUpdateCoordinator):
+    """Soft incumbent should hold position when no contender is eligible."""
+    device = _configure_device(coordinator, "66:77:88:99:AA:BC")
+    now = monotonic_time_coarse()
+
+    soft_incumbent = _make_advert(
+        "soft",
+        "area-soft",
+        distance=None,
+    )
+    soft_incumbent.stamp = now
+    device.area_distance = 2.0
+
+    # Challenger is invalid (no distance) and should not win.
+    invalid_challenger = _make_advert("invalid", area_id="area-soft", distance=None)
+    invalid_challenger.stamp = now
+    device.area_advert = soft_incumbent
+    device.adverts = {"soft": soft_incumbent, "invalid": invalid_challenger}
+
+    coordinator._refresh_area_by_min_distance(device)
+
+    assert device.area_advert is soft_incumbent
+    assert device.area_distance == 2.0
+
+
 def test_stale_incumbent_allows_switch(coordinator: BermudaDataUpdateCoordinator):
     """A stale incumbent should be replaced by a valid challenger."""
     device = _configure_device(coordinator, "66:77:88:99:AA:BB")
@@ -237,6 +285,20 @@ def test_stale_incumbent_allows_switch(coordinator: BermudaDataUpdateCoordinator
     coordinator._refresh_area_by_min_distance(device)
 
     assert device.area_advert is challenger
+
+
+def test_distance_fallback_requires_fresh_advert(coordinator: BermudaDataUpdateCoordinator):
+    """Cached distance should only be reused for fresh adverts."""
+    device = _configure_device(coordinator, "77:88:99:AA:BB:CC")
+
+    stale_soft = _make_advert("stale", "area-stale", distance=None, age=AREA_MAX_AD_AGE + 1)
+    device.area_advert = stale_soft
+    device.area_distance = 3.0
+
+    device.apply_scanner_selection(stale_soft)
+
+    assert device.area_advert is None
+    assert device.area_distance is None
 
 
 def test_legitimate_move_switches_to_better_challenger(coordinator: BermudaDataUpdateCoordinator):
