@@ -716,10 +716,13 @@ class BermudaDevice(dict):
         """
         Apply the winning scanner's data to the device.
 
-        PEER REVIEW FIX: Implements "Fast Acquire / Stable Switch".
-        1. If device is in NO Area: Accept the winner immediately (ignoring strict evidence window).
-        2. If device IS in an Area: Enforce strict evidence/stability rules to prevent jumping.
-        3. Source of truth is the scanner's current area, not the advert's cached copy.
+        CRITICAL FIXES:
+        1. Permissive Update: Do NOT block updates if winner_area_id is None.
+           (Reverts regression where devices next to unassigned scanners showed 'Unknown').
+        2. Fast Acquire: Accept any valid advert immediately if device is currently 'lost'.
+        3. Authoritative Source: Prefer scanner_device.area_id over cached advert data.
+        4. Retention: Keep prior area state when evidence is stale but within retention
+           thresholds, clearing only when the retention window expires.
         """
         old_area = self.area_name
         stamp_now = nowstamp if nowstamp is not None else monotonic_time_coarse()
@@ -737,118 +740,103 @@ class BermudaDevice(dict):
                 scanner_area_name = getattr(scanner_device, "area_name", None)
                 if isinstance(scanner_area_name, str):
                     winner_area_name = scanner_area_name
+
             if winner_area_id is None:
                 winner_area_id = getattr(bermuda_advert, "area_id", None)
                 winner_area_name = getattr(bermuda_advert, "area_name", None)
             scanner_address = getattr(bermuda_advert, "scanner_address", None)
 
-        if winner_area_id is not None:
-            evidence_ok = bermuda_advert is not None and bermuda_advert.stamp is not None
-            evidence_ok = bool(evidence_ok and bermuda_advert.stamp >= evidence_cutoff)
+        evidence_ok = bermuda_advert is not None and bermuda_advert.stamp is not None
+        evidence_ok = bool(evidence_ok and bermuda_advert.stamp >= evidence_cutoff)
 
-            # --- LOGIC CHANGE START ---
-            # Original HA-13: if not evidence_ok: -> reject
-            # New Logic: Only reject weak evidence if we already HAVE a location (Stability).
-            # If we are currently "lost" (old_area is None), accept any valid advert (Fast Acquire).
-            if not evidence_ok and old_area is not None:
-                if source != "selection":
-                    return
-                bermuda_advert = None
-            # --- LOGIC CHANGE END ---
-
-            if bermuda_advert is not None:
-                new_area_id = winner_area_id
-                distance = None
-                distance_stamp = None
-                previous_area_id = None
-                previous_scanner_address = None
-                if self.area_advert is not None:
-                    previous_area_id = (
-                        getattr(self.area_advert.scanner_device, "area_id", None)
-                        or getattr(self.area_advert, "area_id", None)
-                    )
-                    previous_scanner_address = getattr(self.area_advert, "scanner_address", None)
-                same_area = (
-                    previous_area_id is not None
-                    and new_area_id == previous_area_id
-                    and scanner_address == previous_scanner_address
-                )
-                advert_age = stamp_now - bermuda_advert.stamp if bermuda_advert.stamp is not None else None
-                if advert_age is not None and advert_age > AREA_MAX_AD_AGE:
-                    _LOGGER.debug(
-                        "Applying stale area advert for %s: area=%s age=%.1fs",
-                        self.name,
-                        new_area_id,
-                        advert_age,
-                    )
-                if bermuda_advert.rssi_distance is not None:
-                    distance = bermuda_advert.rssi_distance
-                    distance_stamp = bermuda_advert.stamp
-                elif (
-                    same_area
-                    and self.area_distance is not None
-                    and self.area_distance_stamp is not None
-                    and stamp_now - self.area_distance_stamp <= DISTANCE_RETENTION_SECONDS
-                ):
-                    distance = self.area_distance
-                    distance_stamp = self.area_distance_stamp
-                elif same_area and self.area_distance is not None:
-                    _LOGGER.debug(
-                        "Clearing distance for %s due to stale/no measurement "
-                        "(advert_age=%.1fs distance_age=%.1fs)",
-                        self.name,
-                        advert_age if advert_age is not None else -1,
-                        stamp_now - self.area_distance_stamp if self.area_distance_stamp else -1,
-                    )
-
-                # Keep advert metadata aligned with the scanner's current location.
-                bermuda_advert.area_id = new_area_id
-                bermuda_advert.area_name = winner_area_name
-
-                # We found a winner
-                self.area_advert = bermuda_advert
-                self._update_area_and_floor(new_area_id)
-                self.area_distance = distance
-                if distance is not None:
-                    self.area_distance_stamp = distance_stamp or bermuda_advert.stamp or stamp_now
-                else:
-                    self.area_distance_stamp = None
-                self.area_rssi = bermuda_advert.rssi
-                self.area_last_seen = self.area_name
-                self.area_last_seen_id = self.area_id
-                self.area_last_seen_icon = self.area_icon
-                if (
-                    evidence_ok
-                    and source == "selection"
-                    and (
-                        self.area_state_stamp is None
-                        or (bermuda_advert.stamp is not None and bermuda_advert.stamp > self.area_state_stamp)
-                    )
-                ):
-                    self.area_state_stamp = bermuda_advert.stamp
-                self.area_state_source = getattr(bermuda_advert, "scanner_address", None)
-                self.area_state_retained = False
-                if (old_area != self.area_name or distance is None) and self.create_sensor:
-                    _LOGGER.debug(
-                        "Device %s was in '%s', now '%s'%s",
-                        self.name,
-                        old_area,
-                        self.area_name,
-                        "" if distance is not None else " (distance cleared)",
-                    )
-
-                # --- LAST SEEN FIX ---
-                # Allow update if evidence is OK, OR if we just forced an update (Fast Acquire)
-                should_update_last_seen = evidence_ok or (old_area is None)
-
-                if (
-                    should_update_last_seen
-                    and source == "selection"
-                    and bermuda_advert.stamp is not None
-                    and bermuda_advert.stamp > self.last_seen
-                ):
-                    self.last_seen = bermuda_advert.stamp
+        # Fast Acquire: If we are currently "lost" (old_area is None), accept any valid advert.
+        if not evidence_ok and old_area is not None:
+            if source != "selection":
                 return
+            bermuda_advert = None
+
+        if bermuda_advert is not None:
+            new_area_id = winner_area_id
+            distance = None
+            distance_stamp = None
+            previous_area_id = None
+            previous_scanner_address = None
+            if self.area_advert is not None:
+                previous_area_id = (
+                    getattr(self.area_advert.scanner_device, "area_id", None)
+                    or getattr(self.area_advert, "area_id", None)
+                )
+                previous_scanner_address = getattr(self.area_advert, "scanner_address", None)
+            same_area = (
+                previous_area_id is not None
+                and new_area_id == previous_area_id
+                and scanner_address == previous_scanner_address
+            )
+            advert_age = stamp_now - bermuda_advert.stamp if bermuda_advert.stamp is not None else None
+            if advert_age is not None and advert_age > AREA_MAX_AD_AGE:
+                _LOGGER.debug(
+                    "Applying stale area advert for %s: area=%s age=%.1fs",
+                    self.name,
+                    new_area_id,
+                    advert_age,
+                )
+            if bermuda_advert.rssi_distance is not None:
+                distance = bermuda_advert.rssi_distance
+                distance_stamp = bermuda_advert.stamp
+            elif (
+                same_area
+                and self.area_distance is not None
+                and self.area_distance_stamp is not None
+                and stamp_now - self.area_distance_stamp <= DISTANCE_RETENTION_SECONDS
+            ):
+                distance = self.area_distance
+                distance_stamp = self.area_distance_stamp
+            elif same_area and self.area_distance is not None:
+                _LOGGER.debug("Clearing distance for %s due to stale/no measurement", self.name)
+
+            # Sync advert metadata for consistency
+            bermuda_advert.area_id = new_area_id
+            bermuda_advert.area_name = winner_area_name
+
+            # We found a winner
+            self.area_advert = bermuda_advert
+            self._update_area_and_floor(new_area_id)
+            self.area_distance = distance
+            if distance is not None:
+                self.area_distance_stamp = distance_stamp or bermuda_advert.stamp or stamp_now
+            else:
+                self.area_distance_stamp = None
+            self.area_rssi = bermuda_advert.rssi
+            self.area_last_seen = self.area_name
+            self.area_last_seen_id = self.area_id
+            self.area_last_seen_icon = self.area_icon
+
+            if (
+                evidence_ok
+                and source == "selection"
+                and (
+                    self.area_state_stamp is None
+                    or (bermuda_advert.stamp is not None and bermuda_advert.stamp > self.area_state_stamp)
+                )
+            ):
+                self.area_state_stamp = bermuda_advert.stamp
+
+            self.area_state_source = getattr(bermuda_advert, "scanner_address", None)
+            self.area_state_retained = False
+
+            if (old_area != self.area_name or distance is None) and self.create_sensor:
+                _LOGGER.debug("Device %s was in '%s', now '%s'", self.name, old_area, self.area_name)
+
+            # Update last_seen: Allow if evidence is OK OR if we forced an update (Fast Acquire)
+            should_update_last_seen = evidence_ok or (old_area is None)
+            if (
+                should_update_last_seen
+                and source == "selection"
+                and bermuda_advert.stamp is not None
+                and bermuda_advert.stamp > self.last_seen
+            ):
+                self.last_seen = bermuda_advert.stamp
+            return
 
         # Winner missing or stale: retain last known selection where possible.
         last_good_age = self._area_state_age(stamp_now)
@@ -858,23 +846,13 @@ class BermudaDevice(dict):
                 self.area_state_source = getattr(bermuda_advert, "scanner_address", None)
             if stamp_now - self.last_retained_log > AREA_MAX_AD_AGE:
                 self.last_retained_log = stamp_now
-                _LOGGER.debug(
-                    "Retaining area for %s in %s (age=%.1fs, reason=%s)",
-                    self.name,
-                    self.area_name,
-                    last_good_age,
-                    "no_winner" if bermuda_advert is None else "stale_winner",
-                )
+                _LOGGER.debug("Retaining area for %s", self.name)
             return
 
         # Not close to any scanners, or closest scanner has timed out beyond retention.
         if last_good_age is not None and stamp_now - self.last_retained_log > AREA_MAX_AD_AGE:
             self.last_retained_log = stamp_now
-            _LOGGER.debug(
-                "Clearing retained area for %s after %.1fs silence",
-                self.name,
-                last_good_age,
-            )
+            _LOGGER.debug("Clearing retained area for %s", self.name)
         self.area_advert = None
         self._update_area_and_floor(None)
         self.area_distance = None
