@@ -670,7 +670,7 @@ class BermudaDevice(dict):
         Used to apply a "winning" scanner's data to the device for setting closest Area.
         """
         old_area = self.area_name
-        stamp_now = nowstamp or monotonic_time_coarse()
+        stamp_now = nowstamp if nowstamp is not None else monotonic_time_coarse()
         if (
             bermuda_advert is not None
             and bermuda_advert.area_id is not None
@@ -699,6 +699,7 @@ class BermudaDevice(dict):
                     old_area,
                     self.area_name,
                 )
+            self.last_seen = max(self.last_seen, stamp_now)
             return
 
         # Not close to any scanners, or closest scanner has timed out!

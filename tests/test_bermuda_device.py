@@ -142,3 +142,18 @@ def test_repr(bermuda_device):
     """Test __repr__ method."""
     repr_str = repr(bermuda_device)
     assert repr_str == f"{bermuda_device.name} [{bermuda_device.address}]"
+
+
+def test_apply_scanner_selection_accepts_nowstamp(bermuda_device):
+    """Ensure apply_scanner_selection accepts and uses nowstamp."""
+    advert = MagicMock()
+    advert.area_id = "area-new"
+    advert.stamp = 100.0
+    advert.rssi_distance = 1.5
+    advert.rssi = -60.0
+    advert.scanner_device = MagicMock()
+
+    bermuda_device.apply_scanner_selection(advert, nowstamp=105.0)
+
+    assert bermuda_device.area_id == "area-new"
+    assert bermuda_device.last_seen == pytest.approx(105.0)
