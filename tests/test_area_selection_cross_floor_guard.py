@@ -21,6 +21,12 @@ class FakeScanner:
     area_id: str
     area_name: str
     floor_level: int | None = None
+    address: str | None = None
+
+    def __post_init__(self) -> None:
+        # Auto-generate address from name if not provided
+        if self.address is None:
+            self.address = f"AA:BB:CC:DD:{hash(self.name) % 256:02X}:{hash(self.name + 'x') % 256:02X}"
 
 
 class FakeAdvert:
@@ -65,6 +71,35 @@ class FakeDevice:
         self.area_name = incumbent.area_name
         self.floor_id = incumbent.scanner_device.floor_id
         self.floor_name = incumbent.scanner_device.floor_name
+        # Co-visibility learning (stub for testing)
+        self.co_visibility_stats: dict[str, dict[str, dict[str, int]]] = {}
+        self.co_visibility_min_samples: int = 50
+
+    def update_co_visibility(
+        self, area_id: str, visible_scanners: set[str], all_scanners: set[str]
+    ) -> None:
+        """Stub for co-visibility update - just track stats for testing."""
+        if area_id not in self.co_visibility_stats:
+            self.co_visibility_stats[area_id] = {}
+        for scanner_addr in all_scanners:
+            if scanner_addr not in self.co_visibility_stats[area_id]:
+                self.co_visibility_stats[area_id][scanner_addr] = {"seen": 0, "total": 0}
+            self.co_visibility_stats[area_id][scanner_addr]["total"] += 1
+            if scanner_addr in visible_scanners:
+                self.co_visibility_stats[area_id][scanner_addr]["seen"] += 1
+
+    def get_co_visibility_confidence(self, area_id: str, visible_scanners: set[str]) -> float:
+        """Stub for co-visibility confidence - returns 1.0 for tests (no penalty)."""
+        # For test simplicity, always return 1.0 unless test explicitly sets up stats
+        if area_id not in self.co_visibility_stats:
+            return 1.0
+        # Check if we have enough samples
+        max_total = 0
+        for scanner_stats in self.co_visibility_stats[area_id].values():
+            max_total = max(max_total, scanner_stats.get("total", 0))
+        if max_total < self.co_visibility_min_samples:
+            return 1.0
+        return 1.0  # Simple stub - tests can override if needed
 
     def apply_scanner_selection(self, selected: FakeAdvert | None, nowstamp: float | None = None) -> None:
         if selected is None or selected.scanner_device is None:
