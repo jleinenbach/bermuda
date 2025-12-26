@@ -317,12 +317,27 @@ class BermudaAdvert(dict):
                 self.hist_distance_by_interval.clear()
                 self.hist_distance_by_interval.append(self.rssi_distance_raw)
 
-        # ADJUSTED TIMEOUT (60s)
-        # Prevents flickering but avoids zombie devices (stuck in wrong area >1min).
-        elif new_stamp is None and (self.stamp is None or self.stamp < monotonic_time_coarse() - 60):
-            self.rssi_distance = None
-            if len(self.hist_distance_by_interval) > 0:
-                self.hist_distance_by_interval.clear()
+        # ADAPTIVE TIMEOUT: Use device's typical advertisement interval to determine staleness.
+        # Calculate average interval from recent timestamps, then use 3x that value.
+        # Minimum timeout is 60s to prevent flickering; maximum is 180s for slow advertisers.
+        elif new_stamp is None:
+            adaptive_timeout = 60.0  # Default minimum
+            if len(self.hist_stamp) >= 2:
+                # Calculate intervals between consecutive timestamps
+                intervals = [
+                    self.hist_stamp[i] - self.hist_stamp[i + 1]
+                    for i in range(min(5, len(self.hist_stamp) - 1))
+                    if self.hist_stamp[i + 1] is not None
+                ]
+                if intervals:
+                    avg_interval = sum(intervals) / len(intervals)
+                    # Use 3x average interval, clamped between 60-180 seconds
+                    adaptive_timeout = max(60.0, min(180.0, avg_interval * 3))
+
+            if self.stamp is None or self.stamp < monotonic_time_coarse() - adaptive_timeout:
+                self.rssi_distance = None
+                if len(self.hist_distance_by_interval) > 0:
+                    self.hist_distance_by_interval.clear()
 
         else:
             if len(self.hist_stamp) > 1:

@@ -1329,7 +1329,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                                     canonical_id = id_value
                                     break
                                 # Keep track of the simplest identifier as fallback
-                                elif colon_count == 0 and canonical_id is None:
+                                if colon_count == 0 and canonical_id is None:
                                     canonical_id = id_value
 
                         # Fall back to entity unique_id if no googlefindmy identifier found
@@ -1908,6 +1908,28 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             cross_floor_escape = 0.45
             history_window = 5  # the time period to compare between us and incumbent
             cross_floor_min_history = CROSS_FLOOR_MIN_HISTORY  # Require longer history before cross-floor wins
+
+            # Same-Floor-Confirmation: Count how many scanners on the incumbent's floor
+            # also see this device. If multiple scanners on the current floor see it,
+            # require stronger evidence for a cross-floor switch.
+            if cross_floor and inc_floor_id is not None:
+                incumbent_floor_witnesses = 0
+                for witness_adv in device.adverts.values():
+                    if not _is_distance_contender(witness_adv):
+                        continue
+                    witness_scanner = witness_adv.scanner_device
+                    if witness_scanner is None:
+                        continue
+                    witness_floor = getattr(witness_scanner, "floor_id", None)
+                    if witness_floor == inc_floor_id:
+                        incumbent_floor_witnesses += 1
+
+                # If 2+ scanners on the current floor see the device, increase thresholds
+                if incumbent_floor_witnesses >= 2:
+                    # Each additional witness increases the required margin by 10%
+                    extra_margin = 0.10 * (incumbent_floor_witnesses - 1)
+                    cross_floor_margin = min(0.60, cross_floor_margin + extra_margin)
+                    cross_floor_escape = min(0.80, cross_floor_escape + extra_margin)
 
             # Same area. Confirm freshness and distance.
             if (

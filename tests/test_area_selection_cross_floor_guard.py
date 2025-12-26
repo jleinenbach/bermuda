@@ -339,3 +339,201 @@ def test_missing_scanner_device_does_not_crash(monkeypatch):
     BermudaDataUpdateCoordinator._refresh_area_by_min_distance(coord, device)
 
     assert device.area_advert is incumbent
+
+
+def test_same_floor_confirmation_blocks_cross_floor_switch(monkeypatch):
+    """When multiple scanners on the incumbent's floor see the device,
+    cross-floor switches should require much stronger evidence."""
+    now = 5000.0
+    monkeypatch.setattr("custom_components.bermuda.coordinator.monotonic_time_coarse", lambda: now)
+    coord = _build_coord()
+
+    # Create multiple scanners on the same floor (floor A)
+    scanner_a1 = FakeScanner(
+        name="Scanner A1",
+        last_seen=now - 0.01,
+        floor_id="floor_a",
+        floor_name="Level A",
+        area_id="area_a1",
+        area_name="Room A1",
+    )
+    scanner_a2 = FakeScanner(
+        name="Scanner A2",
+        last_seen=now - 0.02,
+        floor_id="floor_a",
+        floor_name="Level A",
+        area_id="area_a2",
+        area_name="Room A2",
+    )
+    scanner_a3 = FakeScanner(
+        name="Scanner A3",
+        last_seen=now - 0.03,
+        floor_id="floor_a",
+        floor_name="Level A",
+        area_id="area_a3",
+        area_name="Room A3",
+    )
+    # Scanner on a different floor (floor B)
+    scanner_b = FakeScanner(
+        name="Scanner B",
+        last_seen=now - 0.01,
+        floor_id="floor_b",
+        floor_name="Level B",
+        area_id="area_b",
+        area_name="Room B",
+    )
+
+    # Incumbent is scanner_a1 with a moderate distance
+    incumbent = FakeAdvert(
+        name=scanner_a1.name,
+        scanner_device=scanner_a1,
+        area_id=scanner_a1.area_id,
+        area_name=scanner_a1.area_name,
+        rssi_distance=2.0,
+        rssi=-85,
+        stamp=now - 0.01,
+        hist=[2.0] * 10,
+    )
+    # Other scanners on the same floor also see the device
+    witness_a2 = FakeAdvert(
+        name=scanner_a2.name,
+        scanner_device=scanner_a2,
+        area_id=scanner_a2.area_id,
+        area_name=scanner_a2.area_name,
+        rssi_distance=3.0,
+        rssi=-88,
+        stamp=now - 0.02,
+        hist=[3.0] * 10,
+    )
+    witness_a3 = FakeAdvert(
+        name=scanner_a3.name,
+        scanner_device=scanner_a3,
+        area_id=scanner_a3.area_id,
+        area_name=scanner_a3.area_name,
+        rssi_distance=4.0,
+        rssi=-90,
+        stamp=now - 0.03,
+        hist=[4.0] * 10,
+    )
+    # Challenger on floor B is closer than incumbent (would normally win)
+    # with only ~30% difference (1.4 vs 2.0), which would pass the default
+    # cross_floor_margin (0.25) but should be blocked by same-floor-confirmation
+    challenger = FakeAdvert(
+        name=scanner_b.name,
+        scanner_device=scanner_b,
+        area_id=scanner_b.area_id,
+        area_name=scanner_b.area_name,
+        rssi_distance=1.4,  # ~35% closer than incumbent
+        rssi=-80,
+        stamp=now - 0.01,
+        hist=[1.4] * 10,
+    )
+
+    device = FakeDevice(
+        name="stable tag",
+        incumbent=incumbent,
+        adverts={
+            "a1": incumbent,
+            "a2": witness_a2,
+            "a3": witness_a3,
+            "b": challenger,
+        },
+    )
+
+    original_floor = device.floor_id
+    original_area = device.area_name
+
+    # Run selection multiple times (even more than CROSS_FLOOR_STREAK)
+    for _ in range(CROSS_FLOOR_STREAK + 2):
+        BermudaDataUpdateCoordinator._refresh_area_by_min_distance(coord, device)
+
+    # With 3 scanners on floor A seeing the device, the cross_floor_margin
+    # should be increased from 0.25 to 0.45, blocking the 35% difference challenger
+    assert device.floor_id == original_floor, (
+        f"Unexpected cross-floor switch despite multiple same-floor witnesses. "
+        f"Expected floor={original_floor!r}, got={device.floor_id!r}"
+    )
+    assert device.area_name == original_area
+
+
+def test_same_floor_confirmation_allows_strong_switch(monkeypatch):
+    """When a challenger has very strong evidence (>60% diff), it should still win
+    even with same-floor witnesses."""
+    now = 6000.0
+    monkeypatch.setattr("custom_components.bermuda.coordinator.monotonic_time_coarse", lambda: now)
+    coord = _build_coord()
+
+    # Multiple scanners on floor A
+    scanner_a1 = FakeScanner(
+        name="Scanner A1",
+        last_seen=now - 0.01,
+        floor_id="floor_a",
+        floor_name="Level A",
+        area_id="area_a1",
+        area_name="Room A1",
+    )
+    scanner_a2 = FakeScanner(
+        name="Scanner A2",
+        last_seen=now - 0.02,
+        floor_id="floor_a",
+        floor_name="Level A",
+        area_id="area_a2",
+        area_name="Room A2",
+    )
+    # Scanner on floor B
+    scanner_b = FakeScanner(
+        name="Scanner B",
+        last_seen=now - 0.01,
+        floor_id="floor_b",
+        floor_name="Level B",
+        area_id="area_b",
+        area_name="Room B",
+    )
+
+    incumbent = FakeAdvert(
+        name=scanner_a1.name,
+        scanner_device=scanner_a1,
+        area_id=scanner_a1.area_id,
+        area_name=scanner_a1.area_name,
+        rssi_distance=5.0,
+        rssi=-95,
+        stamp=now - 0.01,
+        hist=[5.0] * 10,
+    )
+    witness_a2 = FakeAdvert(
+        name=scanner_a2.name,
+        scanner_device=scanner_a2,
+        area_id=scanner_a2.area_id,
+        area_name=scanner_a2.area_name,
+        rssi_distance=6.0,
+        rssi=-97,
+        stamp=now - 0.02,
+        hist=[6.0] * 10,
+    )
+    # Challenger with very strong evidence (>80% closer)
+    challenger = FakeAdvert(
+        name=scanner_b.name,
+        scanner_device=scanner_b,
+        area_id=scanner_b.area_id,
+        area_name=scanner_b.area_name,
+        rssi_distance=0.8,  # ~145% difference from 5.0
+        rssi=-70,
+        stamp=now - 0.01,
+        hist=[0.8] * 10,
+    )
+
+    device = FakeDevice(
+        name="moving tag",
+        incumbent=incumbent,
+        adverts={"a1": incumbent, "a2": witness_a2, "b": challenger},
+    )
+
+    # Run selection CROSS_FLOOR_STREAK times
+    for _ in range(CROSS_FLOOR_STREAK):
+        BermudaDataUpdateCoordinator._refresh_area_by_min_distance(coord, device)
+
+    # Even with same-floor witnesses, such strong evidence should win
+    assert device.area_advert is challenger, (
+        f"Expected challenger to win with strong evidence. "
+        f"Got area={device.area_name!r}, floor={device.floor_id!r}"
+    )

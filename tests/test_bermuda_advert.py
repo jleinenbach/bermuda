@@ -138,3 +138,120 @@ def test_repr(bermuda_advert):
     """Test __repr__ method."""
     repr_str = repr(bermuda_advert)
     assert repr_str == f"{normalize_mac('aa:bb:cc:dd:ee:ff')}__Mock Scanner"
+
+
+def test_adaptive_stale_timeout_with_frequent_updates(bermuda_advert):
+    """Test that adaptive timeout stays at minimum (60s) for frequently updating devices."""
+    # Simulate a device that updates every 1 second
+    base_time = 1000.0
+    bermuda_advert.hist_stamp = [
+        base_time,
+        base_time - 1.0,
+        base_time - 2.0,
+        base_time - 3.0,
+        base_time - 4.0,
+    ]
+    bermuda_advert.stamp = base_time
+    bermuda_advert.new_stamp = None
+    bermuda_advert.rssi_distance = 5.0
+
+    # Device has 1s average interval, so adaptive timeout = max(60, 1*3) = 60s
+    # At time base_time + 59, device should still be considered valid
+    with patch("custom_components.bermuda.bermuda_advert.monotonic_time_coarse", return_value=base_time + 59):
+        bermuda_advert.calculate_data()
+        # Should NOT be cleared because stamp (1000) is >= (1059 - 60) = 999
+        assert bermuda_advert.rssi_distance == 5.0
+
+    # Reset for next test
+    bermuda_advert.rssi_distance = 5.0
+
+    # At time base_time + 61, device should be considered stale
+    with patch("custom_components.bermuda.bermuda_advert.monotonic_time_coarse", return_value=base_time + 61):
+        bermuda_advert.calculate_data()
+        # Should be cleared because stamp (1000) < (1061 - 60) = 1001
+        assert bermuda_advert.rssi_distance is None
+
+
+def test_adaptive_stale_timeout_with_slow_updates(bermuda_advert):
+    """Test that adaptive timeout increases for slow-updating devices (e.g., FMDN tags)."""
+    # Simulate a device that updates every 30 seconds
+    base_time = 2000.0
+    bermuda_advert.hist_stamp = [
+        base_time,
+        base_time - 30.0,
+        base_time - 60.0,
+        base_time - 90.0,
+        base_time - 120.0,
+    ]
+    bermuda_advert.stamp = base_time
+    bermuda_advert.new_stamp = None
+    bermuda_advert.rssi_distance = 5.0
+
+    # Device has 30s average interval, so adaptive timeout = max(60, 30*3) = 90s
+    # At time base_time + 89, device should still be considered valid
+    with patch("custom_components.bermuda.bermuda_advert.monotonic_time_coarse", return_value=base_time + 89):
+        bermuda_advert.calculate_data()
+        # Should NOT be cleared because stamp (2000) >= (2089 - 90) = 1999
+        assert bermuda_advert.rssi_distance == 5.0
+
+    # Reset for next test
+    bermuda_advert.rssi_distance = 5.0
+
+    # At time base_time + 91, device should be considered stale
+    with patch("custom_components.bermuda.bermuda_advert.monotonic_time_coarse", return_value=base_time + 91):
+        bermuda_advert.calculate_data()
+        # Should be cleared because stamp (2000) < (2091 - 90) = 2001
+        assert bermuda_advert.rssi_distance is None
+
+
+def test_adaptive_stale_timeout_capped_at_180s(bermuda_advert):
+    """Test that adaptive timeout is capped at 180 seconds."""
+    # Simulate a device that updates every 90 seconds
+    base_time = 3000.0
+    bermuda_advert.hist_stamp = [
+        base_time,
+        base_time - 90.0,
+        base_time - 180.0,
+        base_time - 270.0,
+    ]
+    bermuda_advert.stamp = base_time
+    bermuda_advert.new_stamp = None
+    bermuda_advert.rssi_distance = 5.0
+
+    # Device has 90s average interval, so adaptive timeout would be 270s,
+    # but it's capped at 180s
+    # At time base_time + 179, device should still be considered valid
+    with patch("custom_components.bermuda.bermuda_advert.monotonic_time_coarse", return_value=base_time + 179):
+        bermuda_advert.calculate_data()
+        # Should NOT be cleared because stamp (3000) >= (3179 - 180) = 2999
+        assert bermuda_advert.rssi_distance == 5.0
+
+    # Reset for next test
+    bermuda_advert.rssi_distance = 5.0
+
+    # At time base_time + 181, device should be considered stale (capped at 180s)
+    with patch("custom_components.bermuda.bermuda_advert.monotonic_time_coarse", return_value=base_time + 181):
+        bermuda_advert.calculate_data()
+        # Should be cleared because stamp (3000) < (3181 - 180) = 3001
+        assert bermuda_advert.rssi_distance is None
+
+
+def test_adaptive_stale_timeout_with_insufficient_history(bermuda_advert):
+    """Test that adaptive timeout uses default 60s when history is insufficient."""
+    base_time = 4000.0
+    # Only one timestamp - not enough to calculate intervals
+    bermuda_advert.hist_stamp = [base_time]
+    bermuda_advert.stamp = base_time
+    bermuda_advert.new_stamp = None
+    bermuda_advert.rssi_distance = 5.0
+
+    # With insufficient history, default timeout of 60s should be used
+    with patch("custom_components.bermuda.bermuda_advert.monotonic_time_coarse", return_value=base_time + 59):
+        bermuda_advert.calculate_data()
+        assert bermuda_advert.rssi_distance == 5.0
+
+    bermuda_advert.rssi_distance = 5.0
+
+    with patch("custom_components.bermuda.bermuda_advert.monotonic_time_coarse", return_value=base_time + 61):
+        bermuda_advert.calculate_data()
+        assert bermuda_advert.rssi_distance is None
