@@ -55,9 +55,8 @@ def test_format_fmdn_metadevice_key_stable(coordinator: BermudaDataUpdateCoordin
     fallback_key = coordinator._format_fmdn_metadevice_address("Device-Only", None)
     assert fallback_key == "fmdn:device-only"
 
-def test_fmdn_resolution_registers_metadevice(
-    hass: HomeAssistant, coordinator: BermudaDataUpdateCoordinator
-) -> None:
+
+def test_fmdn_resolution_registers_metadevice(hass: HomeAssistant, coordinator: BermudaDataUpdateCoordinator) -> None:
     """Resolve an FMDN frame and register the rotating source."""
 
     resolver = MagicMock()
@@ -83,9 +82,7 @@ def test_fmdn_resolution_registers_metadevice(
     assert METADEVICE_TYPE_FMDN_SOURCE in created_source.metadevice_type
 
 
-def test_fmdn_resolution_without_googlefindmy(
-    hass: HomeAssistant, coordinator: BermudaDataUpdateCoordinator
-) -> None:
+def test_fmdn_resolution_without_googlefindmy(hass: HomeAssistant, coordinator: BermudaDataUpdateCoordinator) -> None:
     """Ignore FMDN adverts when the resolver integration is absent."""
 
     service_data = {SERVICE_UUID_FMDN: bytes([0x40]) + b"\x02" * 20}
@@ -165,7 +162,7 @@ def test_extract_fmdn_eids_handles_embedded_lengths() -> None:
 
     eid20 = bytes(range(1, 21))
     eid32 = bytes(range(1, 33))
-    payload = b"\x40" + b"\xAA\xBB" + eid20 + b"\xCC" + eid32 + b"\xDD"
+    payload = b"\x40" + b"\xaa\xbb" + eid20 + b"\xcc" + eid32 + b"\xdd"
 
     candidates = extract_fmdn_eids({SERVICE_UUID_FMDN: payload}, mode=FMDN_EID_FORMAT_AUTO)
 
@@ -214,7 +211,7 @@ def test_deduplicates_metadevices_by_canonical_id(hass, coordinator):
 
     first_source = coordinator._get_or_create_device("00:11:22:33:44:55")
     second_source = coordinator._get_or_create_device("00:11:22:33:44:56")
-    service_data = {SERVICE_UUID_FMDN: bytes([0x40]) + b"\xAA" * 20}
+    service_data = {SERVICE_UUID_FMDN: bytes([0x40]) + b"\xaa" * 20}
 
     coordinator._handle_fmdn_advertisement(first_source, service_data)
     coordinator._handle_fmdn_advertisement(second_source, service_data)

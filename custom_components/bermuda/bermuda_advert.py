@@ -20,6 +20,7 @@ from bluetooth_data_tools import monotonic_time_coarse
 
 from .const import (
     _LOGGER,
+    _LOGGER_SPAM_LESS,
     CONF_ATTENUATION,
     CONF_MAX_VELOCITY,
     CONF_REF_POWER,
@@ -28,8 +29,6 @@ from .const import (
     DISTANCE_INFINITE,
     HIST_KEEP_COUNT,
 )
-
-# from .const import _LOGGER_SPAM_LESS
 from .util import clean_charbuf, rssi_to_metres
 
 if TYPE_CHECKING:
@@ -75,6 +74,8 @@ class BermudaAdvert(dict):
         advertisementdata: AdvertisementData,  # The advertisement info from the device, received by the scanner
         options,
         scanner_device: BermudaDevice,  # The scanner device that "saw" it.
+        *,
+        nowstamp: float | None = None,
     ) -> None:
         self.scanner_address: Final[str] = scanner_device.address
         self.device_address: Final[str] = parent_device.address
@@ -108,7 +109,7 @@ class BermudaAdvert(dict):
         self.service_uuids: list[str] = []
 
         # Just pass the rest on to update...
-        self.update_advertisement(advertisementdata, self.scanner_device)
+        self.update_advertisement(advertisementdata, self.scanner_device, nowstamp=nowstamp)
 
     def apply_new_scanner(self, scanner_device: BermudaDevice):
         self.name: str = scanner_device.name  # or scandata.scanner.name
@@ -120,7 +121,9 @@ class BermudaAdvert(dict):
         # Only remote scanners log timestamps, local usb adaptors do not.
         self.scanner_sends_stamps = scanner_device.is_remote_scanner
 
-    def update_advertisement(self, advertisementdata: AdvertisementData, scanner_device: BermudaDevice):
+    def update_advertisement(
+        self, advertisementdata: AdvertisementData, scanner_device: BermudaDevice, *, nowstamp: float | None = None
+    ):
         """
         Refresh the advert with the latest packet from a scanner.
 
@@ -136,17 +139,19 @@ class BermudaAdvert(dict):
             )
             self.apply_new_scanner(scanner_device)
 
-        if self.scanner_device.area_id != self.area_id:
-            self.area_id = self.scanner_device.area_id
-            self.area_name = self.scanner_device.area_name
+        if isinstance(self.scanner_device.area_id, str) and self.scanner_device.area_id != "":
+            if self.scanner_device.area_id != self.area_id:
+                self.area_id = self.scanner_device.area_id
+                self.area_name = self.scanner_device.area_name
+
+        stamp_now = nowstamp if nowstamp is not None else monotonic_time_coarse()
 
         if self.scanner_device.area_id is None:
-            now = monotonic_time_coarse()
             last_check = getattr(self.scanner_device, "last_devreg_check", 0.0)
-            if now - last_check > 60:
+            if stamp_now - last_check > 60:
                 self.scanner_device.async_as_scanner_resolve_device_entries()
-                self.scanner_device.last_devreg_check = now
-                if self.scanner_device.area_id is not None:
+                self.scanner_device.last_devreg_check = stamp_now
+                if isinstance(self.scanner_device.area_id, str) and self.scanner_device.area_id != "":
                     self.area_id = self.scanner_device.area_id
                     self.area_name = self.scanner_device.area_name
 
@@ -158,6 +163,17 @@ class BermudaAdvert(dict):
             if new_stamp is None:
                 self.stale_update_count += 1
                 return
+            future_by = new_stamp - stamp_now
+            if future_by > 0.5:
+                self.stale_update_count += 1
+                _LOGGER_SPAM_LESS.debug(
+                    "future_stamp_advert",
+                    "Ignoring future stamp for advert %s from scanner %s: stamp is in the future by %.3fs",
+                    self.device_address,
+                    self.scanner_address,
+                    future_by,
+                )
+                return
             if self.stamp > new_stamp:
                 self.stale_update_count += 1
                 _LOGGER.debug("Advert from %s for %s is OLDER than last recorded", scanner.name, self._device.name)
@@ -166,11 +182,11 @@ class BermudaAdvert(dict):
                 self.stale_update_count += 1
                 return
         elif self.rssi != advertisementdata.rssi:
-            new_stamp = monotonic_time_coarse() - 3.0
+            new_stamp = stamp_now - 3.0
         else:
             return
 
-        if new_stamp > self.scanner_device.last_seen + 0.01:
+        if new_stamp is not None and new_stamp > self.scanner_device.last_seen + 0.01:
             self.scanner_device.last_seen = new_stamp
 
         if len(self.hist_stamp) == 0 or new_stamp is not None:

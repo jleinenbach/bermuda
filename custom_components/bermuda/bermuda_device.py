@@ -13,6 +13,7 @@ for them, so we can use them to contribute towards measurements.
 from __future__ import annotations
 
 import binascii
+import logging
 import re
 from typing import TYPE_CHECKING, Final
 
@@ -63,7 +64,7 @@ from .const import (
     METADEVICE_TYPE_FMDN_SOURCE,
     METADEVICE_TYPE_IBEACON_SOURCE,
 )
-from .util import mac_math_offset, normalize_address, normalize_mac
+from .util import is_mac_address, mac_math_offset, normalize_address, normalize_mac
 
 if TYPE_CHECKING:
     from bleak.backends.scanner import AdvertisementData
@@ -120,6 +121,7 @@ class BermudaDevice(dict):
         self.area_distance: float | None = None  # how far this dev is from that area
         self.area_rssi: float | None = None  # rssi from closest scanner
         self.area_advert: BermudaAdvert | None = None  # currently closest BermudaScanner
+        self._metadevice_warned: bool = False
 
         self.floor: fr.FloorEntry | None = None
         self.floor_id: str | None = None
@@ -706,31 +708,88 @@ class BermudaDevice(dict):
             "area_source": self.area_state_source,
         }
 
-    def apply_scanner_selection(
+    def _parse_tracker_timeout(self, raw: object) -> float:
+        """Return a safe tracker timeout value in seconds."""
+        if isinstance(raw, (int, float)) and raw > 0:
+            return float(raw)
+        if isinstance(raw, str):
+            try:
+                parsed = float(raw)
+            except (TypeError, ValueError):
+                return float(DEFAULT_DEVTRACK_TIMEOUT)
+            if parsed > 0:
+                return parsed
+        return float(DEFAULT_DEVTRACK_TIMEOUT)
+
+    def _maybe_update_last_seen(
+        self,
+        *,
+        advert_stamp: float | None,
+        stamp_now: float,
+        tracker_timeout: float,
+        evidence_ok: bool,
+        old_area: str | None,
+        source: str,
+    ) -> None:
+        """Update last_seen from an advert stamp when it is recent and valid."""
+        if source != "selection":
+            return
+        if not (evidence_ok or old_area is None):
+            return
+        if not isinstance(advert_stamp, (int, float)):
+            if _LOGGER.isEnabledFor(logging.DEBUG):
+                _LOGGER.debug(
+                    "Skipping last_seen refresh for %s: missing valid advert stamp from %s",
+                    self.name,
+                    source,
+                )
+            return
+        advert_age = stamp_now - advert_stamp
+        if advert_age < 0:
+            _LOGGER_SPAM_LESS.debug(
+                "future_stamp_last_seen",
+                "Skipping last_seen refresh for %s (%s): advert stamp is in the future by %.3fs",
+                self.name,
+                self.address,
+                -advert_age,
+            )
+            return
+        if advert_age > tracker_timeout:
+            if _LOGGER.isEnabledFor(logging.DEBUG):
+                _LOGGER.debug(
+                    "Skipping last_seen refresh for %s: advert age %.1fs exceeds not-home window %.1fs",
+                    self.name,
+                    advert_age,
+                    tracker_timeout,
+                )
+            return
+        if advert_stamp > self.last_seen:
+            self.last_seen = float(advert_stamp)
+
+    def apply_scanner_selection(  # noqa: C901
         self,
         bermuda_advert: BermudaAdvert | None,
         *,
         nowstamp: float | None = None,
         source: str = "selection",
-    ):
+    ) -> None:
         """
         Apply the winning scanner's data to the device.
 
-        CRITICAL FIXES:
-        1. Permissive Update: Do NOT block updates if winner_area_id is None.
-           (Reverts regression where devices next to unassigned scanners showed 'Unknown').
-        2. Fast Acquire: Accept any valid advert immediately if device is currently 'lost'.
-        3. Authoritative Source: Prefer scanner_device.area_id over cached advert data.
-        4. Retention: Keep prior area state when evidence is stale but within retention
-           thresholds, clearing only when the retention window expires.
+        The caller may supply ``nowstamp`` to ensure monotonic timestamps remain aligned
+        with the coordinator loop. Area and floor metadata are applied from the advert or
+        scanner, and ``last_seen`` is only updated from the advert's own stamp to avoid
+        inflating presence with loop timestamps.
         """
         old_area = self.area_name
         stamp_now = nowstamp if nowstamp is not None else monotonic_time_coarse()
         evidence_cutoff = stamp_now - EVIDENCE_WINDOW_SECONDS
+        tracker_timeout = self._parse_tracker_timeout(self.options.get(CONF_DEVTRACK_TIMEOUT))
         evidence_ok = False
         winner_area_id = None
         winner_area_name = None
         scanner_address = None
+        advert_stamp: float | None = None
         if bermuda_advert is not None:
             scanner_device = getattr(bermuda_advert, "scanner_device", None)
             if scanner_device is not None:
@@ -745,9 +804,20 @@ class BermudaDevice(dict):
                 winner_area_id = getattr(bermuda_advert, "area_id", None)
                 winner_area_name = getattr(bermuda_advert, "area_name", None)
             scanner_address = getattr(bermuda_advert, "scanner_address", None)
+            advert_stamp = getattr(bermuda_advert, "stamp", None)
 
-        evidence_ok = bermuda_advert is not None and bermuda_advert.stamp is not None
-        evidence_ok = bool(evidence_ok and bermuda_advert.stamp >= evidence_cutoff)
+        advert_stamp_valid = isinstance(advert_stamp, (int, float))
+        advert_stamp_future = bool(advert_stamp_valid and advert_stamp is not None and advert_stamp > stamp_now + 0.5)
+        if advert_stamp_future:
+            _LOGGER_SPAM_LESS.debug(
+                "future_stamp_selection",
+                "Skipping future-dated advert for %s (%s): advert stamp is in the future by %.3fs",
+                self.name,
+                self.address,
+                advert_stamp - stamp_now,
+            )
+        evidence_ok = bermuda_advert is not None and advert_stamp_valid and not advert_stamp_future
+        evidence_ok = bool(evidence_ok and advert_stamp is not None and advert_stamp >= evidence_cutoff)
 
         # Fast Acquire: If we are currently "lost" (old_area is None), accept any valid advert.
         if not evidence_ok and old_area is not None:
@@ -762,9 +832,8 @@ class BermudaDevice(dict):
             previous_area_id = None
             previous_scanner_address = None
             if self.area_advert is not None:
-                previous_area_id = (
-                    getattr(self.area_advert.scanner_device, "area_id", None)
-                    or getattr(self.area_advert, "area_id", None)
+                previous_area_id = getattr(self.area_advert.scanner_device, "area_id", None) or getattr(
+                    self.area_advert, "area_id", None
                 )
                 previous_scanner_address = getattr(self.area_advert, "scanner_address", None)
             same_area = (
@@ -772,7 +841,7 @@ class BermudaDevice(dict):
                 and new_area_id == previous_area_id
                 and scanner_address == previous_scanner_address
             )
-            advert_age = stamp_now - bermuda_advert.stamp if bermuda_advert.stamp is not None else None
+            advert_age = stamp_now - advert_stamp if advert_stamp is not None and not advert_stamp_future else None
             if advert_age is not None and advert_age > AREA_MAX_AD_AGE:
                 _LOGGER.debug(
                     "Applying stale area advert for %s: area=%s age=%.1fs",
@@ -780,9 +849,12 @@ class BermudaDevice(dict):
                     new_area_id,
                     advert_age,
                 )
-            if bermuda_advert.rssi_distance is not None:
+            if advert_stamp_future:
+                distance = None
+                distance_stamp = None
+            elif bermuda_advert.rssi_distance is not None:
                 distance = bermuda_advert.rssi_distance
-                distance_stamp = bermuda_advert.stamp
+                distance_stamp = advert_stamp
             elif (
                 same_area
                 and self.area_distance is not None
@@ -799,11 +871,16 @@ class BermudaDevice(dict):
             bermuda_advert.area_name = winner_area_name
 
             # We found a winner
+            if new_area_id is None and _LOGGER.isEnabledFor(logging.DEBUG):
+                _LOGGER.debug("Selected advert for %s lacked an area id (source=%s)", self.name, source)
             self.area_advert = bermuda_advert
             self._update_area_and_floor(new_area_id)
             self.area_distance = distance
             if distance is not None:
-                self.area_distance_stamp = distance_stamp or bermuda_advert.stamp or stamp_now
+                if distance_stamp is not None:
+                    self.area_distance_stamp = distance_stamp
+                else:
+                    self.area_distance_stamp = None
             else:
                 self.area_distance_stamp = None
             self.area_rssi = bermuda_advert.rssi
@@ -814,12 +891,11 @@ class BermudaDevice(dict):
             if (
                 evidence_ok
                 and source == "selection"
-                and (
-                    self.area_state_stamp is None
-                    or (bermuda_advert.stamp is not None and bermuda_advert.stamp > self.area_state_stamp)
-                )
+                and advert_stamp is not None
+                and not advert_stamp_future
+                and (self.area_state_stamp is None or advert_stamp > self.area_state_stamp)
             ):
-                self.area_state_stamp = bermuda_advert.stamp
+                self.area_state_stamp = advert_stamp
 
             self.area_state_source = getattr(bermuda_advert, "scanner_address", None)
             self.area_state_retained = False
@@ -827,15 +903,14 @@ class BermudaDevice(dict):
             if (old_area != self.area_name or distance is None) and self.create_sensor:
                 _LOGGER.debug("Device %s was in '%s', now '%s'", self.name, old_area, self.area_name)
 
-            # Update last_seen: Allow if evidence is OK OR if we forced an update (Fast Acquire)
-            should_update_last_seen = evidence_ok or (old_area is None)
-            if (
-                should_update_last_seen
-                and source == "selection"
-                and bermuda_advert.stamp is not None
-                and bermuda_advert.stamp > self.last_seen
-            ):
-                self.last_seen = bermuda_advert.stamp
+            self._maybe_update_last_seen(
+                advert_stamp=advert_stamp,
+                stamp_now=stamp_now,
+                tracker_timeout=tracker_timeout,
+                evidence_ok=evidence_ok,
+                old_area=old_area,
+                source=source,
+            )
             return
 
         # Winner missing or stale: retain last known selection where possible.
@@ -907,12 +982,12 @@ class BermudaDevice(dict):
                 )
 
         # Update whether this device has been seen recently, for device_tracker:
-        if (
-            self.last_seen is not None
-            and monotonic_time_coarse() - self.options.get(CONF_DEVTRACK_TIMEOUT, DEFAULT_DEVTRACK_TIMEOUT)
-            < self.last_seen
-        ):
-            self.zone = STATE_HOME
+        if self.last_seen is not None:
+            timeout = self._parse_tracker_timeout(self.options.get(CONF_DEVTRACK_TIMEOUT))
+            if monotonic_time_coarse() - timeout < self.last_seen:
+                self.zone = STATE_HOME
+            else:
+                self.zone = STATE_NOT_HOME
         else:
             self.zone = STATE_NOT_HOME
 
@@ -945,22 +1020,33 @@ class BermudaDevice(dict):
         device_address = self.address
         # Ensure this is used for referencing self.scanners[], as self.address might point elsewhere!
         advert_tuple = (device_address, scanner_address)
+        stamp_now = monotonic_time_coarse()
 
         if len(self.metadevice_sources) > 0 and not self._is_scanner:
             # If we're a metadevice we should never be in this function,
             # unless we _used_ to be a scanner but are no longer. Shelly proxies
             # seem to do this when they go offline. See #608
-            _LOGGER_SPAM_LESS.debug(
-                f"meta_{self.address}_{advert_tuple}",
-                "process_advertisement called on a metadevice (%s) - probably a dead proxy. Advert tuple: (%s)",
-                self.__repr__(),
-                advert_tuple,
-            )
-            return
+            normalized_sources = {
+                normalize_address(source)
+                for source in self.metadevice_sources
+                if isinstance(source, str) and is_mac_address(source)
+            }
+            allow_processing = not self.adverts or scanner_address in normalized_sources
+            if not self._metadevice_warned:
+                _LOGGER_SPAM_LESS.debug(
+                    f"meta_{self.address}_{advert_tuple}",
+                    "process_advertisement on a metadevice (%s); %s advert tuple %s",
+                    self.__repr__(),
+                    "allowing" if allow_processing else "skipping",
+                    advert_tuple,
+                )
+                self._metadevice_warned = True
+            if not allow_processing:
+                return
 
         if advert_tuple in self.adverts:
             # Device already exists, update it
-            self.adverts[advert_tuple].update_advertisement(advertisementdata, scanner_device)
+            self.adverts[advert_tuple].update_advertisement(advertisementdata, scanner_device, nowstamp=stamp_now)
             device_advert = self.adverts[advert_tuple]
         else:
             # Create it
@@ -969,9 +1055,20 @@ class BermudaDevice(dict):
                 advertisementdata,
                 self.options,
                 scanner_device,
+                nowstamp=stamp_now,
             )
 
         # Let's see if we should update our last_seen based on this...
+        if device_advert.stamp is not None:
+            if device_advert.stamp > stamp_now + 0.5:
+                _LOGGER_SPAM_LESS.debug(
+                    "future_stamp_scanner_last_seen",
+                    "Skipping last_seen refresh for %s (%s): advert stamp is in the future by %.3fs",
+                    self.name,
+                    self.address,
+                    device_advert.stamp - stamp_now,
+                )
+                return
         if device_advert.stamp is not None and self.last_seen < device_advert.stamp:
             self.last_seen = device_advert.stamp
 

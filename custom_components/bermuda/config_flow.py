@@ -280,8 +280,7 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
                         SelectOptionDict(
                             value=device.address,
                             label=(
-                                f"FMDN resolved: [{device.address}] {name} "
-                                f"(sources: {len(device.metadevice_sources)})"
+                                f"FMDN resolved: [{device.address}] {name} (sources: {len(device.metadevice_sources)})"
                             ),
                         )
                     )

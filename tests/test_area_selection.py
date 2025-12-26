@@ -824,7 +824,9 @@ def test_floor_level_populated_from_floor_registry(coordinator: BermudaDataUpdat
     dummy_floor = DummyFloor()
     dummy_area = DummyArea()
 
-    device.fr = SimpleNamespace(async_get_floor=lambda floor_id: dummy_floor if floor_id == dummy_floor.floor_id else None)
+    device.fr = SimpleNamespace(
+        async_get_floor=lambda floor_id: dummy_floor if floor_id == dummy_floor.floor_id else None
+    )
     device.ar = SimpleNamespace(async_get_area=lambda area_id: dummy_area if area_id == "area-kitchen" else None)
 
     device._update_area_and_floor("area-kitchen")

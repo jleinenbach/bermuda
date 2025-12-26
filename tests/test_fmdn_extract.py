@@ -107,7 +107,7 @@ def test_extract_handles_32_byte_eid_with_frame_and_flags() -> None:
 
 def test_extract_from_embedded_uuid_marker() -> None:
     eid = bytes(range(20))
-    payload = b"\x01\x02" + b"\xAA\xFE" + b"\x40" + eid + b"\xAA"
+    payload = b"\x01\x02" + b"\xaa\xfe" + b"\x40" + eid + b"\xaa"
     service_data = {0xFEAA: payload}
 
     candidates = extract_fmdn_eids(service_data, mode=FMDN_EID_FORMAT_AUTO)
