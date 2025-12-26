@@ -1283,11 +1283,37 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                             )
                             continue
 
-                        # Use the device_id as the basis for the metadevice address
+                        # Extract the canonical device identifier from googlefindmy's identifiers.
+                        # The googlefindmy integration uses multiple identifier formats:
+                        # - (DOMAIN, "entry_id:subentry_id:device_id") - full format
+                        # - (DOMAIN, "entry_id:device_id") - with entry_id
+                        # - (DOMAIN, "device_id") - simplest format
+                        # The EID resolver returns canonical_id which is typically the device_id
+                        # (or unique_id from the entity). We need to match this format.
+                        canonical_id = None
+                        for identifier in fmdn_device.identifiers:
+                            if len(identifier) == 2 and identifier[0] == DOMAIN_GOOGLEFINDMY:
+                                # Found a googlefindmy identifier
+                                id_value = identifier[1]
+                                # The EID resolver typically returns the last part (device_id)
+                                # as canonical_id, so extract that for consistency
+                                parts = id_value.split(":")
+                                if len(parts) > 0:
+                                    # Use the last part as a candidate (most specific)
+                                    candidate = parts[-1]
+                                    # Prefer shorter identifiers (more likely to be the canonical device_id)
+                                    if canonical_id is None or len(candidate) < len(canonical_id):
+                                        canonical_id = candidate
+
+                        # Fall back to entity unique_id if no googlefindmy identifier found
+                        if canonical_id is None:
+                            canonical_id = fmdn_entity.unique_id
+
+                        # Use the canonical_id as the basis for the metadevice address
                         # This matches the format used by _register_fmdn_source when
-                        # receiving advertisements.
+                        # receiving advertisements from the EID resolver.
                         metadevice_address = self._format_fmdn_metadevice_address(
-                            fmdn_device.id, fmdn_entity.unique_id
+                            fmdn_device.id, canonical_id
                         )
 
                         # Create our Meta-Device and tag it up...
@@ -1298,6 +1324,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                         metadevice.metadevice_type.add(METADEVICE_FMDN_DEVICE)
                         metadevice.address_type = ADDR_TYPE_FMDN_DEVICE
                         metadevice.fmdn_device_id = fmdn_device.id
+                        metadevice.fmdn_canonical_id = canonical_id
 
                         # Set a nice name
                         metadevice.name_by_user = fmdn_device.name_by_user
