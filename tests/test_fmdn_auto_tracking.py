@@ -214,3 +214,46 @@ def test_fmdn_device_has_fmdn_canonical_id(
 
     # fmdn_canonical_id should be set for consistent metadevice addressing
     assert metadevice.fmdn_canonical_id == "canonical-uuid-5"
+
+
+def test_fmdn_deduplication_by_device_id_prevents_duplicates(
+    hass: HomeAssistant, coordinator: BermudaDataUpdateCoordinator
+) -> None:
+    """Test that metadevices are deduplicated by fmdn_device_id.
+
+    This prevents duplicate entities when _register_fmdn_source() and
+    discover_fmdn_metadevices() use different canonical_id formats.
+    """
+    # First, simulate _register_fmdn_source creating a metadevice via BLE advertisement
+    resolver = MagicMock()
+    match = SimpleNamespace(device_id="shared-device-registry-id", canonical_id="entry_id:device_id")
+    resolver.resolve_eid.return_value = match
+    hass.data[DOMAIN_GOOGLEFINDMY] = {DATA_EID_RESOLVER: resolver}
+
+    service_data = {SERVICE_UUID_FMDN: bytes([0x40]) + b"\x07" * 20}
+    source_device = coordinator._get_or_create_device("66:77:88:99:aa:bb")
+    coordinator._handle_fmdn_advertisement(source_device, service_data)
+
+    # Verify first metadevice was created
+    assert len(coordinator.metadevices) == 1
+    first_metadevice = next(iter(coordinator.metadevices.values()))
+    assert first_metadevice.fmdn_device_id == "shared-device-registry-id"
+
+    # Now simulate a second registration with the SAME device_id but DIFFERENT canonical_id
+    # This simulates what happens when discover_fmdn_metadevices extracts a different
+    # canonical_id format from the device registry identifiers
+    match2 = SimpleNamespace(device_id="shared-device-registry-id", canonical_id="different_canonical_id")
+    resolver.resolve_eid.return_value = match2
+
+    source_device2 = coordinator._get_or_create_device("77:88:99:aa:bb:cc")
+    coordinator._handle_fmdn_advertisement(source_device2, service_data)
+
+    # CRITICAL ASSERTION: Should still be only ONE metadevice (not two!)
+    # because they share the same fmdn_device_id
+    assert len(coordinator.metadevices) == 1
+
+    # The metadevice should now have both source devices
+    metadevice = next(iter(coordinator.metadevices.values()))
+    assert metadevice.fmdn_device_id == "shared-device-registry-id"
+    assert source_device.address in metadevice.metadevice_sources
+    assert source_device2.address in metadevice.metadevice_sources

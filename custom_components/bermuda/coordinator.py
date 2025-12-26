@@ -759,11 +759,37 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
     def _register_fmdn_source(self, source_device: BermudaDevice, metadevice_address: str, match: Any) -> None:
         """Attach a rotating FMDN source MAC to its stable metadevice container."""
-        metadevice = self._get_or_create_device(metadevice_address)
+        fmdn_device_id = getattr(match, "device_id", None)
+
+        # IMPORTANT: Before creating a new metadevice, check if one already exists
+        # for this fmdn_device_id. This prevents duplicate devices when
+        # discover_fmdn_metadevices() has already created a metadevice with a
+        # different canonical_id format from the device registry identifiers.
+        # The fmdn_device_id is the HA Device Registry ID, which is stable.
+        existing_metadevice = None
+        if fmdn_device_id:
+            for existing in self.metadevices.values():
+                if existing.fmdn_device_id == fmdn_device_id:
+                    existing_metadevice = existing
+                    _LOGGER.debug(
+                        "Found existing FMDN metadevice %s for device_id %s in _register_fmdn_source",
+                        existing.address,
+                        fmdn_device_id,
+                    )
+                    break
+
+        if existing_metadevice is not None:
+            metadevice = existing_metadevice
+        else:
+            metadevice = self._get_or_create_device(metadevice_address)
+
         metadevice.metadevice_type.add(METADEVICE_FMDN_DEVICE)
         metadevice.address_type = ADDR_TYPE_FMDN_DEVICE
-        metadevice.fmdn_device_id = getattr(match, "device_id", None)
-        metadevice.fmdn_canonical_id = getattr(match, "canonical_id", None)
+        metadevice.fmdn_device_id = fmdn_device_id
+        # Update fmdn_canonical_id from the resolver if not already set
+        canonical_id = getattr(match, "canonical_id", None)
+        if canonical_id and (metadevice.fmdn_canonical_id is None):
+            metadevice.fmdn_canonical_id = canonical_id
         # Since the googlefindmy integration discovered this device, we always
         # create sensors for them (like Private BLE Devices).
         metadevice.create_sensor = True
@@ -1310,22 +1336,47 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                         if canonical_id is None:
                             canonical_id = fmdn_entity.unique_id
 
-                        # Use the canonical_id as the basis for the metadevice address
-                        # This matches the format used by _register_fmdn_source when
-                        # receiving advertisements from the EID resolver.
-                        metadevice_address = self._format_fmdn_metadevice_address(
-                            fmdn_device.id, canonical_id
-                        )
+                        # IMPORTANT: Before creating a new metadevice, check if one already
+                        # exists for this fmdn_device_id. This prevents duplicate devices when
+                        # _register_fmdn_source() has already created a metadevice from BLE
+                        # advertisements with a different canonical_id format.
+                        # The fmdn_device_id is the HA Device Registry ID, which is stable
+                        # and consistent between both registration paths.
+                        existing_metadevice = None
+                        for existing in self.metadevices.values():
+                            if existing.fmdn_device_id == fmdn_device.id:
+                                existing_metadevice = existing
+                                _LOGGER.debug(
+                                    "Found existing FMDN metadevice %s for device_id %s",
+                                    existing.address,
+                                    fmdn_device.id,
+                                )
+                                break
 
-                        # Create our Meta-Device and tag it up...
-                        metadevice = self._get_or_create_device(metadevice_address)
+                        if existing_metadevice is not None:
+                            # Use the existing metadevice created by _register_fmdn_source
+                            metadevice = existing_metadevice
+                        else:
+                            # Use the canonical_id as the basis for the metadevice address
+                            # This matches the format used by _register_fmdn_source when
+                            # receiving advertisements from the EID resolver.
+                            metadevice_address = self._format_fmdn_metadevice_address(
+                                fmdn_device.id, canonical_id
+                            )
+
+                            # Create our Meta-Device and tag it up...
+                            metadevice = self._get_or_create_device(metadevice_address)
+
                         # Since user has already configured the googlefindmy Device, we
                         # always create sensors for them.
                         metadevice.create_sensor = True
                         metadevice.metadevice_type.add(METADEVICE_FMDN_DEVICE)
                         metadevice.address_type = ADDR_TYPE_FMDN_DEVICE
                         metadevice.fmdn_device_id = fmdn_device.id
-                        metadevice.fmdn_canonical_id = canonical_id
+                        # Update fmdn_canonical_id if not already set or if we have a
+                        # better value (one extracted from identifiers)
+                        if metadevice.fmdn_canonical_id is None or canonical_id is not None:
+                            metadevice.fmdn_canonical_id = canonical_id
 
                         # Set a nice name
                         metadevice.name_by_user = fmdn_device.name_by_user
@@ -1338,7 +1389,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
                         _LOGGER.debug(
                             "Registered FMDN metadevice %s for %s",
-                            metadevice_address,
+                            metadevice.address,
                             fmdn_device.name,
                         )
 
