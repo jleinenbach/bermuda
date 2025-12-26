@@ -11,12 +11,14 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
+    ADDR_TYPE_FMDN_DEVICE,
     ADDR_TYPE_IBEACON,
     ADDR_TYPE_PRIVATE_BLE_DEVICE,
     ATTRIBUTION,
     CONF_UPDATE_INTERVAL,
     DEFAULT_UPDATE_INTERVAL,
     DOMAIN,
+    DOMAIN_GOOGLEFINDMY,
     DOMAIN_PRIVATE_BLE_DEVICE,
 )
 from .util import is_mac_address, normalize_mac
@@ -152,6 +154,18 @@ class BermudaEntity(CoordinatorEntity):
             # if dr_device is not None:
             #    existing_device_id = dr_device.id
             domain_name = DOMAIN_PRIVATE_BLE_DEVICE
+        elif self._device.address_type == ADDR_TYPE_FMDN_DEVICE:
+            # FMDN Device (Google Find My Device Network) - use the device_id
+            # from googlefindmy integration to enable device congealment.
+            # Bermuda entities will appear in the googlefindmy device.
+            if self._device.fmdn_device_id:
+                # Use the fmdn_device_id as the identifier to match the googlefindmy device
+                connections = {(DOMAIN_GOOGLEFINDMY, self._device.fmdn_device_id)}
+            else:
+                connections = set()
+            # We don't set the model since the googlefindmy integration should have
+            # already named it nicely.
+            domain_name = DOMAIN_GOOGLEFINDMY
         elif is_mac_address(self._device.address):
             connections = {(dr.CONNECTION_BLUETOOTH, normalize_mac(self._device.address))}
         else:

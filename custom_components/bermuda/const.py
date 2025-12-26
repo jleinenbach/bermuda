@@ -115,6 +115,7 @@ BDADDR_TYPE_NOT_MAC48: Final = "bd_addr_not_mac48"
 # Non-bluetooth address types - for our metadevice entries
 ADDR_TYPE_IBEACON: Final = "addr_type_ibeacon"
 ADDR_TYPE_PRIVATE_BLE_DEVICE: Final = "addr_type_private_ble_device"
+ADDR_TYPE_FMDN_DEVICE: Final = "addr_type_fmdn_device"
 
 
 class IrkTypes(Enum):
