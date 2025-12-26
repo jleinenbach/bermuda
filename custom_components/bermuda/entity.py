@@ -158,9 +158,23 @@ class BermudaEntity(CoordinatorEntity):
             # FMDN Device (Google Find My Device Network) - use the device_id
             # from googlefindmy integration to enable device congealment.
             # Bermuda entities will appear in the googlefindmy device.
+            #
+            # To properly congeal with googlefindmy, we need to use the SAME
+            # identifiers that googlefindmy uses. We get these from the device
+            # registry entry.
             if self._device.fmdn_device_id:
-                # Use the fmdn_device_id as the identifier to match the googlefindmy device
-                connections = {(DOMAIN_GOOGLEFINDMY, self._device.fmdn_device_id)}
+                fmdn_device_entry = self.dr.async_get(self._device.fmdn_device_id)
+                if fmdn_device_entry and fmdn_device_entry.identifiers:
+                    # Use the same identifiers as googlefindmy for proper congealment
+                    # This makes Bermuda entities appear under the same device as
+                    # googlefindmy entities, showing both integrations in the device info.
+                    device_info = {
+                        "identifiers": fmdn_device_entry.identifiers,
+                        "name": self._device.name,
+                    }
+                    return device_info
+                # Fallback: create identifier using canonical_id
+                connections = set()
             else:
                 connections = set()
             # We don't set the model since the googlefindmy integration should have
@@ -173,8 +187,15 @@ class BermudaEntity(CoordinatorEntity):
             # No need to set model, since MAC address will be shown via connection.
             # model = f"Bermuda: {self._device.address.lower()}"
 
+        # For FMDN devices, use canonical_id (without fmdn: prefix) to match
+        # googlefindmy's identifier format. This helps with congealment in fallback cases.
+        if self._device.address_type == ADDR_TYPE_FMDN_DEVICE and self._device.fmdn_canonical_id:
+            identifier_value = self._device.fmdn_canonical_id
+        else:
+            identifier_value = self._device.unique_id
+
         device_info = {
-            "identifiers": {(domain_name, self._device.unique_id)},
+            "identifiers": {(domain_name, identifier_value)},
             "connections": connections,
             "name": self._device.name,
         }

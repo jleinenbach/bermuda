@@ -193,3 +193,24 @@ def test_fmdn_device_has_fmdn_device_id(
 
     # fmdn_device_id should be set for device registry congealment
     assert metadevice.fmdn_device_id == "googlefindmy-device-id"
+
+
+def test_fmdn_device_has_fmdn_canonical_id(
+    hass: HomeAssistant, coordinator: BermudaDataUpdateCoordinator
+) -> None:
+    """FMDN metadevices should have fmdn_canonical_id set for consistent addressing."""
+    resolver = MagicMock()
+    match = SimpleNamespace(device_id="fmdn-device-5", canonical_id="canonical-uuid-5")
+    resolver.resolve_eid.return_value = match
+    hass.data[DOMAIN_GOOGLEFINDMY] = {DATA_EID_RESOLVER: resolver}
+
+    service_data = {SERVICE_UUID_FMDN: bytes([0x40]) + b"\x06" * 20}
+
+    source_device = coordinator._get_or_create_device("55:66:77:88:99:aa")
+    coordinator._handle_fmdn_advertisement(source_device, service_data)
+
+    metadevice_key = coordinator._format_fmdn_metadevice_address(match.device_id, match.canonical_id)
+    metadevice = coordinator.metadevices[metadevice_key]
+
+    # fmdn_canonical_id should be set for consistent metadevice addressing
+    assert metadevice.fmdn_canonical_id == "canonical-uuid-5"
