@@ -112,6 +112,7 @@ from .util import is_mac_address, mac_explode_formats, normalize_address, normal
 Cancellable = Callable[[], None]
 DUMP_DEVICE_SOFT_LIMIT = 1200
 
+
 # Protocol definition kept small to avoid cross-integration dependency imports.
 class EidResolver(Protocol):
     """Resolver interface exposed by the googlefindmy integration."""
@@ -796,9 +797,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             self._register_fmdn_source(device, metadevice_address, match)
             break
 
-    def _maybe_prune_fmdn_source(
-        self, device: BermudaDevice, stamp_fmdn: float, prune_list: list[str]
-    ) -> bool:
+    def _maybe_prune_fmdn_source(self, device: BermudaDevice, stamp_fmdn: float, prune_list: list[str]) -> bool:
         """Prune stale FMDN rotating MACs and return True if pruned."""
         if METADEVICE_TYPE_FMDN_SOURCE not in device.metadevice_type:
             return False
@@ -1476,8 +1475,8 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         """Set area for ALL devices based on closest beacon."""
         for device in self.devices.values():
             if (
-                # device.is_scanner is not True  # exclude scanners.
-                device.create_sensor  # include any devices we are tracking
+                not device.is_scanner
+                and (device.create_sensor or device.create_tracker_done)  # include tracked or tracker devices
                 # or device.metadevice_type in METADEVICE_SOURCETYPES  # and any source devices for PBLE, ibeacon etc
             ):
                 self._refresh_area_by_min_distance(device)
@@ -1657,16 +1656,12 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
             incumbent_scanner = current_incumbent.scanner_device if current_incumbent else None
             inc_floor_id = getattr(incumbent_scanner, "floor_id", None) if incumbent_scanner else None
-            inc_floor_level = (
-                getattr(incumbent_scanner, "floor_level", None) if incumbent_scanner else None
-            )
+            inc_floor_level = getattr(incumbent_scanner, "floor_level", None) if incumbent_scanner else None
             chal_floor_id = getattr(challenger_scanner, "floor_id", None)
             chal_floor_level = getattr(challenger_scanner, "floor_level", None)
             tests.floors = (inc_floor_id, chal_floor_id)
             tests.floor_levels = (inc_floor_level, chal_floor_level)
-            cross_floor = (
-                inc_floor_id is not None and chal_floor_id is not None and inc_floor_id != chal_floor_id
-            )
+            cross_floor = inc_floor_id is not None and chal_floor_id is not None and inc_floor_id != chal_floor_id
 
             # If closest scanner lacks critical data, we win.
             if current_incumbent is None:
@@ -1764,9 +1759,10 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             incumbent_hist_all = current_incumbent.hist_distance_by_interval
             challenger_hist_all = challenger.hist_distance_by_interval
             if cross_floor:
-                if len(challenger_hist_all) < cross_floor_min_history or len(
-                    incumbent_hist_all
-                ) < cross_floor_min_history:
+                if (
+                    len(challenger_hist_all) < cross_floor_min_history
+                    or len(incumbent_hist_all) < cross_floor_min_history
+                ):
                     tests.reason = "LOSS - cross-floor history too short"
                     continue
             incumbent_history: list[float] = incumbent_hist_all[:history_window]
@@ -1830,6 +1826,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         winner = incumbent or soft_incumbent
 
         if not has_distance_contender:
+
             def _evidence_ok(advert: BermudaAdvert | None) -> bool:
                 return _within_evidence(advert)
 
@@ -1885,6 +1882,24 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             device.apply_scanner_selection(advert, nowstamp=nowstamp)
 
         if winner is None:
+            candidates: list[tuple[float, BermudaAdvert]] = []
+            for adv in device.adverts.values():
+                if not (_has_area(adv) and _within_evidence(adv)):
+                    continue
+                adv_effective = _effective_distance(adv)
+                if adv_effective is None or adv_effective > _max_radius:
+                    continue
+                candidates.append((adv_effective, adv))
+            if candidates:
+                winner = min(
+                    candidates,
+                    key=lambda item: (item[0], item[1].stamp if item[1].stamp is not None else 0),
+                )[1]
+                tests.reason = "WIN via rescue candidate"
+            if winner is not None:
+                _apply_selection(winner)
+                return
+
             if _LOGGER.isEnabledFor(logging.DEBUG):
                 fresh_adverts = [adv for adv in device.adverts.values() if _within_evidence(adv)]
                 fresh_with_area = [adv for adv in fresh_adverts if _has_area(adv)]
@@ -1940,9 +1955,8 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             _apply_selection(winner)
             return
 
-        if (
-            device.pending_area_id == winner.area_id
-            and device.pending_floor_id == getattr(winner.scanner_device, "floor_id", None)
+        if device.pending_area_id == winner.area_id and device.pending_floor_id == getattr(
+            winner.scanner_device, "floor_id", None
         ):
             device.pending_streak += 1
         else:
@@ -2097,9 +2111,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             if isinstance(configured_devices_option, list):
                 fallback_addresses.update(str(device) for device in configured_devices_option)
             fallback_addresses.update(
-                str(source_address)
-                for source_address in self.pb_state_sources.values()
-                if source_address is not None
+                str(source_address) for source_address in self.pb_state_sources.values() if source_address is not None
             )
             addresses = list(map(str.lower, fallback_addresses))
             summary = {

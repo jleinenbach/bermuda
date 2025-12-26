@@ -127,9 +127,7 @@ def test_refresh_area_by_min_distance_handles_empty_incumbent_history(monkeypatc
 def test_redact_data_handles_many_entries(hass):
     """Large redaction sets should remain functional."""
     coordinator = _make_coordinator(hass)
-    coordinator.redactions = {
-        f"aa:bb:cc:dd:ee:{i:02x}": f"redacted-{i}" for i in range(500)
-    }
+    coordinator.redactions = {f"aa:bb:cc:dd:ee:{i:02x}": f"redacted-{i}" for i in range(500)}
 
     result = coordinator.redact_data("AA:BB:CC:DD:EE:00 is present", first_recursion=False)
 

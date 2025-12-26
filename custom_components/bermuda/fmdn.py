@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 
 _LAST_MODE_LOGGED: list[str | None] = [None]
 _LOG_SPAM_LESS = BermudaLogSpamLess(_LOGGER, spam_interval=300)
-_FHN_UUID_MARKER = b"\xAA\xFE"  # 0xFEAA in little-endian order as it appears on-air
+_FHN_UUID_MARKER = b"\xaa\xfe"  # 0xFEAA in little-endian order as it appears on-air
 _FHN_FRAME_TYPES = (0x40, 0x41)
 
 
