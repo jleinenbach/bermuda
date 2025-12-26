@@ -339,3 +339,471 @@ def test_missing_scanner_device_does_not_crash(monkeypatch):
     BermudaDataUpdateCoordinator._refresh_area_by_min_distance(coord, device)
 
     assert device.area_advert is incumbent
+
+
+def test_same_floor_confirmation_blocks_cross_floor_switch(monkeypatch):
+    """When multiple scanners on the incumbent's floor see the device,
+    cross-floor switches should require much stronger evidence."""
+    now = 5000.0
+    monkeypatch.setattr("custom_components.bermuda.coordinator.monotonic_time_coarse", lambda: now)
+    coord = _build_coord()
+
+    # Create multiple scanners on the same floor (floor A)
+    scanner_a1 = FakeScanner(
+        name="Scanner A1",
+        last_seen=now - 0.01,
+        floor_id="floor_a",
+        floor_name="Level A",
+        area_id="area_a1",
+        area_name="Room A1",
+    )
+    scanner_a2 = FakeScanner(
+        name="Scanner A2",
+        last_seen=now - 0.02,
+        floor_id="floor_a",
+        floor_name="Level A",
+        area_id="area_a2",
+        area_name="Room A2",
+    )
+    scanner_a3 = FakeScanner(
+        name="Scanner A3",
+        last_seen=now - 0.03,
+        floor_id="floor_a",
+        floor_name="Level A",
+        area_id="area_a3",
+        area_name="Room A3",
+    )
+    # Scanner on a different floor (floor B)
+    scanner_b = FakeScanner(
+        name="Scanner B",
+        last_seen=now - 0.01,
+        floor_id="floor_b",
+        floor_name="Level B",
+        area_id="area_b",
+        area_name="Room B",
+    )
+
+    # Incumbent is scanner_a1 with a moderate distance
+    incumbent = FakeAdvert(
+        name=scanner_a1.name,
+        scanner_device=scanner_a1,
+        area_id=scanner_a1.area_id,
+        area_name=scanner_a1.area_name,
+        rssi_distance=2.0,
+        rssi=-85,
+        stamp=now - 0.01,
+        hist=[2.0] * 10,
+    )
+    # Other scanners on the same floor also see the device
+    witness_a2 = FakeAdvert(
+        name=scanner_a2.name,
+        scanner_device=scanner_a2,
+        area_id=scanner_a2.area_id,
+        area_name=scanner_a2.area_name,
+        rssi_distance=3.0,
+        rssi=-88,
+        stamp=now - 0.02,
+        hist=[3.0] * 10,
+    )
+    witness_a3 = FakeAdvert(
+        name=scanner_a3.name,
+        scanner_device=scanner_a3,
+        area_id=scanner_a3.area_id,
+        area_name=scanner_a3.area_name,
+        rssi_distance=4.0,
+        rssi=-90,
+        stamp=now - 0.03,
+        hist=[4.0] * 10,
+    )
+    # Challenger on floor B is closer than incumbent (would normally win)
+    # with only ~30% difference (1.4 vs 2.0), which would pass the default
+    # cross_floor_margin (0.25) but should be blocked by same-floor-confirmation
+    challenger = FakeAdvert(
+        name=scanner_b.name,
+        scanner_device=scanner_b,
+        area_id=scanner_b.area_id,
+        area_name=scanner_b.area_name,
+        rssi_distance=1.4,  # ~35% closer than incumbent
+        rssi=-80,
+        stamp=now - 0.01,
+        hist=[1.4] * 10,
+    )
+
+    device = FakeDevice(
+        name="stable tag",
+        incumbent=incumbent,
+        adverts={
+            "a1": incumbent,
+            "a2": witness_a2,
+            "a3": witness_a3,
+            "b": challenger,
+        },
+    )
+
+    original_floor = device.floor_id
+    original_area = device.area_name
+
+    # Run selection multiple times (even more than CROSS_FLOOR_STREAK)
+    for _ in range(CROSS_FLOOR_STREAK + 2):
+        BermudaDataUpdateCoordinator._refresh_area_by_min_distance(coord, device)
+
+    # With 3 scanners on floor A seeing the device, the cross_floor_margin
+    # should be increased from 0.25 to 0.45, blocking the 35% difference challenger
+    assert device.floor_id == original_floor, (
+        f"Unexpected cross-floor switch despite multiple same-floor witnesses. "
+        f"Expected floor={original_floor!r}, got={device.floor_id!r}"
+    )
+    assert device.area_name == original_area
+
+
+def test_same_floor_confirmation_allows_strong_switch(monkeypatch):
+    """When a challenger has very strong evidence (>60% diff), it should still win
+    even with same-floor witnesses."""
+    now = 6000.0
+    monkeypatch.setattr("custom_components.bermuda.coordinator.monotonic_time_coarse", lambda: now)
+    coord = _build_coord()
+
+    # Multiple scanners on floor A
+    scanner_a1 = FakeScanner(
+        name="Scanner A1",
+        last_seen=now - 0.01,
+        floor_id="floor_a",
+        floor_name="Level A",
+        area_id="area_a1",
+        area_name="Room A1",
+    )
+    scanner_a2 = FakeScanner(
+        name="Scanner A2",
+        last_seen=now - 0.02,
+        floor_id="floor_a",
+        floor_name="Level A",
+        area_id="area_a2",
+        area_name="Room A2",
+    )
+    # Scanner on floor B
+    scanner_b = FakeScanner(
+        name="Scanner B",
+        last_seen=now - 0.01,
+        floor_id="floor_b",
+        floor_name="Level B",
+        area_id="area_b",
+        area_name="Room B",
+    )
+
+    incumbent = FakeAdvert(
+        name=scanner_a1.name,
+        scanner_device=scanner_a1,
+        area_id=scanner_a1.area_id,
+        area_name=scanner_a1.area_name,
+        rssi_distance=5.0,
+        rssi=-95,
+        stamp=now - 0.01,
+        hist=[5.0] * 10,
+    )
+    witness_a2 = FakeAdvert(
+        name=scanner_a2.name,
+        scanner_device=scanner_a2,
+        area_id=scanner_a2.area_id,
+        area_name=scanner_a2.area_name,
+        rssi_distance=6.0,
+        rssi=-97,
+        stamp=now - 0.02,
+        hist=[6.0] * 10,
+    )
+    # Challenger with very strong evidence (>80% closer)
+    challenger = FakeAdvert(
+        name=scanner_b.name,
+        scanner_device=scanner_b,
+        area_id=scanner_b.area_id,
+        area_name=scanner_b.area_name,
+        rssi_distance=0.8,  # ~145% difference from 5.0
+        rssi=-70,
+        stamp=now - 0.01,
+        hist=[0.8] * 10,
+    )
+
+    device = FakeDevice(
+        name="moving tag",
+        incumbent=incumbent,
+        adverts={"a1": incumbent, "a2": witness_a2, "b": challenger},
+    )
+
+    # Run selection CROSS_FLOOR_STREAK times
+    for _ in range(CROSS_FLOOR_STREAK):
+        BermudaDataUpdateCoordinator._refresh_area_by_min_distance(coord, device)
+
+    # Even with same-floor witnesses, such strong evidence should win
+    assert device.area_advert is challenger, (
+        f"Expected challenger to win with strong evidence. "
+        f"Got area={device.area_name!r}, floor={device.floor_id!r}"
+    )
+
+
+def test_floor_sandwich_logic_blocks_switch(monkeypatch):
+    """When a device is seen by scanners on floors above AND below the incumbent,
+    the incumbent floor (middle) is most likely correct - block switches."""
+    now = 7000.0
+    monkeypatch.setattr("custom_components.bermuda.coordinator.monotonic_time_coarse", lambda: now)
+    coord = _build_coord()
+
+    # Three floors: Basement (-1), Ground (0), Upper (1)
+    scanner_basement = FakeScanner(
+        name="Scanner Basement",
+        last_seen=now - 0.01,
+        floor_id="floor_basement",
+        floor_name="Basement",
+        area_id="area_basement",
+        area_name="Keller",
+        floor_level=-1,
+    )
+    scanner_ground = FakeScanner(
+        name="Scanner Ground",
+        last_seen=now - 0.01,
+        floor_id="floor_ground",
+        floor_name="Ground",
+        area_id="area_ground",
+        area_name="Erdgeschoss",
+        floor_level=0,
+    )
+    scanner_upper = FakeScanner(
+        name="Scanner Upper",
+        last_seen=now - 0.01,
+        floor_id="floor_upper",
+        floor_name="Upper",
+        area_id="area_upper",
+        area_name="Obergeschoss",
+        floor_level=1,
+    )
+
+    # Incumbent is on ground floor (0), device is seen by all three floors
+    incumbent = FakeAdvert(
+        name=scanner_ground.name,
+        scanner_device=scanner_ground,
+        area_id=scanner_ground.area_id,
+        area_name=scanner_ground.area_name,
+        rssi_distance=2.5,
+        rssi=-85,
+        stamp=now - 0.01,
+        hist=[2.5] * 10,
+    )
+    # Basement scanner sees it too
+    advert_basement = FakeAdvert(
+        name=scanner_basement.name,
+        scanner_device=scanner_basement,
+        area_id=scanner_basement.area_id,
+        area_name=scanner_basement.area_name,
+        rssi_distance=4.0,
+        rssi=-90,
+        stamp=now - 0.02,
+        hist=[4.0] * 10,
+    )
+    # Upper floor scanner is closer (would normally win with ~40% diff)
+    challenger = FakeAdvert(
+        name=scanner_upper.name,
+        scanner_device=scanner_upper,
+        area_id=scanner_upper.area_id,
+        area_name=scanner_upper.area_name,
+        rssi_distance=1.5,  # ~50% closer than incumbent
+        rssi=-78,
+        stamp=now - 0.01,
+        hist=[1.5] * 10,
+    )
+
+    device = FakeDevice(
+        name="sandwiched tag",
+        incumbent=incumbent,
+        adverts={
+            "ground": incumbent,
+            "basement": advert_basement,
+            "upper": challenger,
+        },
+    )
+
+    original_floor = device.floor_id
+
+    # Run selection multiple times
+    for _ in range(CROSS_FLOOR_STREAK + 3):
+        BermudaDataUpdateCoordinator._refresh_area_by_min_distance(coord, device)
+
+    # With sandwich logic, the ground floor (middle) should be protected
+    # The 50% difference is not enough to overcome the sandwich margin boost
+    assert device.floor_id == original_floor, (
+        f"Unexpected switch from sandwiched floor. "
+        f"Expected floor={original_floor!r}, got={device.floor_id!r}"
+    )
+
+
+def test_non_adjacent_floor_requires_stronger_evidence(monkeypatch):
+    """Switching to a non-adjacent floor (skipping a floor) should require
+    much stronger evidence since BLE rarely skips floors cleanly."""
+    now = 8000.0
+    monkeypatch.setattr("custom_components.bermuda.coordinator.monotonic_time_coarse", lambda: now)
+    coord = _build_coord()
+
+    # Three floors: Basement (-1), Ground (0), Upper (1)
+    scanner_basement = FakeScanner(
+        name="Scanner Basement",
+        last_seen=now - 0.01,
+        floor_id="floor_basement",
+        floor_name="Basement",
+        area_id="area_basement",
+        area_name="Keller",
+        floor_level=-1,
+    )
+    scanner_upper = FakeScanner(
+        name="Scanner Upper",
+        last_seen=now - 0.01,
+        floor_id="floor_upper",
+        floor_name="Upper",
+        area_id="area_upper",
+        area_name="Obergeschoss",
+        floor_level=1,
+    )
+
+    # Incumbent is in basement (-1)
+    incumbent = FakeAdvert(
+        name=scanner_basement.name,
+        scanner_device=scanner_basement,
+        area_id=scanner_basement.area_id,
+        area_name=scanner_basement.area_name,
+        rssi_distance=3.0,
+        rssi=-88,
+        stamp=now - 0.01,
+        hist=[3.0] * 10,
+    )
+    # Challenger is on upper floor (+1) - skipping ground floor (distance = 2)
+    # Even with ~45% better distance, the floor skip penalty should block this
+    challenger = FakeAdvert(
+        name=scanner_upper.name,
+        scanner_device=scanner_upper,
+        area_id=scanner_upper.area_id,
+        area_name=scanner_upper.area_name,
+        rssi_distance=1.7,  # ~55% closer
+        rssi=-80,
+        stamp=now - 0.01,
+        hist=[1.7] * 10,
+    )
+
+    device = FakeDevice(
+        name="basement tag",
+        incumbent=incumbent,
+        adverts={"basement": incumbent, "upper": challenger},
+    )
+
+    original_floor = device.floor_id
+
+    # Run selection multiple times
+    for _ in range(CROSS_FLOOR_STREAK + 3):
+        BermudaDataUpdateCoordinator._refresh_area_by_min_distance(coord, device)
+
+    # With floor skip penalty (15% extra margin for skipping 1 floor),
+    # the 55% difference should NOT be enough
+    assert device.floor_id == original_floor, (
+        f"Unexpected switch to non-adjacent floor. "
+        f"Expected floor={original_floor!r}, got={device.floor_id!r}"
+    )
+
+
+class TestCoVisibilityLearning:
+    """Tests for co-visibility learning functionality."""
+
+    def test_co_visibility_stats_update(self):
+        """Test that co-visibility statistics are properly updated."""
+        from custom_components.bermuda.bermuda_device import BermudaDevice
+        from unittest.mock import MagicMock
+
+        # Create a mock device
+        mock_coordinator = MagicMock()
+        mock_coordinator.options = {}
+        mock_coordinator.hass = MagicMock()
+        mock_coordinator.hass.data = {}
+
+        # We need to mock area_registry and floor_registry
+        with (
+            MagicMock() as mock_ar,
+            MagicMock() as mock_fr,
+        ):
+            mock_ar.async_get.return_value = MagicMock()
+            mock_fr.async_get.return_value = MagicMock()
+
+            # Create device directly and set required attributes
+            device = object.__new__(BermudaDevice)
+            device.co_visibility_stats = {}
+            device.co_visibility_min_samples = 50
+
+            # Test updating co-visibility
+            visible = {"scanner_a", "scanner_b"}
+            all_scanners = {"scanner_a", "scanner_b", "scanner_c"}
+
+            device.update_co_visibility("area_living", visible, all_scanners)
+
+            assert "area_living" in device.co_visibility_stats
+            assert device.co_visibility_stats["area_living"]["scanner_a"]["seen"] == 1
+            assert device.co_visibility_stats["area_living"]["scanner_a"]["total"] == 1
+            assert device.co_visibility_stats["area_living"]["scanner_c"]["seen"] == 0
+            assert device.co_visibility_stats["area_living"]["scanner_c"]["total"] == 1
+
+    def test_co_visibility_confidence_with_no_data(self):
+        """Test that confidence is 1.0 when no data is available."""
+        from custom_components.bermuda.bermuda_device import BermudaDevice
+
+        device = object.__new__(BermudaDevice)
+        device.co_visibility_stats = {}
+        device.co_visibility_min_samples = 50
+
+        confidence = device.get_co_visibility_confidence("area_unknown", {"scanner_a"})
+        assert confidence == 1.0
+
+    def test_co_visibility_confidence_with_insufficient_samples(self):
+        """Test that confidence is 1.0 when samples are below threshold."""
+        from custom_components.bermuda.bermuda_device import BermudaDevice
+
+        device = object.__new__(BermudaDevice)
+        device.co_visibility_min_samples = 50
+        device.co_visibility_stats = {
+            "area_test": {
+                "scanner_a": {"seen": 10, "total": 10},  # Only 10 samples
+                "scanner_b": {"seen": 5, "total": 10},
+            }
+        }
+
+        confidence = device.get_co_visibility_confidence("area_test", {"scanner_a"})
+        assert confidence == 1.0  # Not enough samples
+
+    def test_co_visibility_confidence_with_all_expected_scanners(self):
+        """Test high confidence when all expected scanners are visible."""
+        from custom_components.bermuda.bermuda_device import BermudaDevice
+
+        device = object.__new__(BermudaDevice)
+        device.co_visibility_min_samples = 50
+        device.co_visibility_stats = {
+            "area_test": {
+                "scanner_a": {"seen": 90, "total": 100},  # 90% visibility
+                "scanner_b": {"seen": 80, "total": 100},  # 80% visibility
+                "scanner_c": {"seen": 10, "total": 100},  # 10% - below threshold
+            }
+        }
+
+        # All significant scanners (a and b) are visible
+        confidence = device.get_co_visibility_confidence(
+            "area_test", {"scanner_a", "scanner_b"}
+        )
+        assert confidence == 1.0  # Full confidence
+
+    def test_co_visibility_confidence_with_missing_expected_scanners(self):
+        """Test reduced confidence when expected scanners are missing."""
+        from custom_components.bermuda.bermuda_device import BermudaDevice
+
+        device = object.__new__(BermudaDevice)
+        device.co_visibility_min_samples = 50
+        device.co_visibility_stats = {
+            "area_test": {
+                "scanner_a": {"seen": 90, "total": 100},  # 90% visibility
+                "scanner_b": {"seen": 80, "total": 100},  # 80% visibility
+            }
+        }
+
+        # Only scanner_a is visible, but scanner_b (80% expected) is missing
+        confidence = device.get_co_visibility_confidence("area_test", {"scanner_a"})
+        # Expected: (0.9) / (0.9 + 0.8) = 0.529, sqrt = 0.727
+        assert 0.5 < confidence < 0.8  # Reduced but not zero
