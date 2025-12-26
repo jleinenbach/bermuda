@@ -1284,26 +1284,27 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                             continue
 
                         # Extract the canonical device identifier from googlefindmy's identifiers.
+                        # Per docs/google_find_my_support.md, the EID resolver returns canonical_id
+                        # in the format "{entry_id}:{device_id}" (with one colon separator).
                         # The googlefindmy integration uses multiple identifier formats:
-                        # - (DOMAIN, "entry_id:subentry_id:device_id") - full format
-                        # - (DOMAIN, "entry_id:device_id") - with entry_id
-                        # - (DOMAIN, "device_id") - simplest format
-                        # The EID resolver returns canonical_id which is typically the device_id
-                        # (or unique_id from the entity). We need to match this format.
+                        # - (DOMAIN, "entry_id:subentry_id:device_id") - full format (2 colons)
+                        # - (DOMAIN, "entry_id:device_id") - canonical format (1 colon)
+                        # - (DOMAIN, "device_id") - simplest format (0 colons)
+                        # We need to find the identifier matching the resolver's format.
                         canonical_id = None
                         for identifier in fmdn_device.identifiers:
                             if len(identifier) == 2 and identifier[0] == DOMAIN_GOOGLEFINDMY:
                                 # Found a googlefindmy identifier
                                 id_value = identifier[1]
-                                # The EID resolver typically returns the last part (device_id)
-                                # as canonical_id, so extract that for consistency
-                                parts = id_value.split(":")
-                                if len(parts) > 0:
-                                    # Use the last part as a candidate (most specific)
-                                    candidate = parts[-1]
-                                    # Prefer shorter identifiers (more likely to be the canonical device_id)
-                                    if canonical_id is None or len(candidate) < len(canonical_id):
-                                        canonical_id = candidate
+                                colon_count = id_value.count(":")
+                                # Prefer the "entry_id:device_id" format (1 colon) as it matches
+                                # what the EID resolver returns for canonical_id
+                                if colon_count == 1:
+                                    canonical_id = id_value
+                                    break
+                                # Keep track of the simplest identifier as fallback
+                                elif colon_count == 0 and canonical_id is None:
+                                    canonical_id = id_value
 
                         # Fall back to entity unique_id if no googlefindmy identifier found
                         if canonical_id is None:
