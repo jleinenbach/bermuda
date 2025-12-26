@@ -995,7 +995,10 @@ class BermudaDevice(dict):
         if not isinstance(configured_devices_option, list):
             configured_devices_option = []
         configured_devices = {normalize_address(addr) for addr in configured_devices_option if isinstance(addr, str)}
-        self.create_sensor = self.address in configured_devices
+        # Private BLE Devices are automatically tracked via discover_private_ble_metadevices()
+        # and must not be overwritten here, otherwise they lose their create_sensor=True flag.
+        is_auto_tracked_metadevice = METADEVICE_PRIVATE_BLE_DEVICE in self.metadevice_type
+        self.create_sensor = self.address in configured_devices or is_auto_tracked_metadevice
 
         fmdn_mode = self.options.get(CONF_FMDN_MODE, DEFAULT_FMDN_MODE)
         if fmdn_mode not in (FMDN_MODE_RESOLVED_ONLY, FMDN_MODE_BOTH, FMDN_MODE_SOURCES_ONLY):
