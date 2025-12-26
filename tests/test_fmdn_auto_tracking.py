@@ -111,7 +111,7 @@ def test_fmdn_calculate_data_preserves_create_sensor(
     assert metadevice.create_sensor is True
 
     # Call calculate_data (this should NOT overwrite create_sensor for FMDN devices)
-    metadevice.calculate_data(scanners=set())
+    metadevice.calculate_data()
 
     # After calculate_data, create_sensor should still be True
     assert metadevice.create_sensor is True
@@ -127,7 +127,7 @@ def test_private_ble_device_calculate_data_preserves_create_sensor(
     metadevice.create_sensor = True
 
     # Call calculate_data (this should NOT overwrite create_sensor for Private BLE devices)
-    metadevice.calculate_data(scanners=set())
+    metadevice.calculate_data()
 
     # After calculate_data, create_sensor should still be True
     assert metadevice.create_sensor is True
