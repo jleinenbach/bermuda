@@ -134,6 +134,14 @@ class BermudaDevice(dict):
         self.area_state_source: str | None = None
         self.area_state_retained: bool = False
 
+        # Co-Visibility Learning: Tracks which scanners typically see this device
+        # when it's in a given area. Used to detect anomalies (e.g., device supposedly
+        # in Area A but typical co-scanners for Area A don't see it).
+        # Structure: {area_id: {scanner_address: {"seen": count, "total": count}}}
+        self.co_visibility_stats: dict[str, dict[str, dict[str, int]]] = {}
+        # Minimum samples before co-visibility affects confidence
+        self.co_visibility_min_samples: int = 50
+
         self.zone: str = STATE_NOT_HOME  # STATE_HOME or STATE_NOT_HOME
         self.manufacturer: str | None = None
         self.fmdn_device_id: str | None = None
@@ -708,6 +716,99 @@ class BermudaDevice(dict):
             "area_retention_seconds_remaining": retention_remaining,
             "area_source": self.area_state_source,
         }
+
+    def update_co_visibility(
+        self, area_id: str, visible_scanners: set[str], all_candidate_scanners: set[str]
+    ) -> None:
+        """
+        Update co-visibility statistics for a given area.
+
+        Called when a device is confirmed to be in an area. Records which scanners
+        saw the device (visible_scanners) out of all scanners that could potentially
+        see it (all_candidate_scanners).
+
+        Args:
+            area_id: The area the device is currently assigned to
+            visible_scanners: Set of scanner addresses that currently see the device
+            all_candidate_scanners: Set of all scanner addresses that have ever seen
+                                   the device in this area
+
+        """
+        if area_id not in self.co_visibility_stats:
+            self.co_visibility_stats[area_id] = {}
+
+        area_stats = self.co_visibility_stats[area_id]
+
+        # Update stats for all candidate scanners
+        for scanner_addr in all_candidate_scanners:
+            if scanner_addr not in area_stats:
+                area_stats[scanner_addr] = {"seen": 0, "total": 0}
+
+            area_stats[scanner_addr]["total"] += 1
+            if scanner_addr in visible_scanners:
+                area_stats[scanner_addr]["seen"] += 1
+
+        # Limit memory: keep only top 20 scanners per area by total count
+        if len(area_stats) > 20:
+            sorted_scanners = sorted(
+                area_stats.items(), key=lambda x: x[1]["total"], reverse=True
+            )
+            self.co_visibility_stats[area_id] = dict(sorted_scanners[:20])
+
+    def get_co_visibility_confidence(
+        self, area_id: str, visible_scanners: set[str]
+    ) -> float:
+        """
+        Calculate confidence penalty based on missing expected co-scanners.
+
+        Returns a value between 0.0 (all expected scanners missing) and 1.0
+        (all expected scanners present or not enough data).
+
+        Args:
+            area_id: The area to check co-visibility for
+            visible_scanners: Set of scanner addresses currently seeing the device
+
+        Returns:
+            Confidence multiplier (0.0 to 1.0). Lower values mean more expected
+            scanners are missing, suggesting the device might not actually be
+            in this area.
+
+        """
+        if area_id not in self.co_visibility_stats:
+            return 1.0  # No data yet, no penalty
+
+        area_stats = self.co_visibility_stats[area_id]
+
+        # Need minimum samples before we trust the statistics
+        max_total = max((s["total"] for s in area_stats.values()), default=0)
+        if max_total < self.co_visibility_min_samples:
+            return 1.0  # Not enough data
+
+        # Calculate expected visibility for each scanner
+        expected_visibility = 0.0
+        actual_visibility = 0.0
+
+        for scanner_addr, stats in area_stats.items():
+            if stats["total"] < 10:  # Ignore scanners with very few samples
+                continue
+
+            # Historical visibility rate for this scanner
+            visibility_rate = stats["seen"] / stats["total"]
+
+            # Only consider scanners that are typically visible (>30% of the time)
+            if visibility_rate >= 0.30:
+                expected_visibility += visibility_rate
+                if scanner_addr in visible_scanners:
+                    actual_visibility += visibility_rate
+
+        if expected_visibility == 0:
+            return 1.0  # No significant co-scanners
+
+        # Calculate confidence as ratio of actual to expected
+        confidence = actual_visibility / expected_visibility
+
+        # Apply a softer penalty (square root) to avoid being too aggressive
+        return min(1.0, confidence ** 0.5)
 
     def _parse_tracker_timeout(self, raw: object) -> float:
         """Return a safe tracker timeout value in seconds."""

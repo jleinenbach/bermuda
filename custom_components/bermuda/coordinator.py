@@ -2107,8 +2107,30 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             cand_floor = getattr(candidate.scanner_device, "floor_id", None) if candidate else None
             return cur_floor is not None and cand_floor is not None and cur_floor != cand_floor
 
+        def _get_visible_scanners() -> set[str]:
+            """Get addresses of all scanners currently seeing this device."""
+            visible = set()
+            for adv in device.adverts.values():
+                if _is_distance_contender(adv) and adv.scanner_device is not None:
+                    visible.add(adv.scanner_device.address)
+            return visible
+
+        def _get_all_known_scanners_for_area(area_id: str) -> set[str]:
+            """Get all scanner addresses that have ever seen this device in this area."""
+            if area_id not in device.co_visibility_stats:
+                return set()
+            return set(device.co_visibility_stats[area_id].keys())
+
         def _apply_selection(advert: BermudaAdvert | None) -> None:
             device.apply_scanner_selection(advert, nowstamp=nowstamp)
+
+            # Update co-visibility statistics when applying a valid selection
+            if advert is not None and advert.area_id is not None:
+                visible_scanners = _get_visible_scanners()
+                # Include current visible scanners in the set of known scanners for this area
+                known_scanners = _get_all_known_scanners_for_area(advert.area_id)
+                all_candidate_scanners = known_scanners | visible_scanners
+                device.update_co_visibility(advert.area_id, visible_scanners, all_candidate_scanners)
 
         if winner is None:
             candidates: list[tuple[float, BermudaAdvert]] = []
@@ -2175,6 +2197,29 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
         cross_floor = _resolve_cross_floor(device.area_advert, winner)
         streak_target = CROSS_FLOOR_STREAK if cross_floor else SAME_FLOOR_STREAK
+
+        # Co-Visibility Confidence Check: If the winner's area has low co-visibility
+        # confidence (expected scanners are missing) but the incumbent has high
+        # confidence, prefer the incumbent. This helps detect false positives where
+        # a device appears closer to a scanner but the typical co-scanners are missing.
+        if (
+            device.area_advert is not None
+            and winner is not None
+            and winner.area_id is not None
+            and device.area_advert.area_id is not None
+            and winner.area_id != device.area_advert.area_id
+        ):
+            visible_scanners = _get_visible_scanners()
+            winner_confidence = device.get_co_visibility_confidence(winner.area_id, visible_scanners)
+            incumbent_confidence = device.get_co_visibility_confidence(
+                device.area_advert.area_id, visible_scanners
+            )
+
+            # If winner has significantly lower confidence than incumbent, increase streak target
+            # This makes it harder to switch when expected co-scanners are missing
+            if winner_confidence < 0.7 and incumbent_confidence > winner_confidence + 0.2:
+                # Double the streak requirement when co-visibility is suspicious
+                streak_target = max(streak_target, streak_target * 2)
 
         if device.area_advert is None and winner is not None:
             # Bootstrap immediately when we have no area yet; don't wait for streak logic.

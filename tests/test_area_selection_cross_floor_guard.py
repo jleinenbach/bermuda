@@ -702,3 +702,108 @@ def test_non_adjacent_floor_requires_stronger_evidence(monkeypatch):
         f"Unexpected switch to non-adjacent floor. "
         f"Expected floor={original_floor!r}, got={device.floor_id!r}"
     )
+
+
+class TestCoVisibilityLearning:
+    """Tests for co-visibility learning functionality."""
+
+    def test_co_visibility_stats_update(self):
+        """Test that co-visibility statistics are properly updated."""
+        from custom_components.bermuda.bermuda_device import BermudaDevice
+        from unittest.mock import MagicMock
+
+        # Create a mock device
+        mock_coordinator = MagicMock()
+        mock_coordinator.options = {}
+        mock_coordinator.hass = MagicMock()
+        mock_coordinator.hass.data = {}
+
+        # We need to mock area_registry and floor_registry
+        with (
+            MagicMock() as mock_ar,
+            MagicMock() as mock_fr,
+        ):
+            mock_ar.async_get.return_value = MagicMock()
+            mock_fr.async_get.return_value = MagicMock()
+
+            # Create device directly and set required attributes
+            device = object.__new__(BermudaDevice)
+            device.co_visibility_stats = {}
+            device.co_visibility_min_samples = 50
+
+            # Test updating co-visibility
+            visible = {"scanner_a", "scanner_b"}
+            all_scanners = {"scanner_a", "scanner_b", "scanner_c"}
+
+            device.update_co_visibility("area_living", visible, all_scanners)
+
+            assert "area_living" in device.co_visibility_stats
+            assert device.co_visibility_stats["area_living"]["scanner_a"]["seen"] == 1
+            assert device.co_visibility_stats["area_living"]["scanner_a"]["total"] == 1
+            assert device.co_visibility_stats["area_living"]["scanner_c"]["seen"] == 0
+            assert device.co_visibility_stats["area_living"]["scanner_c"]["total"] == 1
+
+    def test_co_visibility_confidence_with_no_data(self):
+        """Test that confidence is 1.0 when no data is available."""
+        from custom_components.bermuda.bermuda_device import BermudaDevice
+
+        device = object.__new__(BermudaDevice)
+        device.co_visibility_stats = {}
+        device.co_visibility_min_samples = 50
+
+        confidence = device.get_co_visibility_confidence("area_unknown", {"scanner_a"})
+        assert confidence == 1.0
+
+    def test_co_visibility_confidence_with_insufficient_samples(self):
+        """Test that confidence is 1.0 when samples are below threshold."""
+        from custom_components.bermuda.bermuda_device import BermudaDevice
+
+        device = object.__new__(BermudaDevice)
+        device.co_visibility_min_samples = 50
+        device.co_visibility_stats = {
+            "area_test": {
+                "scanner_a": {"seen": 10, "total": 10},  # Only 10 samples
+                "scanner_b": {"seen": 5, "total": 10},
+            }
+        }
+
+        confidence = device.get_co_visibility_confidence("area_test", {"scanner_a"})
+        assert confidence == 1.0  # Not enough samples
+
+    def test_co_visibility_confidence_with_all_expected_scanners(self):
+        """Test high confidence when all expected scanners are visible."""
+        from custom_components.bermuda.bermuda_device import BermudaDevice
+
+        device = object.__new__(BermudaDevice)
+        device.co_visibility_min_samples = 50
+        device.co_visibility_stats = {
+            "area_test": {
+                "scanner_a": {"seen": 90, "total": 100},  # 90% visibility
+                "scanner_b": {"seen": 80, "total": 100},  # 80% visibility
+                "scanner_c": {"seen": 10, "total": 100},  # 10% - below threshold
+            }
+        }
+
+        # All significant scanners (a and b) are visible
+        confidence = device.get_co_visibility_confidence(
+            "area_test", {"scanner_a", "scanner_b"}
+        )
+        assert confidence == 1.0  # Full confidence
+
+    def test_co_visibility_confidence_with_missing_expected_scanners(self):
+        """Test reduced confidence when expected scanners are missing."""
+        from custom_components.bermuda.bermuda_device import BermudaDevice
+
+        device = object.__new__(BermudaDevice)
+        device.co_visibility_min_samples = 50
+        device.co_visibility_stats = {
+            "area_test": {
+                "scanner_a": {"seen": 90, "total": 100},  # 90% visibility
+                "scanner_b": {"seen": 80, "total": 100},  # 80% visibility
+            }
+        }
+
+        # Only scanner_a is visible, but scanner_b (80% expected) is missing
+        confidence = device.get_co_visibility_confidence("area_test", {"scanner_a"})
+        # Expected: (0.9) / (0.9 + 0.8) = 0.529, sqrt = 0.727
+        assert 0.5 < confidence < 0.8  # Reduced but not zero
