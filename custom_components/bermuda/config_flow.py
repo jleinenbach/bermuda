@@ -275,15 +275,7 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
                 # We don't "track" scanner devices, per se
                 continue
             if METADEVICE_FMDN_DEVICE in device.metadevice_type:
-                if fmdn_mode != FMDN_MODE_SOURCES_ONLY:
-                    options_fmdn_resolved.append(
-                        SelectOptionDict(
-                            value=device.address,
-                            label=(
-                                f"FMDN resolved: [{device.address}] {name} (sources: {len(device.metadevice_sources)})"
-                            ),
-                        )
-                    )
+                # FMDN Devices get configured automagically (like Private BLE Devices), skip
                 continue
             if METADEVICE_TYPE_FMDN_SOURCE in device.metadevice_type:
                 if fmdn_mode in (FMDN_MODE_BOTH, FMDN_MODE_SOURCES_ONLY):

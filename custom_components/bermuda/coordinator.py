@@ -57,6 +57,7 @@ from .bermuda_irk import BermudaIrkManager
 from .const import (
     _LOGGER,
     _LOGGER_SPAM_LESS,
+    ADDR_TYPE_FMDN_DEVICE,
     ADDR_TYPE_PRIVATE_BLE_DEVICE,
     AREA_MAX_AD_AGE,
     BDADDR_TYPE_NOT_MAC48,
@@ -251,6 +252,10 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         # First time go through the private ble devices to see if there's
         # any there for us to track.
         self._do_private_device_init = True
+
+        # First time go through the googlefindmy (FMDN) devices to see if there's
+        # any there for us to track.
+        self._do_fmdn_device_init = True
 
         # Listen for changes to the device registry and handle them.
         # Primarily for changes to scanners and Private BLE Devices.
@@ -455,6 +460,21 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             # Pull up the device registry entry for the device_id
             if device_entry := self.dr.async_get(ev.data["device_id"]):
                 # Work out if it's a device that interests us and respond appropriately.
+                # First check identifiers for googlefindmy devices
+                for ident_type, ident_id in device_entry.identifiers:
+                    if ident_type == DOMAIN_GOOGLEFINDMY:
+                        _LOGGER.debug("Trigger updating of FMDN Devices (googlefindmy)")
+                        self._do_fmdn_device_init = True
+                        break
+                    if ident_type == DOMAIN:
+                        # One of our sensor devices!
+                        try:
+                            if _device := self.devices[ident_id.lower()]:
+                                _device.name_by_user = device_entry.name_by_user
+                                _device.make_name()
+                        except KeyError:
+                            pass
+
                 for conn_type, _conn_id in device_entry.connections:
                     if conn_type == "private_ble_device":
                         _LOGGER.debug("Trigger updating of Private BLE Devices")
@@ -463,15 +483,6 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                         # this was probably us, nothing else to do
                         pass
                     else:
-                        for ident_type, ident_id in device_entry.identifiers:
-                            if ident_type == DOMAIN:
-                                # One of our sensor devices!
-                                try:
-                                    if _device := self.devices[ident_id.lower()]:
-                                        _device.name_by_user = device_entry.name_by_user
-                                        _device.make_name()
-                                except KeyError:
-                                    pass
                         # might be a scanner, so let's refresh those
                         _LOGGER.debug("Trigger updating of Scanner Listings")
                         self._scanner_init_pending = True
@@ -495,8 +506,9 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                 # If we save the private ble device's device_id into devices[].entry_id
                 # we could check ev.data["device_id"] against it to decide if we should
                 # rescan PBLE devices. But right now we don't, so scan 'em anyway.
-                _LOGGER.debug("Opportunistic trigger of update for Private BLE Devices")
+                _LOGGER.debug("Opportunistic trigger of update for Private BLE and FMDN Devices")
                 self._do_private_device_init = True
+                self._do_fmdn_device_init = True
         # The co-ordinator will only get updates if we have created entities already.
         # Since this might not always be the case (say, private_ble_device loads after
         # we do), then we trigger an update here with the expectation that we got a
@@ -749,9 +761,12 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         """Attach a rotating FMDN source MAC to its stable metadevice container."""
         metadevice = self._get_or_create_device(metadevice_address)
         metadevice.metadevice_type.add(METADEVICE_FMDN_DEVICE)
-        metadevice.address_type = BDADDR_TYPE_NOT_MAC48
+        metadevice.address_type = ADDR_TYPE_FMDN_DEVICE
         metadevice.fmdn_device_id = getattr(match, "device_id", None)
         metadevice.fmdn_canonical_id = getattr(match, "canonical_id", None)
+        # Since the googlefindmy integration discovered this device, we always
+        # create sensors for them (like Private BLE Devices).
+        metadevice.create_sensor = True
 
         if metadevice.address not in self.metadevices:
             self.metadevices[metadevice.address] = metadevice
@@ -1227,6 +1242,78 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                                 pb_entity.entity_id,
                             )
 
+    def discover_fmdn_metadevices(self):
+        """
+        Access the googlefindmy integration to find FMDN metadevices to track.
+
+        This function sets up the skeleton metadevice entry for FMDN (Google Find My Device)
+        devices, ready for update_metadevices to manage. It works similarly to
+        discover_private_ble_metadevices().
+        """
+        if self._do_fmdn_device_init:
+            self._do_fmdn_device_init = False
+            _LOGGER.debug("Refreshing FMDN Device list from googlefindmy integration")
+
+            # Iterate through the googlefindmy integration's entities,
+            # and ensure for each "device" we create a metadevice.
+            fmdn_entries = self.hass.config_entries.async_entries(DOMAIN_GOOGLEFINDMY, include_disabled=False)
+            for fmdn_entry in fmdn_entries:
+                fmdn_entities = self.er.entities.get_entries_for_config_entry_id(fmdn_entry.entry_id)
+                # This will be a list of entities for a given googlefindmy device,
+                # let's pull out the device_tracker one, since it has the device
+                # info we need.
+                for fmdn_entity in fmdn_entities:
+                    if fmdn_entity.domain == Platform.DEVICE_TRACKER:
+                        # We found a *device_tracker* entity for the googlefindmy device.
+                        _LOGGER.debug(
+                            "Found a googlefindmy FMDN Device Tracker! %s",
+                            fmdn_entity.entity_id,
+                        )
+
+                        # Grab the device entry (for the name and device_id)
+                        if fmdn_entity.device_id is not None:
+                            fmdn_device = self.dr.async_get(fmdn_entity.device_id)
+                        else:
+                            fmdn_device = None
+
+                        if fmdn_device is None:
+                            _LOGGER.debug(
+                                "No device registry entry for FMDN entity %s",
+                                fmdn_entity.entity_id,
+                            )
+                            continue
+
+                        # Use the device_id as the basis for the metadevice address
+                        # This matches the format used by _register_fmdn_source when
+                        # receiving advertisements.
+                        metadevice_address = self._format_fmdn_metadevice_address(
+                            fmdn_device.id, fmdn_entity.unique_id
+                        )
+
+                        # Create our Meta-Device and tag it up...
+                        metadevice = self._get_or_create_device(metadevice_address)
+                        # Since user has already configured the googlefindmy Device, we
+                        # always create sensors for them.
+                        metadevice.create_sensor = True
+                        metadevice.metadevice_type.add(METADEVICE_FMDN_DEVICE)
+                        metadevice.address_type = ADDR_TYPE_FMDN_DEVICE
+                        metadevice.fmdn_device_id = fmdn_device.id
+
+                        # Set a nice name
+                        metadevice.name_by_user = fmdn_device.name_by_user
+                        metadevice.name_devreg = fmdn_device.name
+                        metadevice.make_name()
+
+                        # Add metadevice to list so it gets included in update_metadevices
+                        if metadevice.address not in self.metadevices:
+                            self.metadevices[metadevice.address] = metadevice
+
+                        _LOGGER.debug(
+                            "Registered FMDN metadevice %s for %s",
+                            metadevice_address,
+                            fmdn_device.name,
+                        )
+
     def register_ibeacon_source(self, source_device: BermudaDevice) -> None:
         """
         Create or update the meta-device for tracking an iBeacon.
@@ -1301,6 +1388,10 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         # FIXME: Can we delete this? pble's should create at realtime as they
         # are detected now.
         self.discover_private_ble_metadevices()
+
+        # Seed the FMDN (googlefindmy) metadevice skeletons. It will only do anything
+        # if the self._do_fmdn_device_init flag is set.
+        self.discover_fmdn_metadevices()
 
         # iBeacon devices should already have their metadevices created, so nothing more to
         # set up for them.

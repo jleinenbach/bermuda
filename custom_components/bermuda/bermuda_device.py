@@ -59,6 +59,7 @@ from .const import (
     FMDN_MODE_SOURCES_ONLY,
     ICON_DEFAULT_AREA,
     ICON_DEFAULT_FLOOR,
+    METADEVICE_FMDN_DEVICE,
     METADEVICE_IBEACON_DEVICE,
     METADEVICE_PRIVATE_BLE_DEVICE,
     METADEVICE_TYPE_FMDN_SOURCE,
@@ -995,7 +996,19 @@ class BermudaDevice(dict):
         if not isinstance(configured_devices_option, list):
             configured_devices_option = []
         configured_devices = {normalize_address(addr) for addr in configured_devices_option if isinstance(addr, str)}
-        self.create_sensor = self.address in configured_devices
+
+        # Auto-tracked metadevices (Private BLE and FMDN devices) should always
+        # have create_sensor = True. This was set by discover_private_ble_metadevices()
+        # or _register_fmdn_source() / discover_fmdn_metadevices(). Don't overwrite it.
+        is_auto_tracked_metadevice = (
+            METADEVICE_PRIVATE_BLE_DEVICE in self.metadevice_type
+            or METADEVICE_FMDN_DEVICE in self.metadevice_type
+        )
+        if is_auto_tracked_metadevice:
+            # Preserve the create_sensor value set during discovery/registration
+            pass
+        else:
+            self.create_sensor = self.address in configured_devices
 
         fmdn_mode = self.options.get(CONF_FMDN_MODE, DEFAULT_FMDN_MODE)
         if fmdn_mode not in (FMDN_MODE_RESOLVED_ONLY, FMDN_MODE_BOTH, FMDN_MODE_SOURCES_ONLY):
