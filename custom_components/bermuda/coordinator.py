@@ -1914,6 +1914,8 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             # require stronger evidence for a cross-floor switch.
             if cross_floor and inc_floor_id is not None:
                 incumbent_floor_witnesses = 0
+                # Collect floor levels from all contending scanners for sandwich logic
+                witness_floor_levels: set[int] = set()
                 for witness_adv in device.adverts.values():
                     if not _is_distance_contender(witness_adv):
                         continue
@@ -1921,8 +1923,11 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                     if witness_scanner is None:
                         continue
                     witness_floor = getattr(witness_scanner, "floor_id", None)
+                    witness_level = getattr(witness_scanner, "floor_level", None)
                     if witness_floor == inc_floor_id:
                         incumbent_floor_witnesses += 1
+                    if isinstance(witness_level, int):
+                        witness_floor_levels.add(witness_level)
 
                 # If 2+ scanners on the current floor see the device, increase thresholds
                 if incumbent_floor_witnesses >= 2:
@@ -1930,6 +1935,38 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                     extra_margin = 0.10 * (incumbent_floor_witnesses - 1)
                     cross_floor_margin = min(0.60, cross_floor_margin + extra_margin)
                     cross_floor_escape = min(0.80, cross_floor_escape + extra_margin)
+
+                # Floor-Sandwich Logic: If the incumbent floor is "sandwiched" between
+                # floors that also see the device, it's very likely the device is actually
+                # on the incumbent floor. Example: If KG (-1), EG (0), and OG (1) all see
+                # the device and incumbent is EG (0), then EG is most probable.
+                if (
+                    isinstance(inc_floor_level, int)
+                    and len(witness_floor_levels) >= 2
+                ):
+                    levels_below = [lvl for lvl in witness_floor_levels if lvl < inc_floor_level]
+                    levels_above = [lvl for lvl in witness_floor_levels if lvl > inc_floor_level]
+
+                    # Check if incumbent floor is sandwiched (floors both above AND below see device)
+                    is_sandwiched = bool(levels_below) and bool(levels_above)
+
+                    if is_sandwiched:
+                        # Strong evidence that device is on the middle floor
+                        # Add significant margin boost (20% base + 5% per extra sandwiching floor)
+                        sandwich_floors = len(levels_below) + len(levels_above)
+                        sandwich_margin = 0.20 + 0.05 * (sandwich_floors - 2)
+                        cross_floor_margin = min(0.75, cross_floor_margin + sandwich_margin)
+                        cross_floor_escape = min(0.90, cross_floor_escape + sandwich_margin)
+
+                    # Adjacent-floor bonus: If challenger is NOT adjacent to incumbent,
+                    # require even stronger evidence (BLE rarely skips floors cleanly)
+                    if isinstance(chal_floor_level, int):
+                        floor_distance = abs(chal_floor_level - inc_floor_level)
+                        if floor_distance >= 2:
+                            # Non-adjacent floors: add 15% per floor gap beyond 1
+                            skip_margin = 0.15 * (floor_distance - 1)
+                            cross_floor_margin = min(0.80, cross_floor_margin + skip_margin)
+                            cross_floor_escape = min(0.95, cross_floor_escape + skip_margin)
 
             # Same area. Confirm freshness and distance.
             if (

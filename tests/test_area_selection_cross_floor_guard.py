@@ -537,3 +537,168 @@ def test_same_floor_confirmation_allows_strong_switch(monkeypatch):
         f"Expected challenger to win with strong evidence. "
         f"Got area={device.area_name!r}, floor={device.floor_id!r}"
     )
+
+
+def test_floor_sandwich_logic_blocks_switch(monkeypatch):
+    """When a device is seen by scanners on floors above AND below the incumbent,
+    the incumbent floor (middle) is most likely correct - block switches."""
+    now = 7000.0
+    monkeypatch.setattr("custom_components.bermuda.coordinator.monotonic_time_coarse", lambda: now)
+    coord = _build_coord()
+
+    # Three floors: Basement (-1), Ground (0), Upper (1)
+    scanner_basement = FakeScanner(
+        name="Scanner Basement",
+        last_seen=now - 0.01,
+        floor_id="floor_basement",
+        floor_name="Basement",
+        area_id="area_basement",
+        area_name="Keller",
+        floor_level=-1,
+    )
+    scanner_ground = FakeScanner(
+        name="Scanner Ground",
+        last_seen=now - 0.01,
+        floor_id="floor_ground",
+        floor_name="Ground",
+        area_id="area_ground",
+        area_name="Erdgeschoss",
+        floor_level=0,
+    )
+    scanner_upper = FakeScanner(
+        name="Scanner Upper",
+        last_seen=now - 0.01,
+        floor_id="floor_upper",
+        floor_name="Upper",
+        area_id="area_upper",
+        area_name="Obergeschoss",
+        floor_level=1,
+    )
+
+    # Incumbent is on ground floor (0), device is seen by all three floors
+    incumbent = FakeAdvert(
+        name=scanner_ground.name,
+        scanner_device=scanner_ground,
+        area_id=scanner_ground.area_id,
+        area_name=scanner_ground.area_name,
+        rssi_distance=2.5,
+        rssi=-85,
+        stamp=now - 0.01,
+        hist=[2.5] * 10,
+    )
+    # Basement scanner sees it too
+    advert_basement = FakeAdvert(
+        name=scanner_basement.name,
+        scanner_device=scanner_basement,
+        area_id=scanner_basement.area_id,
+        area_name=scanner_basement.area_name,
+        rssi_distance=4.0,
+        rssi=-90,
+        stamp=now - 0.02,
+        hist=[4.0] * 10,
+    )
+    # Upper floor scanner is closer (would normally win with ~40% diff)
+    challenger = FakeAdvert(
+        name=scanner_upper.name,
+        scanner_device=scanner_upper,
+        area_id=scanner_upper.area_id,
+        area_name=scanner_upper.area_name,
+        rssi_distance=1.5,  # ~50% closer than incumbent
+        rssi=-78,
+        stamp=now - 0.01,
+        hist=[1.5] * 10,
+    )
+
+    device = FakeDevice(
+        name="sandwiched tag",
+        incumbent=incumbent,
+        adverts={
+            "ground": incumbent,
+            "basement": advert_basement,
+            "upper": challenger,
+        },
+    )
+
+    original_floor = device.floor_id
+
+    # Run selection multiple times
+    for _ in range(CROSS_FLOOR_STREAK + 3):
+        BermudaDataUpdateCoordinator._refresh_area_by_min_distance(coord, device)
+
+    # With sandwich logic, the ground floor (middle) should be protected
+    # The 50% difference is not enough to overcome the sandwich margin boost
+    assert device.floor_id == original_floor, (
+        f"Unexpected switch from sandwiched floor. "
+        f"Expected floor={original_floor!r}, got={device.floor_id!r}"
+    )
+
+
+def test_non_adjacent_floor_requires_stronger_evidence(monkeypatch):
+    """Switching to a non-adjacent floor (skipping a floor) should require
+    much stronger evidence since BLE rarely skips floors cleanly."""
+    now = 8000.0
+    monkeypatch.setattr("custom_components.bermuda.coordinator.monotonic_time_coarse", lambda: now)
+    coord = _build_coord()
+
+    # Three floors: Basement (-1), Ground (0), Upper (1)
+    scanner_basement = FakeScanner(
+        name="Scanner Basement",
+        last_seen=now - 0.01,
+        floor_id="floor_basement",
+        floor_name="Basement",
+        area_id="area_basement",
+        area_name="Keller",
+        floor_level=-1,
+    )
+    scanner_upper = FakeScanner(
+        name="Scanner Upper",
+        last_seen=now - 0.01,
+        floor_id="floor_upper",
+        floor_name="Upper",
+        area_id="area_upper",
+        area_name="Obergeschoss",
+        floor_level=1,
+    )
+
+    # Incumbent is in basement (-1)
+    incumbent = FakeAdvert(
+        name=scanner_basement.name,
+        scanner_device=scanner_basement,
+        area_id=scanner_basement.area_id,
+        area_name=scanner_basement.area_name,
+        rssi_distance=3.0,
+        rssi=-88,
+        stamp=now - 0.01,
+        hist=[3.0] * 10,
+    )
+    # Challenger is on upper floor (+1) - skipping ground floor (distance = 2)
+    # Even with ~45% better distance, the floor skip penalty should block this
+    challenger = FakeAdvert(
+        name=scanner_upper.name,
+        scanner_device=scanner_upper,
+        area_id=scanner_upper.area_id,
+        area_name=scanner_upper.area_name,
+        rssi_distance=1.7,  # ~55% closer
+        rssi=-80,
+        stamp=now - 0.01,
+        hist=[1.7] * 10,
+    )
+
+    device = FakeDevice(
+        name="basement tag",
+        incumbent=incumbent,
+        adverts={"basement": incumbent, "upper": challenger},
+    )
+
+    original_floor = device.floor_id
+
+    # Run selection multiple times
+    for _ in range(CROSS_FLOOR_STREAK + 3):
+        BermudaDataUpdateCoordinator._refresh_area_by_min_distance(coord, device)
+
+    # With floor skip penalty (15% extra margin for skipping 1 floor),
+    # the 55% difference should NOT be enough
+    assert device.floor_id == original_floor, (
+        f"Unexpected switch to non-adjacent floor. "
+        f"Expected floor={original_floor!r}, got={device.floor_id!r}"
+    )
