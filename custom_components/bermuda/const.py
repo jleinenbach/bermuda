@@ -71,8 +71,15 @@ DISTANCE_TIMEOUT = 30  # seconds to wait before marking a sensor distance measur
 # as unknown/none/stale/away. Separate from device_tracker.
 DISTANCE_INFINITE = 999  # arbitrary distance for infinite/unknown rssi range
 
-AREA_MAX_AD_AGE: Final = max(DISTANCE_TIMEOUT / 3, UPDATE_INTERVAL * 2)
-# Adverts older than this can not win an area contest.
+AREA_MAX_AD_AGE_DEFAULT: Final = 60.0
+# Default maximum age for adverts in distance-based selection when adaptive timeout unavailable.
+# The actual timeout is adaptive per-advert based on observed advertisement intervals.
+# See BermudaAdvert.adaptive_timeout for the per-device adaptive logic (uses MAX of intervals × 2).
+AREA_MAX_AD_AGE_LIMIT: Final = 360.0
+# Absolute maximum (6 minutes) for adaptive timeout - covers deep sleep scenarios.
+# Using 360s instead of 300s provides margin for timing jitter and BLE stack delays.
+AREA_MAX_AD_AGE: Final = AREA_MAX_AD_AGE_DEFAULT
+# Backward compatibility alias - used by bermuda_device.py for area_is_stale checks.
 AREA_RETENTION_SECONDS: Final = 15 * 60
 # Keep the last known area/distance/floor for low-advertising trackers for a reasonable
 # window, independent of selection freshness.
