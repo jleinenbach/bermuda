@@ -46,12 +46,18 @@ def coordinator(hass: HomeAssistant) -> BermudaDataUpdateCoordinator:
 
 
 def test_format_fmdn_metadevice_key_stable(coordinator: BermudaDataUpdateCoordinator) -> None:
-    """Ensure FMDN metadevice keys remain identifier-based."""
+    """Ensure FMDN metadevice keys use device_id for stability.
 
+    Previously used canonical_id which caused duplicate entities after reboots
+    when execution order changed between _register_fmdn_source() and
+    discover_fmdn_metadevices(). Now always uses device_id (HA Device Registry ID).
+    """
+    # device_id is always used, canonical_id is ignored for address generation
     key = coordinator._format_fmdn_metadevice_address("DEVICE-ID", "CANONICAL-01")
-    assert key == "fmdn:canonical-01"
+    assert key == "fmdn:device-id"
     assert key.startswith("fmdn:")
 
+    # Even without canonical_id, the device_id is used
     fallback_key = coordinator._format_fmdn_metadevice_address("Device-Only", None)
     assert fallback_key == "fmdn:device-only"
 
@@ -198,9 +204,12 @@ def test_shared_match_without_identifiers_skipped(
     assert METADEVICE_TYPE_FMDN_SOURCE in source_device.metadevice_type
 
 
-def test_deduplicates_metadevices_by_canonical_id(hass, coordinator):
-    """Ensure multiple sources map to the same canonical metadevice."""
+def test_deduplicates_metadevices_by_device_id(hass, coordinator):
+    """Ensure multiple sources map to the same metadevice via device_id.
 
+    The metadevice address is now based solely on device_id (HA Device Registry ID)
+    for stability across reboots, regardless of canonical_id format variations.
+    """
     resolver = MagicMock()
 
     def _resolver(payload):

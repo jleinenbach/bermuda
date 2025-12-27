@@ -713,9 +713,23 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         return cast("EidResolver", resolver)
 
     def _format_fmdn_metadevice_address(self, device_id: str, canonical_id: str | None) -> str:
-        """Return the canonical key for an FMDN metadevice."""
-        base = canonical_id or device_id
-        return normalize_identifier(f"fmdn:{base}")
+        """Return the canonical key for an FMDN metadevice.
+
+        Always uses device_id (HA Device Registry ID) for stable addresses across restarts.
+        Previously, using canonical_id caused duplicate entities because:
+        1. _register_fmdn_source() gets canonical_id from EID resolver
+        2. discover_fmdn_metadevices() extracts it from Device Registry identifiers
+        3. These can have different formats depending on GoogleFindMy version/config
+        4. Whichever function runs first determines the address
+        5. After reboot, execution order can change → different address → different
+           unique_id → persisted entities with old unique_id + new entities = duplicates
+
+        The device_id (HA Device Registry ID) is stable and unique per device entry,
+        making the metadevice address deterministic regardless of execution order.
+        """
+        # canonical_id is kept as parameter for future use (logging, diagnostics)
+        # but not used for address generation to ensure stability
+        return normalize_identifier(f"fmdn:{device_id}")
 
     @staticmethod
     def _normalize_eid_bytes(eid_data: bytes | bytearray | memoryview | str | None) -> bytes | None:
