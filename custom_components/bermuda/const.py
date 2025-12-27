@@ -81,7 +81,8 @@ DISTANCE_RETENTION_SECONDS: Final = AREA_RETENTION_SECONDS
 # Evidence window for adverts to participate in selection/fallback. Prevents immortal stale adverts.
 EVIDENCE_WINDOW_SECONDS: Final = AREA_RETENTION_SECONDS
 CROSS_FLOOR_MIN_HISTORY: Final = 8  # Minimum history length before cross-floor wins via historical checks.
-SAME_FLOOR_STREAK: Final = 1  # Consecutive wins needed before applying a same-floor switch.
+SAME_FLOOR_MIN_HISTORY: Final = 3  # Minimum history length before same-floor wins can occur.
+SAME_FLOOR_STREAK: Final = 2  # Consecutive wins needed before applying a same-floor switch.
 CROSS_FLOOR_STREAK: Final = 3  # Consecutive wins needed before applying a cross-floor switch.
 
 # Beacon-handling constants. Source devices are tracked by MAC-address and are the

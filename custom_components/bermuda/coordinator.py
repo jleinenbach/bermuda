@@ -75,6 +75,7 @@ from .const import (
     CONF_UPDATE_INTERVAL,
     CROSS_FLOOR_MIN_HISTORY,
     CROSS_FLOOR_STREAK,
+    SAME_FLOOR_MIN_HISTORY,
     DATA_EID_RESOLVER,
     DEFAULT_ATTENUATION,
     DEFAULT_DEVTRACK_TIMEOUT,
@@ -2023,6 +2024,13 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                 )
                 if not (sustained_cross_floor or tests.pcnt_diff >= cross_floor_escape):
                     tests.reason = "LOSS - cross-floor evidence insufficient"
+                    continue
+            else:
+                # Same-floor: require minimum history before allowing a win.
+                # This prevents a scanner with little/no history from immediately
+                # "winning" just because it reports a closer distance.
+                if len(challenger_hist_all) < SAME_FLOOR_MIN_HISTORY:
+                    tests.reason = "LOSS - same-floor history too short"
                     continue
 
             if tests.pcnt_diff < pdiff_outright:
