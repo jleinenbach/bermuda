@@ -1084,7 +1084,8 @@ class BermudaDevice(dict):
                 )
 
         # Update whether this device has been seen recently, for device_tracker:
-        if self.last_seen is not None:
+        # last_seen is initialized to 0, so we use truthy check to detect "never seen"
+        if self.last_seen:
             timeout = self._parse_tracker_timeout(self.options.get(CONF_DEVTRACK_TIMEOUT))
             if monotonic_time_coarse() - timeout < self.last_seen:
                 self.zone = STATE_HOME
@@ -1096,6 +1097,7 @@ class BermudaDevice(dict):
                     self.zone = STATE_NOT_HOME
                 # else: keep current zone state (don't change to away during network outage)
         else:
+            # Device has never been seen (last_seen is 0/None), always mark as not_home
             self.zone = STATE_NOT_HOME
 
         configured_devices_option = self.options.get(CONF_DEVICES, [])
