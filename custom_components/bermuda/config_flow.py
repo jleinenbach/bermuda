@@ -21,6 +21,7 @@ from homeassistant.helpers.selector import (
 )
 
 from .const import (
+    ADDR_TYPE_FMDN_DEVICE,
     ADDR_TYPE_IBEACON,
     ADDR_TYPE_PRIVATE_BLE_DEVICE,
     BDADDR_TYPE_RANDOM_RESOLVABLE,
@@ -240,16 +241,28 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
 
     async def async_step_selectdevices(self, user_input=None):
         """Handle a flow initialized by the user."""
+        coordinator = self.config_entry.runtime_data.coordinator
+
+        # Build set of auto-configured device addresses (these are managed by other integrations)
+        auto_configured_addresses: set[str] = set()
+        for metadevice in coordinator.metadevices.values():
+            if metadevice.address_type in (ADDR_TYPE_PRIVATE_BLE_DEVICE, ADDR_TYPE_FMDN_DEVICE):
+                auto_configured_addresses.add(normalize_address(metadevice.address))
+
         if user_input is not None:
             if user_input.get(CONF_DEVICES):
+                # Filter out auto-configured devices from the saved config
+                # (they are managed by their respective integrations)
                 user_input[CONF_DEVICES] = [
-                    normalize_address(addr) for addr in user_input[CONF_DEVICES] if isinstance(addr, str)
+                    normalize_address(addr)
+                    for addr in user_input[CONF_DEVICES]
+                    if isinstance(addr, str) and normalize_address(addr) not in auto_configured_addresses
                 ]
             self.options.update(user_input)
             return await self._update_options()
 
         # Grab the co-ordinator's device list so we can build a selector from it.
-        self.devices = self.config_entry.runtime_data.coordinator.devices
+        self.devices = coordinator.devices
         configured_devices_option = self.options.get(CONF_DEVICES, [])
         if not isinstance(configured_devices_option, list):
             configured_devices_option = []
@@ -260,6 +273,7 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
 
         # Where we store the options before building the selector
         options_list = []
+        options_auto_configured = []  # Auto-configured devices (Private BLE, FMDN) - shown first
         options_fmdn_resolved = []
         options_fmdn_sources = []
         options_metadevices = []  # These will be first in the list
@@ -275,7 +289,14 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
                 # We don't "track" scanner devices, per se
                 continue
             if METADEVICE_FMDN_DEVICE in device.metadevice_type:
-                # FMDN Devices get configured automagically (like Private BLE Devices), skip
+                # FMDN Devices get configured automagically via googlefindmy integration
+                # Show them in the list so users can see what's being tracked
+                options_auto_configured.append(
+                    SelectOptionDict(
+                        value=device.address,
+                        label=f"[Auto: Google Find My] {name}",
+                    )
+                )
                 continue
             if METADEVICE_TYPE_FMDN_SOURCE in device.metadevice_type:
                 if fmdn_mode in (FMDN_MODE_BOTH, FMDN_MODE_SOURCES_ONLY):
@@ -287,7 +308,14 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
                     )
                 continue
             if device.address_type == ADDR_TYPE_PRIVATE_BLE_DEVICE:
-                # Private BLE Devices get configured automagically, skip
+                # Private BLE Devices get configured automagically via private_ble_device integration
+                # Show them in the list so users can see what's being tracked
+                options_auto_configured.append(
+                    SelectOptionDict(
+                        value=device.address,
+                        label=f"[Auto: Private BLE Device] {name}",
+                    )
+                )
                 continue
             if device.address_type == ADDR_TYPE_IBEACON:
                 # This is an iBeacon meta-device
@@ -329,11 +357,14 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
             )
 
         # build the final list with "preferred" devices first.
+        # Auto-configured devices appear first (so users can see what's being auto-tracked)
+        options_auto_configured.sort(key=lambda item: item["label"])
         options_fmdn_resolved.sort(key=lambda item: item["label"])
         options_metadevices.sort(key=lambda item: item["label"])
         options_otherdevices.sort(key=lambda item: item["label"])
         options_randoms.sort(key=lambda item: item["label"])
         options_fmdn_sources.sort(key=lambda item: item["label"])
+        options_list.extend(options_auto_configured)
         options_list.extend(options_fmdn_resolved)
         options_list.extend(options_metadevices)
         options_list.extend(options_otherdevices)
@@ -348,10 +379,14 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
             ):
                 options_list.append(SelectOptionDict(value=address, label=f"[{address}] (saved)"))
 
+        # Default selection includes both manually configured devices AND auto-configured devices
+        # (auto-configured devices are shown as selected since they're actively being tracked)
+        default_selection = sorted(configured_devices | auto_configured_addresses)
+
         data_schema = {
             vol.Optional(
                 CONF_DEVICES,
-                default=sorted(configured_devices),
+                default=default_selection,
             ): SelectSelector(SelectSelectorConfig(options=options_list, multiple=True)),
         }
 
