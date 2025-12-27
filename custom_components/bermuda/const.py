@@ -75,8 +75,9 @@ AREA_MAX_AD_AGE_DEFAULT: Final = 60.0
 # Default maximum age for adverts in distance-based selection when adaptive timeout unavailable.
 # The actual timeout is adaptive per-advert based on observed advertisement intervals.
 # See BermudaAdvert.adaptive_timeout for the per-device adaptive logic (uses MAX of intervals × 2).
-AREA_MAX_AD_AGE_LIMIT: Final = 300.0
-# Absolute maximum (5 minutes) for adaptive timeout - covers deep sleep scenarios.
+AREA_MAX_AD_AGE_LIMIT: Final = 360.0
+# Absolute maximum (6 minutes) for adaptive timeout - covers deep sleep scenarios.
+# Using 360s instead of 300s provides margin for timing jitter and BLE stack delays.
 AREA_RETENTION_SECONDS: Final = 15 * 60
 # Keep the last known area/distance/floor for low-advertising trackers for a reasonable
 # window, independent of selection freshness.

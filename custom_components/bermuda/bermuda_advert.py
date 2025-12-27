@@ -21,6 +21,8 @@ from bluetooth_data_tools import monotonic_time_coarse
 from .const import (
     _LOGGER,
     _LOGGER_SPAM_LESS,
+    AREA_MAX_AD_AGE_DEFAULT,
+    AREA_MAX_AD_AGE_LIMIT,
     CONF_ATTENUATION,
     CONF_MAX_VELOCITY,
     CONF_REF_POWER,
@@ -92,7 +94,7 @@ class BermudaAdvert(dict):
         self.rssi_distance: float | None = None
         self.rssi_distance_raw: float
         self.stale_update_count = 0  # How many times we did an update but no new stamps were found.
-        self.adaptive_timeout: float = 60.0  # Calculated timeout based on device's advertisement pattern
+        self.adaptive_timeout: float = AREA_MAX_AD_AGE_DEFAULT  # Calculated based on device's ad pattern
         self.hist_stamp: list[float] = []
         self.hist_rssi: list[int] = []
         self.hist_distance: list[float] = []
@@ -320,8 +322,7 @@ class BermudaAdvert(dict):
 
         # ADAPTIVE TIMEOUT: Use device's MAXIMUM observed advertisement interval to determine staleness.
         # Using MAX instead of AVG ensures we don't mark devices as stale during deep sleep cycles.
-        # Smartphones can have intervals ranging from 1-10s (active) to 30-300s (deep sleep).
-        # Minimum timeout is 60s to prevent flickering; maximum is 300s (5 min) for deep sleep.
+        # Smartphones can have intervals ranging from 1-10s (active) to 30-360s (deep sleep).
         elif new_stamp is None:
             if len(self.hist_stamp) >= 2:
                 # Calculate intervals between consecutive timestamps
@@ -332,9 +333,11 @@ class BermudaAdvert(dict):
                 ]
                 if intervals:
                     max_interval = max(intervals)
-                    # Use 2x maximum interval, clamped between 60-300 seconds
+                    # Use 2x maximum interval, clamped between DEFAULT (60s) and LIMIT (360s)
                     # Using MAX (not AVG) ensures deep sleep intervals are respected
-                    self.adaptive_timeout = max(60.0, min(300.0, max_interval * 2))
+                    self.adaptive_timeout = max(
+                        AREA_MAX_AD_AGE_DEFAULT, min(AREA_MAX_AD_AGE_LIMIT, max_interval * 2)
+                    )
 
             if self.stamp is None or self.stamp < monotonic_time_coarse() - self.adaptive_timeout:
                 self.rssi_distance = None
