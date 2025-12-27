@@ -157,3 +157,75 @@ def test_apply_scanner_selection_accepts_nowstamp(bermuda_device):
 
     assert bermuda_device.area_id == "area-new"
     assert bermuda_device.last_seen == pytest.approx(100.0)
+
+
+class TestScannerAwareAwayLogic:
+    """Tests for scanner-aware away logic during network outages."""
+
+    def test_device_stays_home_when_all_scanners_offline(self, mock_coordinator):
+        """Test that device stays 'home' when stale but all scanners are offline."""
+        from custom_components.bermuda.const import CONF_DEVTRACK_TIMEOUT, DEFAULT_DEVTRACK_TIMEOUT
+
+        mock_coordinator.options[CONF_DEVTRACK_TIMEOUT] = DEFAULT_DEVTRACK_TIMEOUT
+        mock_coordinator.count_active_scanners.return_value = 0  # All scanners offline
+
+        device = BermudaDevice(address="AA:BB:CC:DD:EE:FF", coordinator=mock_coordinator)
+        device.zone = "home"  # Device was home before network outage
+        device.last_seen = 1.0  # Very old timestamp (stale)
+
+        with patch("custom_components.bermuda.bermuda_device.monotonic_time_coarse", return_value=1000.0):
+            device.calculate_data()
+
+        # Device should remain "home" because no scanners are active
+        assert device.zone == "home"
+
+    def test_device_becomes_away_when_scanners_active(self, mock_coordinator):
+        """Test that device becomes 'not_home' when stale and scanners are active."""
+        from custom_components.bermuda.const import CONF_DEVTRACK_TIMEOUT, DEFAULT_DEVTRACK_TIMEOUT
+
+        mock_coordinator.options[CONF_DEVTRACK_TIMEOUT] = DEFAULT_DEVTRACK_TIMEOUT
+        mock_coordinator.count_active_scanners.return_value = 2  # Scanners are active
+
+        device = BermudaDevice(address="AA:BB:CC:DD:EE:FF", coordinator=mock_coordinator)
+        device.zone = "home"  # Device was home
+        device.last_seen = 1.0  # Very old timestamp (stale)
+
+        with patch("custom_components.bermuda.bermuda_device.monotonic_time_coarse", return_value=1000.0):
+            device.calculate_data()
+
+        # Device should be "not_home" because scanners are active but device is stale
+        assert device.zone == "not_home"
+
+    def test_device_stays_home_when_recently_seen(self, mock_coordinator):
+        """Test that device stays 'home' when recently seen regardless of scanner count."""
+        from custom_components.bermuda.const import CONF_DEVTRACK_TIMEOUT, DEFAULT_DEVTRACK_TIMEOUT
+
+        mock_coordinator.options[CONF_DEVTRACK_TIMEOUT] = DEFAULT_DEVTRACK_TIMEOUT
+        mock_coordinator.count_active_scanners.return_value = 2  # Scanners are active
+
+        device = BermudaDevice(address="AA:BB:CC:DD:EE:FF", coordinator=mock_coordinator)
+        device.zone = "not_home"  # Start as not_home
+        device.last_seen = 995.0  # Recently seen (within timeout)
+
+        with patch("custom_components.bermuda.bermuda_device.monotonic_time_coarse", return_value=1000.0):
+            device.calculate_data()
+
+        # Device should be "home" because it was recently seen
+        assert device.zone == "home"
+
+    def test_device_away_when_never_seen(self, mock_coordinator):
+        """Test that device is 'not_home' when never seen (last_seen is 0)."""
+        from custom_components.bermuda.const import CONF_DEVTRACK_TIMEOUT, DEFAULT_DEVTRACK_TIMEOUT
+
+        mock_coordinator.options[CONF_DEVTRACK_TIMEOUT] = DEFAULT_DEVTRACK_TIMEOUT
+        mock_coordinator.count_active_scanners.return_value = 0  # Even with no scanners
+
+        device = BermudaDevice(address="AA:BB:CC:DD:EE:FF", coordinator=mock_coordinator)
+        device.zone = "home"  # Start as home
+        device.last_seen = 0  # Never seen (falsy value)
+
+        with patch("custom_components.bermuda.bermuda_device.monotonic_time_coarse", return_value=1000.0):
+            device.calculate_data()
+
+        # Device should be "not_home" because it was never actually seen
+        assert device.zone == "not_home"

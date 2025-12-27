@@ -1089,7 +1089,12 @@ class BermudaDevice(dict):
             if monotonic_time_coarse() - timeout < self.last_seen:
                 self.zone = STATE_HOME
             else:
-                self.zone = STATE_NOT_HOME
+                # Device is stale, but only mark as away if at least one scanner is active.
+                # This prevents false "away" states during network outages (e.g., router restart).
+                active_scanners = self._coordinator.count_active_scanners()
+                if active_scanners > 0:
+                    self.zone = STATE_NOT_HOME
+                # else: keep current zone state (don't change to away during network outage)
         else:
             self.zone = STATE_NOT_HOME
 
