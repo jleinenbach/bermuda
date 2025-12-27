@@ -52,7 +52,7 @@
       },
       "selectdevices": {
         "title": "Select Devices",
-        "description": "Choose which devices you wish to track. If no devices appear below, then Bermuda is not seeing any data coming from Bluetooth scanners. Ensure you have an esphome ble_proxy device, Shelly devices with bluetooth proxy configured or a local bluetooth adaptor."
+        "description": "Choose which devices you wish to track. If no devices appear below, then Bermuda is not seeing any data coming from Bluetooth scanners. Ensure you have an esphome ble_proxy device, Shelly devices with bluetooth proxy configured or a local bluetooth adaptor.\n\nDevices marked with **[Auto: ...]** are automatically tracked via their respective integrations (Private BLE Device or Google Find My). These cannot be deselected here - manage them through their source integration."
       },
       "calibration1_global": {
         "title": "Calibration 1: Global",
