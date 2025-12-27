@@ -78,6 +78,8 @@ AREA_MAX_AD_AGE_DEFAULT: Final = 60.0
 AREA_MAX_AD_AGE_LIMIT: Final = 360.0
 # Absolute maximum (6 minutes) for adaptive timeout - covers deep sleep scenarios.
 # Using 360s instead of 300s provides margin for timing jitter and BLE stack delays.
+AREA_MAX_AD_AGE: Final = AREA_MAX_AD_AGE_DEFAULT
+# Backward compatibility alias - used by bermuda_device.py for area_is_stale checks.
 AREA_RETENTION_SECONDS: Final = 15 * 60
 # Keep the last known area/distance/floor for low-advertising trackers for a reasonable
 # window, independent of selection freshness.
