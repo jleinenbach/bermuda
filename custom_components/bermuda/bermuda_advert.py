@@ -92,6 +92,7 @@ class BermudaAdvert(dict):
         self.rssi_distance: float | None = None
         self.rssi_distance_raw: float
         self.stale_update_count = 0  # How many times we did an update but no new stamps were found.
+        self.adaptive_timeout: float = 60.0  # Calculated timeout based on device's advertisement pattern
         self.hist_stamp: list[float] = []
         self.hist_rssi: list[int] = []
         self.hist_distance: list[float] = []
@@ -317,24 +318,25 @@ class BermudaAdvert(dict):
                 self.hist_distance_by_interval.clear()
                 self.hist_distance_by_interval.append(self.rssi_distance_raw)
 
-        # ADAPTIVE TIMEOUT: Use device's typical advertisement interval to determine staleness.
-        # Calculate average interval from recent timestamps, then use 3x that value.
-        # Minimum timeout is 60s to prevent flickering; maximum is 180s for slow advertisers.
+        # ADAPTIVE TIMEOUT: Use device's MAXIMUM observed advertisement interval to determine staleness.
+        # Using MAX instead of AVG ensures we don't mark devices as stale during deep sleep cycles.
+        # Smartphones can have intervals ranging from 1-10s (active) to 30-300s (deep sleep).
+        # Minimum timeout is 60s to prevent flickering; maximum is 300s (5 min) for deep sleep.
         elif new_stamp is None:
-            adaptive_timeout = 60.0  # Default minimum
             if len(self.hist_stamp) >= 2:
                 # Calculate intervals between consecutive timestamps
                 intervals = [
                     self.hist_stamp[i] - self.hist_stamp[i + 1]
-                    for i in range(min(5, len(self.hist_stamp) - 1))
+                    for i in range(min(10, len(self.hist_stamp) - 1))
                     if self.hist_stamp[i + 1] is not None
                 ]
                 if intervals:
-                    avg_interval = sum(intervals) / len(intervals)
-                    # Use 3x average interval, clamped between 60-180 seconds
-                    adaptive_timeout = max(60.0, min(180.0, avg_interval * 3))
+                    max_interval = max(intervals)
+                    # Use 2x maximum interval, clamped between 60-300 seconds
+                    # Using MAX (not AVG) ensures deep sleep intervals are respected
+                    self.adaptive_timeout = max(60.0, min(300.0, max_interval * 2))
 
-            if self.stamp is None or self.stamp < monotonic_time_coarse() - adaptive_timeout:
+            if self.stamp is None or self.stamp < monotonic_time_coarse() - self.adaptive_timeout:
                 self.rssi_distance = None
                 if len(self.hist_distance_by_interval) > 0:
                     self.hist_distance_by_interval.clear()

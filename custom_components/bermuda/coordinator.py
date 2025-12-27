@@ -59,7 +59,8 @@ from .const import (
     _LOGGER_SPAM_LESS,
     ADDR_TYPE_FMDN_DEVICE,
     ADDR_TYPE_PRIVATE_BLE_DEVICE,
-    AREA_MAX_AD_AGE,
+    AREA_MAX_AD_AGE_DEFAULT,
+    AREA_MAX_AD_AGE_LIMIT,
     BDADDR_TYPE_NOT_MAC48,
     BDADDR_TYPE_RANDOM_RESOLVABLE,
     CONF_ATTENUATION,
@@ -1630,7 +1631,14 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         if advert.rssi_distance is not None:
             return advert.rssi_distance
 
-        if advert.stamp < nowstamp - AREA_MAX_AD_AGE:
+        # Use the advert's adaptive timeout if available, otherwise fall back to default.
+        # The adaptive timeout is calculated per-advert based on MAX(observed intervals) × 2,
+        # which handles devices with variable advertisement intervals (e.g., smartphone deep sleep).
+        max_age = getattr(advert, "adaptive_timeout", AREA_MAX_AD_AGE_DEFAULT)
+        # Clamp to absolute limit to prevent runaway values
+        max_age = min(max_age, AREA_MAX_AD_AGE_LIMIT)
+
+        if advert.stamp < nowstamp - max_age:
             return None
 
         hist_distances = [
@@ -2191,7 +2199,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                     for adv in top_candidates
                 ]
                 last_log_age = nowstamp - getattr(device, "last_no_winner_log", 0)
-                if last_log_age > AREA_MAX_AD_AGE:
+                if last_log_age > AREA_MAX_AD_AGE_DEFAULT:
                     device.last_no_winner_log = nowstamp
                     _LOGGER.debug(
                         "Area selection cleared for %s: adverts=%d fresh=%d fresh_with_area=%d "
