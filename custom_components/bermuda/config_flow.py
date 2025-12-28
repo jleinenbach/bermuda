@@ -47,6 +47,7 @@ from .const import (
     DEFAULT_UPDATE_INTERVAL,
     DISTANCE_INFINITE,
     DOMAIN,
+    DOMAIN_GOOGLEFINDMY,
     DOMAIN_PRIVATE_BLE_DEVICE,
     FMDN_MODE_BOTH,
     FMDN_MODE_SOURCES_ONLY,
@@ -628,14 +629,15 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
 
     def _get_bermuda_device_from_registry(self, registry_id: str) -> BermudaDevice | None:
         """
-        Given a device registry device id, return the associated MAC address.
+        Given a device registry device id, return the associated BermudaDevice.
 
-        Returns None if the id can not be resolved to a mac.
+        Returns None if the id can not be resolved.
         """
         devreg = dr.async_get(self.hass)
         device = devreg.async_get(registry_id)
         device_address = None
         if device is not None:
+            # First, check connections for standard BLE devices
             for connection in device.connections:
                 if connection[0] in {
                     DOMAIN_PRIVATE_BLE_DEVICE,
@@ -645,8 +647,23 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
                     device_address = connection[1]
                     break
             if device_address is not None:
-                return self.coordinator.devices[device_address.lower()]
-        # We couldn't match the HA device id to a bermuda device mac.
+                return self.coordinator.devices.get(device_address.lower())
+
+            # For FMDN devices: check if any BermudaDevice has this registry_id as fmdn_device_id
+            for bermuda_device in self.coordinator.devices.values():
+                if bermuda_device.fmdn_device_id == registry_id:
+                    return bermuda_device
+
+            # Also check identifiers for googlefindmy domain (fallback)
+            for identifier in device.identifiers:
+                if identifier[0] == DOMAIN_GOOGLEFINDMY:
+                    # Search for a device with matching fmdn_canonical_id
+                    canonical_id = identifier[1]
+                    for bermuda_device in self.coordinator.devices.values():
+                        if bermuda_device.fmdn_canonical_id == canonical_id:
+                            return bermuda_device
+
+        # We couldn't match the HA device id to a bermuda device.
         return None
 
     async def _update_options(self):
