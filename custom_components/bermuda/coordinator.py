@@ -2333,24 +2333,30 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             return
 
         # Also bootstrap immediately when the current area_advert is out of range, invalid,
-        # stale, or when there's a significant improvement. This ensures out-of-range or old
-        # incumbents don't block valid challengers via streak logic.
+        # stale, or when there's a significant improvement on the SAME floor.
+        # Cross-floor switches still require the streak for stability.
         area_advert_stale = False
-        significant_improvement = False
+        significant_improvement_same_floor = False
         if device.area_advert is not None:
             max_age = getattr(device.area_advert, "adaptive_timeout", AREA_MAX_AD_AGE_DEFAULT)
             max_age = min(max_age, AREA_MAX_AD_AGE_LIMIT)
             area_advert_stale = device.area_advert.stamp < nowstamp - max_age
-            # Check for significant improvement (>30% distance difference)
+            # Check for significant improvement (>30% distance difference) on same floor only
             if winner is not None:
                 winner_dist = _effective_distance(winner)
                 incumbent_dist = _effective_distance(device.area_advert)
-                if winner_dist is not None and incumbent_dist is not None and winner_dist < incumbent_dist:
+                is_cross_floor = _resolve_cross_floor(device.area_advert, winner)
+                if (
+                    winner_dist is not None
+                    and incumbent_dist is not None
+                    and winner_dist < incumbent_dist
+                    and not is_cross_floor  # Only apply for same-floor switches
+                ):
                     avg_dist = (winner_dist + incumbent_dist) / 2
                     pcnt_diff = abs(winner_dist - incumbent_dist) / avg_dist if avg_dist > 0 else 0
-                    significant_improvement = pcnt_diff >= 0.30  # pdiff_outright threshold
+                    significant_improvement_same_floor = pcnt_diff >= 0.30  # pdiff_outright threshold
         if winner is not None and (
-            not _is_distance_contender(device.area_advert) or area_advert_stale or significant_improvement
+            not _is_distance_contender(device.area_advert) or area_advert_stale or significant_improvement_same_floor
         ):
             device.pending_area_id = None
             device.pending_floor_id = None

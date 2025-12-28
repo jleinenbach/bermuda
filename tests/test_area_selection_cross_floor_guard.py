@@ -762,7 +762,7 @@ class TestCoVisibilityLearning:
             mock_fr.async_get.return_value = MagicMock()
 
             # Create device directly and set required attributes
-            device = object.__new__(BermudaDevice)
+            device = BermudaDevice.__new__(BermudaDevice)
             device.co_visibility_stats = {}
             device.co_visibility_min_samples = 50
 
@@ -782,7 +782,7 @@ class TestCoVisibilityLearning:
         """Test that confidence is 1.0 when no data is available."""
         from custom_components.bermuda.bermuda_device import BermudaDevice
 
-        device = object.__new__(BermudaDevice)
+        device = BermudaDevice.__new__(BermudaDevice)
         device.co_visibility_stats = {}
         device.co_visibility_min_samples = 50
 
@@ -793,7 +793,7 @@ class TestCoVisibilityLearning:
         """Test that confidence is 1.0 when samples are below threshold."""
         from custom_components.bermuda.bermuda_device import BermudaDevice
 
-        device = object.__new__(BermudaDevice)
+        device = BermudaDevice.__new__(BermudaDevice)
         device.co_visibility_min_samples = 50
         device.co_visibility_stats = {
             "area_test": {
@@ -809,7 +809,7 @@ class TestCoVisibilityLearning:
         """Test high confidence when all expected scanners are visible."""
         from custom_components.bermuda.bermuda_device import BermudaDevice
 
-        device = object.__new__(BermudaDevice)
+        device = BermudaDevice.__new__(BermudaDevice)
         device.co_visibility_min_samples = 50
         device.co_visibility_stats = {
             "area_test": {
@@ -829,7 +829,7 @@ class TestCoVisibilityLearning:
         """Test reduced confidence when expected scanners are missing."""
         from custom_components.bermuda.bermuda_device import BermudaDevice
 
-        device = object.__new__(BermudaDevice)
+        device = BermudaDevice.__new__(BermudaDevice)
         device.co_visibility_min_samples = 50
         device.co_visibility_stats = {
             "area_test": {

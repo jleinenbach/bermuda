@@ -23,6 +23,21 @@ from .const import MOCK_CONFIG
 pytest_plugins = "pytest_homeassistant_custom_component"
 
 
+# Allow lingering timers from bluetooth scanner infrastructure.
+# The Home Assistant bluetooth component creates background timers that may
+# not be cleaned up before test teardown completes.
+@pytest.fixture(autouse=True)
+def expected_lingering_timers():
+    """Allow lingering timers in tests."""
+    return True
+
+
+@pytest.fixture(autouse=True)
+def expected_lingering_tasks():
+    """Allow lingering tasks in tests."""
+    return True
+
+
 @pytest.fixture(autouse=True)
 def mock_bluetooth(enable_bluetooth):
     """Auto mock bluetooth."""

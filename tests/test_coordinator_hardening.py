@@ -104,7 +104,7 @@ def test_refresh_area_by_min_distance_handles_empty_incumbent_history(monkeypatc
         rssi_distance=3.0,
         rssi=-60.0,
         stamp=995.0,
-        scanner_device=SimpleNamespace(last_seen=995.0, name="scanner-inc"),
+        scanner_device=SimpleNamespace(last_seen=995.0, name="scanner-inc", address="00:00:00:00:00:01", floor_id=None),
         hist_distance_by_interval=[],
     )
     challenger = SimpleNamespace(
@@ -114,7 +114,7 @@ def test_refresh_area_by_min_distance_handles_empty_incumbent_history(monkeypatc
         rssi_distance=2.0,
         rssi=-55.0,
         stamp=999.0,
-        scanner_device=SimpleNamespace(last_seen=999.0, name="scanner-new"),
+        scanner_device=SimpleNamespace(last_seen=999.0, name="scanner-new", address="00:00:00:00:00:02", floor_id=None),
         hist_distance_by_interval=[2.1, 2.0, 1.9, 1.8],
     )
 
