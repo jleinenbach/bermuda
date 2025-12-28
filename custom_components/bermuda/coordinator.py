@@ -1617,24 +1617,29 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                 # Dual-stack device guard: If multiple metadevices share the same source
                 # (e.g., iBeacon + FMDN on same device), we need to prevent them from
                 # "fighting" over ref_power. Priority rules:
-                # 1. If source already had ref_power set this cycle, skip unless this
-                #    metadevice has a user-configured (non-zero) ref_power
-                # 2. User-configured ref_power (non-zero) always takes priority
-                # 3. First metadevice to process wins for default (zero) ref_power
+                # 1. First metadevice to touch a source "claims" it for this cycle
+                # 2. User-configured ref_power (non-zero) always takes priority over default
+                # 3. Default (zero) ref_power never overwrites a non-zero value
 
                 # Note we are setting the ref_power on the source_device, not the
                 # individual scanner entries (it will propagate to them though)
                 should_set_ref_power = False
                 if source_address not in ref_power_set_this_cycle:
-                    # First metadevice to touch this source this cycle
-                    should_set_ref_power = source_device.ref_power != metadevice.ref_power
+                    # First metadevice to touch this source this cycle - claim it
+                    ref_power_set_this_cycle.add(source_address)
+                    # Only change ref_power if different AND (this metadevice has
+                    # user-configured value OR source has default value)
+                    if source_device.ref_power != metadevice.ref_power:
+                        # Don't let default (0) overwrite a calibrated source value
+                        if metadevice.ref_power != 0 or source_device.ref_power == 0:
+                            should_set_ref_power = True
                 elif metadevice.ref_power != 0 and source_device.ref_power != metadevice.ref_power:
-                    # This metadevice has user-configured ref_power, it takes priority
+                    # Source already claimed, but this metadevice has user-configured
+                    # ref_power which takes priority
                     should_set_ref_power = True
 
                 if should_set_ref_power:
                     source_device.set_ref_power(metadevice.ref_power)
-                    ref_power_set_this_cycle.add(source_address)
 
                 # anything that isn't already set to something interesting, overwrite
                 # it with the new device's data.
