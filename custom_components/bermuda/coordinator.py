@@ -916,12 +916,12 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         prune_list.append(device.address)
         return True
 
-    async def _async_update_data(self):
+    async def _async_update_data(self) -> bool:
         """Implementation of DataUpdateCoordinator update_data function."""
         # return False
         return self._async_update_data_internal()
 
-    def _async_update_data_internal(self):
+    def _async_update_data_internal(self) -> bool:
         """
         The primary update loop that processes almost all data in Bermuda.
 
@@ -1015,7 +1015,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         self.last_update_success = True
         return result_gather_adverts
 
-    def _async_gather_advert_data(self):
+    def _async_gather_advert_data(self) -> bool:
         """Perform the gathering of backend Bluetooth Data and updating scanners and devices."""
         # Initialise ha_scanners if we haven't already
         if self._scanner_init_pending:
@@ -1064,7 +1064,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         # end of for ha_scanner loop
         return True
 
-    def prune_devices(self, force_pruning=False):  # noqa: C901
+    def prune_devices(self, force_pruning: bool = False) -> None:  # noqa: C901
         """
         Scan through all collected devices, and remove those that meet Pruning criteria.
 
@@ -1339,7 +1339,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                                 pb_entity.entity_id,
                             )
 
-    def discover_fmdn_metadevices(self):
+    def discover_fmdn_metadevices(self) -> None:
         """
         Access the googlefindmy integration to find FMDN metadevices to track.
 
@@ -2621,7 +2621,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             _LOGGER.debug("Redaction list update took %.3f seconds, has %d items", _elapsed, len(self.redactions))
         self.stamp_redactions_expiry = monotonic_time_coarse() + PRUNE_TIME_REDACTIONS
 
-    def redact_data(self, data, first_recursion=True):
+    def redact_data(self, data: Any, first_recursion: bool = True) -> Any:
         """
         Wash any collection of data of any MAC addresses.
 

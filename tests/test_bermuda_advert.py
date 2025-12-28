@@ -2,8 +2,15 @@
 Tests for BermudaAdvert class in bermuda_advert.py.
 """
 
-import pytest
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
+
+import pytest
+
+from bleak.backends.scanner import AdvertisementData
+
 from custom_components.bermuda.bermuda_advert import BermudaAdvert
 from custom_components.bermuda.bermuda_device import BermudaDevice
 from custom_components.bermuda.const import (
@@ -14,11 +21,11 @@ from custom_components.bermuda.const import (
     CONF_SMOOTHING_SAMPLES,
 )
 from custom_components.bermuda.util import normalize_mac
-from bleak.backends.scanner import AdvertisementData
+
 
 
 @pytest.fixture
-def mock_parent_device():
+def mock_parent_device() -> MagicMock:
     """Fixture for mocking the parent BermudaDevice."""
     device = MagicMock(spec=BermudaDevice)
     device.address = normalize_mac("aa:bb:cc:dd:ee:ff")
@@ -29,7 +36,7 @@ def mock_parent_device():
 
 
 @pytest.fixture
-def mock_scanner_device():
+def mock_scanner_device() -> MagicMock:
     """Fixture for mocking the scanner BermudaDevice."""
     scanner = MagicMock(spec=BermudaDevice)
     scanner.address = normalize_mac("11:22:33:44:55:66")
@@ -44,7 +51,7 @@ def mock_scanner_device():
 
 
 @pytest.fixture
-def mock_advertisement_data():
+def mock_advertisement_data() -> MagicMock:
     """Fixture for mocking AdvertisementData."""
     advert = MagicMock(spec=AdvertisementData)
     advert.rssi = -70
@@ -58,9 +65,13 @@ def mock_advertisement_data():
 
 
 @pytest.fixture
-def bermuda_advert(mock_parent_device, mock_advertisement_data, mock_scanner_device):
+def bermuda_advert(
+    mock_parent_device: MagicMock,
+    mock_advertisement_data: MagicMock,
+    mock_scanner_device: MagicMock,
+) -> BermudaAdvert:
     """Fixture for creating a BermudaAdvert instance."""
-    options = {
+    options: dict[str, Any] = {
         CONF_RSSI_OFFSETS: {normalize_mac("11:22:33:44:55:66"): 5},
         CONF_REF_POWER: -59,
         CONF_ATTENUATION: 2.0,
@@ -77,7 +88,7 @@ def bermuda_advert(mock_parent_device, mock_advertisement_data, mock_scanner_dev
     return ba
 
 
-def test_bermuda_advert_initialization(bermuda_advert):
+def test_bermuda_advert_initialization(bermuda_advert: BermudaAdvert) -> None:
     """Test BermudaAdvert initialization."""
     assert bermuda_advert.device_address == normalize_mac("aa:bb:cc:dd:ee:ff")
     assert bermuda_advert.scanner_address == normalize_mac("11:22:33:44:55:66")
@@ -86,14 +97,16 @@ def test_bermuda_advert_initialization(bermuda_advert):
     assert bermuda_advert.rssi == -70
 
 
-def test_apply_new_scanner(bermuda_advert, mock_scanner_device):
+def test_apply_new_scanner(bermuda_advert: BermudaAdvert, mock_scanner_device: MagicMock) -> None:
     """Test apply_new_scanner method."""
     bermuda_advert.apply_new_scanner(mock_scanner_device)
     assert bermuda_advert.scanner_device == mock_scanner_device
     assert bermuda_advert.scanner_sends_stamps is True
 
 
-def test_update_advertisement(bermuda_advert, mock_advertisement_data, mock_scanner_device):
+def test_update_advertisement(
+    bermuda_advert: BermudaAdvert, mock_advertisement_data: MagicMock, mock_scanner_device: MagicMock
+) -> None:
     """Test update_advertisement method."""
     bermuda_advert.update_advertisement(mock_advertisement_data, mock_scanner_device)
     assert bermuda_advert.rssi == -70
@@ -103,14 +116,14 @@ def test_update_advertisement(bermuda_advert, mock_advertisement_data, mock_scan
     assert bermuda_advert.service_data[0]["0000abcd-0000-1000-8000-00805f9b34fb"] == b"\x01\x02"
 
 
-def test_set_ref_power(bermuda_advert):
+def test_set_ref_power(bermuda_advert: BermudaAdvert) -> None:
     """Test set_ref_power method."""
     new_distance = bermuda_advert.set_ref_power(-65)
     assert bermuda_advert.ref_power == -65
     assert new_distance is not None
 
 
-def test_calculate_data_device_arrived(bermuda_advert):
+def test_calculate_data_device_arrived(bermuda_advert: BermudaAdvert) -> None:
     """Test calculate_data method when device arrives."""
     bermuda_advert.new_stamp = 123.45
     bermuda_advert.rssi_distance_raw = 5.0
@@ -118,7 +131,7 @@ def test_calculate_data_device_arrived(bermuda_advert):
     assert bermuda_advert.rssi_distance == 5.0
 
 
-def test_calculate_data_device_away(bermuda_advert):
+def test_calculate_data_device_away(bermuda_advert: BermudaAdvert) -> None:
     """Test calculate_data method when device is away."""
     bermuda_advert.stamp = 0.0
     bermuda_advert.new_stamp = None
@@ -126,7 +139,7 @@ def test_calculate_data_device_away(bermuda_advert):
     assert bermuda_advert.rssi_distance is None
 
 
-def test_to_dict(bermuda_advert):
+def test_to_dict(bermuda_advert: BermudaAdvert) -> None:
     """Test to_dict method."""
     advert_dict = bermuda_advert.to_dict()
     assert isinstance(advert_dict, dict)
@@ -134,13 +147,13 @@ def test_to_dict(bermuda_advert):
     assert advert_dict["scanner_address"] == normalize_mac("11:22:33:44:55:66")
 
 
-def test_repr(bermuda_advert):
+def test_repr(bermuda_advert: BermudaAdvert) -> None:
     """Test __repr__ method."""
     repr_str = repr(bermuda_advert)
     assert repr_str == f"{normalize_mac('aa:bb:cc:dd:ee:ff')}__Mock Scanner"
 
 
-def test_adaptive_stale_timeout_with_frequent_updates(bermuda_advert):
+def test_adaptive_stale_timeout_with_frequent_updates(bermuda_advert: BermudaAdvert) -> None:
     """Test that adaptive timeout stays at minimum (60s) for frequently updating devices."""
     # Simulate a device that updates every 1 second
     base_time = 1000.0
@@ -172,7 +185,7 @@ def test_adaptive_stale_timeout_with_frequent_updates(bermuda_advert):
         assert bermuda_advert.rssi_distance is None
 
 
-def test_adaptive_stale_timeout_with_slow_updates(bermuda_advert):
+def test_adaptive_stale_timeout_with_slow_updates(bermuda_advert: BermudaAdvert) -> None:
     """Test that adaptive timeout increases for slow-updating devices (e.g., FMDN tags)."""
     # Simulate a device that updates every 45 seconds (max interval)
     # The code uses 2x maximum interval, clamped between 60s and 360s
@@ -205,7 +218,7 @@ def test_adaptive_stale_timeout_with_slow_updates(bermuda_advert):
         assert bermuda_advert.rssi_distance is None
 
 
-def test_adaptive_stale_timeout_capped_at_180s(bermuda_advert):
+def test_adaptive_stale_timeout_capped_at_180s(bermuda_advert: BermudaAdvert) -> None:
     """Test that adaptive timeout is capped at 180 seconds."""
     # Simulate a device that updates every 90 seconds
     base_time = 3000.0
@@ -237,7 +250,7 @@ def test_adaptive_stale_timeout_capped_at_180s(bermuda_advert):
         assert bermuda_advert.rssi_distance is None
 
 
-def test_adaptive_stale_timeout_with_insufficient_history(bermuda_advert):
+def test_adaptive_stale_timeout_with_insufficient_history(bermuda_advert: BermudaAdvert) -> None:
     """Test that adaptive timeout uses default 60s when history is insufficient."""
     base_time = 4000.0
     # Only one timestamp - not enough to calculate intervals

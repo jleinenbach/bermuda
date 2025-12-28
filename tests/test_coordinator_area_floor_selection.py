@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 import pytest
 from bleak.backends.scanner import AdvertisementData
 from bluetooth_data_tools import monotonic_time_coarse
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import floor_registry as fr
 
@@ -25,7 +26,7 @@ from custom_components.bermuda.const import (
 )
 
 
-def _make_coordinator(hass) -> BermudaDataUpdateCoordinator:
+def _make_coordinator(hass: HomeAssistant) -> BermudaDataUpdateCoordinator:
     """Create a lightweight coordinator instance."""
     coordinator = BermudaDataUpdateCoordinator.__new__(BermudaDataUpdateCoordinator)
     coordinator.hass = hass
@@ -49,7 +50,9 @@ def _make_coordinator(hass) -> BermudaDataUpdateCoordinator:
     return coordinator
 
 
-def test_tracker_device_gets_area_and_floor(hass, monkeypatch, caplog) -> None:
+def test_tracker_device_gets_area_and_floor(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
     """Area selection should run for tracker-only devices."""
     coordinator = _make_coordinator(hass)
     floor_entry = coordinator.fr.async_create("Test Floor")
@@ -78,7 +81,9 @@ def test_tracker_device_gets_area_and_floor(hass, monkeypatch, caplog) -> None:
     monkeypatch.setattr("custom_components.bermuda.bermuda_advert.rssi_to_metres", lambda *_: 1.0)
     original_apply_selection = tracked.apply_scanner_selection
 
-    def _capture_selection(advert: BermudaAdvert | None, *, nowstamp: float | None = None, source: str = "selection"):
+    def _capture_selection(
+        advert: BermudaAdvert | None, *, nowstamp: float | None = None, source: str = "selection"
+    ) -> None:
         selection_calls["advert"] = advert
         selection_calls["nowstamp"] = nowstamp
         selection_calls["source"] = source

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from math import floor
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from bleak.backends.device import BLEDevice
 from bluetooth_data_tools import get_cipher_for_irk, monotonic_time_coarse, resolve_private_address
@@ -227,7 +227,7 @@ class BermudaIrkManager:
 
         return _unsubscribe
 
-    def async_diagnostics_no_redactions(self):
+    def async_diagnostics_no_redactions(self) -> dict[str, Any]:
         """Return diagnostic info. Make sure to run redactions over the results."""
         nowstamp = monotonic_time_coarse()
         macs = {}

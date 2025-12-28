@@ -1,6 +1,10 @@
 """Tests for automatic FMDN device tracking (like Private BLE Device)."""
 
+from __future__ import annotations
+
+from collections.abc import Mapping
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -59,7 +63,7 @@ def test_fmdn_resolution_sets_create_sensor_true(
     resolver.resolve_eid.return_value = match
     hass.data[DOMAIN_GOOGLEFINDMY] = {DATA_EID_RESOLVER: resolver}
 
-    service_data = {SERVICE_UUID_FMDN: bytes([0x40]) + b"\x01" * 20}
+    service_data: Mapping[str | int, Any] = {SERVICE_UUID_FMDN: bytes([0x40]) + b"\x01" * 20}
 
     source_device = coordinator._get_or_create_device("aa:bb:cc:dd:ee:ff")
     coordinator._handle_fmdn_advertisement(source_device, service_data)
@@ -83,7 +87,7 @@ def test_fmdn_metadevice_address_type_is_fmdn_device(
     resolver.resolve_eid.return_value = match
     hass.data[DOMAIN_GOOGLEFINDMY] = {DATA_EID_RESOLVER: resolver}
 
-    service_data = {SERVICE_UUID_FMDN: bytes([0x40]) + b"\x02" * 20}
+    service_data: Mapping[str | int, Any] = {SERVICE_UUID_FMDN: bytes([0x40]) + b"\x02" * 20}
 
     source_device = coordinator._get_or_create_device("11:22:33:44:55:66")
     coordinator._handle_fmdn_advertisement(source_device, service_data)
@@ -103,7 +107,7 @@ def test_fmdn_calculate_data_preserves_create_sensor(
     resolver.resolve_eid.return_value = match
     hass.data[DOMAIN_GOOGLEFINDMY] = {DATA_EID_RESOLVER: resolver}
 
-    service_data = {SERVICE_UUID_FMDN: bytes([0x40]) + b"\x03" * 20}
+    service_data: Mapping[str | int, Any] = {SERVICE_UUID_FMDN: bytes([0x40]) + b"\x03" * 20}
 
     source_device = coordinator._get_or_create_device("22:33:44:55:66:77")
     coordinator._handle_fmdn_advertisement(source_device, service_data)
@@ -166,7 +170,7 @@ def test_fmdn_device_not_in_configured_devices_still_tracked(
     # Ensure CONF_DEVICES is empty
     coordinator.options = {"configured_devices": []}
 
-    service_data = {SERVICE_UUID_FMDN: bytes([0x40]) + b"\x04" * 20}
+    service_data: Mapping[str | int, Any] = {SERVICE_UUID_FMDN: bytes([0x40]) + b"\x04" * 20}
 
     source_device = coordinator._get_or_create_device("33:44:55:66:77:88")
     coordinator._handle_fmdn_advertisement(source_device, service_data)
@@ -187,7 +191,7 @@ def test_fmdn_device_has_fmdn_device_id(
     resolver.resolve_eid.return_value = match
     hass.data[DOMAIN_GOOGLEFINDMY] = {DATA_EID_RESOLVER: resolver}
 
-    service_data = {SERVICE_UUID_FMDN: bytes([0x40]) + b"\x05" * 20}
+    service_data: Mapping[str | int, Any] = {SERVICE_UUID_FMDN: bytes([0x40]) + b"\x05" * 20}
 
     source_device = coordinator._get_or_create_device("44:55:66:77:88:99")
     coordinator._handle_fmdn_advertisement(source_device, service_data)
@@ -208,7 +212,7 @@ def test_fmdn_device_has_fmdn_canonical_id(
     resolver.resolve_eid.return_value = match
     hass.data[DOMAIN_GOOGLEFINDMY] = {DATA_EID_RESOLVER: resolver}
 
-    service_data = {SERVICE_UUID_FMDN: bytes([0x40]) + b"\x06" * 20}
+    service_data: Mapping[str | int, Any] = {SERVICE_UUID_FMDN: bytes([0x40]) + b"\x06" * 20}
 
     source_device = coordinator._get_or_create_device("55:66:77:88:99:aa")
     coordinator._handle_fmdn_advertisement(source_device, service_data)
@@ -234,7 +238,7 @@ def test_fmdn_deduplication_by_device_id_prevents_duplicates(
     resolver.resolve_eid.return_value = match
     hass.data[DOMAIN_GOOGLEFINDMY] = {DATA_EID_RESOLVER: resolver}
 
-    service_data = {SERVICE_UUID_FMDN: bytes([0x40]) + b"\x07" * 20}
+    service_data: Mapping[str | int, Any] = {SERVICE_UUID_FMDN: bytes([0x40]) + b"\x07" * 20}
     source_device = coordinator._get_or_create_device("66:77:88:99:aa:bb")
     coordinator._handle_fmdn_advertisement(source_device, service_data)
 

@@ -1059,7 +1059,7 @@ class BermudaDevice(dict):
 
         return _found_scanner
 
-    def calculate_data(self):
+    def calculate_data(self) -> None:
         """
         Call after doing update_scanner() calls so that distances
         etc can be freshly smoothed and filtered.

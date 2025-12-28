@@ -302,7 +302,7 @@ class BermudaAdvert(dict):
             return self._update_raw_distance(False)
         return self.rssi_distance_raw
 
-    def calculate_data(self):
+    def calculate_data(self) -> None:
         """
         Filter and update distance estimates.
 
@@ -408,7 +408,7 @@ class BermudaAdvert(dict):
         del self.hist_stamp[HIST_KEEP_COUNT:]
         del self.hist_velocity[HIST_KEEP_COUNT:]
 
-    def to_dict(self):
+    def to_dict(self) -> dict[str, Any]:
         """Convert class to serialisable dict for dump_devices."""
         # using "is" comparisons instead of string matching means
         # linting and typing can catch errors.

@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import re
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import floor_registry as fr
 
 from custom_components.bermuda import coordinator as coordinator_mod
+from custom_components.bermuda.bermuda_device import BermudaDevice
 from custom_components.bermuda.bermuda_fmdn_manager import BermudaFmdnManager
 from custom_components.bermuda.bermuda_irk import BermudaIrkManager
 from custom_components.bermuda.const import (
@@ -24,7 +27,7 @@ from custom_components.bermuda.const import (
 from custom_components.bermuda.coordinator import BermudaDataUpdateCoordinator
 
 
-def _make_coordinator(hass) -> BermudaDataUpdateCoordinator:
+def _make_coordinator(hass: HomeAssistant) -> BermudaDataUpdateCoordinator:
     """Build a lightweight coordinator for hotspot tests."""
     coordinator = BermudaDataUpdateCoordinator.__new__(BermudaDataUpdateCoordinator)
     coordinator.hass = hass
@@ -60,18 +63,18 @@ def _make_coordinator(hass) -> BermudaDataUpdateCoordinator:
     coordinator.update_in_progress = False
     coordinator.last_update_success = False
     coordinator._waitingfor_load_manufacturer_ids = False
-    coordinator.config_entry = SimpleNamespace(async_on_unload=lambda cb: cb)
+    coordinator.config_entry = SimpleNamespace(async_on_unload=lambda cb: cb)  # type: ignore[assignment]
     return coordinator
 
 
-def _configure_device(coordinator: BermudaDataUpdateCoordinator, address: str):
+def _configure_device(coordinator: BermudaDataUpdateCoordinator, address: str) -> BermudaDevice:
     """Create a BermudaDevice with default distance options."""
     device = coordinator._get_or_create_device(address)
     device.options.update(coordinator.options)
     return device
 
 
-def test_prune_devices_handles_quota_shortfall(monkeypatch, hass):
+def test_prune_devices_handles_quota_shortfall(monkeypatch: pytest.MonkeyPatch, hass: HomeAssistant) -> None:
     """Ensure prune_devices handles quota expansion without IndexError."""
     monkeypatch.setattr(coordinator_mod, "PRUNE_MAX_COUNT", 1)
     monkeypatch.setattr(coordinator_mod, "monotonic_time_coarse", lambda: 2000.0)
@@ -91,7 +94,9 @@ def test_prune_devices_handles_quota_shortfall(monkeypatch, hass):
     assert prunable.address not in coordinator.devices
 
 
-def test_refresh_area_by_min_distance_handles_empty_incumbent_history(monkeypatch, hass):
+def test_refresh_area_by_min_distance_handles_empty_incumbent_history(
+    monkeypatch: pytest.MonkeyPatch, hass: HomeAssistant
+) -> None:
     """A challenger with history should not fail when incumbent has none."""
     monkeypatch.setattr(coordinator_mod, "monotonic_time_coarse", lambda: 1000.0)
     coordinator = _make_coordinator(hass)
@@ -118,15 +123,15 @@ def test_refresh_area_by_min_distance_handles_empty_incumbent_history(monkeypatc
         hist_distance_by_interval=[2.1, 2.0, 1.9, 1.8],
     )
 
-    device.area_advert = incumbent
-    device.adverts = {"incumbent": incumbent, "challenger": challenger}
+    device.area_advert = incumbent  # type: ignore[assignment]
+    device.adverts = {"incumbent": incumbent, "challenger": challenger}  # type: ignore[dict-item]
 
     coordinator._refresh_area_by_min_distance(device)
 
-    assert device.area_advert is challenger
+    assert device.area_advert is challenger  # type: ignore[comparison-overlap]
 
 
-def test_redact_data_handles_many_entries(hass):
+def test_redact_data_handles_many_entries(hass: HomeAssistant) -> None:
     """Large redaction sets should remain functional."""
     coordinator = _make_coordinator(hass)
     coordinator.redactions = {f"aa:bb:cc:dd:ee:{i:02x}": f"redacted-{i}" for i in range(500)}
@@ -137,12 +142,12 @@ def test_redact_data_handles_many_entries(hass):
 
 
 @pytest.mark.asyncio
-async def test_async_update_data_returns_internal_result(hass):
+async def test_async_update_data_returns_internal_result(hass: HomeAssistant) -> None:
     """Ensure _async_update_data propagates the internal result."""
     coordinator = _make_coordinator(hass)
     sentinel = object()
 
-    coordinator._async_update_data_internal = lambda: sentinel
+    coordinator._async_update_data_internal = lambda: sentinel  # type: ignore[method-assign, assignment, return-value]
 
     result = await coordinator._async_update_data()
 
@@ -150,7 +155,9 @@ async def test_async_update_data_returns_internal_result(hass):
 
 
 @pytest.mark.asyncio
-async def test_dump_devices_limits_when_over_soft_cap(monkeypatch, hass):
+async def test_dump_devices_limits_when_over_soft_cap(
+    monkeypatch: pytest.MonkeyPatch, hass: HomeAssistant
+) -> None:
     """Dump service should fall back when device graph is oversized."""
     monkeypatch.setattr(coordinator_mod, "DUMP_DEVICE_SOFT_LIMIT", 2)
     coordinator = _make_coordinator(hass)
@@ -168,12 +175,16 @@ async def test_dump_devices_limits_when_over_soft_cap(monkeypatch, hass):
 
     for suffix in ("01", "03", "ff", "10", "11"):
         address = f"AA:BB:CC:DD:EE:{suffix}"
-        coordinator.devices[address.lower()] = DummyDevice(address.lower())
+        coordinator.devices[address.lower()] = DummyDevice(address.lower())  # type: ignore[assignment]
 
-    response = await coordinator.service_dump_devices(SimpleNamespace(data={}))
+    response = await coordinator.service_dump_devices(SimpleNamespace(data={}))  # type: ignore[arg-type]
 
     assert isinstance(response, dict)
     assert "summary" in response
-    assert response["summary"]["limited"] is True
-    assert response["summary"]["requested_devices"] == 5
-    assert len(response["devices"]) < len(coordinator.devices)
+    summary = response["summary"]
+    assert isinstance(summary, dict)
+    assert summary["limited"] is True
+    assert summary["requested_devices"] == 5
+    devices = response["devices"]
+    assert isinstance(devices, dict)
+    assert len(devices) < len(coordinator.devices)

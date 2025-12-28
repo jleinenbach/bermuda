@@ -29,7 +29,7 @@ MOCK_OPTIONS_GLOBALS = {
     custom_components.bermuda.const.CONF_REF_POWER: -55.0,
 }
 
-MOCK_OPTIONS_DEVICES = {
+MOCK_OPTIONS_DEVICES: dict[str, list[str]] = {
     custom_components.bermuda.const.CONF_DEVICES: [],  # ["EE:E8:37:9F:6B:54"],
 }
 
