@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import voluptuous as vol
 from bluetooth_data_tools import monotonic_time_coarse
@@ -47,6 +47,7 @@ from .const import (
     DEFAULT_UPDATE_INTERVAL,
     DISTANCE_INFINITE,
     DOMAIN,
+    DOMAIN_GOOGLEFINDMY,
     DOMAIN_PRIVATE_BLE_DEVICE,
     FMDN_MODE_BOTH,
     FMDN_MODE_SOURCES_ONLY,
@@ -77,7 +78,7 @@ class BermudaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
 
     def __init__(self) -> None:
         """Initialize."""
-        self._errors = {}
+        self._errors: dict[str, str] = {}
 
     async def async_step_bluetooth(self, discovery_info: BluetoothServiceInfoBleak) -> ConfigFlowResult:
         """
@@ -95,7 +96,9 @@ class BermudaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(step_id="user", description_placeholders={"name": NAME})
 
-    async def async_step_user(self, user_input=None):
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
         """
         Handle a flow initialized by the user.
 
@@ -113,7 +116,9 @@ class BermudaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
 
     @staticmethod
     @callback
-    def async_get_options_flow(config_entry):
+    def async_get_options_flow(
+        config_entry: BermudaConfigEntry,
+    ) -> BermudaOptionsFlowHandler:
         return BermudaOptionsFlowHandler(config_entry)
 
     # async def _show_config_form(self, user_input):  # pylint: disable=unused-argument
@@ -141,7 +146,9 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
         self._last_attenuation = None
         self._last_scanner_info = None
 
-    async def async_step_init(self, user_input=None):  # pylint: disable=unused-argument
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:  # pylint: disable=unused-argument
         """Manage the options."""
         self.coordinator = self.config_entry.runtime_data.coordinator
         self.devices = self.coordinator.devices
@@ -181,7 +188,7 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
             else:
                 status = '<ha-icon icon="mdi:skull-crossbones"></ha-icon>'
             # Remove centre octets from mac for condensed, privatised display
-            shortmac = mac_redact(scanner.get("address", "ERR"))
+            shortmac = mac_redact(str(scanner.get("address", "ERR")))
             scanner_table += (
                 f"| {scanner.get('name', 'NAME_ERR')}| [{shortmac}]"
                 f"| {status} {(scanner.get('last_stamp_age', DISTANCE_INFINITE)):.2f} seconds ago.|\n"
@@ -200,7 +207,9 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
             description_placeholders=messages,
         )
 
-    async def async_step_globalopts(self, user_input=None):
+    async def async_step_globalopts(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
         """Handle global options flow."""
         if user_input is not None:
             self.options.update(user_input)
@@ -239,7 +248,9 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
 
         return self.async_show_form(step_id="globalopts", data_schema=vol.Schema(data_schema))
 
-    async def async_step_selectdevices(self, user_input=None):
+    async def async_step_selectdevices(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
         """Handle a flow initialized by the user."""
         coordinator = self.config_entry.runtime_data.coordinator
 
@@ -272,13 +283,14 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
         fmdn_mode = DEFAULT_FMDN_MODE
 
         # Where we store the options before building the selector
-        options_list = []
-        options_auto_configured = []  # Auto-configured devices (Private BLE, FMDN) - shown first
-        options_fmdn_resolved = []
-        options_fmdn_sources = []
-        options_metadevices = []  # These will be first in the list
-        options_otherdevices = []  # These will be last.
-        options_randoms = []  # Random MAC addresses - very last!
+        options_list: list[SelectOptionDict] = []
+        # Auto-configured devices (Private BLE, FMDN) - shown first
+        options_auto_configured: list[SelectOptionDict] = []
+        options_fmdn_resolved: list[SelectOptionDict] = []
+        options_fmdn_sources: list[SelectOptionDict] = []
+        options_metadevices: list[SelectOptionDict] = []  # These will be first in the list
+        options_otherdevices: list[SelectOptionDict] = []  # These will be last.
+        options_randoms: list[SelectOptionDict] = []  # Random MAC addresses - very last!
 
         for device in self.devices.values():
             # Iterate through all the discovered devices to build the options list
@@ -392,7 +404,9 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
 
         return self.async_show_form(step_id="selectdevices", data_schema=vol.Schema(data_schema))
 
-    async def async_step_calibration1_global(self, user_input=None):
+    async def async_step_calibration1_global(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
         # FIXME: This is ridiculous. But I can't yet find a better way.
         _ugly_token_hack = {
             # These are work-arounds for (broken?) placeholder substitutions.
@@ -529,7 +543,9 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
             },
         )
 
-    async def async_step_calibration2_scanners(self, user_input=None):
+    async def async_step_calibration2_scanners(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
         """
         Per-scanner calibration of rssi_offset.
 
@@ -590,6 +606,7 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
                 data_schema=vol.Schema(data_schema),
                 description_placeholders={"suffix": "After you click Submit, the new distances will be shown here."},
             )
+        device: BermudaDevice | None = None
         if isinstance(self._last_device, str):
             device = self._get_bermuda_device_from_registry(self._last_device)
         results_str = ""
@@ -628,14 +645,15 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
 
     def _get_bermuda_device_from_registry(self, registry_id: str) -> BermudaDevice | None:
         """
-        Given a device registry device id, return the associated MAC address.
+        Given a device registry device id, return the associated BermudaDevice.
 
-        Returns None if the id can not be resolved to a mac.
+        Returns None if the id can not be resolved.
         """
         devreg = dr.async_get(self.hass)
         device = devreg.async_get(registry_id)
         device_address = None
         if device is not None:
+            # First, check connections for standard BLE devices
             for connection in device.connections:
                 if connection[0] in {
                     DOMAIN_PRIVATE_BLE_DEVICE,
@@ -645,10 +663,25 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
                     device_address = connection[1]
                     break
             if device_address is not None:
-                return self.coordinator.devices[device_address.lower()]
-        # We couldn't match the HA device id to a bermuda device mac.
+                return self.coordinator.devices.get(device_address.lower())
+
+            # For FMDN devices: check if any BermudaDevice has this registry_id as fmdn_device_id
+            for bermuda_device in self.coordinator.devices.values():
+                if bermuda_device.fmdn_device_id == registry_id:
+                    return bermuda_device
+
+            # Also check identifiers for googlefindmy domain (fallback)
+            for identifier in device.identifiers:
+                if identifier[0] == DOMAIN_GOOGLEFINDMY:
+                    # Search for a device with matching fmdn_canonical_id
+                    canonical_id = identifier[1]
+                    for bermuda_device in self.coordinator.devices.values():
+                        if bermuda_device.fmdn_canonical_id == canonical_id:
+                            return bermuda_device
+
+        # We couldn't match the HA device id to a bermuda device.
         return None
 
-    async def _update_options(self):
+    async def _update_options(self) -> ConfigFlowResult:
         """Update config entry options."""
         return self.async_create_entry(title=NAME, data=self.options)
