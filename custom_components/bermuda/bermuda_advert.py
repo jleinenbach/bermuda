@@ -252,12 +252,25 @@ class BermudaAdvert(dict):
         immediately, perhaps between cycles, in order to reflect a
         setting change (such as altering a device's ref_power setting).
         """
-        # Check if we should use a device-based ref_power
-        if self.ref_power == 0:  # No user-supplied per-device value
-            # use global default
-            ref_power = self.conf_ref_power
-        else:
+        # Determine ref_power with priority:
+        # 1. Device-specific ref_power (user-calibrated per device)
+        # 2. beacon_power from iBeacon advertisement (calibrated 1m RSSI)
+        # 3. tx_power from BLE advertisement
+        # 4. Global default ref_power
+        if self.ref_power != 0:
+            # User-calibrated per-device value takes priority
             ref_power = self.ref_power
+        else:
+            # Check for beacon_power (iBeacon's calibrated 1m RSSI)
+            beacon_power = getattr(self._device, "beacon_power", None)
+            if beacon_power is not None:
+                ref_power = beacon_power
+            # Check for tx_power from advertisement
+            elif self.tx_power is not None:
+                ref_power = self.tx_power
+            else:
+                # Fall back to global default
+                ref_power = self.conf_ref_power
 
         distance = rssi_to_metres(self.rssi + self.conf_rssi_offset, ref_power, self.conf_attenuation)
         self.rssi_distance_raw = distance
