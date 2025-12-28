@@ -8,6 +8,7 @@ from bluetooth_data_tools import monotonic_time_coarse
 from homeassistant.core import callback
 from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
@@ -57,7 +58,13 @@ class BermudaEntity(CoordinatorEntity):
         self.bermuda_last_state: Any = 0
         self.bermuda_last_stamp: float = 0
 
-    def _cached_ratelimit(self, statevalue: Any, fast_falling=True, fast_rising=False, interval=None):
+    def _cached_ratelimit(
+        self,
+        statevalue: Any,
+        fast_falling: bool = True,
+        fast_rising: bool = False,
+        interval: float | None = None,
+    ) -> Any:
         """
         Uses the CONF_UPDATE_INTERVAL and other logic to return either the given statevalue
         or an older, cached value. Helps to reduce excess sensor churn without compromising latency.
@@ -104,12 +111,12 @@ class BermudaEntity(CoordinatorEntity):
         self.async_write_ha_state()
 
     @property
-    def unique_id(self):
+    def unique_id(self) -> str | None:
         """Return a unique ID to use for this entity."""
         return self._device.unique_id
 
     @property
-    def device_info(self):
+    def device_info(self) -> DeviceInfo | None:
         """
         Implementing this creates an entry in the device registry.
 
@@ -168,11 +175,10 @@ class BermudaEntity(CoordinatorEntity):
                     # Use the same identifiers as googlefindmy for proper congealment
                     # This makes Bermuda entities appear under the same device as
                     # googlefindmy entities, showing both integrations in the device info.
-                    device_info = {
-                        "identifiers": fmdn_device_entry.identifiers,
-                        "name": self._device.name,
-                    }
-                    return device_info
+                    return DeviceInfo(
+                        identifiers=fmdn_device_entry.identifiers,
+                        name=self._device.name,
+                    )
                 # Fallback: create identifier using canonical_id
                 connections = set()
             else:
@@ -189,25 +195,23 @@ class BermudaEntity(CoordinatorEntity):
 
         # For FMDN devices, use canonical_id (without fmdn: prefix) to match
         # googlefindmy's identifier format. This helps with congealment in fallback cases.
+        identifier_value: str
         if self._device.address_type == ADDR_TYPE_FMDN_DEVICE and self._device.fmdn_canonical_id:
             identifier_value = self._device.fmdn_canonical_id
-        else:
+        elif self._device.unique_id is not None:
             identifier_value = self._device.unique_id
+        else:
+            identifier_value = self._device.address
 
-        device_info = {
-            "identifiers": {(domain_name, identifier_value)},
-            "connections": connections,
-            "name": self._device.name,
-        }
-        if model is not None:
-            device_info["model"] = model
-        # if existing_device_id is not None:
-        #    device_info['id'] = existing_device_id
-
-        return device_info
+        return DeviceInfo(
+            identifiers={(domain_name, identifier_value)},
+            connections=connections,
+            name=self._device.name,
+            model=model,
+        )
 
     @property
-    def device_state_attributes(self):
+    def device_state_attributes(self) -> dict[str, str]:
         """Return the state attributes."""
         return {
             "attribution": ATTRIBUTION,
@@ -240,7 +244,7 @@ class BermudaGlobalEntity(CoordinatorEntity):
         """
         self.async_write_ha_state()
 
-    def _cached_ratelimit(self, statevalue: Any, interval: int | None = None):
+    def _cached_ratelimit(self, statevalue: Any, interval: int | None = None) -> Any:
         """A simple way to rate-limit sensor updates."""
         if interval is not None:
             self._cache_ratelimit_interval = interval
@@ -254,9 +258,9 @@ class BermudaGlobalEntity(CoordinatorEntity):
             return self._cache_ratelimit_value
 
     @property
-    def device_info(self):
+    def device_info(self) -> DeviceInfo | None:
         """Implementing this creates an entry in the device registry."""
-        return {
-            "identifiers": {(DOMAIN, "BERMUDA_GLOBAL")},
-            "name": "Bermuda Global",
-        }
+        return DeviceInfo(
+            identifiers={(DOMAIN, "BERMUDA_GLOBAL")},
+            name="Bermuda Global",
+        )

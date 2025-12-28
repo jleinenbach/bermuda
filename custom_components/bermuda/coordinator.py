@@ -777,31 +777,23 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         resolver = self._get_fmdn_resolver()
 
         if resolver is None:
-            self.fmdn_manager.record_resolution_failure(
-                eid_bytes, source_mac, EidResolutionStatus.RESOLVER_UNAVAILABLE
-            )
+            self.fmdn_manager.record_resolution_failure(eid_bytes, source_mac, EidResolutionStatus.RESOLVER_UNAVAILABLE)
             return None, EidResolutionStatus.RESOLVER_UNAVAILABLE
 
         normalized_eid = self._normalize_eid_bytes(eid_bytes)
         if normalized_eid is None:
-            self.fmdn_manager.record_resolution_failure(
-                eid_bytes, source_mac, EidResolutionStatus.NO_KNOWN_EID_MATCH
-            )
+            self.fmdn_manager.record_resolution_failure(eid_bytes, source_mac, EidResolutionStatus.NO_KNOWN_EID_MATCH)
             return None, EidResolutionStatus.NO_KNOWN_EID_MATCH
 
         try:
             match = resolver.resolve_eid(normalized_eid)
         except Exception:  # noqa: BLE001
             _LOGGER.debug("Resolver raised while processing EID payload", exc_info=True)
-            self.fmdn_manager.record_resolution_failure(
-                eid_bytes, source_mac, EidResolutionStatus.RESOLVER_ERROR
-            )
+            self.fmdn_manager.record_resolution_failure(eid_bytes, source_mac, EidResolutionStatus.RESOLVER_ERROR)
             return None, EidResolutionStatus.RESOLVER_ERROR
 
         if match is None:
-            self.fmdn_manager.record_resolution_failure(
-                eid_bytes, source_mac, EidResolutionStatus.NO_KNOWN_EID_MATCH
-            )
+            self.fmdn_manager.record_resolution_failure(eid_bytes, source_mac, EidResolutionStatus.NO_KNOWN_EID_MATCH)
             return None, EidResolutionStatus.NO_KNOWN_EID_MATCH
         # Match found - will be recorded by caller with device_id
         return match, EidResolutionStatus.NOT_EVALUATED
@@ -1439,9 +1431,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                             # Use the canonical_id as the basis for the metadevice address
                             # This matches the format used by _register_fmdn_source when
                             # receiving advertisements from the EID resolver.
-                            metadevice_address = self._format_fmdn_metadevice_address(
-                                fmdn_device.id, canonical_id
-                            )
+                            metadevice_address = self._format_fmdn_metadevice_address(fmdn_device.id, canonical_id)
 
                             # Create our Meta-Device and tag it up...
                             metadevice = self._get_or_create_device(metadevice_address)
@@ -1695,7 +1685,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             return advert.rssi_distance
 
         # Use the advert's adaptive timeout if available, otherwise fall back to default.
-        # The adaptive timeout is calculated per-advert based on MAX(observed intervals) × 2,
+        # The adaptive timeout is calculated per-advert based on MAX(observed intervals) x 2,
         # which handles devices with variable advertisement intervals (e.g., smartphone deep sleep).
         max_age = getattr(advert, "adaptive_timeout", AREA_MAX_AD_AGE_DEFAULT)
         # Clamp to absolute limit to prevent runaway values
@@ -2026,10 +2016,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                 # floors that also see the device, it's very likely the device is actually
                 # on the incumbent floor. Example: If KG (-1), EG (0), and OG (1) all see
                 # the device and incumbent is EG (0), then EG is most probable.
-                if (
-                    isinstance(inc_floor_level, int)
-                    and len(witness_floor_levels) >= 2
-                ):
+                if isinstance(inc_floor_level, int) and len(witness_floor_levels) >= 2:
                     levels_below = [lvl for lvl in witness_floor_levels if lvl < inc_floor_level]
                     levels_above = [lvl for lvl in witness_floor_levels if lvl > inc_floor_level]
 
@@ -2303,9 +2290,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         ):
             visible_scanners = _get_visible_scanners()
             winner_confidence = device.get_co_visibility_confidence(winner.area_id, visible_scanners)
-            incumbent_confidence = device.get_co_visibility_confidence(
-                device.area_advert.area_id, visible_scanners
-            )
+            incumbent_confidence = device.get_co_visibility_confidence(device.area_advert.area_id, visible_scanners)
 
             # If winner has significantly lower confidence than incumbent, increase streak target
             # This makes it harder to switch when expected co-scanners are missing

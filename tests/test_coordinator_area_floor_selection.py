@@ -11,6 +11,8 @@ from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import floor_registry as fr
 
 from custom_components.bermuda.bermuda_advert import BermudaAdvert
+from custom_components.bermuda.bermuda_fmdn_manager import BermudaFmdnManager
+from custom_components.bermuda.bermuda_irk import BermudaIrkManager
 from custom_components.bermuda.coordinator import BermudaDataUpdateCoordinator
 from custom_components.bermuda.const import (
     CONF_ATTENUATION,
@@ -42,6 +44,8 @@ def _make_coordinator(hass) -> BermudaDataUpdateCoordinator:
     coordinator._scanners_without_areas = None
     coordinator.ar = ar.async_get(hass)
     coordinator.fr = fr.async_get(hass)
+    coordinator.irk_manager = BermudaIrkManager()
+    coordinator.fmdn_manager = BermudaFmdnManager()
     return coordinator
 
 

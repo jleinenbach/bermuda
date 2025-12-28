@@ -335,9 +335,7 @@ class BermudaAdvert(dict):
                     max_interval = max(intervals)
                     # Use 2x maximum interval, clamped between DEFAULT (60s) and LIMIT (360s)
                     # Using MAX (not AVG) ensures deep sleep intervals are respected
-                    self.adaptive_timeout = max(
-                        AREA_MAX_AD_AGE_DEFAULT, min(AREA_MAX_AD_AGE_LIMIT, max_interval * 2)
-                    )
+                    self.adaptive_timeout = max(AREA_MAX_AD_AGE_DEFAULT, min(AREA_MAX_AD_AGE_LIMIT, max_interval * 2))
 
             if self.stamp is None or self.stamp < monotonic_time_coarse() - self.adaptive_timeout:
                 self.rssi_distance = None
