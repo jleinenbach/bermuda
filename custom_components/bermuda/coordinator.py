@@ -1544,6 +1544,11 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         # iBeacon devices should already have their metadevices created, so nothing more to
         # set up for them.
 
+        # Track which source devices have had ref_power set this cycle to prevent
+        # multiple metadevices from "fighting" over a shared source's ref_power.
+        # This fixes the dual-stack device issue (e.g., iBeacon + FMDN on same device).
+        ref_power_set_this_cycle: set[str] = set()
+
         for metadevice in self.metadevices.values():
             # Find every known source device and copy their adverts in.
 
@@ -1609,19 +1614,27 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                 # distance measurements. This won't affect Area wins though, because
                 # they are "relative", not absolute.
 
-                # FIXME: This has two potential bugs:
-                # - if multiple metadevices share a source, they will
-                #   "fight" over their preferred ref_power, if different.
-                # - The non-meta device (if tracked) will receive distances
-                #   based on the meta device's ref_power.
-                # - The non-meta device if tracked will have its own ref_power ignored.
-                #
-                # None of these are terribly awful, but worth fixing.
+                # Dual-stack device guard: If multiple metadevices share the same source
+                # (e.g., iBeacon + FMDN on same device), we need to prevent them from
+                # "fighting" over ref_power. Priority rules:
+                # 1. If source already had ref_power set this cycle, skip unless this
+                #    metadevice has a user-configured (non-zero) ref_power
+                # 2. User-configured ref_power (non-zero) always takes priority
+                # 3. First metadevice to process wins for default (zero) ref_power
 
                 # Note we are setting the ref_power on the source_device, not the
                 # individual scanner entries (it will propagate to them though)
-                if source_device.ref_power != metadevice.ref_power:
+                should_set_ref_power = False
+                if source_address not in ref_power_set_this_cycle:
+                    # First metadevice to touch this source this cycle
+                    should_set_ref_power = source_device.ref_power != metadevice.ref_power
+                elif metadevice.ref_power != 0 and source_device.ref_power != metadevice.ref_power:
+                    # This metadevice has user-configured ref_power, it takes priority
+                    should_set_ref_power = True
+
+                if should_set_ref_power:
                     source_device.set_ref_power(metadevice.ref_power)
+                    ref_power_set_this_cycle.add(source_address)
 
                 # anything that isn't already set to something interesting, overwrite
                 # it with the new device's data.
@@ -2202,6 +2215,27 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                 else:
                     winner = incumbent_candidate
                     tests.reason = "HOLD via RSSI fallback hysteresis"
+
+                # Populate diagnostic fields for RSSI fallback path so the diagnostic
+                # shows meaningful scanner information even when no distance contenders exist.
+                # This fixes the "scannername|" empty diagnostic for dual-stack devices.
+                winner_name = ""
+                winner_area = ""
+                winner_distance = 0.0
+                if winner is not None:
+                    winner_name = getattr(winner, "name", "") or ""
+                    winner_area = getattr(winner, "area_name", "") or ""
+                    winner_distance = _effective_distance(winner) or 0.0
+                incumbent_name = ""
+                incumbent_area = ""
+                incumbent_dist = 0.0
+                if incumbent_candidate is not None and incumbent_candidate is not winner:
+                    incumbent_name = getattr(incumbent_candidate, "name", "") or ""
+                    incumbent_area = getattr(incumbent_candidate, "area_name", "") or ""
+                    incumbent_dist = _effective_distance(incumbent_candidate) or 0.0
+                tests.scannername = (incumbent_name, winner_name)
+                tests.areas = (incumbent_area, winner_area)
+                tests.distance = (incumbent_dist, winner_distance)
             else:
                 winner = None
 
