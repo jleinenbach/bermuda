@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import logging
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 from bleak.backends.scanner import AdvertisementData
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import floor_registry as fr
 
@@ -26,7 +28,7 @@ from custom_components.bermuda.const import (
 from custom_components.bermuda.coordinator import BermudaDataUpdateCoordinator
 
 
-def _make_coordinator(hass) -> BermudaDataUpdateCoordinator:
+def _make_coordinator(hass: HomeAssistant) -> BermudaDataUpdateCoordinator:
     """Build a minimal coordinator suitable for BermudaDevice construction."""
     coordinator = BermudaDataUpdateCoordinator.__new__(BermudaDataUpdateCoordinator)
     coordinator.hass = hass
@@ -52,7 +54,7 @@ def _make_coordinator(hass) -> BermudaDataUpdateCoordinator:
 
 
 @pytest.mark.parametrize("create_sensor", [False, True])
-async def test_apply_sets_area_from_advert(hass, create_sensor: bool) -> None:
+async def test_apply_sets_area_from_advert(hass: HomeAssistant, create_sensor: bool) -> None:
     """Ensure selection applies advert metadata without crashing."""
     coordinator = _make_coordinator(hass)
     area_registry = ar.async_get(hass)
@@ -76,14 +78,14 @@ async def test_apply_sets_area_from_advert(hass, create_sensor: bool) -> None:
         stamp=base_stamp,
     )
 
-    device.apply_scanner_selection(advert, nowstamp=base_stamp + 1.0)
+    device.apply_scanner_selection(advert, nowstamp=base_stamp + 1.0)  # type: ignore[arg-type]
 
     assert device.area_id == advert_area_id
     assert device.area_name == area_entry.name
-    assert device.area_advert is advert
+    assert device.area_advert is advert  # type: ignore[comparison-overlap]
 
 
-def test_apply_selection_does_not_log_spam(hass, caplog) -> None:
+def test_apply_selection_does_not_log_spam(hass: HomeAssistant, caplog: pytest.LogCaptureFixture) -> None:
     """Area change should log once and identical repeats should be quiet."""
     coordinator = _make_coordinator(hass)
     device = coordinator._get_or_create_device("AA:BB:CC:DD:EE:10")
@@ -101,14 +103,14 @@ def test_apply_selection_does_not_log_spam(hass, caplog) -> None:
     )
 
     with caplog.at_level(logging.DEBUG):
-        device.apply_scanner_selection(advert, nowstamp=advert.stamp + 1.0)
-        device.apply_scanner_selection(advert, nowstamp=advert.stamp + 2.0)
+        device.apply_scanner_selection(advert, nowstamp=advert.stamp + 1.0)  # type: ignore[arg-type]
+        device.apply_scanner_selection(advert, nowstamp=advert.stamp + 2.0)  # type: ignore[arg-type]
 
     area_change_logs = [rec for rec in caplog.records if "was in" in rec.getMessage()]
     assert len(area_change_logs) == 1
 
 
-def test_apply_accepts_nowstamp_keyword(hass) -> None:
+def test_apply_accepts_nowstamp_keyword(hass: HomeAssistant) -> None:
     """Coordinator-style invocation should not raise when passing nowstamp."""
     coordinator = _make_coordinator(hass)
     device = coordinator._get_or_create_device("AA:BB:CC:DD:EE:02")
@@ -123,13 +125,13 @@ def test_apply_accepts_nowstamp_keyword(hass) -> None:
         stamp=101.0,
     )
 
-    device.apply_scanner_selection(advert, nowstamp=150.0)
+    device.apply_scanner_selection(advert, nowstamp=150.0)  # type: ignore[arg-type]
 
-    assert device.area_advert is advert
+    assert device.area_advert is advert  # type: ignore[comparison-overlap]
 
 
 @pytest.mark.parametrize("raw_timeout", [None, "", "30s"])
-def test_tracker_timeout_parsing_is_resilient(hass, raw_timeout: object) -> None:
+def test_tracker_timeout_parsing_is_resilient(hass: HomeAssistant, raw_timeout: object) -> None:
     """Invalid tracker timeout values should fall back safely."""
     coordinator = _make_coordinator(hass)
     device = coordinator._get_or_create_device("AA:BB:CC:DD:EE:09")
@@ -146,12 +148,12 @@ def test_tracker_timeout_parsing_is_resilient(hass, raw_timeout: object) -> None
         stamp=100.0,
     )
 
-    device.apply_scanner_selection(advert, nowstamp=120.0)
+    device.apply_scanner_selection(advert, nowstamp=120.0)  # type: ignore[arg-type]
 
     assert device.last_seen == pytest.approx(100.0)
 
 
-def test_last_seen_not_bumped_from_stale_advert(hass) -> None:
+def test_last_seen_not_bumped_from_stale_advert(hass: HomeAssistant) -> None:
     """Stale evidence must not promote last_seen to the refresh timestamp."""
     coordinator = _make_coordinator(hass)
     device = coordinator._get_or_create_device("AA:BB:CC:DD:EE:03")
@@ -170,7 +172,7 @@ def test_last_seen_not_bumped_from_stale_advert(hass) -> None:
         stamp=base_stamp,
     )
 
-    device.apply_scanner_selection(advert, nowstamp=base_stamp + 40.0)
+    device.apply_scanner_selection(advert, nowstamp=base_stamp + 40.0)  # type: ignore[arg-type]
 
     assert device.last_seen == pytest.approx(800.0)
 
@@ -184,12 +186,12 @@ def test_last_seen_not_bumped_from_stale_advert(hass) -> None:
         stamp=base_stamp + 5.0,
     )
 
-    device.apply_scanner_selection(fresh_advert, nowstamp=base_stamp + 6.0)
+    device.apply_scanner_selection(fresh_advert, nowstamp=base_stamp + 6.0)  # type: ignore[arg-type]
 
     assert device.last_seen == pytest.approx(base_stamp + 5.0)
 
 
-def test_future_stamp_does_not_bump_last_seen(hass, monkeypatch) -> None:
+def test_future_stamp_does_not_bump_last_seen(hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch) -> None:
     """Future-dated adverts must not advance last_seen in selection (unit test)."""
     coordinator = _make_coordinator(hass)
     device = coordinator._get_or_create_device("AA:BB:CC:DD:EE:04")
@@ -208,17 +210,18 @@ def test_future_stamp_does_not_bump_last_seen(hass, monkeypatch) -> None:
         stamp=future_stamp,
     )
 
-    device.apply_scanner_selection(advert, nowstamp=base_time)
+    device.apply_scanner_selection(advert, nowstamp=base_time)  # type: ignore[arg-type]
 
     metadata = device.area_state_metadata(stamp_now=base_time)
     assert device.last_seen == pytest.approx(50.0)
     assert device.area_id == area_entry.id
     assert device.area_distance is None
     assert device.area_state_stamp is None
-    assert metadata["last_good_area_age_s"] is None or metadata["last_good_area_age_s"] >= 0
+    last_good_age: float | bool | str | None = metadata["last_good_area_age_s"]
+    assert last_good_age is None or (isinstance(last_good_age, (int, float)) and last_good_age >= 0)
 
 
-def test_future_stamp_in_process_advertisement_guarded(hass, monkeypatch) -> None:
+def test_future_stamp_in_process_advertisement_guarded(hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch) -> None:
     """Future-dated adverts must not advance last_seen in process_advertisement."""
     coordinator = _make_coordinator(hass)
     device = coordinator._get_or_create_device("AA:BB:CC:DD:EE:0B")
@@ -231,7 +234,7 @@ def test_future_stamp_in_process_advertisement_guarded(hass, monkeypatch) -> Non
         return base_time
 
     monkeypatch.setattr("custom_components.bermuda.bermuda_device.monotonic_time_coarse", _fake_mono)
-    scanner.async_as_scanner_get_stamp = MagicMock(return_value=future_stamp)
+    scanner.async_as_scanner_get_stamp = MagicMock(return_value=future_stamp)  # type: ignore[method-assign]
 
     advertisement_data = MagicMock(spec=AdvertisementData)
     advertisement_data.rssi = -60
@@ -249,7 +252,7 @@ def test_future_stamp_in_process_advertisement_guarded(hass, monkeypatch) -> Non
     assert scanner.last_seen < base_time + 0.1
 
 
-def test_future_stamp_skips_scanner_last_seen(monkeypatch, hass) -> None:
+def test_future_stamp_skips_scanner_last_seen(monkeypatch: pytest.MonkeyPatch, hass: HomeAssistant) -> None:
     """Scanner last_seen must not jump forward on future remote stamps (production path)."""
     coordinator = _make_coordinator(hass)
     device = coordinator._get_or_create_device("AA:BB:CC:DD:EE:0C")
@@ -259,7 +262,7 @@ def test_future_stamp_skips_scanner_last_seen(monkeypatch, hass) -> None:
     future_stamp = base_time + 5.0
     monkeypatch.setattr("custom_components.bermuda.bermuda_advert.monotonic_time_coarse", lambda: base_time)
     monkeypatch.setattr("custom_components.bermuda.bermuda_device.monotonic_time_coarse", lambda: base_time)
-    scanner.async_as_scanner_get_stamp = MagicMock(return_value=future_stamp)
+    scanner.async_as_scanner_get_stamp = MagicMock(return_value=future_stamp)  # type: ignore[method-assign]
 
     advertisement_data = MagicMock(spec=AdvertisementData)
     advertisement_data.rssi = -65
@@ -277,7 +280,7 @@ def test_future_stamp_skips_scanner_last_seen(monkeypatch, hass) -> None:
     assert len(device.adverts) == 1
 
 
-def test_process_advertisement_sets_distance_stamp_from_advert(monkeypatch, hass) -> None:
+def test_process_advertisement_sets_distance_stamp_from_advert(monkeypatch: pytest.MonkeyPatch, hass: HomeAssistant) -> None:
     """Remote scanner stamps must carry through to distance_stamp (production path)."""
     coordinator = _make_coordinator(hass)
     device = coordinator._get_or_create_device("AA:BB:CC:DD:EE:0D")
@@ -291,7 +294,7 @@ def test_process_advertisement_sets_distance_stamp_from_advert(monkeypatch, hass
     monkeypatch.setattr("custom_components.bermuda.coordinator.monotonic_time_coarse", lambda: base_time)
     monkeypatch.setattr("custom_components.bermuda.bermuda_advert.rssi_to_metres", lambda *_: 1.5)
     scanner._is_remote_scanner = True  # noqa: SLF001
-    scanner.async_as_scanner_get_stamp = MagicMock(return_value=base_time)
+    scanner.async_as_scanner_get_stamp = MagicMock(return_value=base_time)  # type: ignore[method-assign]
 
     advertisement_data = MagicMock(spec=AdvertisementData)
     advertisement_data.rssi = -60
@@ -313,7 +316,7 @@ def test_process_advertisement_sets_distance_stamp_from_advert(monkeypatch, hass
     assert device.area_distance_stamp == pytest.approx(base_time)
 
 
-def test_distance_stamp_not_inflated_without_stamp(hass) -> None:
+def test_distance_stamp_not_inflated_without_stamp(hass: HomeAssistant) -> None:
     """Distance retention must not fabricate a stamp when advert stamp is missing (unit test)."""
     coordinator = _make_coordinator(hass)
     device = coordinator._get_or_create_device("AA:BB:CC:DD:EE:0E")
@@ -329,13 +332,13 @@ def test_distance_stamp_not_inflated_without_stamp(hass) -> None:
         stamp=None,
     )
 
-    device.apply_scanner_selection(advert, nowstamp=10.0)
+    device.apply_scanner_selection(advert, nowstamp=10.0)  # type: ignore[arg-type]
 
     assert device.area_distance == pytest.approx(2.5)
     assert device.area_distance_stamp is None
 
 
-def test_local_scanner_distance_uses_synthetic_stamp(monkeypatch, hass) -> None:
+def test_local_scanner_distance_uses_synthetic_stamp(monkeypatch: pytest.MonkeyPatch, hass: HomeAssistant) -> None:
     """Local scanners without stamps should use their synthetic stamp, not nowstamp."""
     coordinator = _make_coordinator(hass)
     device = coordinator._get_or_create_device("AA:BB:CC:DD:EE:0F")
@@ -369,9 +372,9 @@ def test_local_scanner_distance_uses_synthetic_stamp(monkeypatch, hass) -> None:
     assert device.area_distance_stamp == pytest.approx(base_time - 3.0)
 
 
-def _make_advertisement_data(rssi: int = -60) -> SimpleNamespace:
+def _make_advertisement_data(rssi: int = -60) -> AdvertisementData:
     """Construct minimal advertisement data object."""
-    return SimpleNamespace(
+    return SimpleNamespace(  # type: ignore[return-value]
         rssi=rssi,
         tx_power=None,
         manufacturer_data={},
@@ -381,7 +384,7 @@ def _make_advertisement_data(rssi: int = -60) -> SimpleNamespace:
     )
 
 
-def test_scanner_none_does_not_clear_advert_area(hass) -> None:
+def test_scanner_none_does_not_clear_advert_area(hass: HomeAssistant) -> None:
     """Scanner without area must not clobber advert area metadata."""
     coordinator = _make_coordinator(hass)
     parent = coordinator._get_or_create_device("AA:BB:CC:DD:EE:05")
@@ -402,7 +405,7 @@ def test_scanner_none_does_not_clear_advert_area(hass) -> None:
     assert bermuda_advert.area_name == "Original"
 
 
-def test_scanner_area_overwrite_applies(hass) -> None:
+def test_scanner_area_overwrite_applies(hass: HomeAssistant) -> None:
     """Scanner with a real area should overwrite advert metadata."""
     coordinator = _make_coordinator(hass)
     parent = coordinator._get_or_create_device("AA:BB:CC:DD:EE:06")
@@ -421,7 +424,7 @@ def test_scanner_area_overwrite_applies(hass) -> None:
     assert bermuda_advert.area_name == "Second"
 
 
-def test_metadevice_fallback_processes_advert(hass) -> None:
+def test_metadevice_fallback_processes_advert(hass: HomeAssistant) -> None:
     """Metadevices should process adverts when linked to the source."""
     coordinator = _make_coordinator(hass)
     metadevice = coordinator._get_or_create_device("AA:BB:CC:DD:EE:07")
@@ -441,7 +444,7 @@ def test_metadevice_fallback_processes_advert(hass) -> None:
     assert len(metadevice.adverts) == 1
 
 
-def test_metadevice_rejects_unlinked_advert_when_existing(hass) -> None:
+def test_metadevice_rejects_unlinked_advert_when_existing(hass: HomeAssistant) -> None:
     """Metadevices should skip adverts from unrelated scanners when already populated."""
     coordinator = _make_coordinator(hass)
     metadevice = coordinator._get_or_create_device("AA:BB:CC:DD:EE:08")

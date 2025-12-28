@@ -863,7 +863,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         any_resolved = False
 
         for eid_bytes in candidates:
-            match, resolution_status = self._process_fmdn_resolution_with_status(eid_bytes, device.address)
+            match, _resolution_status = self._process_fmdn_resolution_with_status(eid_bytes, device.address)
 
             if match is None:
                 # EID was seen but not resolved - already tracked in _process_fmdn_resolution_with_status
@@ -1064,7 +1064,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         # end of for ha_scanner loop
         return True
 
-    def prune_devices(self, force_pruning: bool = False) -> None:  # noqa: C901
+    def prune_devices(self, force_pruning: bool = False) -> None:  # noqa: C901, FBT001
         """
         Scan through all collected devices, and remove those that meet Pruning criteria.
 
@@ -2621,7 +2621,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             _LOGGER.debug("Redaction list update took %.3f seconds, has %d items", _elapsed, len(self.redactions))
         self.stamp_redactions_expiry = monotonic_time_coarse() + PRUNE_TIME_REDACTIONS
 
-    def redact_data(self, data: Any, first_recursion: bool = True) -> Any:
+    def redact_data(self, data: Any, first_recursion: bool = True) -> Any:  # noqa: FBT001
         """
         Wash any collection of data of any MAC addresses.
 

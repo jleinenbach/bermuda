@@ -61,8 +61,8 @@ class BermudaEntity(CoordinatorEntity):
     def _cached_ratelimit(
         self,
         statevalue: Any,
-        fast_falling: bool = True,
-        fast_rising: bool = False,
+        fast_falling: bool = True,  # noqa: FBT001
+        fast_rising: bool = False,  # noqa: FBT001
         interval: float | None = None,
     ) -> Any:
         """

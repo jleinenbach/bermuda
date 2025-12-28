@@ -14,7 +14,7 @@ to the combination of the scanner and the device it is reporting.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Any, Final
 
 from bluetooth_data_tools import monotonic_time_coarse
 
