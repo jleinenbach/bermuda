@@ -2035,9 +2035,9 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
                     if is_sandwiched:
                         # Strong evidence that device is on the middle floor
-                        # Add significant margin boost (20% base + 5% per extra sandwiching floor)
+                        # Add significant margin boost (30% base + 5% per extra sandwiching floor)
                         sandwich_floors = len(levels_below) + len(levels_above)
-                        sandwich_margin = 0.20 + 0.05 * (sandwich_floors - 2)
+                        sandwich_margin = 0.30 + 0.05 * (sandwich_floors - 2)
                         cross_floor_margin = min(0.75, cross_floor_margin + sandwich_margin)
                         cross_floor_escape = min(0.90, cross_floor_escape + sandwich_margin)
 
@@ -2046,8 +2046,8 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                     if isinstance(chal_floor_level, int):
                         floor_distance = abs(chal_floor_level - inc_floor_level)
                         if floor_distance >= 2:
-                            # Non-adjacent floors: add 15% per floor gap beyond 1
-                            skip_margin = 0.15 * (floor_distance - 1)
+                            # Non-adjacent floors: add 35% per floor gap beyond 1
+                            skip_margin = 0.35 * (floor_distance - 1)
                             cross_floor_margin = min(0.80, cross_floor_margin + skip_margin)
                             cross_floor_escape = min(0.95, cross_floor_escape + skip_margin)
 
@@ -2086,9 +2086,11 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                         min(incumbent_history),
                         max(challenger_history),
                     )
+                    # For cross-floor switches, require the increased margin; otherwise use pdiff_historical
+                    hist_margin = cross_floor_margin if cross_floor else pdiff_historical
                     if (
                         tests.hist_min_max[1] < tests.hist_min_max[0]
-                        and tests.pcnt_diff > pdiff_historical  # and we're significantly closer.
+                        and tests.pcnt_diff > hist_margin  # and we're significantly closer.
                     ):
                         tests.reason = "WIN on historical min/max"
                         incumbent = challenger

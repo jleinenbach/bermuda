@@ -174,20 +174,21 @@ def test_adaptive_stale_timeout_with_frequent_updates(bermuda_advert):
 
 def test_adaptive_stale_timeout_with_slow_updates(bermuda_advert):
     """Test that adaptive timeout increases for slow-updating devices (e.g., FMDN tags)."""
-    # Simulate a device that updates every 30 seconds
+    # Simulate a device that updates every 45 seconds (max interval)
+    # The code uses 2x maximum interval, clamped between 60s and 360s
     base_time = 2000.0
     bermuda_advert.hist_stamp = [
         base_time,
-        base_time - 30.0,
-        base_time - 60.0,
+        base_time - 45.0,
         base_time - 90.0,
-        base_time - 120.0,
+        base_time - 135.0,
+        base_time - 180.0,
     ]
     bermuda_advert.stamp = base_time
     bermuda_advert.new_stamp = None
     bermuda_advert.rssi_distance = 5.0
 
-    # Device has 30s average interval, so adaptive timeout = max(60, 30*3) = 90s
+    # Device has 45s max interval, so adaptive timeout = max(60, 45*2) = 90s
     # At time base_time + 89, device should still be considered valid
     with patch("custom_components.bermuda.bermuda_advert.monotonic_time_coarse", return_value=base_time + 89):
         bermuda_advert.calculate_data()
