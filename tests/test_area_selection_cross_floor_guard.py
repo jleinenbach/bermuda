@@ -67,10 +67,10 @@ class FakeDevice:
         self.pending_floor_id: str | None = None
         self.pending_streak: int = 0
         self.create_sensor = False
-        self.area_id = incumbent.area_id
-        self.area_name = incumbent.area_name
-        self.floor_id = incumbent.scanner_device.floor_id
-        self.floor_name = incumbent.scanner_device.floor_name
+        self.area_id: str | None = incumbent.area_id
+        self.area_name: str | None = incumbent.area_name
+        self.floor_id: str | None = incumbent.scanner_device.floor_id if incumbent.scanner_device else None
+        self.floor_name: str | None = incumbent.scanner_device.floor_name if incumbent.scanner_device else None
         # Co-visibility learning (stub for testing)
         self.co_visibility_stats: dict[str, dict[str, dict[str, int]]] = {}
         self.co_visibility_min_samples: int = 50
@@ -131,7 +131,7 @@ def _build_coord() -> BermudaDataUpdateCoordinator:
     return coord
 
 
-def test_cross_floor_historical_minmax_requires_stronger_history(monkeypatch):
+def test_cross_floor_historical_minmax_requires_stronger_history(monkeypatch: pytest.MonkeyPatch) -> None:
     """Cross-floor switches must not happen with short history via historical win."""
     now = 1000.0
     monkeypatch.setattr("custom_components.bermuda.coordinator.monotonic_time_coarse", lambda: now)
@@ -185,7 +185,7 @@ def test_cross_floor_historical_minmax_requires_stronger_history(monkeypatch):
     expected_floor = device.floor_id
     expected_area = device.area_name
 
-    BermudaDataUpdateCoordinator._refresh_area_by_min_distance(coord, device)
+    BermudaDataUpdateCoordinator._refresh_area_by_min_distance(coord, device)  # type: ignore[arg-type]
 
     if device.floor_id != expected_floor or device.area_name != expected_area:
         pd = _pcnt_diff(incumbent.rssi_distance, challenger.rssi_distance)
@@ -194,15 +194,15 @@ def test_cross_floor_historical_minmax_requires_stronger_history(monkeypatch):
             f"diag_area_switch={device.diag_area_switch!r}\n"
             f"expected_area={expected_area!r} expected_floor={expected_floor!r}\n"
             f"got_area={device.area_name!r} got_floor={device.floor_id!r}\n"
-            f"incumbent: area={incumbent.area_name!r} floor={incumbent.scanner_device.floor_id!r} "
+            f"incumbent: area={incumbent.area_name!r} floor={getattr(incumbent.scanner_device, 'floor_id', None)!r} "
             f"dist={incumbent.rssi_distance} hist[:5]={incumbent.hist_distance_by_interval[:5]}\n"
-            f"challenger: area={challenger.area_name!r} floor={challenger.scanner_device.floor_id!r} "
+            f"challenger: area={challenger.area_name!r} floor={getattr(challenger.scanner_device, 'floor_id', None)!r} "
             f"dist={challenger.rssi_distance} hist[:5]={challenger.hist_distance_by_interval[:5]}\n"
             f"pcnt_diff={pd:.3f}\n"
         )
 
 
-def test_cross_floor_switch_allowed_with_long_history(monkeypatch):
+def test_cross_floor_switch_allowed_with_long_history(monkeypatch: pytest.MonkeyPatch) -> None:
     """Cross-floor switches can proceed when history is long enough."""
     now = 2000.0
     monkeypatch.setattr("custom_components.bermuda.coordinator.monotonic_time_coarse", lambda: now)
@@ -254,12 +254,12 @@ def test_cross_floor_switch_allowed_with_long_history(monkeypatch):
     )
 
     for _ in range(CROSS_FLOOR_STREAK):
-        BermudaDataUpdateCoordinator._refresh_area_by_min_distance(coord, device)
+        BermudaDataUpdateCoordinator._refresh_area_by_min_distance(coord, device)  # type: ignore[arg-type]
 
     assert device.area_advert is challenger
 
 
-def test_transient_gap_still_allows_cross_floor_switch(monkeypatch):
+def test_transient_gap_still_allows_cross_floor_switch(monkeypatch: pytest.MonkeyPatch) -> None:
     """A transient missing incumbent distance should not block a justified cross-floor switch."""
     now = [3000.0]
 
@@ -318,8 +318,8 @@ def test_transient_gap_still_allows_cross_floor_switch(monkeypatch):
         now[0] += 0.5
         incumbent.stamp = _fake_time()
         challenger.stamp = _fake_time()
-        incumbent.rssi_distance = inc_distance
-        coord._refresh_area_by_min_distance(device)
+        incumbent.rssi_distance = inc_distance  # type: ignore[assignment]
+        coord._refresh_area_by_min_distance(device)  # type: ignore[arg-type]
         if device.area_advert is challenger:
             switch_cycle = idx
             break
@@ -329,7 +329,7 @@ def test_transient_gap_still_allows_cross_floor_switch(monkeypatch):
     assert switch_cycle >= CROSS_FLOOR_STREAK - 1
 
 
-def test_missing_scanner_device_does_not_crash(monkeypatch):
+def test_missing_scanner_device_does_not_crash(monkeypatch: pytest.MonkeyPatch) -> None:
     """Missing scanner metadata must not raise or switch."""
     now = 4000.0
     monkeypatch.setattr("custom_components.bermuda.coordinator.monotonic_time_coarse", lambda: now)
@@ -356,7 +356,7 @@ def test_missing_scanner_device_does_not_crash(monkeypatch):
     )
     challenger = FakeAdvert(
         name="bad",
-        scanner_device=None,  # type: ignore[arg-type]
+        scanner_device=None,
         area_id="area_bad",
         area_name="Room Bad",
         rssi_distance=1.0,
@@ -371,12 +371,12 @@ def test_missing_scanner_device_does_not_crash(monkeypatch):
         adverts={"ok": incumbent, "bad": challenger},
     )
 
-    BermudaDataUpdateCoordinator._refresh_area_by_min_distance(coord, device)
+    BermudaDataUpdateCoordinator._refresh_area_by_min_distance(coord, device)  # type: ignore[arg-type]
 
     assert device.area_advert is incumbent
 
 
-def test_same_floor_confirmation_blocks_cross_floor_switch(monkeypatch):
+def test_same_floor_confirmation_blocks_cross_floor_switch(monkeypatch: pytest.MonkeyPatch) -> None:
     """When multiple scanners on the incumbent's floor see the device,
     cross-floor switches should require much stronger evidence."""
     now = 5000.0
@@ -480,7 +480,7 @@ def test_same_floor_confirmation_blocks_cross_floor_switch(monkeypatch):
 
     # Run selection multiple times (even more than CROSS_FLOOR_STREAK)
     for _ in range(CROSS_FLOOR_STREAK + 2):
-        BermudaDataUpdateCoordinator._refresh_area_by_min_distance(coord, device)
+        BermudaDataUpdateCoordinator._refresh_area_by_min_distance(coord, device)  # type: ignore[arg-type]
 
     # With 3 scanners on floor A seeing the device, the cross_floor_margin
     # should be increased from 0.25 to 0.45, blocking the 35% difference challenger
@@ -491,7 +491,7 @@ def test_same_floor_confirmation_blocks_cross_floor_switch(monkeypatch):
     assert device.area_name == original_area
 
 
-def test_same_floor_confirmation_allows_strong_switch(monkeypatch):
+def test_same_floor_confirmation_allows_strong_switch(monkeypatch: pytest.MonkeyPatch) -> None:
     """When a challenger has very strong evidence (>60% diff), it should still win
     even with same-floor witnesses."""
     now = 6000.0
@@ -565,7 +565,7 @@ def test_same_floor_confirmation_allows_strong_switch(monkeypatch):
 
     # Run selection CROSS_FLOOR_STREAK times
     for _ in range(CROSS_FLOOR_STREAK):
-        BermudaDataUpdateCoordinator._refresh_area_by_min_distance(coord, device)
+        BermudaDataUpdateCoordinator._refresh_area_by_min_distance(coord, device)  # type: ignore[arg-type]
 
     # Even with same-floor witnesses, such strong evidence should win
     assert device.area_advert is challenger, (
@@ -574,7 +574,7 @@ def test_same_floor_confirmation_allows_strong_switch(monkeypatch):
     )
 
 
-def test_floor_sandwich_logic_blocks_switch(monkeypatch):
+def test_floor_sandwich_logic_blocks_switch(monkeypatch: pytest.MonkeyPatch) -> None:
     """When a device is seen by scanners on floors above AND below the incumbent,
     the incumbent floor (middle) is most likely correct - block switches."""
     now = 7000.0
@@ -658,7 +658,7 @@ def test_floor_sandwich_logic_blocks_switch(monkeypatch):
 
     # Run selection multiple times
     for _ in range(CROSS_FLOOR_STREAK + 3):
-        BermudaDataUpdateCoordinator._refresh_area_by_min_distance(coord, device)
+        BermudaDataUpdateCoordinator._refresh_area_by_min_distance(coord, device)  # type: ignore[arg-type]
 
     # With sandwich logic, the ground floor (middle) should be protected
     # The 50% difference is not enough to overcome the sandwich margin boost
@@ -668,7 +668,7 @@ def test_floor_sandwich_logic_blocks_switch(monkeypatch):
     )
 
 
-def test_non_adjacent_floor_requires_stronger_evidence(monkeypatch):
+def test_non_adjacent_floor_requires_stronger_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
     """Switching to a non-adjacent floor (skipping a floor) should require
     much stronger evidence since BLE rarely skips floors cleanly."""
     now = 8000.0
@@ -729,7 +729,7 @@ def test_non_adjacent_floor_requires_stronger_evidence(monkeypatch):
 
     # Run selection multiple times
     for _ in range(CROSS_FLOOR_STREAK + 3):
-        BermudaDataUpdateCoordinator._refresh_area_by_min_distance(coord, device)
+        BermudaDataUpdateCoordinator._refresh_area_by_min_distance(coord, device)  # type: ignore[arg-type]
 
     # With floor skip penalty (15% extra margin for skipping 1 floor),
     # the 55% difference should NOT be enough
@@ -742,7 +742,7 @@ def test_non_adjacent_floor_requires_stronger_evidence(monkeypatch):
 class TestCoVisibilityLearning:
     """Tests for co-visibility learning functionality."""
 
-    def test_co_visibility_stats_update(self):
+    def test_co_visibility_stats_update(self) -> None:
         """Test that co-visibility statistics are properly updated."""
         from custom_components.bermuda.bermuda_device import BermudaDevice
         from unittest.mock import MagicMock
@@ -762,7 +762,7 @@ class TestCoVisibilityLearning:
             mock_fr.async_get.return_value = MagicMock()
 
             # Create device directly and set required attributes
-            device = object.__new__(BermudaDevice)
+            device = BermudaDevice.__new__(BermudaDevice)
             device.co_visibility_stats = {}
             device.co_visibility_min_samples = 50
 
@@ -778,22 +778,22 @@ class TestCoVisibilityLearning:
             assert device.co_visibility_stats["area_living"]["scanner_c"]["seen"] == 0
             assert device.co_visibility_stats["area_living"]["scanner_c"]["total"] == 1
 
-    def test_co_visibility_confidence_with_no_data(self):
+    def test_co_visibility_confidence_with_no_data(self) -> None:
         """Test that confidence is 1.0 when no data is available."""
         from custom_components.bermuda.bermuda_device import BermudaDevice
 
-        device = object.__new__(BermudaDevice)
+        device = BermudaDevice.__new__(BermudaDevice)
         device.co_visibility_stats = {}
         device.co_visibility_min_samples = 50
 
         confidence = device.get_co_visibility_confidence("area_unknown", {"scanner_a"})
         assert confidence == 1.0
 
-    def test_co_visibility_confidence_with_insufficient_samples(self):
+    def test_co_visibility_confidence_with_insufficient_samples(self) -> None:
         """Test that confidence is 1.0 when samples are below threshold."""
         from custom_components.bermuda.bermuda_device import BermudaDevice
 
-        device = object.__new__(BermudaDevice)
+        device = BermudaDevice.__new__(BermudaDevice)
         device.co_visibility_min_samples = 50
         device.co_visibility_stats = {
             "area_test": {
@@ -805,11 +805,11 @@ class TestCoVisibilityLearning:
         confidence = device.get_co_visibility_confidence("area_test", {"scanner_a"})
         assert confidence == 1.0  # Not enough samples
 
-    def test_co_visibility_confidence_with_all_expected_scanners(self):
+    def test_co_visibility_confidence_with_all_expected_scanners(self) -> None:
         """Test high confidence when all expected scanners are visible."""
         from custom_components.bermuda.bermuda_device import BermudaDevice
 
-        device = object.__new__(BermudaDevice)
+        device = BermudaDevice.__new__(BermudaDevice)
         device.co_visibility_min_samples = 50
         device.co_visibility_stats = {
             "area_test": {
@@ -825,11 +825,11 @@ class TestCoVisibilityLearning:
         )
         assert confidence == 1.0  # Full confidence
 
-    def test_co_visibility_confidence_with_missing_expected_scanners(self):
+    def test_co_visibility_confidence_with_missing_expected_scanners(self) -> None:
         """Test reduced confidence when expected scanners are missing."""
         from custom_components.bermuda.bermuda_device import BermudaDevice
 
-        device = object.__new__(BermudaDevice)
+        device = BermudaDevice.__new__(BermudaDevice)
         device.co_visibility_min_samples = 50
         device.co_visibility_stats = {
             "area_test": {

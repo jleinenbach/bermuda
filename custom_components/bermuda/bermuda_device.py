@@ -717,9 +717,7 @@ class BermudaDevice(dict):
             "area_source": self.area_state_source,
         }
 
-    def update_co_visibility(
-        self, area_id: str, visible_scanners: set[str], all_candidate_scanners: set[str]
-    ) -> None:
+    def update_co_visibility(self, area_id: str, visible_scanners: set[str], all_candidate_scanners: set[str]) -> None:
         """
         Update co-visibility statistics for a given area.
 
@@ -750,14 +748,10 @@ class BermudaDevice(dict):
 
         # Limit memory: keep only top 20 scanners per area by total count
         if len(area_stats) > 20:
-            sorted_scanners = sorted(
-                area_stats.items(), key=lambda x: x[1]["total"], reverse=True
-            )
+            sorted_scanners = sorted(area_stats.items(), key=lambda x: x[1]["total"], reverse=True)
             self.co_visibility_stats[area_id] = dict(sorted_scanners[:20])
 
-    def get_co_visibility_confidence(
-        self, area_id: str, visible_scanners: set[str]
-    ) -> float:
+    def get_co_visibility_confidence(self, area_id: str, visible_scanners: set[str]) -> float:
         """
         Calculate confidence penalty based on missing expected co-scanners.
 
@@ -808,7 +802,7 @@ class BermudaDevice(dict):
         confidence = actual_visibility / expected_visibility
 
         # Apply a softer penalty (square root) to avoid being too aggressive
-        return min(1.0, confidence ** 0.5)
+        return min(1.0, confidence**0.5)
 
     def _parse_tracker_timeout(self, raw: object) -> float:
         """Return a safe tracker timeout value in seconds."""
@@ -1065,7 +1059,7 @@ class BermudaDevice(dict):
 
         return _found_scanner
 
-    def calculate_data(self):
+    def calculate_data(self) -> None:
         """
         Call after doing update_scanner() calls so that distances
         etc can be freshly smoothed and filtered.
@@ -1109,8 +1103,7 @@ class BermudaDevice(dict):
         # have create_sensor = True. This was set by discover_private_ble_metadevices()
         # or _register_fmdn_source() / discover_fmdn_metadevices(). Don't overwrite it.
         is_auto_tracked_metadevice = (
-            METADEVICE_PRIVATE_BLE_DEVICE in self.metadevice_type
-            or METADEVICE_FMDN_DEVICE in self.metadevice_type
+            METADEVICE_PRIVATE_BLE_DEVICE in self.metadevice_type or METADEVICE_FMDN_DEVICE in self.metadevice_type
         )
         if is_auto_tracked_metadevice:
             # Preserve the create_sensor value set during discovery/registration

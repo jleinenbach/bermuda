@@ -14,7 +14,7 @@ to the combination of the scanner and the device it is reporting.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Any, Final
 
 from bluetooth_data_tools import monotonic_time_coarse
 
@@ -302,7 +302,7 @@ class BermudaAdvert(dict):
             return self._update_raw_distance(False)
         return self.rssi_distance_raw
 
-    def calculate_data(self):
+    def calculate_data(self) -> None:
         """
         Filter and update distance estimates.
 
@@ -335,9 +335,7 @@ class BermudaAdvert(dict):
                     max_interval = max(intervals)
                     # Use 2x maximum interval, clamped between DEFAULT (60s) and LIMIT (360s)
                     # Using MAX (not AVG) ensures deep sleep intervals are respected
-                    self.adaptive_timeout = max(
-                        AREA_MAX_AD_AGE_DEFAULT, min(AREA_MAX_AD_AGE_LIMIT, max_interval * 2)
-                    )
+                    self.adaptive_timeout = max(AREA_MAX_AD_AGE_DEFAULT, min(AREA_MAX_AD_AGE_LIMIT, max_interval * 2))
 
             if self.stamp is None or self.stamp < monotonic_time_coarse() - self.adaptive_timeout:
                 self.rssi_distance = None
@@ -410,7 +408,7 @@ class BermudaAdvert(dict):
         del self.hist_stamp[HIST_KEEP_COUNT:]
         del self.hist_velocity[HIST_KEEP_COUNT:]
 
-    def to_dict(self):
+    def to_dict(self) -> dict[str, Any]:
         """Convert class to serialisable dict for dump_devices."""
         # using "is" comparisons instead of string matching means
         # linting and typing can catch errors.

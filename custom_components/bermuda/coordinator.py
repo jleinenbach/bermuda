@@ -53,6 +53,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util.dt import get_age, now
 
 from .bermuda_device import BermudaDevice
+from .bermuda_fmdn_manager import BermudaFmdnManager, EidResolutionStatus
 from .bermuda_irk import BermudaIrkManager
 from .const import (
     _LOGGER,
@@ -76,7 +77,6 @@ from .const import (
     CONF_UPDATE_INTERVAL,
     CROSS_FLOOR_MIN_HISTORY,
     CROSS_FLOOR_STREAK,
-    SAME_FLOOR_MIN_HISTORY,
     DATA_EID_RESOLVER,
     DEFAULT_ATTENUATION,
     DEFAULT_DEVTRACK_TIMEOUT,
@@ -103,6 +103,7 @@ from .const import (
     PRUNE_TIME_REDACTIONS,
     PRUNE_TIME_UNKNOWN_IRK,
     REPAIR_SCANNER_WITHOUT_AREA,
+    SAME_FLOOR_MIN_HISTORY,
     SAME_FLOOR_STREAK,
     SAVEOUT_COOLDOWN,
     SIGNAL_DEVICE_NEW,
@@ -215,6 +216,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         self._scanner_list: set[str] = set()
         self._scanners: set[BermudaDevice] = set()  # Set of all in self.devices that is_scanner=True
         self.irk_manager = BermudaIrkManager()
+        self.fmdn_manager = BermudaFmdnManager()
 
         self.ar = ar.async_get(self.hass)
         self.er = er.async_get(self.hass)
@@ -714,7 +716,8 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         return cast("EidResolver", resolver)
 
     def _format_fmdn_metadevice_address(self, device_id: str, canonical_id: str | None) -> str:
-        """Return the canonical key for an FMDN metadevice.
+        """
+        Return the canonical key for an FMDN metadevice.
 
         Always uses device_id (HA Device Registry ID) for stable addresses across restarts.
         Previously, using canonical_id caused duplicate entities because:
@@ -758,20 +761,42 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
     def _process_fmdn_resolution(self, eid_bytes: bytes) -> Any | None:
         """Resolve an EID payload to a Home Assistant device registry id."""
+        match, _ = self._process_fmdn_resolution_with_status(eid_bytes, source_mac="unknown")
+        return match
+
+    def _process_fmdn_resolution_with_status(
+        self, eid_bytes: bytes, source_mac: str
+    ) -> tuple[Any | None, EidResolutionStatus]:
+        """
+        Resolve an EID payload and track the resolution status.
+
+        Returns:
+            Tuple of (match result, resolution status)
+
+        """
         resolver = self._get_fmdn_resolver()
 
         if resolver is None:
-            return None
+            self.fmdn_manager.record_resolution_failure(eid_bytes, source_mac, EidResolutionStatus.RESOLVER_UNAVAILABLE)
+            return None, EidResolutionStatus.RESOLVER_UNAVAILABLE
 
         normalized_eid = self._normalize_eid_bytes(eid_bytes)
         if normalized_eid is None:
-            return None
+            self.fmdn_manager.record_resolution_failure(eid_bytes, source_mac, EidResolutionStatus.NO_KNOWN_EID_MATCH)
+            return None, EidResolutionStatus.NO_KNOWN_EID_MATCH
 
         try:
-            return resolver.resolve_eid(normalized_eid)
+            match = resolver.resolve_eid(normalized_eid)
         except Exception:  # noqa: BLE001
             _LOGGER.debug("Resolver raised while processing EID payload", exc_info=True)
-        return None
+            self.fmdn_manager.record_resolution_failure(eid_bytes, source_mac, EidResolutionStatus.RESOLVER_ERROR)
+            return None, EidResolutionStatus.RESOLVER_ERROR
+
+        if match is None:
+            self.fmdn_manager.record_resolution_failure(eid_bytes, source_mac, EidResolutionStatus.NO_KNOWN_EID_MATCH)
+            return None, EidResolutionStatus.NO_KNOWN_EID_MATCH
+        # Match found - will be recorded by caller with device_id
+        return match, EidResolutionStatus.NOT_EVALUATED
 
     def _register_fmdn_source(self, source_device: BermudaDevice, metadevice_address: str, match: Any) -> None:
         """Attach a rotating FMDN source MAC to its stable metadevice container."""
@@ -834,9 +859,14 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
         device.metadevice_type.add(METADEVICE_TYPE_FMDN_SOURCE)
 
+        # Track whether we found any match for this advertisement
+        any_resolved = False
+
         for eid_bytes in candidates:
-            match = self._process_fmdn_resolution(eid_bytes)
+            match, _resolution_status = self._process_fmdn_resolution_with_status(eid_bytes, device.address)
+
             if match is None:
+                # EID was seen but not resolved - already tracked in _process_fmdn_resolution_with_status
                 continue
 
             resolved_device_id = getattr(match, "device_id", None)
@@ -845,14 +875,36 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
             if is_shared and resolved_device_id is None and canonical_id is None:
                 _LOGGER.debug("Skipping shared FMDN match without identifiers")
+                # Track as unresolved since we can't use it
+                self.fmdn_manager.record_resolution_failure(
+                    eid_bytes, device.address, EidResolutionStatus.NO_KNOWN_EID_MATCH
+                )
                 continue
             if resolved_device_id is None:
                 _LOGGER.debug("Resolver returned match without device_id for candidate length %d", len(eid_bytes))
+                self.fmdn_manager.record_resolution_failure(
+                    eid_bytes, device.address, EidResolutionStatus.NO_KNOWN_EID_MATCH
+                )
                 continue
+
+            # Successfully resolved - record in FMDN manager
+            self.fmdn_manager.record_resolution_success(
+                eid_bytes, device.address, str(resolved_device_id), canonical_id
+            )
+            any_resolved = True
 
             metadevice_address = self._format_fmdn_metadevice_address(str(resolved_device_id), canonical_id)
             self._register_fmdn_source(device, metadevice_address, match)
             break
+
+        # If no candidates resolved, record the first one as unresolved for diagnostics
+        if not any_resolved and candidates:
+            first_eid = next(iter(candidates))
+            # Only record if not already tracked by _process_fmdn_resolution_with_status
+            if self.fmdn_manager.get_resolution_status(first_eid) is None:
+                self.fmdn_manager.record_resolution_failure(
+                    first_eid, device.address, EidResolutionStatus.NO_KNOWN_EID_MATCH
+                )
 
     def _maybe_prune_fmdn_source(self, device: BermudaDevice, stamp_fmdn: float, prune_list: list[str]) -> bool:
         """Prune stale FMDN rotating MACs and return True if pruned."""
@@ -864,12 +916,12 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         prune_list.append(device.address)
         return True
 
-    async def _async_update_data(self):
+    async def _async_update_data(self) -> bool:
         """Implementation of DataUpdateCoordinator update_data function."""
         # return False
         return self._async_update_data_internal()
 
-    def _async_update_data_internal(self):
+    def _async_update_data_internal(self) -> bool:
         """
         The primary update loop that processes almost all data in Bermuda.
 
@@ -963,7 +1015,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         self.last_update_success = True
         return result_gather_adverts
 
-    def _async_gather_advert_data(self):
+    def _async_gather_advert_data(self) -> bool:
         """Perform the gathering of backend Bluetooth Data and updating scanners and devices."""
         # Initialise ha_scanners if we haven't already
         if self._scanner_init_pending:
@@ -1012,7 +1064,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         # end of for ha_scanner loop
         return True
 
-    def prune_devices(self, force_pruning=False):  # noqa: C901
+    def prune_devices(self, force_pruning: bool = False) -> None:  # noqa: C901, FBT001
         """
         Scan through all collected devices, and remove those that meet Pruning criteria.
 
@@ -1036,6 +1088,9 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
         # Prune any IRK MACs that have expired
         self.irk_manager.async_prune()
+
+        # Prune any FMDN EIDs that have expired
+        self.fmdn_manager.async_prune()
 
         # Prune devices.
         prune_list: list[str] = []  # list of addresses to be pruned
@@ -1284,7 +1339,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                                 pb_entity.entity_id,
                             )
 
-    def discover_fmdn_metadevices(self):
+    def discover_fmdn_metadevices(self) -> None:
         """
         Access the googlefindmy integration to find FMDN metadevices to track.
 
@@ -1376,9 +1431,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                             # Use the canonical_id as the basis for the metadevice address
                             # This matches the format used by _register_fmdn_source when
                             # receiving advertisements from the EID resolver.
-                            metadevice_address = self._format_fmdn_metadevice_address(
-                                fmdn_device.id, canonical_id
-                            )
+                            metadevice_address = self._format_fmdn_metadevice_address(fmdn_device.id, canonical_id)
 
                             # Create our Meta-Device and tag it up...
                             metadevice = self._get_or_create_device(metadevice_address)
@@ -1632,7 +1685,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             return advert.rssi_distance
 
         # Use the advert's adaptive timeout if available, otherwise fall back to default.
-        # The adaptive timeout is calculated per-advert based on MAX(observed intervals) × 2,
+        # The adaptive timeout is calculated per-advert based on MAX(observed intervals) x 2,
         # which handles devices with variable advertisement intervals (e.g., smartphone deep sleep).
         max_age = getattr(advert, "adaptive_timeout", AREA_MAX_AD_AGE_DEFAULT)
         # Clamp to absolute limit to prevent runaway values
@@ -1869,6 +1922,16 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                     )
                 continue
 
+            # If the incumbent is a soft_incumbent (failed distance contention due to being
+            # out of range or missing distance), a valid distance challenger wins immediately
+            # without needing the history checks. This ensures out-of-range incumbents are
+            # properly replaced by in-range challengers.
+            if current_incumbent is soft_incumbent and not _is_distance_contender(soft_incumbent):
+                tests.reason = "WIN - soft incumbent failed distance contention"
+                incumbent = challenger
+                soft_incumbent = None
+                continue
+
             if incumbent_scanner is None:
                 tests.reason = "LOSS - incumbent missing scanner metadata"
                 continue
@@ -1963,10 +2026,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                 # floors that also see the device, it's very likely the device is actually
                 # on the incumbent floor. Example: If KG (-1), EG (0), and OG (1) all see
                 # the device and incumbent is EG (0), then EG is most probable.
-                if (
-                    isinstance(inc_floor_level, int)
-                    and len(witness_floor_levels) >= 2
-                ):
+                if isinstance(inc_floor_level, int) and len(witness_floor_levels) >= 2:
                     levels_below = [lvl for lvl in witness_floor_levels if lvl < inc_floor_level]
                     levels_above = [lvl for lvl in witness_floor_levels if lvl > inc_floor_level]
 
@@ -1975,9 +2035,9 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
                     if is_sandwiched:
                         # Strong evidence that device is on the middle floor
-                        # Add significant margin boost (20% base + 5% per extra sandwiching floor)
+                        # Add significant margin boost (30% base + 5% per extra sandwiching floor)
                         sandwich_floors = len(levels_below) + len(levels_above)
-                        sandwich_margin = 0.20 + 0.05 * (sandwich_floors - 2)
+                        sandwich_margin = 0.30 + 0.05 * (sandwich_floors - 2)
                         cross_floor_margin = min(0.75, cross_floor_margin + sandwich_margin)
                         cross_floor_escape = min(0.90, cross_floor_escape + sandwich_margin)
 
@@ -1986,8 +2046,8 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                     if isinstance(chal_floor_level, int):
                         floor_distance = abs(chal_floor_level - inc_floor_level)
                         if floor_distance >= 2:
-                            # Non-adjacent floors: add 15% per floor gap beyond 1
-                            skip_margin = 0.15 * (floor_distance - 1)
+                            # Non-adjacent floors: add 35% per floor gap beyond 1
+                            skip_margin = 0.35 * (floor_distance - 1)
                             cross_floor_margin = min(0.80, cross_floor_margin + skip_margin)
                             cross_floor_escape = min(0.95, cross_floor_escape + skip_margin)
 
@@ -2026,13 +2086,26 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                         min(incumbent_history),
                         max(challenger_history),
                     )
+                    # For cross-floor switches, require the increased margin; otherwise use pdiff_historical
+                    hist_margin = cross_floor_margin if cross_floor else pdiff_historical
                     if (
                         tests.hist_min_max[1] < tests.hist_min_max[0]
-                        and tests.pcnt_diff > pdiff_historical  # and we're significantly closer.
+                        and tests.pcnt_diff > hist_margin  # and we're significantly closer.
                     ):
                         tests.reason = "WIN on historical min/max"
                         incumbent = challenger
                         continue
+
+            # Check for near-field absolute improvement BEFORE applying history requirement.
+            # This allows meaningful absolute improvements in close proximity to win
+            # even without extensive history.
+            near_field_cutoff = 1.0
+            abs_win_meters = 0.08
+            near_field_win = avg_dist <= near_field_cutoff and abs_diff >= abs_win_meters
+
+            # Check if percentage difference meets the "outright win" threshold.
+            # If so, bypass history requirement since the evidence is strong.
+            significant_improvement = tests.pcnt_diff >= pdiff_outright
 
             if cross_floor:
                 challenger_history_ready = len(challenger_history) >= history_window
@@ -2047,19 +2120,23 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                 if not (sustained_cross_floor or tests.pcnt_diff >= cross_floor_escape):
                     tests.reason = "LOSS - cross-floor evidence insufficient"
                     continue
-            else:
-                # Same-floor: require minimum history before allowing a win.
-                # This prevents a scanner with little/no history from immediately
-                # "winning" just because it reports a closer distance.
-                if len(challenger_hist_all) < SAME_FLOOR_MIN_HISTORY:
-                    tests.reason = "LOSS - same-floor history too short"
-                    continue
+            # Same-floor: require minimum history before allowing a win.
+            # This prevents a scanner with little/no history from immediately
+            # "winning" just because it reports a closer distance.
+            # Exceptions:
+            # - near-field absolute improvements can bypass this
+            # - significant percentage improvements (>30%) can bypass this
+            elif (
+                len(challenger_hist_all) < SAME_FLOOR_MIN_HISTORY
+                and not near_field_win
+                and not significant_improvement
+            ):
+                tests.reason = "LOSS - same-floor history too short"
+                continue
 
             if tests.pcnt_diff < pdiff_outright:
                 # Allow a near-field absolute improvement to win even when percent diff is small.
-                near_field_cutoff = 1.0
-                abs_win_meters = 0.08
-                if not (avg_dist <= near_field_cutoff and abs_diff >= abs_win_meters):
+                if not near_field_win:
                     tests.reason = "LOSS - failed on percentage_difference"
                     continue
                 tests.reason = "WIN on near-field absolute improvement"
@@ -2241,9 +2318,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         ):
             visible_scanners = _get_visible_scanners()
             winner_confidence = device.get_co_visibility_confidence(winner.area_id, visible_scanners)
-            incumbent_confidence = device.get_co_visibility_confidence(
-                device.area_advert.area_id, visible_scanners
-            )
+            incumbent_confidence = device.get_co_visibility_confidence(device.area_advert.area_id, visible_scanners)
 
             # If winner has significantly lower confidence than incumbent, increase streak target
             # This makes it harder to switch when expected co-scanners are missing
@@ -2253,6 +2328,38 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
         if device.area_advert is None and winner is not None:
             # Bootstrap immediately when we have no area yet; don't wait for streak logic.
+            device.pending_area_id = None
+            device.pending_floor_id = None
+            device.pending_streak = 0
+            _apply_selection(winner)
+            return
+
+        # Also bootstrap immediately when the current area_advert is out of range, invalid,
+        # stale, or when there's a significant improvement on the SAME floor.
+        # Cross-floor switches still require the streak for stability.
+        area_advert_stale = False
+        significant_improvement_same_floor = False
+        if device.area_advert is not None:
+            max_age = getattr(device.area_advert, "adaptive_timeout", AREA_MAX_AD_AGE_DEFAULT)
+            max_age = min(max_age, AREA_MAX_AD_AGE_LIMIT)
+            area_advert_stale = device.area_advert.stamp < nowstamp - max_age
+            # Check for significant improvement (>30% distance difference) on same floor only
+            if winner is not None:
+                winner_dist = _effective_distance(winner)
+                incumbent_dist = _effective_distance(device.area_advert)
+                is_cross_floor = _resolve_cross_floor(device.area_advert, winner)
+                if (
+                    winner_dist is not None
+                    and incumbent_dist is not None
+                    and winner_dist < incumbent_dist
+                    and not is_cross_floor  # Only apply for same-floor switches
+                ):
+                    avg_dist = (winner_dist + incumbent_dist) / 2
+                    pcnt_diff = abs(winner_dist - incumbent_dist) / avg_dist if avg_dist > 0 else 0
+                    significant_improvement_same_floor = pcnt_diff >= 0.30  # pdiff_outright threshold
+        if winner is not None and (
+            not _is_distance_contender(device.area_advert) or area_advert_stale or significant_improvement_same_floor
+        ):
             device.pending_area_id = None
             device.pending_floor_id = None
             device.pending_streak = 0
@@ -2514,7 +2621,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             _LOGGER.debug("Redaction list update took %.3f seconds, has %d items", _elapsed, len(self.redactions))
         self.stamp_redactions_expiry = monotonic_time_coarse() + PRUNE_TIME_REDACTIONS
 
-    def redact_data(self, data, first_recursion=True):
+    def redact_data(self, data: Any, first_recursion: bool = True) -> Any:  # noqa: FBT001
         """
         Wash any collection of data of any MAC addresses.
 

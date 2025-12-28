@@ -1,4 +1,8 @@
+from __future__ import annotations
+
+from collections.abc import Mapping
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -8,6 +12,8 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import floor_registry as fr
 from homeassistant.core import HomeAssistant
 
+from custom_components.bermuda.bermuda_fmdn_manager import BermudaFmdnManager
+from custom_components.bermuda.bermuda_irk import BermudaIrkManager
 from custom_components.bermuda.const import (
     DATA_EID_RESOLVER,
     DEFAULT_FMDN_EID_FORMAT,
@@ -38,6 +44,8 @@ def coordinator(hass: HomeAssistant) -> BermudaDataUpdateCoordinator:
     coordinator._scanners = set()
     coordinator._scanner_list = set()
     coordinator._scanners_without_areas = None
+    coordinator.irk_manager = BermudaIrkManager()
+    coordinator.fmdn_manager = BermudaFmdnManager()
     coordinator.er = er.async_get(hass)
     coordinator.dr = dr.async_get(hass)
     coordinator.ar = ar.async_get(hass)
@@ -70,7 +78,7 @@ def test_fmdn_resolution_registers_metadevice(hass: HomeAssistant, coordinator: 
     resolver.resolve_eid.return_value = match
     hass.data[DOMAIN_GOOGLEFINDMY] = {DATA_EID_RESOLVER: resolver}
 
-    service_data = {SERVICE_UUID_FMDN: bytes([0x40]) + b"\x01" * 20}
+    service_data: Mapping[str | int, Any] = {SERVICE_UUID_FMDN: bytes([0x40]) + b"\x01" * 20}
 
     source_device = coordinator._get_or_create_device("aa:bb:cc:dd:ee:ff")
     coordinator._handle_fmdn_advertisement(source_device, service_data)
@@ -79,7 +87,7 @@ def test_fmdn_resolution_registers_metadevice(hass: HomeAssistant, coordinator: 
 
     metadevice_key = coordinator._format_fmdn_metadevice_address(match.device_id, match.canonical_id)
     metadevice = coordinator.metadevices[metadevice_key]
-    assert metadevice.create_sensor is False
+    assert metadevice.create_sensor is True  # FMDN devices auto-create sensors
     assert metadevice.fmdn_device_id == match.device_id
     assert normalize_mac("aa:bb:cc:dd:ee:ff") in metadevice.metadevice_sources
 
@@ -91,7 +99,7 @@ def test_fmdn_resolution_registers_metadevice(hass: HomeAssistant, coordinator: 
 def test_fmdn_resolution_without_googlefindmy(hass: HomeAssistant, coordinator: BermudaDataUpdateCoordinator) -> None:
     """Ignore FMDN adverts when the resolver integration is absent."""
 
-    service_data = {SERVICE_UUID_FMDN: bytes([0x40]) + b"\x02" * 20}
+    service_data: Mapping[str | int, Any] = {SERVICE_UUID_FMDN: bytes([0x40]) + b"\x02" * 20}
 
     source_device = coordinator._get_or_create_device("11:22:33:44:55:66")
     coordinator._handle_fmdn_advertisement(source_device, service_data)
@@ -107,7 +115,7 @@ def test_fmdn_resolution_handles_missing_resolver_api(
     """Return None when a resolver object lacks the expected API."""
 
     hass.data[DOMAIN_GOOGLEFINDMY] = {DATA_EID_RESOLVER: object()}
-    service_data = {SERVICE_UUID_FMDN: bytes([0x40]) + b"\x03" * 20}
+    service_data: Mapping[str | int, Any] = {SERVICE_UUID_FMDN: bytes([0x40]) + b"\x03" * 20}
 
     source_device = coordinator._get_or_create_device("22:33:44:55:66:77")
     coordinator._handle_fmdn_advertisement(source_device, service_data)
@@ -196,7 +204,7 @@ def test_shared_match_without_identifiers_skipped(
     hass.data[DOMAIN_GOOGLEFINDMY] = {DATA_EID_RESOLVER: resolver}
 
     source_device = coordinator._get_or_create_device("33:44:55:66:77:88")
-    service_data = {SERVICE_UUID_FMDN: bytes([0x40]) + b"\x09" * 20}
+    service_data: Mapping[str | int, Any] = {SERVICE_UUID_FMDN: bytes([0x40]) + b"\x09" * 20}
 
     coordinator._handle_fmdn_advertisement(source_device, service_data)
 
@@ -204,7 +212,9 @@ def test_shared_match_without_identifiers_skipped(
     assert METADEVICE_TYPE_FMDN_SOURCE in source_device.metadevice_type
 
 
-def test_deduplicates_metadevices_by_device_id(hass, coordinator):
+def test_deduplicates_metadevices_by_device_id(
+    hass: HomeAssistant, coordinator: BermudaDataUpdateCoordinator
+) -> None:
     """Ensure multiple sources map to the same metadevice via device_id.
 
     The metadevice address is now based solely on device_id (HA Device Registry ID)
@@ -212,7 +222,7 @@ def test_deduplicates_metadevices_by_device_id(hass, coordinator):
     """
     resolver = MagicMock()
 
-    def _resolver(payload):
+    def _resolver(payload: bytes) -> SimpleNamespace:
         return SimpleNamespace(device_id="owned", canonical_id="shared-uuid")
 
     resolver.resolve_eid.side_effect = _resolver
@@ -220,7 +230,7 @@ def test_deduplicates_metadevices_by_device_id(hass, coordinator):
 
     first_source = coordinator._get_or_create_device("00:11:22:33:44:55")
     second_source = coordinator._get_or_create_device("00:11:22:33:44:56")
-    service_data = {SERVICE_UUID_FMDN: bytes([0x40]) + b"\xaa" * 20}
+    service_data: Mapping[str | int, Any] = {SERVICE_UUID_FMDN: bytes([0x40]) + b"\xaa" * 20}
 
     coordinator._handle_fmdn_advertisement(first_source, service_data)
     coordinator._handle_fmdn_advertisement(second_source, service_data)
