@@ -53,6 +53,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util.dt import get_age, now
 
 from .bermuda_device import BermudaDevice
+from .bermuda_fmdn_manager import BermudaFmdnManager, EidResolutionStatus
 from .bermuda_irk import BermudaIrkManager
 from .const import (
     _LOGGER,
@@ -76,7 +77,6 @@ from .const import (
     CONF_UPDATE_INTERVAL,
     CROSS_FLOOR_MIN_HISTORY,
     CROSS_FLOOR_STREAK,
-    SAME_FLOOR_MIN_HISTORY,
     DATA_EID_RESOLVER,
     DEFAULT_ATTENUATION,
     DEFAULT_DEVTRACK_TIMEOUT,
@@ -103,6 +103,7 @@ from .const import (
     PRUNE_TIME_REDACTIONS,
     PRUNE_TIME_UNKNOWN_IRK,
     REPAIR_SCANNER_WITHOUT_AREA,
+    SAME_FLOOR_MIN_HISTORY,
     SAME_FLOOR_STREAK,
     SAVEOUT_COOLDOWN,
     SIGNAL_DEVICE_NEW,
@@ -215,6 +216,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         self._scanner_list: set[str] = set()
         self._scanners: set[BermudaDevice] = set()  # Set of all in self.devices that is_scanner=True
         self.irk_manager = BermudaIrkManager()
+        self.fmdn_manager = BermudaFmdnManager()
 
         self.ar = ar.async_get(self.hass)
         self.er = er.async_get(self.hass)
@@ -714,7 +716,8 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         return cast("EidResolver", resolver)
 
     def _format_fmdn_metadevice_address(self, device_id: str, canonical_id: str | None) -> str:
-        """Return the canonical key for an FMDN metadevice.
+        """
+        Return the canonical key for an FMDN metadevice.
 
         Always uses device_id (HA Device Registry ID) for stable addresses across restarts.
         Previously, using canonical_id caused duplicate entities because:
@@ -758,20 +761,50 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
     def _process_fmdn_resolution(self, eid_bytes: bytes) -> Any | None:
         """Resolve an EID payload to a Home Assistant device registry id."""
+        match, _ = self._process_fmdn_resolution_with_status(eid_bytes, source_mac="unknown")
+        return match
+
+    def _process_fmdn_resolution_with_status(
+        self, eid_bytes: bytes, source_mac: str
+    ) -> tuple[Any | None, EidResolutionStatus]:
+        """
+        Resolve an EID payload and track the resolution status.
+
+        Returns:
+            Tuple of (match result, resolution status)
+
+        """
         resolver = self._get_fmdn_resolver()
 
         if resolver is None:
-            return None
+            self.fmdn_manager.record_resolution_failure(
+                eid_bytes, source_mac, EidResolutionStatus.RESOLVER_UNAVAILABLE
+            )
+            return None, EidResolutionStatus.RESOLVER_UNAVAILABLE
 
         normalized_eid = self._normalize_eid_bytes(eid_bytes)
         if normalized_eid is None:
-            return None
+            self.fmdn_manager.record_resolution_failure(
+                eid_bytes, source_mac, EidResolutionStatus.NO_KNOWN_EID_MATCH
+            )
+            return None, EidResolutionStatus.NO_KNOWN_EID_MATCH
 
         try:
-            return resolver.resolve_eid(normalized_eid)
+            match = resolver.resolve_eid(normalized_eid)
         except Exception:  # noqa: BLE001
             _LOGGER.debug("Resolver raised while processing EID payload", exc_info=True)
-        return None
+            self.fmdn_manager.record_resolution_failure(
+                eid_bytes, source_mac, EidResolutionStatus.RESOLVER_ERROR
+            )
+            return None, EidResolutionStatus.RESOLVER_ERROR
+
+        if match is None:
+            self.fmdn_manager.record_resolution_failure(
+                eid_bytes, source_mac, EidResolutionStatus.NO_KNOWN_EID_MATCH
+            )
+            return None, EidResolutionStatus.NO_KNOWN_EID_MATCH
+        # Match found - will be recorded by caller with device_id
+        return match, EidResolutionStatus.NOT_EVALUATED
 
     def _register_fmdn_source(self, source_device: BermudaDevice, metadevice_address: str, match: Any) -> None:
         """Attach a rotating FMDN source MAC to its stable metadevice container."""
@@ -834,9 +867,14 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
         device.metadevice_type.add(METADEVICE_TYPE_FMDN_SOURCE)
 
+        # Track whether we found any match for this advertisement
+        any_resolved = False
+
         for eid_bytes in candidates:
-            match = self._process_fmdn_resolution(eid_bytes)
+            match, resolution_status = self._process_fmdn_resolution_with_status(eid_bytes, device.address)
+
             if match is None:
+                # EID was seen but not resolved - already tracked in _process_fmdn_resolution_with_status
                 continue
 
             resolved_device_id = getattr(match, "device_id", None)
@@ -845,14 +883,36 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
             if is_shared and resolved_device_id is None and canonical_id is None:
                 _LOGGER.debug("Skipping shared FMDN match without identifiers")
+                # Track as unresolved since we can't use it
+                self.fmdn_manager.record_resolution_failure(
+                    eid_bytes, device.address, EidResolutionStatus.NO_KNOWN_EID_MATCH
+                )
                 continue
             if resolved_device_id is None:
                 _LOGGER.debug("Resolver returned match without device_id for candidate length %d", len(eid_bytes))
+                self.fmdn_manager.record_resolution_failure(
+                    eid_bytes, device.address, EidResolutionStatus.NO_KNOWN_EID_MATCH
+                )
                 continue
+
+            # Successfully resolved - record in FMDN manager
+            self.fmdn_manager.record_resolution_success(
+                eid_bytes, device.address, str(resolved_device_id), canonical_id
+            )
+            any_resolved = True
 
             metadevice_address = self._format_fmdn_metadevice_address(str(resolved_device_id), canonical_id)
             self._register_fmdn_source(device, metadevice_address, match)
             break
+
+        # If no candidates resolved, record the first one as unresolved for diagnostics
+        if not any_resolved and candidates:
+            first_eid = next(iter(candidates))
+            # Only record if not already tracked by _process_fmdn_resolution_with_status
+            if self.fmdn_manager.get_resolution_status(first_eid) is None:
+                self.fmdn_manager.record_resolution_failure(
+                    first_eid, device.address, EidResolutionStatus.NO_KNOWN_EID_MATCH
+                )
 
     def _maybe_prune_fmdn_source(self, device: BermudaDevice, stamp_fmdn: float, prune_list: list[str]) -> bool:
         """Prune stale FMDN rotating MACs and return True if pruned."""
@@ -1036,6 +1096,9 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
         # Prune any IRK MACs that have expired
         self.irk_manager.async_prune()
+
+        # Prune any FMDN EIDs that have expired
+        self.fmdn_manager.async_prune()
 
         # Prune devices.
         prune_list: list[str] = []  # list of addresses to be pruned
@@ -2047,13 +2110,12 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                 if not (sustained_cross_floor or tests.pcnt_diff >= cross_floor_escape):
                     tests.reason = "LOSS - cross-floor evidence insufficient"
                     continue
-            else:
-                # Same-floor: require minimum history before allowing a win.
-                # This prevents a scanner with little/no history from immediately
-                # "winning" just because it reports a closer distance.
-                if len(challenger_hist_all) < SAME_FLOOR_MIN_HISTORY:
-                    tests.reason = "LOSS - same-floor history too short"
-                    continue
+            # Same-floor: require minimum history before allowing a win.
+            # This prevents a scanner with little/no history from immediately
+            # "winning" just because it reports a closer distance.
+            elif len(challenger_hist_all) < SAME_FLOOR_MIN_HISTORY:
+                tests.reason = "LOSS - same-floor history too short"
+                continue
 
             if tests.pcnt_diff < pdiff_outright:
                 # Allow a near-field absolute improvement to win even when percent diff is small.

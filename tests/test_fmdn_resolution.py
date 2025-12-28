@@ -8,6 +8,8 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import floor_registry as fr
 from homeassistant.core import HomeAssistant
 
+from custom_components.bermuda.bermuda_fmdn_manager import BermudaFmdnManager
+from custom_components.bermuda.bermuda_irk import BermudaIrkManager
 from custom_components.bermuda.const import (
     DATA_EID_RESOLVER,
     DEFAULT_FMDN_EID_FORMAT,
@@ -38,6 +40,8 @@ def coordinator(hass: HomeAssistant) -> BermudaDataUpdateCoordinator:
     coordinator._scanners = set()
     coordinator._scanner_list = set()
     coordinator._scanners_without_areas = None
+    coordinator.irk_manager = BermudaIrkManager()
+    coordinator.fmdn_manager = BermudaFmdnManager()
     coordinator.er = er.async_get(hass)
     coordinator.dr = dr.async_get(hass)
     coordinator.ar = ar.async_get(hass)
@@ -79,7 +83,7 @@ def test_fmdn_resolution_registers_metadevice(hass: HomeAssistant, coordinator: 
 
     metadevice_key = coordinator._format_fmdn_metadevice_address(match.device_id, match.canonical_id)
     metadevice = coordinator.metadevices[metadevice_key]
-    assert metadevice.create_sensor is False
+    assert metadevice.create_sensor is True  # FMDN devices auto-create sensors
     assert metadevice.fmdn_device_id == match.device_id
     assert normalize_mac("aa:bb:cc:dd:ee:ff") in metadevice.metadevice_sources
 

@@ -11,6 +11,8 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import floor_registry as fr
 
+from custom_components.bermuda.bermuda_fmdn_manager import BermudaFmdnManager
+from custom_components.bermuda.bermuda_irk import BermudaIrkManager
 from custom_components.bermuda.const import (
     ADDR_TYPE_FMDN_DEVICE,
     DATA_EID_RESOLVER,
@@ -39,6 +41,8 @@ def coordinator(hass: HomeAssistant) -> BermudaDataUpdateCoordinator:
     coordinator._scanners = set()
     coordinator._scanner_list = set()
     coordinator._scanners_without_areas = None
+    coordinator.irk_manager = BermudaIrkManager()
+    coordinator.fmdn_manager = BermudaFmdnManager()
     coordinator.er = er.async_get(hass)
     coordinator.dr = dr.async_get(hass)
     coordinator.ar = ar.async_get(hass)
