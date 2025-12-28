@@ -1922,6 +1922,16 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                     )
                 continue
 
+            # If the incumbent is a soft_incumbent (failed distance contention due to being
+            # out of range or missing distance), a valid distance challenger wins immediately
+            # without needing the history checks. This ensures out-of-range incumbents are
+            # properly replaced by in-range challengers.
+            if current_incumbent is soft_incumbent and not _is_distance_contender(soft_incumbent):
+                tests.reason = "WIN - soft incumbent failed distance contention"
+                incumbent = challenger
+                soft_incumbent = None
+                continue
+
             if incumbent_scanner is None:
                 tests.reason = "LOSS - incumbent missing scanner metadata"
                 continue
@@ -2084,6 +2094,17 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                         incumbent = challenger
                         continue
 
+            # Check for near-field absolute improvement BEFORE applying history requirement.
+            # This allows meaningful absolute improvements in close proximity to win
+            # even without extensive history.
+            near_field_cutoff = 1.0
+            abs_win_meters = 0.08
+            near_field_win = avg_dist <= near_field_cutoff and abs_diff >= abs_win_meters
+
+            # Check if percentage difference meets the "outright win" threshold.
+            # If so, bypass history requirement since the evidence is strong.
+            significant_improvement = tests.pcnt_diff >= pdiff_outright
+
             if cross_floor:
                 challenger_history_ready = len(challenger_history) >= history_window
                 incumbent_history_ready = len(incumbent_history) >= history_window
@@ -2100,15 +2121,20 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             # Same-floor: require minimum history before allowing a win.
             # This prevents a scanner with little/no history from immediately
             # "winning" just because it reports a closer distance.
-            elif len(challenger_hist_all) < SAME_FLOOR_MIN_HISTORY:
+            # Exceptions:
+            # - near-field absolute improvements can bypass this
+            # - significant percentage improvements (>30%) can bypass this
+            elif (
+                len(challenger_hist_all) < SAME_FLOOR_MIN_HISTORY
+                and not near_field_win
+                and not significant_improvement
+            ):
                 tests.reason = "LOSS - same-floor history too short"
                 continue
 
             if tests.pcnt_diff < pdiff_outright:
                 # Allow a near-field absolute improvement to win even when percent diff is small.
-                near_field_cutoff = 1.0
-                abs_win_meters = 0.08
-                if not (avg_dist <= near_field_cutoff and abs_diff >= abs_win_meters):
+                if not near_field_win:
                     tests.reason = "LOSS - failed on percentage_difference"
                     continue
                 tests.reason = "WIN on near-field absolute improvement"
@@ -2300,6 +2326,32 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
         if device.area_advert is None and winner is not None:
             # Bootstrap immediately when we have no area yet; don't wait for streak logic.
+            device.pending_area_id = None
+            device.pending_floor_id = None
+            device.pending_streak = 0
+            _apply_selection(winner)
+            return
+
+        # Also bootstrap immediately when the current area_advert is out of range, invalid,
+        # stale, or when there's a significant improvement. This ensures out-of-range or old
+        # incumbents don't block valid challengers via streak logic.
+        area_advert_stale = False
+        significant_improvement = False
+        if device.area_advert is not None:
+            max_age = getattr(device.area_advert, "adaptive_timeout", AREA_MAX_AD_AGE_DEFAULT)
+            max_age = min(max_age, AREA_MAX_AD_AGE_LIMIT)
+            area_advert_stale = device.area_advert.stamp < nowstamp - max_age
+            # Check for significant improvement (>30% distance difference)
+            if winner is not None:
+                winner_dist = _effective_distance(winner)
+                incumbent_dist = _effective_distance(device.area_advert)
+                if winner_dist is not None and incumbent_dist is not None and winner_dist < incumbent_dist:
+                    avg_dist = (winner_dist + incumbent_dist) / 2
+                    pcnt_diff = abs(winner_dist - incumbent_dist) / avg_dist if avg_dist > 0 else 0
+                    significant_improvement = pcnt_diff >= 0.30  # pdiff_outright threshold
+        if winner is not None and (
+            not _is_distance_contender(device.area_advert) or area_advert_stale or significant_improvement
+        ):
             device.pending_area_id = None
             device.pending_floor_id = None
             device.pending_streak = 0
