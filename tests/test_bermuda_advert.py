@@ -269,3 +269,69 @@ def test_adaptive_stale_timeout_with_insufficient_history(bermuda_advert: Bermud
     with patch("custom_components.bermuda.bermuda_advert.monotonic_time_coarse", return_value=base_time + 61):
         bermuda_advert.calculate_data()
         assert bermuda_advert.rssi_distance is None
+
+
+def test_median_smoothing_filters_spikes(bermuda_advert: BermudaAdvert) -> None:
+    """Test that median-based smoothing filters out signal spikes effectively.
+
+    The old 'moving minimum' algorithm would produce unrealistically small distances
+    when signal spikes occurred. The new median-based algorithm should be robust
+    against individual outliers.
+    """
+    # Set up initial state
+    bermuda_advert.new_stamp = 100.0
+    bermuda_advert.stamp = 100.0
+    bermuda_advert.rssi_distance_raw = 4.0
+
+    # Simulate history with mostly stable readings around 4m and one spike at 0.5m
+    bermuda_advert.hist_distance_by_interval = [4.0, 3.8, 0.5, 4.2, 4.1]
+
+    bermuda_advert.calculate_data()
+
+    # Median of [0.5, 3.8, 4.0, 4.1, 4.2] is 4.0
+    # Since raw (4.0) >= median (4.0), result should be median
+    assert bermuda_advert.rssi_distance is not None
+    assert 3.5 <= bermuda_advert.rssi_distance <= 4.5, (
+        f"Expected median ~4.0m but got {bermuda_advert.rssi_distance}m. "
+        "Spike at 0.5m should not significantly affect the result."
+    )
+
+
+def test_median_smoothing_responds_to_approach(bermuda_advert: BermudaAdvert) -> None:
+    """Test that median smoothing still responds quickly when device approaches.
+
+    When the raw distance is smaller than the median (device getting closer),
+    the algorithm should use the raw distance for quick response.
+    """
+    bermuda_advert.new_stamp = 100.0
+    bermuda_advert.stamp = 100.0
+    bermuda_advert.rssi_distance_raw = 1.5  # Device suddenly closer
+
+    # History shows device was previously around 5m
+    bermuda_advert.hist_distance_by_interval = [5.0, 5.2, 4.8, 5.1, 4.9]
+
+    bermuda_advert.calculate_data()
+
+    # Raw (1.5m) < median (~5.0m), so should use raw for quick approach response
+    assert bermuda_advert.rssi_distance is not None
+    assert bermuda_advert.rssi_distance == 1.5, (
+        f"Expected raw distance 1.5m for quick approach response, got {bermuda_advert.rssi_distance}m"
+    )
+
+
+def test_median_smoothing_stable_readings(bermuda_advert: BermudaAdvert) -> None:
+    """Test that median smoothing produces stable output for stable input."""
+    bermuda_advert.new_stamp = 100.0
+    bermuda_advert.stamp = 100.0
+    bermuda_advert.rssi_distance_raw = 3.0
+
+    # Stable readings around 3m
+    bermuda_advert.hist_distance_by_interval = [3.1, 2.9, 3.0, 3.2, 2.8]
+
+    bermuda_advert.calculate_data()
+
+    # Median of [2.8, 2.9, 3.0, 3.1, 3.2] is 3.0
+    assert bermuda_advert.rssi_distance is not None
+    assert 2.9 <= bermuda_advert.rssi_distance <= 3.1, (
+        f"Expected stable median ~3.0m, got {bermuda_advert.rssi_distance}m"
+    )

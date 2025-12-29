@@ -10,6 +10,123 @@ from homeassistant.helpers.device_registry import format_mac
 
 from .const import MIN_DISTANCE
 
+
+class KalmanFilter:
+    """
+    1D Kalman filter optimized for BLE RSSI signal filtering.
+
+    Based on scientific research showing Kalman filtering improves BLE distance
+    estimation accuracy by ~27% compared to raw measurements.
+
+    References:
+    - "The Influence of Kalman Filtering on RSSI in Multi-node BLE Communications" (2024)
+    - "An Improved BLE Indoor Localization with Kalman-Based Fusion" (PMC5461075)
+    - "A Practice of BLE RSSI Measurement for Indoor Positioning" (PMC8347277)
+
+    The filter is applied to RSSI values (not distances) because RSSI measurements
+    are linear, while distance calculations are logarithmic (non-linear).
+
+    """
+
+    def __init__(
+        self,
+        process_noise: float = 1.0,
+        measurement_noise: float = 10.0,
+        initial_estimate: float | None = None,
+    ) -> None:
+        """
+        Initialize the Kalman filter.
+
+        Args:
+            process_noise (Q): How much the true value can change between updates.
+                              Typical range: 0.5-2.0 for BLE RSSI. Higher values
+                              make the filter more responsive but less smooth.
+            measurement_noise (R): Variance of RSSI measurements.
+                                   Typical RSSI std dev is 2-4 dBm, so R = 4-16.
+                                   Higher values make filter trust measurements less.
+            initial_estimate: Initial state estimate. If None, first measurement
+                             will be used as the initial estimate.
+
+        """
+        # Kalman filter state
+        self._estimate: float | None = initial_estimate  # Current state estimate (x)
+        self._error_covariance: float = 1.0  # Estimation error covariance (P)
+
+        # Filter parameters (tunable)
+        self._process_noise: float = process_noise  # Process noise covariance (Q)
+        self._measurement_noise: float = measurement_noise  # Measurement noise covariance (R)
+
+        # For diagnostics
+        self._kalman_gain: float = 0.0  # Last computed Kalman gain (K)
+        self._measurement_count: int = 0
+
+    def update(self, measurement: float) -> float:
+        """
+        Process a new measurement and return the filtered estimate.
+
+        Args:
+            measurement: New RSSI measurement in dBm
+
+        Returns:
+            Filtered RSSI estimate in dBm
+
+        """
+        self._measurement_count += 1
+
+        # First measurement: initialize estimate
+        if self._estimate is None:
+            self._estimate = measurement
+            self._error_covariance = self._measurement_noise
+            self._kalman_gain = 1.0
+            return self._estimate
+
+        # Prediction step (assume stationary model: x_predicted = x_estimate)
+        # P_predicted = P + Q
+        predicted_error_covariance = self._error_covariance + self._process_noise
+
+        # Update step
+        # Kalman gain: K = P_predicted / (P_predicted + R)
+        self._kalman_gain = predicted_error_covariance / (
+            predicted_error_covariance + self._measurement_noise
+        )
+
+        # State estimate update: x = x + K * (measurement - x)
+        self._estimate = self._estimate + self._kalman_gain * (measurement - self._estimate)
+
+        # Error covariance update: P = (1 - K) * P_predicted
+        self._error_covariance = (1.0 - self._kalman_gain) * predicted_error_covariance
+
+        return self._estimate
+
+    def reset(self, initial_estimate: float | None = None) -> None:
+        """Reset the filter state."""
+        self._estimate = initial_estimate
+        self._error_covariance = 1.0
+        self._kalman_gain = 0.0
+        self._measurement_count = 0
+
+    @property
+    def estimate(self) -> float | None:
+        """Current filtered estimate."""
+        return self._estimate
+
+    @property
+    def kalman_gain(self) -> float:
+        """Last computed Kalman gain (0-1). Higher = trusting measurement more."""
+        return self._kalman_gain
+
+    @property
+    def is_initialized(self) -> bool:
+        """Whether the filter has received at least one measurement."""
+        return self._estimate is not None
+
+    def set_parameters(self, process_noise: float | None = None, measurement_noise: float | None = None) -> None:
+        """Update filter parameters dynamically."""
+        if process_noise is not None:
+            self._process_noise = process_noise
+        if measurement_noise is not None:
+            self._measurement_noise = measurement_noise
+
 MAC_PAIR_PATTERN: Final = re.compile(r"^[0-9A-Fa-f]{2}([:\-_][0-9A-Fa-f]{2}){5}$")
 MAC_DOTTED_PATTERN: Final = re.compile(r"^[0-9A-Fa-f]{4}\.[0-9A-Fa-f]{4}\.[0-9A-Fa-f]{4}$")
 MAC_BARE_PATTERN: Final = re.compile(r"^[0-9A-Fa-f]{12}$")
