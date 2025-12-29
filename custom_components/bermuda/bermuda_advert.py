@@ -30,6 +30,7 @@ from .const import (
     CONF_SMOOTHING_SAMPLES,
     DISTANCE_INFINITE,
     HIST_KEEP_COUNT,
+    RSSI_HISTORY_SAMPLES,
 )
 from .util import clean_charbuf, rssi_to_metres
 
@@ -99,6 +100,7 @@ class BermudaAdvert(dict):
         self.hist_rssi: list[int] = []
         self.hist_distance: list[float] = []
         self.hist_distance_by_interval: list[float] = []  # updated per-interval
+        self.hist_rssi_by_interval: list[float] = []  # Raw RSSI history for physical proximity checks
         self.hist_interval = []  # WARNING: This is actually "age of ad when we polled"
         self.hist_velocity: list[float] = []  # Effective velocity versus previous stamped reading
         self.conf_rssi_offset = self.options.get(CONF_RSSI_OFFSETS, {}).get(self.scanner_address, 0)
@@ -315,6 +317,14 @@ class BermudaAdvert(dict):
             return self._update_raw_distance(False)
         return self.rssi_distance_raw
 
+    def _clear_stale_history(self) -> None:
+        """Clear distance and RSSI history when advert is stale."""
+        self.rssi_distance = None
+        if len(self.hist_distance_by_interval) > 0:
+            self.hist_distance_by_interval.clear()
+        if len(self.hist_rssi_by_interval) > 0:
+            self.hist_rssi_by_interval.clear()
+
     def calculate_data(self) -> None:
         """
         Filter and update distance estimates.
@@ -351,9 +361,7 @@ class BermudaAdvert(dict):
                     self.adaptive_timeout = max(AREA_MAX_AD_AGE_DEFAULT, min(AREA_MAX_AD_AGE_LIMIT, max_interval * 2))
 
             if self.stamp is None or self.stamp < monotonic_time_coarse() - self.adaptive_timeout:
-                self.rssi_distance = None
-                if len(self.hist_distance_by_interval) > 0:
-                    self.hist_distance_by_interval.clear()
+                self._clear_stale_history()
 
         else:
             if len(self.hist_stamp) > 1:
@@ -397,6 +405,12 @@ class BermudaAdvert(dict):
 
             if len(self.hist_distance_by_interval) > self.conf_smoothing_samples:
                 del self.hist_distance_by_interval[self.conf_smoothing_samples :]
+
+            # Update raw RSSI history for physical proximity checks
+            if self.rssi is not None:
+                self.hist_rssi_by_interval.insert(0, self.rssi)
+                if len(self.hist_rssi_by_interval) > RSSI_HISTORY_SAMPLES:
+                    del self.hist_rssi_by_interval[RSSI_HISTORY_SAMPLES:]
 
             dist_total: float = 0
             local_min: float = self.rssi_distance_raw or DISTANCE_INFINITE
@@ -471,3 +485,21 @@ class BermudaAdvert(dict):
     def __repr__(self) -> str:
         """Help debugging by giving it a clear name instead of empty dict."""
         return f"{self.device_address}__{self.scanner_device.name}"
+
+    def median_rssi(self) -> float | None:
+        """
+        Return the median of recent raw RSSI values.
+
+        Uses hist_rssi_by_interval for robust signal strength comparison.
+        Median is more robust against outliers than mean.
+        Returns None if no history is available.
+        """
+        if not self.hist_rssi_by_interval:
+            # Fall back to current RSSI if no history yet
+            return self.rssi
+        sorted_rssi = sorted(self.hist_rssi_by_interval)
+        n = len(sorted_rssi)
+        mid = n // 2
+        if n % 2 == 0:
+            return (sorted_rssi[mid - 1] + sorted_rssi[mid]) / 2
+        return sorted_rssi[mid]

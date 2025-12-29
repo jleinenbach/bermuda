@@ -92,6 +92,14 @@ SAME_FLOOR_MIN_HISTORY: Final = 3  # Minimum history length before same-floor wi
 SAME_FLOOR_STREAK: Final = 2  # Consecutive wins needed before applying a same-floor switch.
 CROSS_FLOOR_STREAK: Final = 3  # Consecutive wins needed before applying a cross-floor switch.
 
+# Physical RSSI Priority - prevents offset-boosted signals from winning over physically closer sensors
+MIN_DISTANCE: Final = 0.1  # Minimum distance in metres (prevents multiple sensors at "0m")
+CONF_USE_PHYSICAL_RSSI_PRIORITY = "use_physical_rssi_priority"
+DEFAULT_USE_PHYSICAL_RSSI_PRIORITY: Final = True  # Enabled by default; set False to revert to old behavior
+RSSI_CONSISTENCY_MARGIN_DB: Final = 8.0  # dB - max allowed RSSI disadvantage for distance winner
+RSSI_HISTORY_SAMPLES: Final = 5  # Samples for median calculation
+RSSI_CONSECUTIVE_WINS: Final = 2  # Consecutive cycles required before switching
+
 # Beacon-handling constants. Source devices are tracked by MAC-address and are the
 # originators of beacon-like data. We then create a "meta-device" for the beacon's
 # uuid. Other non-static-mac protocols should use this method as well, by adding their

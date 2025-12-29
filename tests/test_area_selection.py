@@ -89,7 +89,7 @@ def _make_advert(
     stamp = now - age
     hist = list(hist_distance_by_interval) if hist_distance_by_interval is not None else []
     scanner_device = _make_scanner(name, area_id, stamp, floor_id=floor_id, floor_level=floor_level)
-    return SimpleNamespace(
+    advert = SimpleNamespace(
         name=name,
         area_id=area_id,
         area_name=area_id,
@@ -100,6 +100,9 @@ def _make_advert(
         scanner_device=scanner_device,
         hist_distance_by_interval=hist,
     )
+    # Add median_rssi method for physical RSSI priority feature
+    advert.median_rssi = lambda: rssi
+    return advert
 
 
 def _patch_monotonic_time(monkeypatch: pytest.MonkeyPatch, current_time: list[float]) -> None:
