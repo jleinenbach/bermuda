@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from statistics import median
 
 import pytest
 from bluetooth_data_tools import monotonic_time_coarse
