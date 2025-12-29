@@ -95,7 +95,7 @@ CROSS_FLOOR_STREAK: Final = 3  # Consecutive wins needed before applying a cross
 # Physical RSSI Priority - prevents offset-boosted signals from winning over physically closer sensors
 MIN_DISTANCE: Final = 0.1  # Minimum distance in metres (prevents multiple sensors at "0m")
 CONF_USE_PHYSICAL_RSSI_PRIORITY = "use_physical_rssi_priority"
-DEFAULT_USE_PHYSICAL_RSSI_PRIORITY: Final = False  # Feature flag, default off for backward compatibility
+DEFAULT_USE_PHYSICAL_RSSI_PRIORITY: Final = True  # Enabled by default; set False to revert to old behavior
 RSSI_CONSISTENCY_MARGIN_DB: Final = 8.0  # dB - max allowed RSSI disadvantage for distance winner
 RSSI_HISTORY_SAMPLES: Final = 5  # Samples for median calculation
 RSSI_CONSECUTIVE_WINS: Final = 2  # Consecutive cycles required before switching

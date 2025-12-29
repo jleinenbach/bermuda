@@ -53,6 +53,10 @@ class FakeAdvert:
         self.stamp = stamp
         self.hist_distance_by_interval = hist
 
+    def median_rssi(self) -> int:
+        """Return RSSI for physical RSSI priority feature."""
+        return self.rssi
+
 
 class FakeDevice:
     """Minimal device stub."""
