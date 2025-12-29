@@ -32,7 +32,7 @@ from .const import (
     HIST_KEEP_COUNT,
     RSSI_HISTORY_SAMPLES,
 )
-from .util import clean_charbuf, rssi_to_metres
+from .util import KalmanFilter, clean_charbuf, rssi_to_metres
 
 if TYPE_CHECKING:
     from bleak.backends.scanner import AdvertisementData
@@ -112,6 +112,16 @@ class BermudaAdvert(dict):
         self.manufacturer_data: list[dict[int, bytes]] = []
         self.service_data: list[dict[str, bytes]] = []
         self.service_uuids: list[str] = []
+
+        # Kalman filter for RSSI smoothing (scientific best practice for BLE distance estimation).
+        # Applied to RSSI before distance calculation because RSSI is linear while distance is logarithmic.
+        # Parameters based on BLE research: process_noise=1.0, measurement_noise=10.0
+        # See: "The Influence of Kalman Filtering on RSSI" (2024) - 27% error reduction
+        self.rssi_kalman: KalmanFilter = KalmanFilter(
+            process_noise=1.0,  # Q: How much true RSSI can change between updates
+            measurement_noise=10.0,  # R: RSSI variance (std dev ~3 dBm → variance ~10)
+        )
+        self.rssi_filtered: float | None = None  # Kalman-filtered RSSI value
 
         # Just pass the rest on to update...
         self.update_advertisement(advertisementdata, self.scanner_device, nowstamp=nowstamp)
@@ -243,6 +253,25 @@ class BermudaAdvert(dict):
 
         self.new_stamp = new_stamp
 
+    def _get_effective_ref_power(self) -> float:
+        """
+        Determine the effective reference power for distance calculations.
+
+        Priority order:
+        1. Device-specific ref_power (user-calibrated per device)
+        2. beacon_power from iBeacon advertisement (calibrated 1m RSSI)
+        3. tx_power from BLE advertisement
+        4. Global default ref_power
+        """
+        if self.ref_power != 0:
+            return self.ref_power
+        beacon_power = getattr(self._device, "beacon_power", None)
+        if beacon_power is not None:
+            return beacon_power
+        if self.tx_power is not None:
+            return self.tx_power
+        return self.conf_ref_power
+
     def _update_raw_distance(self, reading_is_new=True) -> float:
         """
         Converts rssi to raw distance and updates history stack and
@@ -254,27 +283,18 @@ class BermudaAdvert(dict):
         immediately, perhaps between cycles, in order to reflect a
         setting change (such as altering a device's ref_power setting).
         """
-        # Determine ref_power with priority:
-        # 1. Device-specific ref_power (user-calibrated per device)
-        # 2. beacon_power from iBeacon advertisement (calibrated 1m RSSI)
-        # 3. tx_power from BLE advertisement
-        # 4. Global default ref_power
-        if self.ref_power != 0:
-            # User-calibrated per-device value takes priority
-            ref_power = self.ref_power
-        else:
-            # Check for beacon_power (iBeacon's calibrated 1m RSSI)
-            beacon_power = getattr(self._device, "beacon_power", None)
-            if beacon_power is not None:
-                ref_power = beacon_power
-            # Check for tx_power from advertisement
-            elif self.tx_power is not None:
-                ref_power = self.tx_power
-            else:
-                # Fall back to global default
-                ref_power = self.conf_ref_power
-
+        ref_power = self._get_effective_ref_power()
         adjusted_rssi = self.rssi + self.conf_rssi_offset
+
+        # Apply Kalman filter to RSSI for improved distance estimation.
+        # Scientific research shows ~27% improvement in distance accuracy.
+        # Filter is applied to RSSI (linear) before distance calc (logarithmic).
+        if reading_is_new:
+            self.rssi_filtered = self.rssi_kalman.update(adjusted_rssi)
+        elif self.rssi_kalman.is_initialized:
+            self.rssi_filtered = self.rssi_kalman.estimate
+
+        # Calculate raw distance from unfiltered RSSI (for comparison/diagnostics)
         distance = rssi_to_metres(adjusted_rssi, ref_power, self.conf_attenuation)
         self.rssi_distance_raw = distance
 
@@ -341,10 +361,39 @@ class BermudaAdvert(dict):
     def _clear_stale_history(self) -> None:
         """Clear distance and RSSI history when advert is stale."""
         self.rssi_distance = None
+        self.rssi_filtered = None
+        self.rssi_kalman.reset()  # Reset Kalman filter state for fresh start
         if len(self.hist_distance_by_interval) > 0:
             self.hist_distance_by_interval.clear()
         if len(self.hist_rssi_by_interval) > 0:
             self.hist_rssi_by_interval.clear()
+
+    def _compute_smoothed_distance(self) -> float:
+        """
+        Compute smoothed distance using Kalman-filtered RSSI and median fallback.
+
+        Returns the best estimate of current distance combining:
+        1. Kalman-filtered RSSI converted to distance (primary)
+        2. Median of historical distances (fallback)
+        """
+        # Primary: Use Kalman-filtered RSSI for distance calculation
+        if self.rssi_filtered is not None:
+            ref_power = self._get_effective_ref_power()
+            return rssi_to_metres(self.rssi_filtered, ref_power, self.conf_attenuation)
+
+        # Fallback: Calculate median of distance history
+        if len(self.hist_distance_by_interval) > 0:
+            sorted_distances = sorted(
+                d for d in self.hist_distance_by_interval if d is not None
+            )
+            if sorted_distances:
+                n = len(sorted_distances)
+                mid = n // 2
+                if n % 2 == 0:
+                    return (sorted_distances[mid - 1] + sorted_distances[mid]) / 2
+                return sorted_distances[mid]
+
+        return self.rssi_distance_raw or DISTANCE_INFINITE
 
     def calculate_data(self) -> None:
         """
@@ -433,31 +482,13 @@ class BermudaAdvert(dict):
                 if len(self.hist_rssi_by_interval) > RSSI_HISTORY_SAMPLES:
                     del self.hist_rssi_by_interval[RSSI_HISTORY_SAMPLES:]
 
-            # Calculate smoothed distance using median for robustness against outliers.
-            # Median is preferred over mean because it's not skewed by signal spikes
-            # caused by reflections or momentary interference.
-            if (_hist_dist_len := len(self.hist_distance_by_interval)) > 0:
-                # Sort a copy of the history to compute median
-                sorted_distances = sorted(
-                    d for d in self.hist_distance_by_interval if d is not None
-                )
-                if sorted_distances:
-                    n = len(sorted_distances)
-                    mid = n // 2
-                    if n % 2 == 0:
-                        median_dist = (sorted_distances[mid - 1] + sorted_distances[mid]) / 2
-                    else:
-                        median_dist = sorted_distances[mid]
-                else:
-                    median_dist = self.rssi_distance_raw or DISTANCE_INFINITE
-            else:
-                median_dist = self.rssi_distance_raw or DISTANCE_INFINITE
+            # Calculate smoothed distance using Kalman-filtered RSSI (scientific best practice)
+            smoothed_dist = self._compute_smoothed_distance()
 
-            # Use the smaller of median or current raw reading.
-            # This allows quick response when device approaches (raw < median),
-            # while filtering out momentary spikes when device moves away.
-            if self.rssi_distance_raw is None or median_dist < self.rssi_distance_raw:
-                self.rssi_distance = median_dist
+            # Allow quick response when device approaches (raw < smoothed).
+            # This maintains responsiveness while filtering spikes when moving away.
+            if self.rssi_distance_raw is None or smoothed_dist < self.rssi_distance_raw:
+                self.rssi_distance = smoothed_dist
             else:
                 self.rssi_distance = self.rssi_distance_raw
 
