@@ -317,6 +317,14 @@ class BermudaAdvert(dict):
             return self._update_raw_distance(False)
         return self.rssi_distance_raw
 
+    def _clear_stale_history(self) -> None:
+        """Clear distance and RSSI history when advert is stale."""
+        self.rssi_distance = None
+        if len(self.hist_distance_by_interval) > 0:
+            self.hist_distance_by_interval.clear()
+        if len(self.hist_rssi_by_interval) > 0:
+            self.hist_rssi_by_interval.clear()
+
     def calculate_data(self) -> None:
         """
         Filter and update distance estimates.
@@ -353,9 +361,7 @@ class BermudaAdvert(dict):
                     self.adaptive_timeout = max(AREA_MAX_AD_AGE_DEFAULT, min(AREA_MAX_AD_AGE_LIMIT, max_interval * 2))
 
             if self.stamp is None or self.stamp < monotonic_time_coarse() - self.adaptive_timeout:
-                self.rssi_distance = None
-                if len(self.hist_distance_by_interval) > 0:
-                    self.hist_distance_by_interval.clear()
+                self._clear_stale_history()
 
         else:
             if len(self.hist_stamp) > 1:
