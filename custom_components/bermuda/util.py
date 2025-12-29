@@ -8,6 +8,8 @@ from typing import Final
 
 from homeassistant.helpers.device_registry import format_mac
 
+from .const import MIN_DISTANCE
+
 MAC_PAIR_PATTERN: Final = re.compile(r"^[0-9A-Fa-f]{2}([:\-_][0-9A-Fa-f]{2}){5}$")
 MAC_DOTTED_PATTERN: Final = re.compile(r"^[0-9A-Fa-f]{4}\.[0-9A-Fa-f]{4}\.[0-9A-Fa-f]{4}$")
 MAC_BARE_PATTERN: Final = re.compile(r"^[0-9A-Fa-f]{12}$")
@@ -153,6 +155,9 @@ def rssi_to_metres(rssi: float, ref_power: float | None = None, attenuation: flo
     ref_power:      db. measured rssi when at 1m distance from rx. The will
                     be affected by both receiver sensitivity and transmitter
                     calibration, antenna design and orientation etc.
+
+    Returns a minimum of MIN_DISTANCE (0.1m) to prevent multiple sensors
+    from appearing at "0m" when signals are very strong.
     """
     if ref_power is None:
         message = "ref_power must be provided to compute distance"
@@ -161,7 +166,8 @@ def rssi_to_metres(rssi: float, ref_power: float | None = None, attenuation: flo
         message = "attenuation must be provided to compute distance"
         raise ValueError(message)
 
-    return 10 ** ((ref_power - rssi) / (10 * attenuation))
+    distance = 10 ** ((ref_power - rssi) / (10 * attenuation))
+    return max(MIN_DISTANCE, distance)
 
 
 @lru_cache(256)

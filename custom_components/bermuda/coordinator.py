@@ -75,9 +75,11 @@ from .const import (
     CONF_RSSI_OFFSETS,
     CONF_SMOOTHING_SAMPLES,
     CONF_UPDATE_INTERVAL,
+    CONF_USE_PHYSICAL_RSSI_PRIORITY,
     CROSS_FLOOR_MIN_HISTORY,
     CROSS_FLOOR_STREAK,
     DATA_EID_RESOLVER,
+    DEFAULT_USE_PHYSICAL_RSSI_PRIORITY,
     DEFAULT_ATTENUATION,
     DEFAULT_DEVTRACK_TIMEOUT,
     DEFAULT_FMDN_EID_FORMAT,
@@ -103,6 +105,8 @@ from .const import (
     PRUNE_TIME_REDACTIONS,
     PRUNE_TIME_UNKNOWN_IRK,
     REPAIR_SCANNER_WITHOUT_AREA,
+    RSSI_CONSISTENCY_MARGIN_DB,
+    RSSI_CONSECUTIVE_WINS,
     SAME_FLOOR_MIN_HISTORY,
     SAME_FLOOR_STREAK,
     SAVEOUT_COOLDOWN,
@@ -1817,6 +1821,9 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         soft_incumbent: BermudaAdvert | None = None
 
         _max_radius = self.options.get(CONF_MAX_RADIUS, DEFAULT_MAX_RADIUS)
+        _use_physical_rssi_priority = self.options.get(
+            CONF_USE_PHYSICAL_RSSI_PRIORITY, DEFAULT_USE_PHYSICAL_RSSI_PRIORITY
+        )
         nowstamp = monotonic_time_coarse()
         evidence_cutoff = nowstamp - EVIDENCE_WINDOW_SECONDS
 
@@ -1979,6 +1986,27 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             if incumbent_distance < challenger_distance:
                 # we are not even closer!
                 continue
+
+            # Physical RSSI Priority Check: If enabled, verify that the distance ranking
+            # is consistent with raw RSSI. If challenger appears closer on distance but
+            # has significantly weaker physical signal, it may be winning only due to offset.
+            if _use_physical_rssi_priority:
+                challenger_median_rssi = challenger.median_rssi()
+                incumbent_median_rssi = current_incumbent.median_rssi()
+                if challenger_median_rssi is not None and incumbent_median_rssi is not None:
+                    # Positive value means incumbent has stronger physical signal
+                    rssi_disadvantage = incumbent_median_rssi - challenger_median_rssi
+                    if rssi_disadvantage > RSSI_CONSISTENCY_MARGIN_DB:
+                        # Challenger is "closer" on distance but has much weaker physical signal
+                        # This indicates the distance advantage is likely from offset, not proximity
+                        if _superchatty:
+                            _LOGGER.info(
+                                "RSSI consistency check: %s rejected (RSSI disadvantage %.1f dB > %.1f dB margin)",
+                                challenger.name,
+                                rssi_disadvantage,
+                                RSSI_CONSISTENCY_MARGIN_DB,
+                            )
+                        continue
 
             tests.reason = None  # ensure we don't trigger logging if no decision was made.
             tests.same_area = current_incumbent.area_id == challenger.area_id
@@ -2288,10 +2316,22 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                     continue
                 candidates.append((adv_effective, adv))
             if candidates:
-                winner = min(
-                    candidates,
-                    key=lambda item: (item[0], item[1].stamp if item[1].stamp is not None else 0),
-                )[1]
+                if _use_physical_rssi_priority:
+                    # Tie-break by raw RSSI (stronger signal = more likely to be physically closer)
+                    # Negative because higher RSSI is better, but min() selects lowest
+                    winner = min(
+                        candidates,
+                        key=lambda item: (
+                            item[0],  # Primary: distance (lower is better)
+                            -(item[1].median_rssi() if item[1].median_rssi() is not None else float("-inf")),
+                        ),
+                    )[1]
+                else:
+                    # Original behavior: tie-break by timestamp
+                    winner = min(
+                        candidates,
+                        key=lambda item: (item[0], item[1].stamp if item[1].stamp is not None else 0),
+                    )[1]
                 tests.reason = "WIN via rescue candidate"
             if winner is not None:
                 _apply_selection(winner)
