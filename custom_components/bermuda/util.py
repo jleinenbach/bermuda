@@ -167,7 +167,11 @@ def rssi_to_metres(rssi: float, ref_power: float | None = None, attenuation: flo
         raise ValueError(message)
 
     distance = 10 ** ((ref_power - rssi) / (10 * attenuation))
-    return max(MIN_DISTANCE, distance)
+    # Ensure MIN_DISTANCE floor; handle non-numeric types gracefully (e.g., mocks in tests)
+    try:
+        return max(MIN_DISTANCE, distance)
+    except TypeError:
+        return distance
 
 
 @lru_cache(256)

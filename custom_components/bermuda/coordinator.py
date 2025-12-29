@@ -79,7 +79,6 @@ from .const import (
     CROSS_FLOOR_MIN_HISTORY,
     CROSS_FLOOR_STREAK,
     DATA_EID_RESOLVER,
-    DEFAULT_USE_PHYSICAL_RSSI_PRIORITY,
     DEFAULT_ATTENUATION,
     DEFAULT_DEVTRACK_TIMEOUT,
     DEFAULT_FMDN_EID_FORMAT,
@@ -88,6 +87,7 @@ from .const import (
     DEFAULT_REF_POWER,
     DEFAULT_SMOOTHING_SAMPLES,
     DEFAULT_UPDATE_INTERVAL,
+    DEFAULT_USE_PHYSICAL_RSSI_PRIORITY,
     DOMAIN,
     DOMAIN_GOOGLEFINDMY,
     DOMAIN_PRIVATE_BLE_DEVICE,
@@ -106,7 +106,6 @@ from .const import (
     PRUNE_TIME_UNKNOWN_IRK,
     REPAIR_SCANNER_WITHOUT_AREA,
     RSSI_CONSISTENCY_MARGIN_DB,
-    RSSI_CONSECUTIVE_WINS,
     SAME_FLOOR_MIN_HISTORY,
     SAME_FLOOR_STREAK,
     SAVEOUT_COOLDOWN,
@@ -1983,30 +1982,47 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             if challenger_distance is None:
                 continue
 
-            if incumbent_distance < challenger_distance:
-                # we are not even closer!
-                continue
-
-            # Physical RSSI Priority Check: If enabled, verify that the distance ranking
-            # is consistent with raw RSSI. If challenger appears closer on distance but
-            # has significantly weaker physical signal, it may be winning only due to offset.
+            # Physical RSSI Priority: Calculate RSSI advantage early for use in multiple checks
+            challenger_rssi_advantage = 0.0
             if _use_physical_rssi_priority:
                 challenger_median_rssi = challenger.median_rssi()
                 incumbent_median_rssi = current_incumbent.median_rssi()
                 if challenger_median_rssi is not None and incumbent_median_rssi is not None:
-                    # Positive value means incumbent has stronger physical signal
-                    rssi_disadvantage = incumbent_median_rssi - challenger_median_rssi
-                    if rssi_disadvantage > RSSI_CONSISTENCY_MARGIN_DB:
-                        # Challenger is "closer" on distance but has much weaker physical signal
-                        # This indicates the distance advantage is likely from offset, not proximity
-                        if _superchatty:
-                            _LOGGER.info(
-                                "RSSI consistency check: %s rejected (RSSI disadvantage %.1f dB > %.1f dB margin)",
-                                challenger.name,
-                                rssi_disadvantage,
-                                RSSI_CONSISTENCY_MARGIN_DB,
-                            )
-                        continue
+                    # Positive value means challenger has stronger physical signal
+                    challenger_rssi_advantage = challenger_median_rssi - incumbent_median_rssi
+
+            if incumbent_distance < challenger_distance:
+                # Incumbent appears closer. Normally we would reject the challenger here.
+                # BUT if RSSI priority is enabled and challenger has significantly stronger
+                # physical signal, the incumbent's "closeness" may be due to offset gaming.
+                if _use_physical_rssi_priority and challenger_rssi_advantage > RSSI_CONSISTENCY_MARGIN_DB:
+                    # Challenger has much stronger signal despite appearing further on distance
+                    # Allow it to proceed - the distance ranking may be wrong due to offsets
+                    if _superchatty:
+                        _LOGGER.info(
+                            "RSSI priority override: %s allowed despite further distance "
+                            "(RSSI advantage %.1f dB > %.1f dB margin)",
+                            challenger.name,
+                            challenger_rssi_advantage,
+                            RSSI_CONSISTENCY_MARGIN_DB,
+                        )
+                else:
+                    # we are not even closer!
+                    continue
+
+            # Physical RSSI Priority Check: If challenger appears closer on distance but
+            # has significantly weaker physical signal, it may be winning only due to offset.
+            if _use_physical_rssi_priority and challenger_rssi_advantage < -RSSI_CONSISTENCY_MARGIN_DB:
+                # Challenger is "closer" on distance but has much weaker physical signal
+                # This indicates the distance advantage is likely from offset, not proximity
+                if _superchatty:
+                    _LOGGER.info(
+                        "RSSI consistency check: %s rejected (RSSI disadvantage %.1f dB > %.1f dB margin)",
+                        challenger.name,
+                        -challenger_rssi_advantage,
+                        RSSI_CONSISTENCY_MARGIN_DB,
+                    )
+                continue
 
             tests.reason = None  # ensure we don't trigger logging if no decision was made.
             tests.same_area = current_incumbent.area_id == challenger.area_id
@@ -2172,10 +2188,28 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             # Exceptions:
             # - near-field absolute improvements can bypass this
             # - significant percentage improvements (>30%) can bypass this
-            elif (
+            # - RSSI tie-break for equal distances (when feature enabled)
+            # RSSI-based wins: tie-break for equal distances, or significant advantage
+            rssi_tiebreak_win = False
+            rssi_advantage_win = False
+            if _use_physical_rssi_priority:
+                challenger_median = challenger.median_rssi()
+                incumbent_median = current_incumbent.median_rssi()
+                if challenger_median is not None and incumbent_median is not None:
+                    rssi_advantage = challenger_median - incumbent_median
+                    # Tie-break when distances are essentially equal
+                    if abs_diff < 0.01 and rssi_advantage > 0:
+                        rssi_tiebreak_win = True
+                    # Significant RSSI advantage wins even if distance ranking differs
+                    if rssi_advantage > RSSI_CONSISTENCY_MARGIN_DB:
+                        rssi_advantage_win = True
+
+            if (
                 len(challenger_hist_all) < SAME_FLOOR_MIN_HISTORY
                 and not near_field_win
                 and not significant_improvement
+                and not rssi_tiebreak_win
+                and not rssi_advantage_win
             ):
                 tests.reason = "LOSS - same-floor history too short"
                 continue
@@ -2183,6 +2217,15 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             if tests.pcnt_diff < pdiff_outright:
                 # Allow a near-field absolute improvement to win even when percent diff is small.
                 if not near_field_win:
+                    # RSSI wins: strong RSSI advantage or tie-break
+                    if rssi_advantage_win:
+                        tests.reason = "WIN on RSSI advantage (stronger physical signal)"
+                        incumbent = challenger
+                        continue
+                    if rssi_tiebreak_win:
+                        tests.reason = "WIN on RSSI tie-break (equal distance)"
+                        incumbent = challenger
+                        continue
                     tests.reason = "LOSS - failed on percentage_difference"
                     continue
                 tests.reason = "WIN on near-field absolute improvement"
@@ -2319,13 +2362,11 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                 if _use_physical_rssi_priority:
                     # Tie-break by raw RSSI (stronger signal = more likely to be physically closer)
                     # Negative because higher RSSI is better, but min() selects lowest
-                    winner = min(
-                        candidates,
-                        key=lambda item: (
-                            item[0],  # Primary: distance (lower is better)
-                            -(item[1].median_rssi() if item[1].median_rssi() is not None else float("-inf")),
-                        ),
-                    )[1]
+                    def _rssi_sort_key(item: tuple[float, BermudaAdvert]) -> tuple[float, float]:
+                        rssi = item[1].median_rssi()
+                        return (item[0], -(rssi if rssi is not None else float("-inf")))
+
+                    winner = min(candidates, key=_rssi_sort_key)[1]
                 else:
                     # Original behavior: tie-break by timestamp
                     winner = min(
@@ -2418,26 +2459,45 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         # Cross-floor switches still require the streak for stability.
         area_advert_stale = False
         significant_improvement_same_floor = False
+        significant_rssi_advantage = False
         if device.area_advert is not None:
             max_age = getattr(device.area_advert, "adaptive_timeout", AREA_MAX_AD_AGE_DEFAULT)
             max_age = min(max_age, AREA_MAX_AD_AGE_LIMIT)
             area_advert_stale = device.area_advert.stamp < nowstamp - max_age
             # Check for significant improvement (>30% distance difference) on same floor only
             if winner is not None:
-                winner_dist = _effective_distance(winner)
-                incumbent_dist = _effective_distance(device.area_advert)
+                streak_winner_dist = _effective_distance(winner)
+                streak_incumbent_dist = _effective_distance(device.area_advert)
                 is_cross_floor = _resolve_cross_floor(device.area_advert, winner)
                 if (
-                    winner_dist is not None
-                    and incumbent_dist is not None
-                    and winner_dist < incumbent_dist
+                    streak_winner_dist is not None
+                    and streak_incumbent_dist is not None
+                    and streak_winner_dist < streak_incumbent_dist
                     and not is_cross_floor  # Only apply for same-floor switches
                 ):
-                    avg_dist = (winner_dist + incumbent_dist) / 2
-                    pcnt_diff = abs(winner_dist - incumbent_dist) / avg_dist if avg_dist > 0 else 0
-                    significant_improvement_same_floor = pcnt_diff >= 0.30  # pdiff_outright threshold
+                    streak_avg = (streak_winner_dist + streak_incumbent_dist) / 2
+                    streak_pcnt = abs(streak_winner_dist - streak_incumbent_dist) / streak_avg if streak_avg > 0 else 0
+                    significant_improvement_same_floor = streak_pcnt >= 0.30  # pdiff_outright threshold
+
+                # RSSI Priority: Significant RSSI advantage also counts as strong evidence
+                # and should bypass streak requirement on same floor
+                if _use_physical_rssi_priority and not is_cross_floor:
+                    winner_rssi = winner.median_rssi() if hasattr(winner, "median_rssi") else None
+                    incumbent_rssi = (
+                        device.area_advert.median_rssi()
+                        if hasattr(device.area_advert, "median_rssi")
+                        else None
+                    )
+                    if winner_rssi is not None and incumbent_rssi is not None:
+                        rssi_advantage = winner_rssi - incumbent_rssi
+                        if rssi_advantage > RSSI_CONSISTENCY_MARGIN_DB:
+                            significant_rssi_advantage = True
+
         if winner is not None and (
-            not _is_distance_contender(device.area_advert) or area_advert_stale or significant_improvement_same_floor
+            not _is_distance_contender(device.area_advert)
+            or area_advert_stale
+            or significant_improvement_same_floor
+            or significant_rssi_advantage
         ):
             device.pending_area_id = None
             device.pending_floor_id = None

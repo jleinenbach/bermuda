@@ -300,10 +300,14 @@ class TestRssiConsistencyCheck:
         device.area_advert = incumbent
         device.adverts = {"inc": incumbent, "chal": challenger}
 
+        # Without significant RSSI advantage, streak logic requires 2 consecutive wins
+        # First call: challenger wins but pending_streak=1
+        coordinator_with_rssi_priority._refresh_area_by_min_distance(device)
+        # Second call: challenger wins again, pending_streak reaches target
         coordinator_with_rssi_priority._refresh_area_by_min_distance(device)
 
         # 5dB is within 8dB margin, so ranking is considered consistent
-        # Challenger should win based on distance
+        # Challenger should win based on distance (after streak requirement)
         assert device.area_advert is challenger
 
 
