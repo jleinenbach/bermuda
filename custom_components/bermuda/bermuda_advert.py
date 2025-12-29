@@ -274,8 +274,29 @@ class BermudaAdvert(dict):
                 # Fall back to global default
                 ref_power = self.conf_ref_power
 
-        distance = rssi_to_metres(self.rssi + self.conf_rssi_offset, ref_power, self.conf_attenuation)
+        adjusted_rssi = self.rssi + self.conf_rssi_offset
+        distance = rssi_to_metres(adjusted_rssi, ref_power, self.conf_attenuation)
         self.rssi_distance_raw = distance
+
+        # Warn if signal is unrealistically strong compared to ref_power.
+        # This suggests calibration may be needed. At 0cm distance, RSSI should still
+        # be somewhat below ref_power due to near-field effects and antenna coupling.
+        # If RSSI exceeds ref_power by more than ~25 dB, the ref_power is likely wrong.
+        rssi_headroom = adjusted_rssi - ref_power
+        if rssi_headroom > 25:
+            _LOGGER_SPAM_LESS.warning(
+                f"calibration_warning_{self.device_address}",
+                "Device %s has RSSI %.0f dBm which is %.0f dB stronger than ref_power %.0f dBm. "
+                "This results in minimum distance (%.1fm). Consider calibrating ref_power for this device. "
+                "Suggested ref_power: %.0f dBm (based on current signal strength)",
+                self._device.name,
+                adjusted_rssi,
+                rssi_headroom,
+                ref_power,
+                distance,
+                adjusted_rssi - 25,  # Suggest a ref_power that would make this signal = ~0.2m
+            )
+
         if reading_is_new:
             # Add a new historical reading
             self.hist_distance.insert(0, distance)
@@ -412,20 +433,31 @@ class BermudaAdvert(dict):
                 if len(self.hist_rssi_by_interval) > RSSI_HISTORY_SAMPLES:
                     del self.hist_rssi_by_interval[RSSI_HISTORY_SAMPLES:]
 
-            dist_total: float = 0
-            local_min: float = self.rssi_distance_raw or DISTANCE_INFINITE
-            for distance in self.hist_distance_by_interval:
-                if distance is not None and distance <= local_min:
-                    local_min = distance
-                dist_total += local_min
-
+            # Calculate smoothed distance using median for robustness against outliers.
+            # Median is preferred over mean because it's not skewed by signal spikes
+            # caused by reflections or momentary interference.
             if (_hist_dist_len := len(self.hist_distance_by_interval)) > 0:
-                movavg = dist_total / _hist_dist_len
+                # Sort a copy of the history to compute median
+                sorted_distances = sorted(
+                    d for d in self.hist_distance_by_interval if d is not None
+                )
+                if sorted_distances:
+                    n = len(sorted_distances)
+                    mid = n // 2
+                    if n % 2 == 0:
+                        median_dist = (sorted_distances[mid - 1] + sorted_distances[mid]) / 2
+                    else:
+                        median_dist = sorted_distances[mid]
+                else:
+                    median_dist = self.rssi_distance_raw or DISTANCE_INFINITE
             else:
-                movavg = local_min
+                median_dist = self.rssi_distance_raw or DISTANCE_INFINITE
 
-            if self.rssi_distance_raw is None or movavg < self.rssi_distance_raw:
-                self.rssi_distance = movavg
+            # Use the smaller of median or current raw reading.
+            # This allows quick response when device approaches (raw < median),
+            # while filtering out momentary spikes when device moves away.
+            if self.rssi_distance_raw is None or median_dist < self.rssi_distance_raw:
+                self.rssi_distance = median_dist
             else:
                 self.rssi_distance = self.rssi_distance_raw
 
