@@ -253,24 +253,28 @@ class BermudaAdvert(dict):
 
         self.new_stamp = new_stamp
 
-    def _get_effective_ref_power(self) -> float:
+    def _get_effective_ref_power(self) -> tuple[float, str]:
         """
         Determine the effective reference power for distance calculations.
 
         Priority order:
         1. Device-specific ref_power (user-calibrated per device)
         2. beacon_power from iBeacon advertisement (calibrated 1m RSSI)
-        3. tx_power from BLE advertisement
-        4. Global default ref_power
+        3. tx_power from BLE advertisement (if valid, i.e., not -127 dBm)
+        4. Global default ref_power from user configuration
+
+        Returns:
+            Tuple of (ref_power value, source description string)
         """
         if self.ref_power != 0:
-            return self.ref_power
+            return self.ref_power, "device-calibrated"
         beacon_power = getattr(self._device, "beacon_power", None)
         if beacon_power is not None:
-            return beacon_power
-        if self.tx_power is not None:
-            return self.tx_power
-        return self.conf_ref_power
+            return beacon_power, "iBeacon beacon_power"
+        # tx_power of -127 dBm is the BLE "unknown" value - ignore it
+        if self.tx_power is not None and self.tx_power != -127:
+            return self.tx_power, "BLE tx_power"
+        return self.conf_ref_power, "global config default"
 
     def _update_raw_distance(self, reading_is_new=True) -> float:
         """
@@ -283,7 +287,7 @@ class BermudaAdvert(dict):
         immediately, perhaps between cycles, in order to reflect a
         setting change (such as altering a device's ref_power setting).
         """
-        ref_power = self._get_effective_ref_power()
+        ref_power, ref_power_source = self._get_effective_ref_power()
         adjusted_rssi = self.rssi + self.conf_rssi_offset
 
         # Apply Kalman filter to RSSI for improved distance estimation.
@@ -306,15 +310,16 @@ class BermudaAdvert(dict):
         if rssi_headroom > 25:
             _LOGGER_SPAM_LESS.warning(
                 f"calibration_warning_{self.device_address}",
-                "Device %s has RSSI %.0f dBm which is %.0f dB stronger than ref_power %.0f dBm. "
+                "Device %s has RSSI %.0f dBm which is %.0f dB stronger than ref_power %.0f dBm (from %s). "
                 "This results in minimum distance (%.1fm). Consider calibrating ref_power for this device. "
-                "Suggested ref_power: %.0f dBm (based on current signal strength)",
+                "Suggested ref_power: %.0f dBm (set 1m from a scanner, or use this RSSI + ~25 dB headroom)",
                 self._device.name,
                 adjusted_rssi,
                 rssi_headroom,
                 ref_power,
+                ref_power_source,
                 distance,
-                adjusted_rssi - 25,  # Suggest a ref_power that would make this signal = ~0.2m
+                adjusted_rssi - 25,  # Suggest a ref_power that would give ~1m distance at this signal strength
             )
 
         if reading_is_new:
@@ -378,7 +383,7 @@ class BermudaAdvert(dict):
         """
         # Primary: Use Kalman-filtered RSSI for distance calculation
         if self.rssi_filtered is not None:
-            ref_power = self._get_effective_ref_power()
+            ref_power, _ = self._get_effective_ref_power()
             return rssi_to_metres(self.rssi_filtered, ref_power, self.conf_attenuation)
 
         # Fallback: Calculate median of distance history
