@@ -265,6 +265,7 @@ class BermudaAdvert(dict):
 
         Returns:
             Tuple of (ref_power value, source description string)
+
         """
         if self.ref_power != 0:
             return self.ref_power, "device-calibrated"
