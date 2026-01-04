@@ -15,7 +15,7 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import floor_registry as fr
 
-from custom_components.bermuda.bermuda_fmdn_manager import BermudaFmdnManager
+from custom_components.bermuda.fmdn import BermudaFmdnManager
 from custom_components.bermuda.bermuda_irk import BermudaIrkManager
 from custom_components.bermuda.const import (
     ADDR_TYPE_FMDN_DEVICE,

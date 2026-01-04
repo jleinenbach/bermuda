@@ -12,7 +12,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import floor_registry as fr
 from homeassistant.core import HomeAssistant
 
-from custom_components.bermuda.bermuda_fmdn_manager import BermudaFmdnManager
+from custom_components.bermuda.fmdn import BermudaFmdnManager
 from custom_components.bermuda.bermuda_irk import BermudaIrkManager
 from custom_components.bermuda.const import (
     DATA_EID_RESOLVER,

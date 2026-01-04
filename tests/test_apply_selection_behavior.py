@@ -15,7 +15,7 @@ from homeassistant.helpers import floor_registry as fr
 
 from custom_components.bermuda.bermuda_advert import BermudaAdvert
 from custom_components.bermuda.bermuda_device import BermudaDevice
-from custom_components.bermuda.bermuda_fmdn_manager import BermudaFmdnManager
+from custom_components.bermuda.fmdn import BermudaFmdnManager
 from custom_components.bermuda.bermuda_irk import BermudaIrkManager
 from custom_components.bermuda.const import (
     CONF_ATTENUATION,

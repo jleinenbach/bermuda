@@ -27,7 +27,7 @@ from custom_components.bermuda.const import (
     EVIDENCE_WINDOW_SECONDS,
 )
 from custom_components.bermuda.coordinator import BermudaDataUpdateCoordinator
-from custom_components.bermuda.bermuda_fmdn_manager import BermudaFmdnManager
+from custom_components.bermuda.fmdn import BermudaFmdnManager
 from custom_components.bermuda.bermuda_irk import BermudaIrkManager
 
 
