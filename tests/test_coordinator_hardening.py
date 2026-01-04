@@ -13,7 +13,7 @@ from homeassistant.helpers import floor_registry as fr
 
 from custom_components.bermuda import coordinator as coordinator_mod
 from custom_components.bermuda.bermuda_device import BermudaDevice
-from custom_components.bermuda.fmdn import BermudaFmdnManager
+from custom_components.bermuda.fmdn import BermudaFmdnManager, FmdnIntegration
 from custom_components.bermuda.bermuda_irk import BermudaIrkManager
 from custom_components.bermuda.const import (
     CONF_DEVICES,
@@ -51,7 +51,7 @@ def _make_coordinator(hass: HomeAssistant) -> BermudaDataUpdateCoordinator:
     coordinator.ar = ar.async_get(hass)
     coordinator.fr = fr.async_get(hass)
     coordinator.irk_manager = BermudaIrkManager()
-    coordinator.fmdn_manager = BermudaFmdnManager()
+    coordinator.fmdn = FmdnIntegration(coordinator)
     coordinator.redactions = {}
     coordinator._redact_generic_re = re.compile(
         r"(?P<start>[0-9A-Fa-f]{2})[:_-]([0-9A-Fa-f]{2}[:_-]){4}(?P<end>[0-9A-Fa-f]{2})"

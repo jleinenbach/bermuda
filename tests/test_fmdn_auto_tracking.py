@@ -15,7 +15,7 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import floor_registry as fr
 
-from custom_components.bermuda.fmdn import BermudaFmdnManager
+from custom_components.bermuda.fmdn import BermudaFmdnManager, FmdnIntegration
 from custom_components.bermuda.bermuda_irk import BermudaIrkManager
 from custom_components.bermuda.const import (
     ADDR_TYPE_FMDN_DEVICE,
@@ -46,7 +46,7 @@ def coordinator(hass: HomeAssistant) -> BermudaDataUpdateCoordinator:
     coordinator._scanner_list = set()
     coordinator._scanners_without_areas = None
     coordinator.irk_manager = BermudaIrkManager()
-    coordinator.fmdn_manager = BermudaFmdnManager()
+    coordinator.fmdn = FmdnIntegration(coordinator)
     coordinator.er = er.async_get(hass)
     coordinator.dr = dr.async_get(hass)
     coordinator.ar = ar.async_get(hass)
@@ -66,9 +66,9 @@ def test_fmdn_resolution_sets_create_sensor_true(
     service_data: Mapping[str | int, Any] = {SERVICE_UUID_FMDN: bytes([0x40]) + b"\x01" * 20}
 
     source_device = coordinator._get_or_create_device("aa:bb:cc:dd:ee:ff")
-    coordinator._handle_fmdn_advertisement(source_device, service_data)
+    coordinator.fmdn.handle_advertisement(source_device, service_data)
 
-    metadevice_key = coordinator._format_fmdn_metadevice_address(match.device_id, match.canonical_id)
+    metadevice_key = coordinator.fmdn.format_metadevice_address(match.device_id, match.canonical_id)
     metadevice = coordinator.metadevices[metadevice_key]
 
     # Key assertion: create_sensor should be True for FMDN devices
@@ -90,9 +90,9 @@ def test_fmdn_metadevice_address_type_is_fmdn_device(
     service_data: Mapping[str | int, Any] = {SERVICE_UUID_FMDN: bytes([0x40]) + b"\x02" * 20}
 
     source_device = coordinator._get_or_create_device("11:22:33:44:55:66")
-    coordinator._handle_fmdn_advertisement(source_device, service_data)
+    coordinator.fmdn.handle_advertisement(source_device, service_data)
 
-    metadevice_key = coordinator._format_fmdn_metadevice_address(match.device_id, match.canonical_id)
+    metadevice_key = coordinator.fmdn.format_metadevice_address(match.device_id, match.canonical_id)
     metadevice = coordinator.metadevices[metadevice_key]
 
     assert metadevice.address_type == ADDR_TYPE_FMDN_DEVICE
@@ -110,9 +110,9 @@ def test_fmdn_calculate_data_preserves_create_sensor(
     service_data: Mapping[str | int, Any] = {SERVICE_UUID_FMDN: bytes([0x40]) + b"\x03" * 20}
 
     source_device = coordinator._get_or_create_device("22:33:44:55:66:77")
-    coordinator._handle_fmdn_advertisement(source_device, service_data)
+    coordinator.fmdn.handle_advertisement(source_device, service_data)
 
-    metadevice_key = coordinator._format_fmdn_metadevice_address(match.device_id, match.canonical_id)
+    metadevice_key = coordinator.fmdn.format_metadevice_address(match.device_id, match.canonical_id)
     metadevice = coordinator.metadevices[metadevice_key]
 
     # Verify create_sensor is True before calculate_data
@@ -152,7 +152,7 @@ def test_fmdn_do_init_flag_triggers_discovery(
     coordinator._do_fmdn_device_init = True
 
     # Call discover_fmdn_metadevices
-    coordinator.discover_fmdn_metadevices()
+    coordinator.fmdn.discover_metadevices()
 
     # After discovery, flag should be reset to False
     assert coordinator._do_fmdn_device_init is False
@@ -173,9 +173,9 @@ def test_fmdn_device_not_in_configured_devices_still_tracked(
     service_data: Mapping[str | int, Any] = {SERVICE_UUID_FMDN: bytes([0x40]) + b"\x04" * 20}
 
     source_device = coordinator._get_or_create_device("33:44:55:66:77:88")
-    coordinator._handle_fmdn_advertisement(source_device, service_data)
+    coordinator.fmdn.handle_advertisement(source_device, service_data)
 
-    metadevice_key = coordinator._format_fmdn_metadevice_address(match.device_id, match.canonical_id)
+    metadevice_key = coordinator.fmdn.format_metadevice_address(match.device_id, match.canonical_id)
     metadevice = coordinator.metadevices[metadevice_key]
 
     # Key assertion: create_sensor should be True even without manual configuration
@@ -194,9 +194,9 @@ def test_fmdn_device_has_fmdn_device_id(
     service_data: Mapping[str | int, Any] = {SERVICE_UUID_FMDN: bytes([0x40]) + b"\x05" * 20}
 
     source_device = coordinator._get_or_create_device("44:55:66:77:88:99")
-    coordinator._handle_fmdn_advertisement(source_device, service_data)
+    coordinator.fmdn.handle_advertisement(source_device, service_data)
 
-    metadevice_key = coordinator._format_fmdn_metadevice_address(match.device_id, match.canonical_id)
+    metadevice_key = coordinator.fmdn.format_metadevice_address(match.device_id, match.canonical_id)
     metadevice = coordinator.metadevices[metadevice_key]
 
     # fmdn_device_id should be set for device registry congealment
@@ -215,9 +215,9 @@ def test_fmdn_device_has_fmdn_canonical_id(
     service_data: Mapping[str | int, Any] = {SERVICE_UUID_FMDN: bytes([0x40]) + b"\x06" * 20}
 
     source_device = coordinator._get_or_create_device("55:66:77:88:99:aa")
-    coordinator._handle_fmdn_advertisement(source_device, service_data)
+    coordinator.fmdn.handle_advertisement(source_device, service_data)
 
-    metadevice_key = coordinator._format_fmdn_metadevice_address(match.device_id, match.canonical_id)
+    metadevice_key = coordinator.fmdn.format_metadevice_address(match.device_id, match.canonical_id)
     metadevice = coordinator.metadevices[metadevice_key]
 
     # fmdn_canonical_id should be set for consistent metadevice addressing
@@ -229,8 +229,8 @@ def test_fmdn_deduplication_by_device_id_prevents_duplicates(
 ) -> None:
     """Test that metadevices are deduplicated by fmdn_device_id.
 
-    This prevents duplicate entities when _register_fmdn_source() and
-    discover_fmdn_metadevices() use different canonical_id formats.
+    This prevents duplicate entities when register_source() and
+    fmdn.discover_metadevices() use different canonical_id formats.
     """
     # First, simulate _register_fmdn_source creating a metadevice via BLE advertisement
     resolver = MagicMock()
@@ -240,7 +240,7 @@ def test_fmdn_deduplication_by_device_id_prevents_duplicates(
 
     service_data: Mapping[str | int, Any] = {SERVICE_UUID_FMDN: bytes([0x40]) + b"\x07" * 20}
     source_device = coordinator._get_or_create_device("66:77:88:99:aa:bb")
-    coordinator._handle_fmdn_advertisement(source_device, service_data)
+    coordinator.fmdn.handle_advertisement(source_device, service_data)
 
     # Verify first metadevice was created
     assert len(coordinator.metadevices) == 1
@@ -254,7 +254,7 @@ def test_fmdn_deduplication_by_device_id_prevents_duplicates(
     resolver.resolve_eid.return_value = match2
 
     source_device2 = coordinator._get_or_create_device("77:88:99:aa:bb:cc")
-    coordinator._handle_fmdn_advertisement(source_device2, service_data)
+    coordinator.fmdn.handle_advertisement(source_device2, service_data)
 
     # CRITICAL ASSERTION: Should still be only ONE metadevice (not two!)
     # because they share the same fmdn_device_id
