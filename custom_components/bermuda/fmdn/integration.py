@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from homeassistant.const import Platform
 
-from ..const import (
+from custom_components.bermuda.const import (
     _LOGGER,
     ADDR_TYPE_FMDN_DEVICE,
     DATA_EID_RESOLVER,
@@ -16,13 +15,16 @@ from ..const import (
     METADEVICE_FMDN_DEVICE,
     METADEVICE_TYPE_FMDN_SOURCE,
 )
-from ..util import normalize_identifier
+from custom_components.bermuda.util import normalize_identifier
+
 from .extraction import extract_fmdn_eids
 from .manager import BermudaFmdnManager, EidResolutionStatus
 
 if TYPE_CHECKING:
-    from ..bermuda_device import BermudaDevice
-    from ..coordinator import BermudaDataUpdateCoordinator
+    from collections.abc import Mapping
+
+    from custom_components.bermuda.bermuda_device import BermudaDevice
+    from custom_components.bermuda.coordinator import BermudaDataUpdateCoordinator
 
 
 class EidResolver(Protocol):
@@ -172,7 +174,7 @@ class FmdnIntegration:
         if existing_metadevice is not None:
             metadevice = existing_metadevice
         else:
-            metadevice = self.coordinator._get_or_create_device(metadevice_address)
+            metadevice = self.coordinator._get_or_create_device(metadevice_address)  # noqa: SLF001
 
         metadevice.metadevice_type.add(METADEVICE_FMDN_DEVICE)
         metadevice.address_type = ADDR_TYPE_FMDN_DEVICE
@@ -274,13 +276,15 @@ class FmdnIntegration:
         devices, ready for update_metadevices to manage. It works similarly to
         discover_private_ble_metadevices().
         """
-        if self.coordinator._do_fmdn_device_init:
-            self.coordinator._do_fmdn_device_init = False
+        if self.coordinator._do_fmdn_device_init:  # noqa: SLF001
+            self.coordinator._do_fmdn_device_init = False  # noqa: SLF001
             _LOGGER.debug("Refreshing FMDN Device list from googlefindmy integration")
 
             # Iterate through the googlefindmy integration's entities,
             # and ensure for each "device" we create a metadevice.
-            fmdn_entries = self.coordinator.hass.config_entries.async_entries(DOMAIN_GOOGLEFINDMY, include_disabled=False)
+            fmdn_entries = self.coordinator.hass.config_entries.async_entries(
+                DOMAIN_GOOGLEFINDMY, include_disabled=False
+            )
             for fmdn_entry in fmdn_entries:
                 fmdn_entities = self.coordinator.er.entities.get_entries_for_config_entry_id(fmdn_entry.entry_id)
                 # This will be a list of entities for a given googlefindmy device,
@@ -361,7 +365,7 @@ class FmdnIntegration:
                             metadevice_address = self.format_metadevice_address(fmdn_device.id, canonical_id)
 
                             # Create our Meta-Device and tag it up...
-                            metadevice = self.coordinator._get_or_create_device(metadevice_address)
+                            metadevice = self.coordinator._get_or_create_device(metadevice_address)  # noqa: SLF001
 
                         # Since user has already configured the googlefindmy Device, we
                         # always create sensors for them.

@@ -10,7 +10,7 @@ https://github.com/agittins/bermuda
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeAlias
 
 from homeassistant.core import callback
 from homeassistant.exceptions import ConfigEntryNotReady
@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
     from homeassistant.helpers.device_registry import DeviceEntry
 
-type BermudaConfigEntry = ConfigEntry[BermudaData]
+BermudaConfigEntry: TypeAlias = "ConfigEntry[BermudaData]"
 
 
 @dataclass
