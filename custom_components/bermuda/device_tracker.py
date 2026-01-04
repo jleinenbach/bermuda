@@ -55,7 +55,7 @@ async def async_setup_entry(
             # )
             pass
         # tell the co-ord we've done it.
-        coordinator.device_tracker_created(address)
+        coordinator.device_tracker_created(address)  # type: ignore[no-untyped-call]
 
     # Connect device_new to a signal so the coordinator can call it
     entry.async_on_unload(async_dispatcher_connect(hass, SIGNAL_DEVICE_NEW, device_new))
@@ -72,12 +72,12 @@ class BermudaDeviceTracker(BermudaEntity, BaseTrackerEntity):
     _attr_name = "Bermuda Tracker"
 
     @property
-    def unique_id(self):
+    def unique_id(self) -> str:
         """
         "Uniquely identify this sensor so that it gets stored in the entity_registry,
         and can be maintained / renamed etc by the user.
         """
-        return self._device.unique_id
+        return self._device.unique_id  # type: ignore[return-value]
 
     @property
     def extra_state_attributes(self) -> Mapping[str, Any]:

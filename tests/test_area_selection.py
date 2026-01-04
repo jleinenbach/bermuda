@@ -27,7 +27,7 @@ from custom_components.bermuda.const import (
     EVIDENCE_WINDOW_SECONDS,
 )
 from custom_components.bermuda.coordinator import BermudaDataUpdateCoordinator
-from custom_components.bermuda.bermuda_fmdn_manager import BermudaFmdnManager
+from custom_components.bermuda.fmdn import BermudaFmdnManager, FmdnIntegration
 from custom_components.bermuda.bermuda_irk import BermudaIrkManager
 
 
@@ -49,7 +49,7 @@ def _make_coordinator(hass: HomeAssistant) -> BermudaDataUpdateCoordinator:
     coordinator.ar = ar.async_get(hass)
     coordinator.fr = fr.async_get(hass)
     coordinator.irk_manager = BermudaIrkManager()
-    coordinator.fmdn_manager = BermudaFmdnManager()
+    coordinator.fmdn = FmdnIntegration(coordinator)
     return coordinator
 
 

@@ -625,7 +625,7 @@ class BermudaDevice(dict):
             # be fine because our irk_manager will only fire another callback if the mac is new.
             self._coordinator.irk_manager.add_macirk(address, bytes.fromhex(self.address))
 
-    def make_name(self):
+    def make_name(self) -> str:
         """
         Refreshes self.name, sets and returns it, based on naming preferences.
 

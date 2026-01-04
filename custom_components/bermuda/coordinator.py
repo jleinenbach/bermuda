@@ -7,7 +7,7 @@ import re
 from collections.abc import Callable, Hashable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Any, Protocol, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import aiofiles
 import voluptuous as vol
@@ -54,11 +54,9 @@ from homeassistant.util.dt import get_age, now
 
 from .bermuda_device import BermudaDevice
 from .bermuda_irk import BermudaIrkManager
-from .fmdn import FmdnIntegration
 from .const import (
     _LOGGER,
     _LOGGER_SPAM_LESS,
-    ADDR_TYPE_FMDN_DEVICE,
     ADDR_TYPE_PRIVATE_BLE_DEVICE,
     AREA_MAX_AD_AGE_DEFAULT,
     AREA_MAX_AD_AGE_LIMIT,
@@ -78,10 +76,8 @@ from .const import (
     CONF_USE_PHYSICAL_RSSI_PRIORITY,
     CROSS_FLOOR_MIN_HISTORY,
     CROSS_FLOOR_STREAK,
-    DATA_EID_RESOLVER,
     DEFAULT_ATTENUATION,
     DEFAULT_DEVTRACK_TIMEOUT,
-    DEFAULT_FMDN_EID_FORMAT,
     DEFAULT_MAX_RADIUS,
     DEFAULT_MAX_VELOCITY,
     DEFAULT_REF_POWER,
@@ -92,9 +88,7 @@ from .const import (
     DOMAIN_GOOGLEFINDMY,
     DOMAIN_PRIVATE_BLE_DEVICE,
     EVIDENCE_WINDOW_SECONDS,
-    METADEVICE_FMDN_DEVICE,
     METADEVICE_IBEACON_DEVICE,
-    METADEVICE_TYPE_FMDN_SOURCE,
     METADEVICE_TYPE_IBEACON_SOURCE,
     METADEVICE_TYPE_PRIVATE_BLE_SOURCE,
     PRUNE_MAX_COUNT,
@@ -113,7 +107,8 @@ from .const import (
     SIGNAL_SCANNERS_CHANGED,
     UPDATE_INTERVAL,
 )
-from .util import is_mac_address, mac_explode_formats, normalize_address, normalize_identifier, normalize_mac
+from .fmdn import FmdnIntegration
+from .util import is_mac_address, mac_explode_formats, normalize_address, normalize_mac
 
 Cancellable = Callable[[], None]
 DUMP_DEVICE_SOFT_LIMIT = 1200
@@ -167,9 +162,9 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         self.sensor_interval = entry.options.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL)
 
         # set some version flags
-        self.hass_version_min_2025_2 = HA_VERSION_MAJ > 2025 or (HA_VERSION_MAJ == 2025 and HA_VERSION_MIN >= 2)
+        self.hass_version_min_2025_2 = HA_VERSION_MAJ > 2025 or (HA_VERSION_MAJ == 2025 and HA_VERSION_MIN >= 2)  # type: ignore[comparison-overlap]
         # when habasescanner.discovered_device_timestamps became a public method.
-        self.hass_version_min_2025_4 = HA_VERSION_MAJ > 2025 or (HA_VERSION_MAJ == 2025 and HA_VERSION_MIN >= 4)
+        self.hass_version_min_2025_4 = HA_VERSION_MAJ > 2025 or (HA_VERSION_MAJ == 2025 and HA_VERSION_MIN >= 4)  # type: ignore[comparison-overlap]
 
         # ##### Redaction Data ###
         #
@@ -1287,7 +1282,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                         # Don't let default (0) overwrite a calibrated source value
                         if metadevice.ref_power != 0 or source_device.ref_power == 0:
                             should_set_ref_power = True
-                elif metadevice.ref_power != 0 and source_device.ref_power != metadevice.ref_power:
+                elif metadevice.ref_power not in (0, source_device.ref_power):
                     # Source already claimed, but this metadevice has user-configured
                     # ref_power which takes priority
                     should_set_ref_power = True

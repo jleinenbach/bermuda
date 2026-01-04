@@ -15,7 +15,7 @@ from homeassistant.helpers import floor_registry as fr
 
 from custom_components.bermuda.bermuda_advert import BermudaAdvert
 from custom_components.bermuda.bermuda_device import BermudaDevice
-from custom_components.bermuda.bermuda_fmdn_manager import BermudaFmdnManager
+from custom_components.bermuda.fmdn import BermudaFmdnManager, FmdnIntegration
 from custom_components.bermuda.bermuda_irk import BermudaIrkManager
 from custom_components.bermuda.const import (
     CONF_ATTENUATION,
@@ -48,7 +48,7 @@ def _make_coordinator(hass: HomeAssistant) -> BermudaDataUpdateCoordinator:
     coordinator.ar = ar.async_get(hass)
     coordinator.fr = fr.async_get(hass)
     coordinator.irk_manager = BermudaIrkManager()
-    coordinator.fmdn_manager = BermudaFmdnManager()
+    coordinator.fmdn = FmdnIntegration(coordinator)
     coordinator.hass_version_min_2025_4 = False
     return coordinator
 

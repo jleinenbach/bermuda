@@ -57,7 +57,7 @@ async def async_setup_entry(
             # )
             pass
         # tell the co-ord we've done it.
-        coordinator.number_created(address)
+        coordinator.number_created(address)  # type: ignore[no-untyped-call]
 
     # Connect device_new to a signal so the coordinator can call it
     entry.async_on_unload(async_dispatcher_connect(hass, SIGNAL_DEVICE_NEW, device_new))
@@ -97,19 +97,18 @@ class BermudaNumber(BermudaEntity, RestoreNumber):
         await super().async_added_to_hass()
         self.restored_data = await self.async_get_last_number_data()
         if self.restored_data is not None and self.restored_data.native_value is not None:
-            self.coordinator.devices[self.address].set_ref_power(self.restored_data.native_value)
+            self.coordinator.devices[self.address].set_ref_power(self.restored_data.native_value)  # type: ignore[attr-defined]
 
     @property
     def native_value(self) -> float | None:
         """Return value of number."""
         # if self.restored_data is not None and self.restored_data.native_value is not None:
         #     return self.restored_data.native_value
-        return self.coordinator.devices[self.address].ref_power
-        return 0
+        return self.coordinator.devices[self.address].ref_power  # type: ignore[attr-defined, no-any-return]
 
     async def async_set_native_value(self, value: float) -> None:
         """Set value."""
-        self.coordinator.devices[self.address].set_ref_power(value)
+        self.coordinator.devices[self.address].set_ref_power(value)  # type: ignore[attr-defined]
         self.async_write_ha_state()
         # Beware that STATE_DUMP_INTERVAL for restore_state's dump_state
         # is 15 minutes, so if HA is killed instead of exiting cleanly,
@@ -118,7 +117,7 @@ class BermudaNumber(BermudaEntity, RestoreNumber):
         # moderately likely to restart HA after playing with them.
 
     @property
-    def unique_id(self):
+    def unique_id(self) -> str:
         """
         "Uniquely identify this sensor so that it gets stored in the entity_registry,
         and can be maintained / renamed etc by the user.

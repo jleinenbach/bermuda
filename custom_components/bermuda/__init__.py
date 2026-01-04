@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
     from homeassistant.helpers.device_registry import DeviceEntry
 
-type BermudaConfigEntry = ConfigEntry[BermudaData]
+type BermudaConfigEntry = "ConfigEntry[BermudaData]"
 
 
 @dataclass

@@ -12,7 +12,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import floor_registry as fr
 from homeassistant.core import HomeAssistant
 
-from custom_components.bermuda.bermuda_fmdn_manager import BermudaFmdnManager
+from custom_components.bermuda.fmdn import BermudaFmdnManager, FmdnIntegration
 from custom_components.bermuda.bermuda_irk import BermudaIrkManager
 from custom_components.bermuda.const import (
     DATA_EID_RESOLVER,
@@ -45,7 +45,7 @@ def coordinator(hass: HomeAssistant) -> BermudaDataUpdateCoordinator:
     coordinator._scanner_list = set()
     coordinator._scanners_without_areas = None
     coordinator.irk_manager = BermudaIrkManager()
-    coordinator.fmdn_manager = BermudaFmdnManager()
+    coordinator.fmdn = FmdnIntegration(coordinator)
     coordinator.er = er.async_get(hass)
     coordinator.dr = dr.async_get(hass)
     coordinator.ar = ar.async_get(hass)
@@ -57,16 +57,16 @@ def test_format_fmdn_metadevice_key_stable(coordinator: BermudaDataUpdateCoordin
     """Ensure FMDN metadevice keys use device_id for stability.
 
     Previously used canonical_id which caused duplicate entities after reboots
-    when execution order changed between _register_fmdn_source() and
-    discover_fmdn_metadevices(). Now always uses device_id (HA Device Registry ID).
+    when execution order changed between register_source() and
+    fmdn.discover_metadevices(). Now always uses device_id (HA Device Registry ID).
     """
     # device_id is always used, canonical_id is ignored for address generation
-    key = coordinator._format_fmdn_metadevice_address("DEVICE-ID", "CANONICAL-01")
+    key = coordinator.fmdn.format_metadevice_address("DEVICE-ID", "CANONICAL-01")
     assert key == "fmdn:device-id"
     assert key.startswith("fmdn:")
 
     # Even without canonical_id, the device_id is used
-    fallback_key = coordinator._format_fmdn_metadevice_address("Device-Only", None)
+    fallback_key = coordinator.fmdn.format_metadevice_address("Device-Only", None)
     assert fallback_key == "fmdn:device-only"
 
 
@@ -81,11 +81,11 @@ def test_fmdn_resolution_registers_metadevice(hass: HomeAssistant, coordinator: 
     service_data: Mapping[str | int, Any] = {SERVICE_UUID_FMDN: bytes([0x40]) + b"\x01" * 20}
 
     source_device = coordinator._get_or_create_device("aa:bb:cc:dd:ee:ff")
-    coordinator._handle_fmdn_advertisement(source_device, service_data)
+    coordinator.fmdn.handle_advertisement(source_device, service_data)
 
     resolver.resolve_eid.assert_called_once_with(b"\x01" * 20)
 
-    metadevice_key = coordinator._format_fmdn_metadevice_address(match.device_id, match.canonical_id)
+    metadevice_key = coordinator.fmdn.format_metadevice_address(match.device_id, match.canonical_id)
     metadevice = coordinator.metadevices[metadevice_key]
     assert metadevice.create_sensor is True  # FMDN devices auto-create sensors
     assert metadevice.fmdn_device_id == match.device_id
@@ -102,7 +102,7 @@ def test_fmdn_resolution_without_googlefindmy(hass: HomeAssistant, coordinator: 
     service_data: Mapping[str | int, Any] = {SERVICE_UUID_FMDN: bytes([0x40]) + b"\x02" * 20}
 
     source_device = coordinator._get_or_create_device("11:22:33:44:55:66")
-    coordinator._handle_fmdn_advertisement(source_device, service_data)
+    coordinator.fmdn.handle_advertisement(source_device, service_data)
 
     assert coordinator.metadevices == {}
     assert DOMAIN_GOOGLEFINDMY not in hass.data
@@ -118,7 +118,7 @@ def test_fmdn_resolution_handles_missing_resolver_api(
     service_data: Mapping[str | int, Any] = {SERVICE_UUID_FMDN: bytes([0x40]) + b"\x03" * 20}
 
     source_device = coordinator._get_or_create_device("22:33:44:55:66:77")
-    coordinator._handle_fmdn_advertisement(source_device, service_data)
+    coordinator.fmdn.handle_advertisement(source_device, service_data)
 
     assert coordinator.metadevices == {}
 
@@ -206,7 +206,7 @@ def test_shared_match_without_identifiers_skipped(
     source_device = coordinator._get_or_create_device("33:44:55:66:77:88")
     service_data: Mapping[str | int, Any] = {SERVICE_UUID_FMDN: bytes([0x40]) + b"\x09" * 20}
 
-    coordinator._handle_fmdn_advertisement(source_device, service_data)
+    coordinator.fmdn.handle_advertisement(source_device, service_data)
 
     assert coordinator.metadevices == {}
     assert METADEVICE_TYPE_FMDN_SOURCE in source_device.metadevice_type
@@ -232,8 +232,8 @@ def test_deduplicates_metadevices_by_device_id(
     second_source = coordinator._get_or_create_device("00:11:22:33:44:56")
     service_data: Mapping[str | int, Any] = {SERVICE_UUID_FMDN: bytes([0x40]) + b"\xaa" * 20}
 
-    coordinator._handle_fmdn_advertisement(first_source, service_data)
-    coordinator._handle_fmdn_advertisement(second_source, service_data)
+    coordinator.fmdn.handle_advertisement(first_source, service_data)
+    coordinator.fmdn.handle_advertisement(second_source, service_data)
 
     assert len(coordinator.metadevices) == 1
     metadevice = next(iter(coordinator.metadevices.values()))
