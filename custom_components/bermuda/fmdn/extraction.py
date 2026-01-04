@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from .const import (
+from ..const import (
     _LOGGER,
     DEFAULT_FMDN_EID_FORMAT,
     FMDN_EID_CANDIDATE_LENGTHS,
@@ -14,7 +14,7 @@ from .const import (
     FMDN_EID_FORMAT_STRIP_FRAME_ALL,
     SERVICE_UUID_FMDN,
 )
-from .log_spam_less import BermudaLogSpamLess
+from ..log_spam_less import BermudaLogSpamLess
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence

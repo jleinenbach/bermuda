@@ -29,7 +29,7 @@ async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: Bermuda
         "active_devices": f"{coordinator.count_active_devices()}/{len(coordinator.devices)}",
         "active_scanners": f"{coordinator.count_active_scanners()}/{len(coordinator.scanner_list)}",
         "irk_manager": coordinator.redact_data(coordinator.irk_manager.async_diagnostics_no_redactions()),
-        "fmdn_manager": coordinator.redact_data(coordinator.fmdn_manager.async_diagnostics_no_redactions()),
+        "fmdn_manager": coordinator.redact_data(coordinator.fmdn.manager.async_diagnostics_no_redactions()),
         "devices": await coordinator.service_dump_devices(call),
         "bt_manager": coordinator.redact_data(bt_diags),
     }

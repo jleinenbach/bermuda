@@ -9,7 +9,7 @@ from typing import Any
 
 from bluetooth_data_tools import monotonic_time_coarse
 
-from .const import _LOGGER, PRUNE_TIME_FMDN
+from ..const import _LOGGER, PRUNE_TIME_FMDN
 
 
 class EidResolutionStatus(Enum):
