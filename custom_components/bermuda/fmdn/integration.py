@@ -33,6 +33,9 @@ class EidResolver(Protocol):
     def resolve_eid(self, eid: bytes) -> Any | None:
         """Resolve an EID to a device match."""
 
+    def resolve_eid_all(self, eid: bytes) -> list[Any]:
+        """Resolve an EID to all matching devices (for shared trackers)."""
+
 
 class FmdnIntegration:
     """
@@ -150,6 +153,58 @@ class FmdnIntegration:
         # Match found - will be recorded by caller with device_id
         return match, EidResolutionStatus.NOT_EVALUATED
 
+    def process_resolution_all_with_status(
+        self, eid_bytes: bytes, source_mac: str
+    ) -> tuple[list[Any], EidResolutionStatus]:
+        """
+        Resolve an EID payload to ALL matching devices (for shared trackers).
+
+        When a physical tracker is shared between multiple Google accounts,
+        each account has its own device entry in Home Assistant. This method
+        returns all matching devices so that Bermuda sensors can be created
+        for each one.
+
+        Returns:
+            Tuple of (list of matches, resolution status)
+
+        """
+        resolver = self.get_resolver()
+
+        if resolver is None:
+            self.manager.record_resolution_failure(eid_bytes, source_mac, EidResolutionStatus.RESOLVER_UNAVAILABLE)
+            return [], EidResolutionStatus.RESOLVER_UNAVAILABLE
+
+        normalized_eid = self.normalize_eid_bytes(eid_bytes)
+        if normalized_eid is None:
+            self.manager.record_resolution_failure(eid_bytes, source_mac, EidResolutionStatus.NO_KNOWN_EID_MATCH)
+            return [], EidResolutionStatus.NO_KNOWN_EID_MATCH
+
+        # Try resolve_eid_all first (returns all matches for shared trackers)
+        resolve_all = getattr(resolver, "resolve_eid_all", None)
+        if callable(resolve_all):
+            try:
+                matches = resolve_all(normalized_eid)
+                if matches:
+                    return matches, EidResolutionStatus.NOT_EVALUATED
+            except Exception:  # noqa: BLE001
+                _LOGGER.debug("Resolver raised while processing EID payload with resolve_eid_all", exc_info=True)
+                # Fall through to try resolve_eid as fallback
+
+        # Fallback to resolve_eid (single match) for older GoogleFindMy versions
+        try:
+            single_match = resolver.resolve_eid(normalized_eid)
+        except Exception:  # noqa: BLE001
+            _LOGGER.debug("Resolver raised while processing EID payload", exc_info=True)
+            self.manager.record_resolution_failure(eid_bytes, source_mac, EidResolutionStatus.RESOLVER_ERROR)
+            return [], EidResolutionStatus.RESOLVER_ERROR
+
+        if single_match is None:
+            self.manager.record_resolution_failure(eid_bytes, source_mac, EidResolutionStatus.NO_KNOWN_EID_MATCH)
+            return [], EidResolutionStatus.NO_KNOWN_EID_MATCH
+
+        # Wrap single match in a list for consistent handling
+        return [single_match], EidResolutionStatus.NOT_EVALUATED
+
     def register_source(self, source_device: BermudaDevice, metadevice_address: str, match: Any) -> None:
         """Attach a rotating FMDN source MAC to its stable metadevice container."""
         fmdn_device_id = getattr(match, "device_id", None)
@@ -201,7 +256,11 @@ class FmdnIntegration:
             metadevice.metadevice_sources.insert(0, source_device.address)
 
     def handle_advertisement(self, device: BermudaDevice, service_data: Mapping[str | int, Any]) -> None:
-        """Process FMDN payloads for an advertisement."""
+        """Process FMDN payloads for an advertisement.
+
+        For shared trackers (same physical device registered in multiple Google accounts),
+        this method creates/updates sensors for ALL matching devices, not just the first one.
+        """
         if not service_data:
             return
 
@@ -215,44 +274,43 @@ class FmdnIntegration:
         any_resolved = False
 
         for eid_bytes in candidates:
-            match, _resolution_status = self.process_resolution_with_status(eid_bytes, device.address)
+            # Use resolve_eid_all to get ALL matches (important for shared trackers)
+            matches, _resolution_status = self.process_resolution_all_with_status(eid_bytes, device.address)
 
-            if match is None:
-                # EID was seen but not resolved - already tracked in process_resolution_with_status
+            if not matches:
+                # EID was seen but not resolved - already tracked in process_resolution_all_with_status
                 continue
 
-            resolved_device_id = getattr(match, "device_id", None)
-            canonical_id = getattr(match, "canonical_id", None)
-            is_shared = bool(getattr(match, "shared", False))
+            # Process ALL matches to support shared trackers between multiple accounts
+            for match in matches:
+                resolved_device_id = getattr(match, "device_id", None)
+                canonical_id = getattr(match, "canonical_id", None)
+                is_shared = bool(getattr(match, "shared", False))
 
-            if is_shared and resolved_device_id is None and canonical_id is None:
-                _LOGGER.debug("Skipping shared FMDN match without identifiers")
-                # Track as unresolved since we can't use it
-                self.manager.record_resolution_failure(
-                    eid_bytes, device.address, EidResolutionStatus.NO_KNOWN_EID_MATCH
+                if is_shared and resolved_device_id is None and canonical_id is None:
+                    _LOGGER.debug("Skipping shared FMDN match without identifiers")
+                    continue
+                if resolved_device_id is None:
+                    _LOGGER.debug("Resolver returned match without device_id for candidate length %d", len(eid_bytes))
+                    continue
+
+                # Successfully resolved - record in FMDN manager
+                self.manager.record_resolution_success(
+                    eid_bytes, device.address, str(resolved_device_id), canonical_id
                 )
-                continue
-            if resolved_device_id is None:
-                _LOGGER.debug("Resolver returned match without device_id for candidate length %d", len(eid_bytes))
-                self.manager.record_resolution_failure(
-                    eid_bytes, device.address, EidResolutionStatus.NO_KNOWN_EID_MATCH
-                )
-                continue
+                any_resolved = True
 
-            # Successfully resolved - record in FMDN manager
-            self.manager.record_resolution_success(
-                eid_bytes, device.address, str(resolved_device_id), canonical_id
-            )
-            any_resolved = True
+                metadevice_address = self.format_metadevice_address(str(resolved_device_id), canonical_id)
+                self.register_source(device, metadevice_address, match)
 
-            metadevice_address = self.format_metadevice_address(str(resolved_device_id), canonical_id)
-            self.register_source(device, metadevice_address, match)
-            break
+            # Found matches for this EID candidate, no need to try other candidates
+            if any_resolved:
+                break
 
         # If no candidates resolved, record the first one as unresolved for diagnostics
         if not any_resolved and candidates:
             first_eid = next(iter(candidates))
-            # Only record if not already tracked by process_resolution_with_status
+            # Only record if not already tracked by process_resolution_all_with_status
             if self.manager.get_resolution_status(first_eid) is None:
                 self.manager.record_resolution_failure(
                     first_eid, device.address, EidResolutionStatus.NO_KNOWN_EID_MATCH

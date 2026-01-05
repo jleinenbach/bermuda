@@ -238,3 +238,79 @@ def test_deduplicates_metadevices_by_device_id(
     assert len(coordinator.metadevices) == 1
     metadevice = next(iter(coordinator.metadevices.values()))
     assert set(metadevice.metadevice_sources) == {first_source.address, second_source.address}
+
+
+def test_shared_tracker_creates_metadevices_for_all_accounts(
+    hass: HomeAssistant, coordinator: BermudaDataUpdateCoordinator
+) -> None:
+    """Ensure shared trackers create metadevices for ALL matching accounts.
+
+    When a physical FMDN tracker (e.g., Moto Tag) is shared between multiple
+    Google accounts, resolve_eid_all returns all matching devices. Bermuda
+    should create sensors for each account's device, not just the first one.
+    """
+    resolver = MagicMock()
+
+    # Simulate shared tracker: same EID resolves to devices in two different accounts
+    account1_match = SimpleNamespace(device_id="account1-device-id", canonical_id="entry1:tracker1")
+    account2_match = SimpleNamespace(device_id="account2-device-id", canonical_id="entry2:tracker2")
+
+    # resolve_eid_all returns ALL matches for shared trackers
+    resolver.resolve_eid_all.return_value = [account1_match, account2_match]
+    # resolve_eid should not be called when resolve_eid_all is available
+    resolver.resolve_eid.return_value = account1_match
+
+    hass.data[DOMAIN_GOOGLEFINDMY] = {DATA_EID_RESOLVER: resolver}
+
+    source_device = coordinator._get_or_create_device("aa:bb:cc:dd:ee:ff")
+    service_data: Mapping[str | int, Any] = {SERVICE_UUID_FMDN: bytes([0x40]) + b"\x01" * 20}
+
+    coordinator.fmdn.handle_advertisement(source_device, service_data)
+
+    # Should use resolve_eid_all, not resolve_eid
+    resolver.resolve_eid_all.assert_called_once_with(b"\x01" * 20)
+    resolver.resolve_eid.assert_not_called()
+
+    # Should create metadevices for BOTH accounts
+    assert len(coordinator.metadevices) == 2
+
+    # Verify both metadevices exist with correct device IDs
+    device_ids = {m.fmdn_device_id for m in coordinator.metadevices.values()}
+    assert device_ids == {"account1-device-id", "account2-device-id"}
+
+    # Both metadevices should have the same source (same BLE advertisement)
+    for metadevice in coordinator.metadevices.values():
+        assert source_device.address in metadevice.metadevice_sources
+        assert metadevice.create_sensor is True
+
+
+def test_shared_tracker_fallback_to_resolve_eid(
+    hass: HomeAssistant, coordinator: BermudaDataUpdateCoordinator
+) -> None:
+    """Ensure fallback to resolve_eid when resolve_eid_all is not available.
+
+    For older versions of GoogleFindMy that don't have resolve_eid_all,
+    Bermuda should fall back to using resolve_eid (single match behavior).
+    """
+    resolver = MagicMock()
+
+    # Simulate older GoogleFindMy without resolve_eid_all
+    del resolver.resolve_eid_all
+    resolver.resolve_eid.return_value = SimpleNamespace(
+        device_id="legacy-device-id", canonical_id="legacy-canonical"
+    )
+
+    hass.data[DOMAIN_GOOGLEFINDMY] = {DATA_EID_RESOLVER: resolver}
+
+    source_device = coordinator._get_or_create_device("11:22:33:44:55:66")
+    service_data: Mapping[str | int, Any] = {SERVICE_UUID_FMDN: bytes([0x40]) + b"\x02" * 20}
+
+    coordinator.fmdn.handle_advertisement(source_device, service_data)
+
+    # Should fall back to resolve_eid
+    resolver.resolve_eid.assert_called_once_with(b"\x02" * 20)
+
+    # Should create single metadevice (legacy behavior)
+    assert len(coordinator.metadevices) == 1
+    metadevice = next(iter(coordinator.metadevices.values()))
+    assert metadevice.fmdn_device_id == "legacy-device-id"
