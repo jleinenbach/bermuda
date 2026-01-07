@@ -152,15 +152,36 @@ class ScannerCalibrationManager:
             addr: [] for addr in self.active_scanners
         }
 
+        bidirectional_pairs = 0
         for pair in self.scanner_pairs.values():
             diff = pair.rssi_difference
             if diff is None:
+                _LOGGER.debug(
+                    "Auto-cal pair %s <-> %s: not bidirectional yet "
+                    "(A sees B: %s/%d, B sees A: %s/%d)",
+                    pair.scanner_a,
+                    pair.scanner_b,
+                    pair.rssi_a_sees_b,
+                    pair.sample_count_ab,
+                    pair.rssi_b_sees_a,
+                    pair.sample_count_ba,
+                )
                 continue
 
+            bidirectional_pairs += 1
+            _LOGGER.debug(
+                "Auto-cal pair %s <-> %s: bidirectional! diff=%.1f dB",
+                pair.scanner_a,
+                pair.scanner_b,
+                diff,
+            )
             # Positive diff means A receives stronger → A needs negative offset
             # to bring its readings down to match B's perspective
             offset_contributions[pair.scanner_a].append(-diff / 2)
             offset_contributions[pair.scanner_b].append(diff / 2)
+
+        if bidirectional_pairs > 0:
+            _LOGGER.debug("Auto-cal: Found %d bidirectional pairs", bidirectional_pairs)
 
         # Calculate median offset for each scanner
         result: dict[str, float] = {}
@@ -170,6 +191,12 @@ class ScannerCalibrationManager:
                 median_offset = statistics.median(contributions)
                 # Round to nearest integer dB
                 result[addr] = round(median_offset)
+                _LOGGER.debug(
+                    "Auto-cal: Suggested offset for %s: %d dB (from %d pairs)",
+                    addr,
+                    result[addr],
+                    len(contributions),
+                )
 
         self.suggested_offsets = result
         return result
@@ -224,6 +251,24 @@ def update_scanner_calibration(
         Dictionary of suggested RSSI offsets per scanner
 
     """
+    # Build a reverse lookup: scanner_mac -> list of iBeacon/metadevice addresses
+    # that broadcast from that scanner
+    scanner_to_ibeacon: dict[str, list[str]] = {addr: [] for addr in scanner_list}
+    for device_addr, device in devices.items():
+        if hasattr(device, "metadevice_sources") and device.metadevice_sources:
+            for source_mac in device.metadevice_sources:
+                if source_mac in scanner_to_ibeacon:
+                    scanner_to_ibeacon[source_mac].append(device_addr)
+
+    # Log which scanners have iBeacon broadcasts
+    scanners_with_ibeacons = {k: v for k, v in scanner_to_ibeacon.items() if v}
+    if scanners_with_ibeacons:
+        _LOGGER.debug(
+            "Auto-cal: Found %d scanners with iBeacon broadcasts: %s",
+            len(scanners_with_ibeacons),
+            scanners_with_ibeacons,
+        )
+
     for scanner_addr in scanner_list:
         scanner_device = devices.get(scanner_addr)
         if scanner_device is None:
@@ -239,21 +284,25 @@ def update_scanner_calibration(
             # where device_addr is the sender and scanner_addr is the receiver
             advert = None
 
-            # Direct MAC match - look for tuple key (other_addr, scanner_addr)
+            # Method 1: Direct MAC match - look for tuple key (other_addr, scanner_addr)
             advert_key = (other_addr, scanner_addr)
             if advert_key in scanner_device.adverts:
                 advert = scanner_device.adverts[advert_key]
 
-            # Also check metadevice_sources for the other scanner
-            # (Shelly devices may broadcast with different MACs)
+            # Method 2: Check if any iBeacon/metadevice sourced from other_addr
+            # is visible to this scanner (ESPHome iBeacons use UUID as address)
             if advert is None:
-                other_device = devices.get(other_addr)
-                if other_device is not None:
-                    for source_addr in getattr(other_device, "metadevice_sources", []):
-                        source_key = (source_addr, scanner_addr)
-                        if source_key in scanner_device.adverts:
-                            advert = scanner_device.adverts[source_key]
-                            break
+                for ibeacon_addr in scanner_to_ibeacon.get(other_addr, []):
+                    ibeacon_key = (ibeacon_addr, scanner_addr)
+                    if ibeacon_key in scanner_device.adverts:
+                        advert = scanner_device.adverts[ibeacon_key]
+                        _LOGGER.debug(
+                            "Auto-cal: Scanner %s sees scanner %s via iBeacon %s",
+                            scanner_addr,
+                            other_addr,
+                            ibeacon_addr,
+                        )
+                        break
 
             if advert is None:
                 continue

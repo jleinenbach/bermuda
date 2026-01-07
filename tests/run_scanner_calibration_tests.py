@@ -237,6 +237,127 @@ def test_calibration_manager_no_data():
     print("  PASS: test_calibration_manager_no_data")
 
 
+# Import update_scanner_calibration for integration tests
+update_scanner_calibration = scanner_cal.update_scanner_calibration
+
+
+class MockAdvert:
+    """Mock advert for testing."""
+    def __init__(self, rssi=-60.0, rssi_filtered=-60.0):
+        self.rssi = rssi
+        self.rssi_filtered = rssi_filtered
+        self.hist_rssi = [rssi] * 10  # 10 samples
+
+
+class MockDevice:
+    """Mock device for testing."""
+    def __init__(self, address, metadevice_sources=None):
+        self.address = address
+        self.metadevice_sources = metadevice_sources or []
+        self.adverts = {}
+
+
+def test_update_scanner_calibration_with_ibeacon():
+    """Test update_scanner_calibration with iBeacon-based scanner visibility."""
+    manager = ScannerCalibrationManager()
+
+    # Scanner A (MAC: aa:aa:aa:aa:aa:aa) broadcasts iBeacon with UUID-based address
+    scanner_a = MockDevice("aa:aa:aa:aa:aa:aa")
+    ibeacon_a = MockDevice(
+        "ibeacon_uuid_a",
+        metadevice_sources=["aa:aa:aa:aa:aa:aa"]
+    )
+
+    # Scanner B (MAC: bb:bb:bb:bb:bb:bb) broadcasts iBeacon with UUID-based address
+    scanner_b = MockDevice("bb:bb:bb:bb:bb:bb")
+    ibeacon_b = MockDevice(
+        "ibeacon_uuid_b",
+        metadevice_sources=["bb:bb:bb:bb:bb:bb"]
+    )
+
+    # Scanner A sees iBeacon B (which is Scanner B's broadcast)
+    scanner_a.adverts[("ibeacon_uuid_b", "aa:aa:aa:aa:aa:aa")] = MockAdvert(rssi_filtered=-55.0)
+
+    # Scanner B sees iBeacon A (which is Scanner A's broadcast)
+    scanner_b.adverts[("ibeacon_uuid_a", "bb:bb:bb:bb:bb:bb")] = MockAdvert(rssi_filtered=-65.0)
+
+    devices = {
+        "aa:aa:aa:aa:aa:aa": scanner_a,
+        "bb:bb:bb:bb:bb:bb": scanner_b,
+        "ibeacon_uuid_a": ibeacon_a,
+        "ibeacon_uuid_b": ibeacon_b,
+    }
+
+    scanner_list = {"aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb"}
+
+    offsets = update_scanner_calibration(manager, scanner_list, devices)
+
+    # A sees B at -55, B sees A at -65 (diff +10)
+    # A should get -5, B should get +5
+    assert "aa:aa:aa:aa:aa:aa" in offsets, f"Scanner A not in offsets: {offsets}"
+    assert "bb:bb:bb:bb:bb:bb" in offsets, f"Scanner B not in offsets: {offsets}"
+    assert offsets["aa:aa:aa:aa:aa:aa"] == -5, f"Expected A=-5, got {offsets['aa:aa:aa:aa:aa:aa']}"
+    assert offsets["bb:bb:bb:bb:bb:bb"] == 5, f"Expected B=5, got {offsets['bb:bb:bb:bb:bb:bb']}"
+    print("  PASS: test_update_scanner_calibration_with_ibeacon")
+
+
+def test_update_scanner_calibration_direct_mac():
+    """Test update_scanner_calibration with direct MAC visibility (no iBeacon)."""
+    manager = ScannerCalibrationManager()
+
+    # Scanner A and B see each other directly by MAC
+    scanner_a = MockDevice("aa:aa:aa:aa:aa:aa")
+    scanner_b = MockDevice("bb:bb:bb:bb:bb:bb")
+
+    # A sees B's MAC directly
+    scanner_a.adverts[("bb:bb:bb:bb:bb:bb", "aa:aa:aa:aa:aa:aa")] = MockAdvert(rssi_filtered=-55.0)
+
+    # B sees A's MAC directly
+    scanner_b.adverts[("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb")] = MockAdvert(rssi_filtered=-65.0)
+
+    devices = {
+        "aa:aa:aa:aa:aa:aa": scanner_a,
+        "bb:bb:bb:bb:bb:bb": scanner_b,
+    }
+
+    scanner_list = {"aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb"}
+
+    offsets = update_scanner_calibration(manager, scanner_list, devices)
+
+    assert offsets["aa:aa:aa:aa:aa:aa"] == -5
+    assert offsets["bb:bb:bb:bb:bb:bb"] == 5
+    print("  PASS: test_update_scanner_calibration_direct_mac")
+
+
+def test_update_scanner_calibration_unidirectional():
+    """Test that unidirectional visibility does not produce offsets."""
+    manager = ScannerCalibrationManager()
+
+    scanner_a = MockDevice("aa:aa:aa:aa:aa:aa")
+    scanner_b = MockDevice("bb:bb:bb:bb:bb:bb")
+    ibeacon_b = MockDevice(
+        "ibeacon_uuid_b",
+        metadevice_sources=["bb:bb:bb:bb:bb:bb"]
+    )
+
+    # Only A sees B's iBeacon (B does not see A)
+    scanner_a.adverts[("ibeacon_uuid_b", "aa:aa:aa:aa:aa:aa")] = MockAdvert(rssi_filtered=-55.0)
+
+    devices = {
+        "aa:aa:aa:aa:aa:aa": scanner_a,
+        "bb:bb:bb:bb:bb:bb": scanner_b,
+        "ibeacon_uuid_b": ibeacon_b,
+    }
+
+    scanner_list = {"aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb"}
+
+    offsets = update_scanner_calibration(manager, scanner_list, devices)
+
+    # No bidirectional data -> no offsets
+    assert len(offsets) == 0, f"Expected no offsets, got {offsets}"
+    print("  PASS: test_update_scanner_calibration_unidirectional")
+
+
 def run_all_tests():
     """Run all tests."""
     print("\n" + "=" * 60)
@@ -257,6 +378,10 @@ def run_all_tests():
         test_calibration_manager_clear,
         test_calibration_manager_get_scanner_pair_info,
         test_calibration_manager_no_data,
+        # Integration tests with update_scanner_calibration
+        test_update_scanner_calibration_with_ibeacon,
+        test_update_scanner_calibration_direct_mac,
+        test_update_scanner_calibration_unidirectional,
     ]
 
     passed = 0
