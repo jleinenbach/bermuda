@@ -443,29 +443,36 @@ class BermudaAdvert(dict):
             if len(self.hist_stamp) > 1:
                 velo_newdistance = self.hist_distance[0]
                 velo_newstamp = self.hist_stamp[0]
-                peak_velocity = 0
+                peak_velocity = 0.0
                 delta_t = velo_newstamp - self.hist_stamp[1]
                 delta_d = velo_newdistance - self.hist_distance[1]
                 if delta_t > 0:
                     peak_velocity = delta_d / delta_t
-                if peak_velocity >= 0:
-                    for old_distance, old_stamp in zip(self.hist_distance[2:], self.hist_stamp[2:], strict=False):
-                        if old_stamp is None:
-                            continue
-                        delta_t = velo_newstamp - old_stamp
-                        if delta_t <= 0:
-                            continue
-                        delta_d = velo_newdistance - old_distance
-                        velocity = delta_d / delta_t
-                        if velocity > peak_velocity:  # noqa: RUF100, PLR1730
-                            peak_velocity = velocity
+                # Check ALL historical readings to find the peak absolute velocity.
+                # This catches both rapid approaches (negative velocity) and rapid departures
+                # (positive velocity). Previously only positive velocities were checked,
+                # which allowed devices to "jump closer" at impossible speeds.
+                for old_distance, old_stamp in zip(self.hist_distance[2:], self.hist_stamp[2:], strict=False):
+                    if old_stamp is None:
+                        continue
+                    delta_t = velo_newstamp - old_stamp
+                    if delta_t <= 0:
+                        continue
+                    delta_d = velo_newdistance - old_distance
+                    velocity = delta_d / delta_t
+                    # Track the highest absolute velocity (catches both directions)
+                    if abs(velocity) > abs(peak_velocity):  # noqa: RUF100, PLR1730
+                        peak_velocity = velocity
                 velocity = peak_velocity
             else:
-                velocity = 0
+                velocity = 0.0
 
             self.hist_velocity.insert(0, velocity)
 
-            if velocity > self.conf_max_velocity:
+            # Use absolute velocity to catch impossible speeds in BOTH directions.
+            # A device jumping from 10m to 1m in 1 second (-9 m/s) is just as
+            # impossible as jumping from 1m to 10m (+9 m/s).
+            if abs(velocity) > self.conf_max_velocity:
                 if self._device.create_sensor:
                     _LOGGER.debug(
                         "This sparrow %s flies too fast (%2fm/s), ignoring",
