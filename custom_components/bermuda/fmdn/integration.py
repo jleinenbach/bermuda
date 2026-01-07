@@ -256,7 +256,8 @@ class FmdnIntegration:
             metadevice.metadevice_sources.insert(0, source_device.address)
 
     def handle_advertisement(self, device: BermudaDevice, service_data: Mapping[str | int, Any]) -> None:
-        """Process FMDN payloads for an advertisement.
+        """
+        Process FMDN payloads for an advertisement.
 
         For shared trackers (same physical device registered in multiple Google accounts),
         this method creates/updates sensors for ALL matching devices, not just the first one.

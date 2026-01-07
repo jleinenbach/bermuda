@@ -43,7 +43,6 @@ if TYPE_CHECKING:
 # split over two lines, ruff removes it, then complains again.
 # so we're just disabling it for the whole file.
 # https://github.com/astral-sh/ruff/issues/4244
-# ruff: noqa: PLR1730
 
 
 class BermudaAdvert(dict):
