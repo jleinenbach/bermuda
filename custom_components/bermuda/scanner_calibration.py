@@ -270,38 +270,50 @@ def update_scanner_calibration(
         )
 
     for scanner_addr in scanner_list:
-        scanner_device = devices.get(scanner_addr)
-        if scanner_device is None:
-            continue
-
         # Check if this scanner sees any other scanners
         for other_addr in scanner_list:
             if other_addr == scanner_addr:
                 continue
 
-            # Check if scanner has an advert from the other scanner
-            # adverts dict has tuple keys: (device_addr, scanner_addr)
-            # where device_addr is the sender and scanner_addr is the receiver
+            # Check if scanner_addr has received an advert from other_addr
+            # IMPORTANT: adverts are stored on the SENDING device, not the receiver!
+            # The key is (source_mac, receiver_scanner_addr)
             advert = None
 
-            # Method 1: Direct MAC match - look for tuple key (other_addr, scanner_addr)
-            advert_key = (other_addr, scanner_addr)
-            if advert_key in scanner_device.adverts:
-                advert = scanner_device.adverts[advert_key]
-
-            # Method 2: Check if any iBeacon/metadevice sourced from other_addr
-            # is visible to this scanner (ESPHome iBeacons use UUID as address)
-            if advert is None:
-                for ibeacon_addr in scanner_to_ibeacon.get(other_addr, []):
-                    ibeacon_key = (ibeacon_addr, scanner_addr)
-                    if ibeacon_key in scanner_device.adverts:
-                        advert = scanner_device.adverts[ibeacon_key]
+            # Method 1: Direct MAC match - check if other_addr device was seen by scanner_addr
+            other_device = devices.get(other_addr)
+            if other_device is not None:
+                # Look for advert where other_device was seen by scanner_addr
+                for advert_key, adv in other_device.adverts.items():
+                    if advert_key[1] == scanner_addr:
+                        advert = adv
                         _LOGGER.debug(
-                            "Auto-cal: Scanner %s sees scanner %s via iBeacon %s",
+                            "Auto-cal: Scanner %s sees scanner %s directly (key: %s)",
                             scanner_addr,
                             other_addr,
-                            ibeacon_addr,
+                            advert_key,
                         )
+                        break
+
+            # Method 2: Check if any iBeacon/metadevice sourced from other_addr
+            # was seen by scanner_addr (ESPHome iBeacons use UUID as address)
+            if advert is None:
+                for ibeacon_addr in scanner_to_ibeacon.get(other_addr, []):
+                    ibeacon_device = devices.get(ibeacon_addr)
+                    if ibeacon_device is None:
+                        continue
+                    # Look for advert where iBeacon was seen by scanner_addr
+                    for advert_key, adv in ibeacon_device.adverts.items():
+                        if advert_key[1] == scanner_addr:
+                            advert = adv
+                            _LOGGER.debug(
+                                "Auto-cal: Scanner %s sees scanner %s via iBeacon %s",
+                                scanner_addr,
+                                other_addr,
+                                ibeacon_addr,
+                            )
+                            break
+                    if advert is not None:
                         break
 
             if advert is None:

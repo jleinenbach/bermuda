@@ -275,11 +275,14 @@ def test_update_scanner_calibration_with_ibeacon():
         metadevice_sources=["bb:bb:bb:bb:bb:bb"]
     )
 
-    # Scanner A sees iBeacon B (which is Scanner B's broadcast)
-    scanner_a.adverts[("ibeacon_uuid_b", "aa:aa:aa:aa:aa:aa")] = MockAdvert(rssi_filtered=-55.0)
+    # IMPORTANT: Adverts are stored on the SENDING device (the iBeacon), not the receiver!
+    # Key format: (source_mac, receiver_scanner_addr)
 
-    # Scanner B sees iBeacon A (which is Scanner A's broadcast)
-    scanner_b.adverts[("ibeacon_uuid_a", "bb:bb:bb:bb:bb:bb")] = MockAdvert(rssi_filtered=-65.0)
+    # Scanner A sees iBeacon B -> stored on ibeacon_b
+    ibeacon_b.adverts[("bb:bb:bb:bb:bb:bb", "aa:aa:aa:aa:aa:aa")] = MockAdvert(rssi_filtered=-55.0)
+
+    # Scanner B sees iBeacon A -> stored on ibeacon_a
+    ibeacon_a.adverts[("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb")] = MockAdvert(rssi_filtered=-65.0)
 
     devices = {
         "aa:aa:aa:aa:aa:aa": scanner_a,
@@ -306,14 +309,15 @@ def test_update_scanner_calibration_direct_mac():
     manager = ScannerCalibrationManager()
 
     # Scanner A and B see each other directly by MAC
+    # IMPORTANT: Adverts are stored on the SENDING device!
     scanner_a = MockDevice("aa:aa:aa:aa:aa:aa")
     scanner_b = MockDevice("bb:bb:bb:bb:bb:bb")
 
-    # A sees B's MAC directly
-    scanner_a.adverts[("bb:bb:bb:bb:bb:bb", "aa:aa:aa:aa:aa:aa")] = MockAdvert(rssi_filtered=-55.0)
+    # A sees B's MAC directly -> stored on scanner_b (the sender)
+    scanner_b.adverts[("bb:bb:bb:bb:bb:bb", "aa:aa:aa:aa:aa:aa")] = MockAdvert(rssi_filtered=-55.0)
 
-    # B sees A's MAC directly
-    scanner_b.adverts[("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb")] = MockAdvert(rssi_filtered=-65.0)
+    # B sees A's MAC directly -> stored on scanner_a (the sender)
+    scanner_a.adverts[("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb")] = MockAdvert(rssi_filtered=-65.0)
 
     devices = {
         "aa:aa:aa:aa:aa:aa": scanner_a,
@@ -341,7 +345,8 @@ def test_update_scanner_calibration_unidirectional():
     )
 
     # Only A sees B's iBeacon (B does not see A)
-    scanner_a.adverts[("ibeacon_uuid_b", "aa:aa:aa:aa:aa:aa")] = MockAdvert(rssi_filtered=-55.0)
+    # Adverts stored on the sending device (ibeacon_b)
+    ibeacon_b.adverts[("bb:bb:bb:bb:bb:bb", "aa:aa:aa:aa:aa:aa")] = MockAdvert(rssi_filtered=-55.0)
 
     devices = {
         "aa:aa:aa:aa:aa:aa": scanner_a,
