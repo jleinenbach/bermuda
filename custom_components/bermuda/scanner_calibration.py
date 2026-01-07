@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 import statistics
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .bermuda_device import BermudaDevice
@@ -65,6 +65,9 @@ class ScannerPairData:
         """
         if not self.has_bidirectional_data:
             return None
+        # Explicit None check for type narrowing (has_bidirectional_data guarantees these)
+        if self.rssi_a_sees_b is None or self.rssi_b_sees_a is None:
+            return None  # pragma: no cover - defensive check for type safety
         return self.rssi_a_sees_b - self.rssi_b_sees_a
 
 
@@ -171,7 +174,7 @@ class ScannerCalibrationManager:
         self.suggested_offsets = result
         return result
 
-    def get_scanner_pair_info(self) -> list[dict]:
+    def get_scanner_pair_info(self) -> list[dict[str, Any]]:
         """
         Get human-readable info about scanner pairs for diagnostics.
 
@@ -179,7 +182,7 @@ class ScannerCalibrationManager:
             List of dictionaries with pair information
 
         """
-        info = []
+        info: list[dict[str, Any]] = []
         for pair in self.scanner_pairs.values():
             pair_info = {
                 "scanner_a": pair.scanner_a,
@@ -232,12 +235,14 @@ def update_scanner_calibration(
                 continue
 
             # Check if scanner has an advert from the other scanner
-            # The other scanner might be visible via its MAC or as an iBeacon
+            # adverts dict has tuple keys: (device_addr, scanner_addr)
+            # where device_addr is the sender and scanner_addr is the receiver
             advert = None
 
-            # Direct MAC match
-            if other_addr in scanner_device.adverts:
-                advert = scanner_device.adverts[other_addr]
+            # Direct MAC match - look for tuple key (other_addr, scanner_addr)
+            advert_key = (other_addr, scanner_addr)
+            if advert_key in scanner_device.adverts:
+                advert = scanner_device.adverts[advert_key]
 
             # Also check metadevice_sources for the other scanner
             # (Shelly devices may broadcast with different MACs)
@@ -245,8 +250,9 @@ def update_scanner_calibration(
                 other_device = devices.get(other_addr)
                 if other_device is not None:
                     for source_addr in getattr(other_device, "metadevice_sources", []):
-                        if source_addr in scanner_device.adverts:
-                            advert = scanner_device.adverts[source_addr]
+                        source_key = (source_addr, scanner_addr)
+                        if source_key in scanner_device.adverts:
+                            advert = scanner_device.adverts[source_key]
                             break
 
             if advert is None:

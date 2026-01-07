@@ -262,11 +262,15 @@ class MockAdvert:
 
 
 class MockDevice:
-    """Mock BermudaDevice for testing."""
+    """Mock BermudaDevice for testing.
 
-    def __init__(self, address, adverts=None, metadevice_sources=None):
+    Note: adverts dict uses tuple keys (device_addr, scanner_addr)
+    where device_addr is the sender and scanner_addr is the receiver.
+    """
+
+    def __init__(self, address: str, adverts: dict | None = None, metadevice_sources: list | None = None):
         self.address = address
-        self.adverts = adverts or {}
+        self.adverts: dict[tuple[str, str], MockAdvert] = adverts or {}
         self.metadevice_sources = metadevice_sources or []
 
 
@@ -307,13 +311,13 @@ class TestUpdateScannerCalibration:
         manager = ScannerCalibrationManager()
         scanner_list = {"aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb"}
 
-        # A sees B
+        # A sees B - key is (sender=B, receiver=A)
         advert_a_sees_b = MockAdvert(rssi_filtered=-55.0, hist_rssi=[-55, -56, -54, -55, -55])
 
         devices = {
             "aa:aa:aa:aa:aa:aa": MockDevice(
                 "aa:aa:aa:aa:aa:aa",
-                adverts={"bb:bb:bb:bb:bb:bb": advert_a_sees_b}
+                adverts={("bb:bb:bb:bb:bb:bb", "aa:aa:aa:aa:aa:aa"): advert_a_sees_b}
             ),
             "bb:bb:bb:bb:bb:bb": MockDevice("bb:bb:bb:bb:bb:bb"),
         }
@@ -327,19 +331,19 @@ class TestUpdateScannerCalibration:
         manager = ScannerCalibrationManager()
         scanner_list = {"aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb"}
 
-        # A sees B at -55
+        # A sees B at -55 - key is (sender=B, receiver=A)
         advert_a_sees_b = MockAdvert(rssi_filtered=-55.0, hist_rssi=[-55] * 10)
-        # B sees A at -65
+        # B sees A at -65 - key is (sender=A, receiver=B)
         advert_b_sees_a = MockAdvert(rssi_filtered=-65.0, hist_rssi=[-65] * 10)
 
         devices = {
             "aa:aa:aa:aa:aa:aa": MockDevice(
                 "aa:aa:aa:aa:aa:aa",
-                adverts={"bb:bb:bb:bb:bb:bb": advert_a_sees_b}
+                adverts={("bb:bb:bb:bb:bb:bb", "aa:aa:aa:aa:aa:aa"): advert_a_sees_b}
             ),
             "bb:bb:bb:bb:bb:bb": MockDevice(
                 "bb:bb:bb:bb:bb:bb",
-                adverts={"aa:aa:aa:aa:aa:aa": advert_b_sees_a}
+                adverts={("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb"): advert_b_sees_a}
             ),
         }
 
@@ -355,19 +359,19 @@ class TestUpdateScannerCalibration:
         manager = ScannerCalibrationManager()
         scanner_list = {"aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb"}
 
-        # A sees B (no filtered RSSI, use raw)
+        # A sees B (no filtered RSSI, use raw) - key is (sender=B, receiver=A)
         advert_a_sees_b = MockAdvert(rssi_filtered=None, rssi=-55.0, hist_rssi=[-55] * 10)
-        # B sees A
+        # B sees A - key is (sender=A, receiver=B)
         advert_b_sees_a = MockAdvert(rssi_filtered=-65.0, hist_rssi=[-65] * 10)
 
         devices = {
             "aa:aa:aa:aa:aa:aa": MockDevice(
                 "aa:aa:aa:aa:aa:aa",
-                adverts={"bb:bb:bb:bb:bb:bb": advert_a_sees_b}
+                adverts={("bb:bb:bb:bb:bb:bb", "aa:aa:aa:aa:aa:aa"): advert_a_sees_b}
             ),
             "bb:bb:bb:bb:bb:bb": MockDevice(
                 "bb:bb:bb:bb:bb:bb",
-                adverts={"aa:aa:aa:aa:aa:aa": advert_b_sees_a}
+                adverts={("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb"): advert_b_sees_a}
             ),
         }
 
@@ -383,19 +387,19 @@ class TestUpdateScannerCalibration:
         scanner_list = {"aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb"}
 
         # Scanner B broadcasts as iBeacon with different MAC "cc:cc:cc:cc:cc:cc"
-        # A sees the iBeacon MAC
+        # A sees the iBeacon MAC - key is (sender=cc, receiver=A)
         advert_a_sees_b_via_ibeacon = MockAdvert(rssi_filtered=-55.0, hist_rssi=[-55] * 10)
-        # B sees A directly
+        # B sees A directly - key is (sender=A, receiver=B)
         advert_b_sees_a = MockAdvert(rssi_filtered=-65.0, hist_rssi=[-65] * 10)
 
         devices = {
             "aa:aa:aa:aa:aa:aa": MockDevice(
                 "aa:aa:aa:aa:aa:aa",
-                adverts={"cc:cc:cc:cc:cc:cc": advert_a_sees_b_via_ibeacon}
+                adverts={("cc:cc:cc:cc:cc:cc", "aa:aa:aa:aa:aa:aa"): advert_a_sees_b_via_ibeacon}
             ),
             "bb:bb:bb:bb:bb:bb": MockDevice(
                 "bb:bb:bb:bb:bb:bb",
-                adverts={"aa:aa:aa:aa:aa:aa": advert_b_sees_a},
+                adverts={("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb"): advert_b_sees_a},
                 metadevice_sources=["cc:cc:cc:cc:cc:cc"]  # B's iBeacon MAC
             ),
         }
@@ -415,13 +419,13 @@ class TestEdgeCases:
         manager = ScannerCalibrationManager()
         scanner_list = {"aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb"}
 
-        # A sees B with None RSSI
+        # A sees B with None RSSI - key is (sender=B, receiver=A)
         advert_a_sees_b = MockAdvert(rssi_filtered=None, rssi=None)
 
         devices = {
             "aa:aa:aa:aa:aa:aa": MockDevice(
                 "aa:aa:aa:aa:aa:aa",
-                adverts={"bb:bb:bb:bb:bb:bb": advert_a_sees_b}
+                adverts={("bb:bb:bb:bb:bb:bb", "aa:aa:aa:aa:aa:aa"): advert_a_sees_b}
             ),
             "bb:bb:bb:bb:bb:bb": MockDevice("bb:bb:bb:bb:bb:bb"),
         }
@@ -448,18 +452,18 @@ class TestEdgeCases:
         manager = ScannerCalibrationManager()
         scanner_list = {"aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb"}
 
-        # Both see each other at the same RSSI
+        # Both see each other at the same RSSI - keys are (sender, receiver)
         advert_a_sees_b = MockAdvert(rssi_filtered=-60.0, hist_rssi=[-60] * 10)
         advert_b_sees_a = MockAdvert(rssi_filtered=-60.0, hist_rssi=[-60] * 10)
 
         devices = {
             "aa:aa:aa:aa:aa:aa": MockDevice(
                 "aa:aa:aa:aa:aa:aa",
-                adverts={"bb:bb:bb:bb:bb:bb": advert_a_sees_b}
+                adverts={("bb:bb:bb:bb:bb:bb", "aa:aa:aa:aa:aa:aa"): advert_a_sees_b}
             ),
             "bb:bb:bb:bb:bb:bb": MockDevice(
                 "bb:bb:bb:bb:bb:bb",
-                adverts={"aa:aa:aa:aa:aa:aa": advert_b_sees_a}
+                adverts={("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb"): advert_b_sees_a}
             ),
         }
 
