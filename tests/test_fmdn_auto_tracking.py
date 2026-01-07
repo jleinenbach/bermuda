@@ -60,7 +60,7 @@ def test_fmdn_resolution_sets_create_sensor_true(
     """FMDN devices should have create_sensor = True after resolution."""
     resolver = MagicMock()
     match = SimpleNamespace(device_id="fmdn-device-id", canonical_id="canon-1")
-    resolver.resolve_eid.return_value = match
+    resolver.resolve_eid_all.return_value = [match]
     hass.data[DOMAIN_GOOGLEFINDMY] = {DATA_EID_RESOLVER: resolver}
 
     service_data: Mapping[str | int, Any] = {SERVICE_UUID_FMDN: bytes([0x40]) + b"\x01" * 20}
@@ -84,7 +84,7 @@ def test_fmdn_metadevice_address_type_is_fmdn_device(
     """FMDN metadevices should have address_type = ADDR_TYPE_FMDN_DEVICE."""
     resolver = MagicMock()
     match = SimpleNamespace(device_id="fmdn-device-2", canonical_id="canon-2")
-    resolver.resolve_eid.return_value = match
+    resolver.resolve_eid_all.return_value = [match]
     hass.data[DOMAIN_GOOGLEFINDMY] = {DATA_EID_RESOLVER: resolver}
 
     service_data: Mapping[str | int, Any] = {SERVICE_UUID_FMDN: bytes([0x40]) + b"\x02" * 20}
@@ -104,7 +104,7 @@ def test_fmdn_calculate_data_preserves_create_sensor(
     """calculate_data() should not overwrite create_sensor for FMDN devices."""
     resolver = MagicMock()
     match = SimpleNamespace(device_id="fmdn-device-3", canonical_id="canon-3")
-    resolver.resolve_eid.return_value = match
+    resolver.resolve_eid_all.return_value = [match]
     hass.data[DOMAIN_GOOGLEFINDMY] = {DATA_EID_RESOLVER: resolver}
 
     service_data: Mapping[str | int, Any] = {SERVICE_UUID_FMDN: bytes([0x40]) + b"\x03" * 20}
@@ -164,7 +164,7 @@ def test_fmdn_device_not_in_configured_devices_still_tracked(
     """FMDN devices should be tracked even without being in CONF_DEVICES."""
     resolver = MagicMock()
     match = SimpleNamespace(device_id="fmdn-device-4", canonical_id="canon-4")
-    resolver.resolve_eid.return_value = match
+    resolver.resolve_eid_all.return_value = [match]
     hass.data[DOMAIN_GOOGLEFINDMY] = {DATA_EID_RESOLVER: resolver}
 
     # Ensure CONF_DEVICES is empty
@@ -188,7 +188,7 @@ def test_fmdn_device_has_fmdn_device_id(
     """FMDN metadevices should have fmdn_device_id set for device congealment."""
     resolver = MagicMock()
     match = SimpleNamespace(device_id="googlefindmy-device-id", canonical_id="canonical-uuid")
-    resolver.resolve_eid.return_value = match
+    resolver.resolve_eid_all.return_value = [match]
     hass.data[DOMAIN_GOOGLEFINDMY] = {DATA_EID_RESOLVER: resolver}
 
     service_data: Mapping[str | int, Any] = {SERVICE_UUID_FMDN: bytes([0x40]) + b"\x05" * 20}
@@ -209,7 +209,7 @@ def test_fmdn_device_has_fmdn_canonical_id(
     """FMDN metadevices should have fmdn_canonical_id set for consistent addressing."""
     resolver = MagicMock()
     match = SimpleNamespace(device_id="fmdn-device-5", canonical_id="canonical-uuid-5")
-    resolver.resolve_eid.return_value = match
+    resolver.resolve_eid_all.return_value = [match]
     hass.data[DOMAIN_GOOGLEFINDMY] = {DATA_EID_RESOLVER: resolver}
 
     service_data: Mapping[str | int, Any] = {SERVICE_UUID_FMDN: bytes([0x40]) + b"\x06" * 20}
@@ -235,7 +235,7 @@ def test_fmdn_deduplication_by_device_id_prevents_duplicates(
     # First, simulate _register_fmdn_source creating a metadevice via BLE advertisement
     resolver = MagicMock()
     match = SimpleNamespace(device_id="shared-device-registry-id", canonical_id="entry_id:device_id")
-    resolver.resolve_eid.return_value = match
+    resolver.resolve_eid_all.return_value = [match]
     hass.data[DOMAIN_GOOGLEFINDMY] = {DATA_EID_RESOLVER: resolver}
 
     service_data: Mapping[str | int, Any] = {SERVICE_UUID_FMDN: bytes([0x40]) + b"\x07" * 20}
@@ -251,7 +251,7 @@ def test_fmdn_deduplication_by_device_id_prevents_duplicates(
     # This simulates what happens when discover_fmdn_metadevices extracts a different
     # canonical_id format from the device registry identifiers
     match2 = SimpleNamespace(device_id="shared-device-registry-id", canonical_id="different_canonical_id")
-    resolver.resolve_eid.return_value = match2
+    resolver.resolve_eid_all.return_value = [match2]
 
     source_device2 = coordinator._get_or_create_device("77:88:99:aa:bb:cc")
     coordinator.fmdn.handle_advertisement(source_device2, service_data)

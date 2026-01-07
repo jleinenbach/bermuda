@@ -75,7 +75,8 @@ def test_fmdn_resolution_registers_metadevice(hass: HomeAssistant, coordinator: 
 
     resolver = MagicMock()
     match = SimpleNamespace(device_id="fmdn-device-id", canonical_id="canon-1")
-    resolver.resolve_eid.return_value = match
+    # Code uses resolve_eid_all first (returns list of matches for shared trackers)
+    resolver.resolve_eid_all.return_value = [match]
     hass.data[DOMAIN_GOOGLEFINDMY] = {DATA_EID_RESOLVER: resolver}
 
     service_data: Mapping[str | int, Any] = {SERVICE_UUID_FMDN: bytes([0x40]) + b"\x01" * 20}
@@ -83,7 +84,7 @@ def test_fmdn_resolution_registers_metadevice(hass: HomeAssistant, coordinator: 
     source_device = coordinator._get_or_create_device("aa:bb:cc:dd:ee:ff")
     coordinator.fmdn.handle_advertisement(source_device, service_data)
 
-    resolver.resolve_eid.assert_called_once_with(b"\x01" * 20)
+    resolver.resolve_eid_all.assert_called_once_with(b"\x01" * 20)
 
     metadevice_key = coordinator.fmdn.format_metadevice_address(match.device_id, match.canonical_id)
     metadevice = coordinator.metadevices[metadevice_key]
@@ -200,7 +201,7 @@ def test_shared_match_without_identifiers_skipped(
     """Shared matches lacking identifiers should not create metadevices."""
 
     resolver = MagicMock()
-    resolver.resolve_eid.return_value = SimpleNamespace(shared=True, device_id=None, canonical_id=None)
+    resolver.resolve_eid_all.return_value = [SimpleNamespace(shared=True, device_id=None, canonical_id=None)]
     hass.data[DOMAIN_GOOGLEFINDMY] = {DATA_EID_RESOLVER: resolver}
 
     source_device = coordinator._get_or_create_device("33:44:55:66:77:88")
@@ -222,10 +223,10 @@ def test_deduplicates_metadevices_by_device_id(
     """
     resolver = MagicMock()
 
-    def _resolver(payload: bytes) -> SimpleNamespace:
-        return SimpleNamespace(device_id="owned", canonical_id="shared-uuid")
+    def _resolver(payload: bytes) -> list[SimpleNamespace]:
+        return [SimpleNamespace(device_id="owned", canonical_id="shared-uuid")]
 
-    resolver.resolve_eid.side_effect = _resolver
+    resolver.resolve_eid_all.side_effect = _resolver
     hass.data[DOMAIN_GOOGLEFINDMY] = {DATA_EID_RESOLVER: resolver}
 
     first_source = coordinator._get_or_create_device("00:11:22:33:44:55")
