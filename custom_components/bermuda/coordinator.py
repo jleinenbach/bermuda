@@ -108,6 +108,7 @@ from .const import (
     UPDATE_INTERVAL,
 )
 from .fmdn import FmdnIntegration
+from .scanner_calibration import ScannerCalibrationManager, update_scanner_calibration
 from .util import is_mac_address, mac_explode_formats, normalize_address, normalize_mac
 
 Cancellable = Callable[[], None]
@@ -206,6 +207,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         self._scanners: set[BermudaDevice] = set()  # Set of all in self.devices that is_scanner=True
         self.irk_manager = BermudaIrkManager()
         self.fmdn = FmdnIntegration(self)
+        self.scanner_calibration = ScannerCalibrationManager()
 
         self.ar = ar.async_get(self.hass)
         self.er = er.async_get(self.hass)
@@ -732,6 +734,13 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             for device in self.devices.values():
                 # Recalculate smoothed distances, last_seen etc
                 device.calculate_data()
+
+            # Update scanner auto-calibration based on cross-visibility
+            update_scanner_calibration(
+                self.scanner_calibration,
+                self._scanner_list,
+                self.devices,
+            )
 
             self._refresh_areas_by_min_distance()
 
@@ -1596,7 +1605,14 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             # out of range or missing distance), a valid distance challenger wins immediately
             # without needing the history checks. This ensures out-of-range incumbents are
             # properly replaced by in-range challengers.
+            # HOWEVER: For cross-floor switches, we still require minimum history to prevent
+            # a device jumping to a different floor just because the current scanner went stale.
             if current_incumbent is soft_incumbent and not _is_distance_contender(soft_incumbent):
+                if cross_floor:
+                    challenger_hist = challenger.hist_distance_by_interval
+                    if len(challenger_hist) < CROSS_FLOOR_MIN_HISTORY:
+                        tests.reason = "LOSS - soft incumbent but cross-floor history too short"
+                        continue
                 tests.reason = "WIN - soft incumbent failed distance contention"
                 incumbent = challenger
                 soft_incumbent = None
@@ -1613,6 +1629,13 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
             if incumbent_distance is None:
                 # No incumbent distance available; allow the challenger to compete to avoid deadlocks.
+                # HOWEVER: For cross-floor switches, still require minimum history to prevent
+                # jumping floors when the current scanner has no distance but hasn't timed out.
+                if cross_floor:
+                    challenger_hist = challenger.hist_distance_by_interval
+                    if len(challenger_hist) < CROSS_FLOOR_MIN_HISTORY:
+                        tests.reason = "LOSS - incumbent distance unavailable but cross-floor history too short"
+                        continue
                 tests.reason = "WIN - incumbent distance unavailable"
                 incumbent = challenger
                 soft_incumbent = None

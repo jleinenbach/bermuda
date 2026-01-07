@@ -586,6 +586,9 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
         saved_rssi_offsets = self.options.get(CONF_RSSI_OFFSETS, {})
         rssi_offset_dict = {}
 
+        # Get auto-calibration suggestions
+        auto_suggested_offsets = self.coordinator.scanner_calibration.suggested_offsets
+
         for scanner in self.coordinator.scanner_list:
             scanner_name = self.coordinator.devices[scanner].name
             rssi_offset_dict[scanner_name] = saved_rssi_offsets.get(scanner, 0)
@@ -636,6 +639,22 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
                     except IndexError:
                         results_str += "`-`|"
             results_str += "\n\n"
+
+            # Show auto-calibration suggestions if available
+            if auto_suggested_offsets:
+                results_str += "**Auto-Calibration Suggestions** (from scanner cross-visibility):\n\n"
+                results_str += "| Scanner | Current | Suggested |\n|---|---:|---:|\n"
+                for scanner in self.coordinator.scanner_list:
+                    scanner_name = self.coordinator.devices[scanner].name
+                    current_offset = saved_rssi_offsets.get(scanner, 0)
+                    suggested_offset = auto_suggested_offsets.get(scanner)
+                    if suggested_offset is not None:
+                        diff = suggested_offset - current_offset
+                        diff_str = f" ({diff:+d})" if diff != 0 else ""
+                        results_str += f"|{scanner_name}| `{current_offset:>3}`| `{suggested_offset:>3}`{diff_str}|\n"
+                    else:
+                        results_str += f"|{scanner_name}| `{current_offset:>3}`| -|\n"
+                results_str += "\n"
 
         return self.async_show_form(
             step_id="calibration2_scanners",
