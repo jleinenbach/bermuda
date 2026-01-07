@@ -1596,7 +1596,14 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             # out of range or missing distance), a valid distance challenger wins immediately
             # without needing the history checks. This ensures out-of-range incumbents are
             # properly replaced by in-range challengers.
+            # HOWEVER: For cross-floor switches, we still require minimum history to prevent
+            # a device jumping to a different floor just because the current scanner went stale.
             if current_incumbent is soft_incumbent and not _is_distance_contender(soft_incumbent):
+                if cross_floor:
+                    challenger_hist = challenger.hist_distance_by_interval
+                    if len(challenger_hist) < CROSS_FLOOR_MIN_HISTORY:
+                        tests.reason = "LOSS - soft incumbent but cross-floor history too short"
+                        continue
                 tests.reason = "WIN - soft incumbent failed distance contention"
                 incumbent = challenger
                 soft_incumbent = None
@@ -1613,6 +1620,13 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
             if incumbent_distance is None:
                 # No incumbent distance available; allow the challenger to compete to avoid deadlocks.
+                # HOWEVER: For cross-floor switches, still require minimum history to prevent
+                # jumping floors when the current scanner has no distance but hasn't timed out.
+                if cross_floor:
+                    challenger_hist = challenger.hist_distance_by_interval
+                    if len(challenger_hist) < CROSS_FLOOR_MIN_HISTORY:
+                        tests.reason = "LOSS - incumbent distance unavailable but cross-floor history too short"
+                        continue
                 tests.reason = "WIN - incumbent distance unavailable"
                 incumbent = challenger
                 soft_incumbent = None
