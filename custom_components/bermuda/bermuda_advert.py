@@ -498,12 +498,14 @@ class BermudaAdvert(dict):
             # Calculate smoothed distance using Kalman-filtered RSSI (scientific best practice)
             smoothed_dist = self._compute_smoothed_distance()
 
-            # Allow quick response when device approaches (raw < smoothed).
-            # This maintains responsiveness while filtering spikes when moving away.
-            if self.rssi_distance_raw is None or smoothed_dist < self.rssi_distance_raw:
-                self.rssi_distance = smoothed_dist
-            else:
-                self.rssi_distance = self.rssi_distance_raw
+            # ALWAYS use the Kalman-filtered distance. The previous logic bypassed the
+            # filter when raw distance was shorter ("quick response when approaching"),
+            # but this allowed single-sample spikes to pass through unfiltered.
+            # The Kalman filter already adapts its gain based on measurement patterns -
+            # consistent approaches will be tracked, while spikes will be attenuated.
+            # The velocity guard (above) provides additional protection against
+            # physically impossible movements in either direction.
+            self.rssi_distance = smoothed_dist
 
         del self.hist_distance[HIST_KEEP_COUNT:]
         del self.hist_interval[HIST_KEEP_COUNT:]
