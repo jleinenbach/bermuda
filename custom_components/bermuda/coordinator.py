@@ -108,6 +108,7 @@ from .const import (
     UPDATE_INTERVAL,
 )
 from .fmdn import FmdnIntegration
+from .scanner_calibration import ScannerCalibrationManager, update_scanner_calibration
 from .util import is_mac_address, mac_explode_formats, normalize_address, normalize_mac
 
 Cancellable = Callable[[], None]
@@ -206,6 +207,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         self._scanners: set[BermudaDevice] = set()  # Set of all in self.devices that is_scanner=True
         self.irk_manager = BermudaIrkManager()
         self.fmdn = FmdnIntegration(self)
+        self.scanner_calibration = ScannerCalibrationManager()
 
         self.ar = ar.async_get(self.hass)
         self.er = er.async_get(self.hass)
@@ -732,6 +734,13 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             for device in self.devices.values():
                 # Recalculate smoothed distances, last_seen etc
                 device.calculate_data()
+
+            # Update scanner auto-calibration based on cross-visibility
+            update_scanner_calibration(
+                self.scanner_calibration,
+                self._scanner_list,
+                self.devices,
+            )
 
             self._refresh_areas_by_min_distance()
 
