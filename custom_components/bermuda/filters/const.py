@@ -63,8 +63,9 @@ CUSUM_DRIFT_SIGMA: Final = 0.5
 # =============================================================================
 
 # Minimum cross-visibility samples before trusting scanner pair data.
-# Research shows BLE RSSI needs 10+ samples for reliable statistics.
-CALIBRATION_MIN_SAMPLES: Final = 10
+# 50 samples provides more stable statistics than the original 10.
+# At typical update rates (~1Hz), this means ~50 seconds of data.
+CALIBRATION_MIN_SAMPLES: Final = 50
 
 # Maximum RSSI history for median calculation.
 # 100 samples provides robust median while limiting memory usage.
@@ -73,3 +74,8 @@ CALIBRATION_MAX_HISTORY: Final = 100
 # Minimum scanner pairs needed to calculate an offset.
 # With just 1 pair we can still detect relative sensitivity differences.
 CALIBRATION_MIN_PAIRS: Final = 1
+
+# Hysteresis threshold for offset changes (dB).
+# Only update suggested offset if the new value differs by more than this.
+# Prevents oscillation due to noise around rounding boundaries.
+CALIBRATION_HYSTERESIS_DB: Final = 3
