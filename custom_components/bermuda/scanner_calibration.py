@@ -28,16 +28,13 @@ if TYPE_CHECKING:
 _LOGGER = logging.getLogger(__name__)
 
 # Minimum samples before we trust cross-visibility data
-MIN_CROSS_VISIBILITY_SAMPLES = 5
+MIN_CROSS_VISIBILITY_SAMPLES = 10
 
 # Minimum scanner pairs needed to calculate an offset
 MIN_SCANNER_PAIRS = 1
 
-# Smoothing factor for RSSI values (0.0-1.0, lower = more smoothing)
-RSSI_SMOOTHING_FACTOR = 0.1
-
-# Hysteresis: only update suggested offset if it changes by more than this
-OFFSET_HYSTERESIS_DB = 1
+# Maximum history size for RSSI samples (for median calculation)
+MAX_RSSI_HISTORY = 100
 
 
 @dataclass
@@ -46,19 +43,40 @@ class ScannerPairData:
 
     scanner_a: str
     scanner_b: str
-    rssi_a_sees_b: float | None = None  # Kalman-filtered RSSI when A sees B
-    rssi_b_sees_a: float | None = None  # Kalman-filtered RSSI when B sees A
-    sample_count_ab: int = 0  # How many times A has seen B
-    sample_count_ba: int = 0  # How many times B has seen A
+    # Store history of RSSI values for robust median calculation
+    rssi_history_ab: list[float] = field(default_factory=list)  # When A sees B
+    rssi_history_ba: list[float] = field(default_factory=list)  # When B sees A
+
+    @property
+    def rssi_a_sees_b(self) -> float | None:
+        """Median RSSI when A sees B."""
+        if len(self.rssi_history_ab) < MIN_CROSS_VISIBILITY_SAMPLES:
+            return None
+        return statistics.median(self.rssi_history_ab)
+
+    @property
+    def rssi_b_sees_a(self) -> float | None:
+        """Median RSSI when B sees A."""
+        if len(self.rssi_history_ba) < MIN_CROSS_VISIBILITY_SAMPLES:
+            return None
+        return statistics.median(self.rssi_history_ba)
+
+    @property
+    def sample_count_ab(self) -> int:
+        """Number of samples for A seeing B."""
+        return len(self.rssi_history_ab)
+
+    @property
+    def sample_count_ba(self) -> int:
+        """Number of samples for B seeing A."""
+        return len(self.rssi_history_ba)
 
     @property
     def has_bidirectional_data(self) -> bool:
-        """Return True if both scanners can see each other."""
+        """Return True if both scanners can see each other with enough samples."""
         return (
-            self.rssi_a_sees_b is not None
-            and self.rssi_b_sees_a is not None
-            and self.sample_count_ab >= MIN_CROSS_VISIBILITY_SAMPLES
-            and self.sample_count_ba >= MIN_CROSS_VISIBILITY_SAMPLES
+            len(self.rssi_history_ab) >= MIN_CROSS_VISIBILITY_SAMPLES
+            and len(self.rssi_history_ba) >= MIN_CROSS_VISIBILITY_SAMPLES
         )
 
     @property
@@ -71,10 +89,11 @@ class ScannerPairData:
         """
         if not self.has_bidirectional_data:
             return None
-        # Explicit None check for type narrowing (has_bidirectional_data guarantees these)
-        if self.rssi_a_sees_b is None or self.rssi_b_sees_a is None:
-            return None  # pragma: no cover - defensive check for type safety
-        return self.rssi_a_sees_b - self.rssi_b_sees_a
+        rssi_ab = self.rssi_a_sees_b
+        rssi_ba = self.rssi_b_sees_a
+        if rssi_ab is None or rssi_ba is None:
+            return None  # pragma: no cover
+        return rssi_ab - rssi_ba
 
 
 @dataclass
@@ -112,7 +131,6 @@ class ScannerCalibrationManager:
         receiver_addr: str,
         sender_addr: str,
         rssi_filtered: float,
-        sample_count: int = 1,
     ) -> None:
         """
         Update cross-visibility data when a scanner sees another scanner.
@@ -120,35 +138,22 @@ class ScannerCalibrationManager:
         Args:
             receiver_addr: Address of the scanner that received the signal
             sender_addr: Address of the scanner that sent the signal (as iBeacon)
-            rssi_filtered: Kalman-filtered RSSI value
-            sample_count: Number of samples this reading is based on
+            rssi_filtered: Kalman-filtered RSSI value (already filtered by Bermuda)
 
         """
         pair = self._get_or_create_pair(receiver_addr, sender_addr)
 
-        # Update the correct direction based on which scanner is receiver
-        # Apply exponential smoothing to reduce fluctuations
+        # Add to history, keeping a rolling window
         if receiver_addr == pair.scanner_a:
             # A sees B
-            if pair.rssi_a_sees_b is None:
-                pair.rssi_a_sees_b = rssi_filtered
-            else:
-                # Exponential moving average: new = alpha * current + (1-alpha) * old
-                pair.rssi_a_sees_b = (
-                    RSSI_SMOOTHING_FACTOR * rssi_filtered
-                    + (1 - RSSI_SMOOTHING_FACTOR) * pair.rssi_a_sees_b
-                )
-            pair.sample_count_ab = min(pair.sample_count_ab + 1, 1000)  # Cap at 1000
+            pair.rssi_history_ab.append(rssi_filtered)
+            if len(pair.rssi_history_ab) > MAX_RSSI_HISTORY:
+                pair.rssi_history_ab.pop(0)
         else:
             # B sees A
-            if pair.rssi_b_sees_a is None:
-                pair.rssi_b_sees_a = rssi_filtered
-            else:
-                pair.rssi_b_sees_a = (
-                    RSSI_SMOOTHING_FACTOR * rssi_filtered
-                    + (1 - RSSI_SMOOTHING_FACTOR) * pair.rssi_b_sees_a
-                )
-            pair.sample_count_ba = min(pair.sample_count_ba + 1, 1000)  # Cap at 1000
+            pair.rssi_history_ba.append(rssi_filtered)
+            if len(pair.rssi_history_ba) > MAX_RSSI_HISTORY:
+                pair.rssi_history_ba.pop(0)
 
         self.active_scanners.add(receiver_addr)
         self.active_scanners.add(sender_addr)
@@ -203,36 +208,21 @@ class ScannerCalibrationManager:
         if bidirectional_pairs > 0:
             _LOGGER.debug("Auto-cal: Found %d bidirectional pairs", bidirectional_pairs)
 
-        # Calculate median offset for each scanner with hysteresis
+        # Calculate median offset for each scanner
+        # (Already stable because we use median on RSSI history)
         for addr, contributions in offset_contributions.items():
             if len(contributions) >= MIN_SCANNER_PAIRS:
                 # Use median for robustness against outliers
                 median_offset = statistics.median(contributions)
                 # Round to nearest integer dB
                 new_offset = round(median_offset)
-
-                # Apply hysteresis: only update if change exceeds threshold
-                current_offset = self.suggested_offsets.get(addr)
-                if current_offset is None:
-                    # First time seeing this scanner
-                    self.suggested_offsets[addr] = new_offset
-                    _LOGGER.debug(
-                        "Auto-cal: Initial offset for %s: %d dB (from %d pairs)",
-                        addr,
-                        new_offset,
-                        len(contributions),
-                    )
-                elif abs(new_offset - current_offset) > OFFSET_HYSTERESIS_DB:
-                    # Change exceeds hysteresis threshold
-                    self.suggested_offsets[addr] = new_offset
-                    _LOGGER.debug(
-                        "Auto-cal: Updated offset for %s: %d -> %d dB (from %d pairs)",
-                        addr,
-                        current_offset,
-                        new_offset,
-                        len(contributions),
-                    )
-                # else: keep current offset (change too small)
+                self.suggested_offsets[addr] = new_offset
+                _LOGGER.debug(
+                    "Auto-cal: Offset for %s: %d dB (from %d pairs)",
+                    addr,
+                    new_offset,
+                    len(contributions),
+                )
 
         return self.suggested_offsets
 
@@ -354,7 +344,7 @@ def update_scanner_calibration(
             if advert is None:
                 continue
 
-            # Use Kalman-filtered RSSI if available
+            # Use Kalman-filtered RSSI if available (already filtered by Bermuda)
             rssi_filtered = advert.rssi_filtered
             if rssi_filtered is None:
                 # Fall back to raw RSSI if Kalman not initialized yet
@@ -363,14 +353,10 @@ def update_scanner_calibration(
             if rssi_filtered is None:
                 continue
 
-            # Count samples from history
-            sample_count = len(getattr(advert, "hist_rssi", [])) or 1
-
             calibration_manager.update_cross_visibility(
                 receiver_addr=scanner_addr,
                 sender_addr=other_addr,
                 rssi_filtered=rssi_filtered,
-                sample_count=sample_count,
             )
 
     # Recalculate suggested offsets

@@ -41,12 +41,13 @@ def test_scanner_pair_data_bidirectional():
     pair = ScannerPairData(
         scanner_a="aa:bb:cc:dd:ee:01",
         scanner_b="aa:bb:cc:dd:ee:02",
-        rssi_a_sees_b=-55.0,
-        rssi_b_sees_a=-65.0,
-        sample_count_ab=MIN_CROSS_VISIBILITY_SAMPLES,
-        sample_count_ba=MIN_CROSS_VISIBILITY_SAMPLES,
+        # New structure: history lists instead of single values
+        rssi_history_ab=[-55.0] * MIN_CROSS_VISIBILITY_SAMPLES,
+        rssi_history_ba=[-65.0] * MIN_CROSS_VISIBILITY_SAMPLES,
     )
     assert pair.has_bidirectional_data
+    assert pair.rssi_a_sees_b == -55.0  # Median of identical values
+    assert pair.rssi_b_sees_a == -65.0
     assert pair.rssi_difference == 10.0  # A sees B 10 dB stronger
     print("  PASS: test_scanner_pair_data_bidirectional")
 
@@ -56,10 +57,9 @@ def test_scanner_pair_data_insufficient_samples():
     pair = ScannerPairData(
         scanner_a="aa:bb:cc:dd:ee:01",
         scanner_b="aa:bb:cc:dd:ee:02",
-        rssi_a_sees_b=-55.0,
-        rssi_b_sees_a=-65.0,
-        sample_count_ab=MIN_CROSS_VISIBILITY_SAMPLES - 1,
-        sample_count_ba=MIN_CROSS_VISIBILITY_SAMPLES,
+        # One direction has insufficient samples
+        rssi_history_ab=[-55.0] * (MIN_CROSS_VISIBILITY_SAMPLES - 1),
+        rssi_history_ba=[-65.0] * MIN_CROSS_VISIBILITY_SAMPLES,
     )
     assert not pair.has_bidirectional_data
     assert pair.rssi_difference is None
@@ -89,9 +89,9 @@ def test_calibration_manager_update_cross_visibility():
     """Test updating cross visibility with bidirectional data."""
     manager = ScannerCalibrationManager()
 
-    # Call multiple times to build up sample count (MIN_CROSS_VISIBILITY_SAMPLES = 5)
-    # Note: RSSI values are smoothed with exponential moving average
-    for _ in range(10):
+    # Call multiple times to build up sample count (MIN_CROSS_VISIBILITY_SAMPLES = 10)
+    # Using history-based median calculation (no EMA smoothing)
+    for _ in range(15):
         # A sees B
         manager.update_cross_visibility(
             receiver_addr="aa:aa:aa:aa:aa:aa",
@@ -106,11 +106,13 @@ def test_calibration_manager_update_cross_visibility():
         )
 
     pair = manager.scanner_pairs[("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb")]
-    # RSSI values should converge to the input values after multiple updates
-    assert abs(pair.rssi_a_sees_b - (-55.0)) < 1.0  # Allow some smoothing variance
-    assert abs(pair.rssi_b_sees_a - (-65.0)) < 1.0
+    # Median of identical values = the value (no variance)
+    assert pair.rssi_a_sees_b == -55.0
+    assert pair.rssi_b_sees_a == -65.0
+    assert pair.sample_count_ab == 15
+    assert pair.sample_count_ba == 15
     assert pair.has_bidirectional_data
-    assert abs(pair.rssi_difference - 10.0) < 2.0  # Allow some smoothing variance
+    assert pair.rssi_difference == 10.0
     print("  PASS: test_calibration_manager_update_cross_visibility")
 
 
@@ -121,8 +123,8 @@ def test_calibration_manager_calculate_offsets_symmetric():
     # A sees B at -55, B sees A at -65
     # Difference is 10 dB, so A receives 5 dB stronger, B receives 5 dB weaker
     # A needs offset -5, B needs offset +5
-    # Call multiple times to build up sample count
-    for _ in range(10):
+    # Call multiple times to build up sample count (MIN_CROSS_VISIBILITY_SAMPLES = 10)
+    for _ in range(15):
         manager.update_cross_visibility("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb", -55.0)
         manager.update_cross_visibility("bb:bb:bb:bb:bb:bb", "aa:aa:aa:aa:aa:aa", -65.0)
 
@@ -141,8 +143,8 @@ def test_calibration_manager_calculate_offsets_multiple_pairs():
     """Test offset calculation with multiple scanner pairs."""
     manager = ScannerCalibrationManager()
 
-    # Call multiple times to build up sample count
-    for _ in range(10):
+    # Call multiple times to build up sample count (MIN_CROSS_VISIBILITY_SAMPLES = 10)
+    for _ in range(15):
         # Scanner A, B, C
         # A sees B at -55, B sees A at -65 (diff +10, A is +5 stronger)
         manager.update_cross_visibility("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb", -55.0)
@@ -172,7 +174,7 @@ def test_calibration_manager_offsets_rounded_to_integer():
     manager = ScannerCalibrationManager()
 
     # A sees B at -55, B sees A at -62 (diff +7, so offset = ±3.5)
-    for _ in range(10):
+    for _ in range(15):
         manager.update_cross_visibility("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb", -55.0)
         manager.update_cross_visibility("bb:bb:bb:bb:bb:bb", "aa:aa:aa:aa:aa:aa", -62.0)
 
@@ -192,7 +194,7 @@ def test_calibration_manager_equal_rssi_zero_offset():
     manager = ScannerCalibrationManager()
 
     # Both see each other at the same RSSI
-    for _ in range(10):
+    for _ in range(15):
         manager.update_cross_visibility("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb", -60.0)
         manager.update_cross_visibility("bb:bb:bb:bb:bb:bb", "aa:aa:aa:aa:aa:aa", -60.0)
 
@@ -221,8 +223,8 @@ def test_calibration_manager_get_scanner_pair_info():
     """Test getting scanner pair info for diagnostics."""
     manager = ScannerCalibrationManager()
 
-    # Call multiple times to build sample count and stabilize RSSI values
-    for _ in range(10):
+    # Call multiple times to build sample count
+    for _ in range(15):
         manager.update_cross_visibility("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb", -55.0)
         manager.update_cross_visibility("bb:bb:bb:bb:bb:bb", "aa:aa:aa:aa:aa:aa", -65.0)
 
@@ -232,11 +234,11 @@ def test_calibration_manager_get_scanner_pair_info():
     pair_info = info[0]
     assert pair_info["scanner_a"] == "aa:aa:aa:aa:aa:aa"
     assert pair_info["scanner_b"] == "bb:bb:bb:bb:bb:bb"
-    # Allow some variance due to smoothing
-    assert abs(pair_info["rssi_a_sees_b"] - (-55.0)) < 1.0
-    assert abs(pair_info["rssi_b_sees_a"] - (-65.0)) < 1.0
+    # Median of identical values = the value (no variance)
+    assert pair_info["rssi_a_sees_b"] == -55.0
+    assert pair_info["rssi_b_sees_a"] == -65.0
     assert pair_info["bidirectional"] is True
-    assert abs(pair_info["difference"] - 10.0) < 2.0
+    assert pair_info["difference"] == 10.0
     print("  PASS: test_calibration_manager_get_scanner_pair_info")
 
 
