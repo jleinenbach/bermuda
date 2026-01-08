@@ -127,6 +127,70 @@ class KalmanFilter:
         if measurement_noise is not None:
             self._measurement_noise = measurement_noise
 
+    def update_adaptive(
+        self,
+        measurement: float,
+        rssi_strong_threshold: float = -50.0,
+        noise_scale_per_10db: float = 2.0,
+    ) -> float:
+        """
+        Process measurement with RSSI-adaptive measurement noise.
+
+        Scientific basis: RSSI measurement variance increases with distance.
+        Research shows SNR degrades as distance increases, meaning weaker
+        signals have higher noise variance and should be trusted less.
+
+        The measurement noise R is scaled based on signal strength:
+        - At rssi_strong_threshold: uses base measurement_noise
+        - For each 10 dB below threshold: multiplies noise by noise_scale_per_10db
+
+        Formula: R_adaptive = R_base * scale^((threshold - rssi) / 10)
+
+        This causes stronger signals to have more influence on the estimate,
+        which aligns with the physical reality that stronger signals are
+        more reliable measurements.
+
+        Args:
+            measurement: New RSSI measurement in dBm
+            rssi_strong_threshold: RSSI level (dBm) where base noise applies.
+                                   Default -50 dBm is typical strong indoor signal.
+            noise_scale_per_10db: Noise multiplier per 10 dB signal decrease.
+                                  Default 2.0 means noise doubles every 10 dB weaker.
+
+        Returns:
+            Filtered RSSI estimate in dBm
+
+        References:
+            - "Variational Bayesian Adaptive UKF for RSSI-based Indoor Localization"
+            - PMC5461075: "An Improved BLE Indoor Localization with Kalman-Based Fusion"
+        """
+        # Calculate adaptive measurement noise based on signal strength
+        db_below_threshold = rssi_strong_threshold - measurement
+        if db_below_threshold > 0:
+            # Weaker signal = higher noise (less trust)
+            adaptive_noise = self._measurement_noise * (
+                noise_scale_per_10db ** (db_below_threshold / 10.0)
+            )
+        else:
+            # Stronger signal = use base noise or slightly less
+            # Cap at 50% of base noise for very strong signals
+            adaptive_noise = max(
+                self._measurement_noise * 0.5,
+                self._measurement_noise * (noise_scale_per_10db ** (db_below_threshold / 10.0))
+            )
+
+        # Store original and apply adaptive
+        original_noise = self._measurement_noise
+        self._measurement_noise = adaptive_noise
+
+        # Run standard Kalman update
+        result = self.update(measurement)
+
+        # Restore original for next call
+        self._measurement_noise = original_noise
+
+        return result
+
 MAC_PAIR_PATTERN: Final = re.compile(r"^[0-9A-Fa-f]{2}([:\-_][0-9A-Fa-f]{2}){5}$")
 MAC_DOTTED_PATTERN: Final = re.compile(r"^[0-9A-Fa-f]{4}\.[0-9A-Fa-f]{4}\.[0-9A-Fa-f]{4}$")
 MAC_BARE_PATTERN: Final = re.compile(r"^[0-9A-Fa-f]{12}$")

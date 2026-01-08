@@ -187,3 +187,60 @@ class TestKalmanFilter:
 
         # High R should result in lower Kalman gain (trusts measurements less)
         assert kf_high_r.kalman_gain < kf_low_r.kalman_gain
+
+    def test_kalman_adaptive_stronger_signal_more_influence(self):
+        """Test that stronger signals have more influence with adaptive update."""
+        kf = util.KalmanFilter(process_noise=1.0, measurement_noise=10.0)
+
+        # Initialize with baseline
+        kf.update(-70.0)
+        baseline = kf.estimate
+
+        # Reset and test with strong signal (-50 dBm)
+        kf.reset(initial_estimate=-70.0)
+        kf.update_adaptive(-50.0, rssi_strong_threshold=-50.0)
+        strong_influence = abs(kf.estimate - (-70.0))
+
+        # Reset and test with weak signal (-80 dBm)
+        kf.reset(initial_estimate=-70.0)
+        kf.update_adaptive(-80.0, rssi_strong_threshold=-50.0)
+        weak_influence = abs(kf.estimate - (-70.0))
+
+        # Strong signal should move estimate MORE (higher influence)
+        # Weak signal should move estimate LESS (lower influence)
+        assert strong_influence > weak_influence
+
+    def test_kalman_adaptive_noise_scaling(self):
+        """Test that adaptive noise scales correctly with signal strength."""
+        kf = util.KalmanFilter(process_noise=1.0, measurement_noise=10.0)
+
+        # Initialize
+        kf.update(-60.0)
+
+        # At threshold, gain should be similar to non-adaptive
+        kf_reference = util.KalmanFilter(process_noise=1.0, measurement_noise=10.0)
+        kf_reference.update(-60.0)
+
+        kf.update_adaptive(-50.0, rssi_strong_threshold=-50.0)
+        kf_reference.update(-50.0)
+
+        # Gains should be similar at threshold (adaptive noise ≈ base noise)
+        assert abs(kf.kalman_gain - kf_reference.kalman_gain) < 0.1
+
+    def test_kalman_adaptive_weak_signal_dampened(self):
+        """Test that very weak signals are heavily dampened."""
+        kf = util.KalmanFilter(process_noise=1.0, measurement_noise=10.0)
+
+        # Establish baseline at -60 dBm
+        for _ in range(5):
+            kf.update_adaptive(-60.0)
+
+        baseline = kf.estimate
+
+        # Apply very weak signal (-90 dBm, 40 dB below threshold)
+        # This should have minimal influence due to high adaptive noise
+        kf.update_adaptive(-90.0, rssi_strong_threshold=-50.0)
+
+        # Estimate should barely change (weak signal heavily dampened)
+        assert baseline is not None
+        assert abs(kf.estimate - baseline) < 5.0  # Less than 5 dBm change
