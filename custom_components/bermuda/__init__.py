@@ -140,5 +140,11 @@ async def async_unload_entry(hass: HomeAssistant, entry: BermudaConfigEntry) -> 
 
 
 async def async_reload_entry(hass: HomeAssistant, entry: BermudaConfigEntry) -> None:
-    """Reload config entry."""
-    hass.config_entries.async_schedule_reload(entry.entry_id)
+    """Handle options update without full reload.
+
+    This preserves runtime state (like scanner calibration data)
+    while applying new configuration options.
+    """
+    coordinator: BermudaDataUpdateCoordinator = entry.runtime_data.coordinator
+    coordinator.reload_options()
+    _LOGGER.debug("Options reloaded without full restart")
