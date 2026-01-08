@@ -137,7 +137,7 @@ class ScannerCalibrationManager:
         self,
         receiver_addr: str,
         sender_addr: str,
-        rssi_filtered: float,
+        rssi_raw: float,
     ) -> bool:
         """
         Update cross-visibility data when a scanner sees another scanner.
@@ -145,7 +145,8 @@ class ScannerCalibrationManager:
         Args:
             receiver_addr: Address of the scanner that received the signal
             sender_addr: Address of the scanner that sent the signal (as iBeacon)
-            rssi_filtered: Kalman-filtered RSSI value (already filtered by Bermuda)
+            rssi_raw: RAW RSSI value (NOT adjusted by rssi_offset!)
+                     Using raw RSSI is critical to avoid circular calibration.
 
         Returns:
             True if a changepoint was detected (significant shift in RSSI),
@@ -157,18 +158,18 @@ class ScannerCalibrationManager:
         # Add to history, keeping a rolling window
         if receiver_addr == pair.scanner_a:
             # A sees B
-            pair.rssi_history_ab.append(rssi_filtered)
+            pair.rssi_history_ab.append(rssi_raw)
             if len(pair.rssi_history_ab) > CALIBRATION_MAX_HISTORY:
                 pair.rssi_history_ab.pop(0)
             # Update adaptive statistics and check for changepoint
-            changepoint_detected = pair.stats_ab.update(rssi_filtered)
+            changepoint_detected = pair.stats_ab.update(rssi_raw)
         else:
             # B sees A
-            pair.rssi_history_ba.append(rssi_filtered)
+            pair.rssi_history_ba.append(rssi_raw)
             if len(pair.rssi_history_ba) > CALIBRATION_MAX_HISTORY:
                 pair.rssi_history_ba.pop(0)
             # Update adaptive statistics and check for changepoint
-            changepoint_detected = pair.stats_ba.update(rssi_filtered)
+            changepoint_detected = pair.stats_ba.update(rssi_raw)
 
         if changepoint_detected:
             _LOGGER.info(
@@ -335,12 +336,23 @@ def update_scanner_calibration(
 
     # Log which scanners have iBeacon broadcasts
     scanners_with_ibeacons = {k: v for k, v in scanner_to_ibeacon.items() if v}
+    scanners_without_ibeacons = [k for k in scanner_list if k not in scanners_with_ibeacons]
+
     if scanners_with_ibeacons:
         _LOGGER.debug(
             "Auto-cal: Found %d scanners with iBeacon broadcasts: %s",
             len(scanners_with_ibeacons),
             scanners_with_ibeacons,
         )
+    if scanners_without_ibeacons:
+        _LOGGER.debug(
+            "Auto-cal: %d scanners WITHOUT iBeacon broadcasts: %s",
+            len(scanners_without_ibeacons),
+            scanners_without_ibeacons,
+        )
+
+    visibility_found = 0
+    visibility_not_found = 0
 
     for scanner_addr in scanner_list:
         # Check if this scanner sees any other scanners
@@ -371,11 +383,32 @@ def update_scanner_calibration(
             # Method 2: Check if any iBeacon/metadevice sourced from other_addr
             # was seen by scanner_addr (ESPHome iBeacons use UUID as address)
             if advert is None:
-                for ibeacon_addr in scanner_to_ibeacon.get(other_addr, []):
+                ibeacon_addrs = scanner_to_ibeacon.get(other_addr, [])
+                if not ibeacon_addrs:
+                    _LOGGER.debug(
+                        "Auto-cal: Scanner %s has no iBeacon devices mapped",
+                        other_addr,
+                    )
+                for ibeacon_addr in ibeacon_addrs:
                     ibeacon_device = devices.get(ibeacon_addr)
                     if ibeacon_device is None:
+                        _LOGGER.debug(
+                            "Auto-cal: iBeacon device %s not found in devices dict",
+                            ibeacon_addr,
+                        )
                         continue
                     # Look for advert where iBeacon was seen by scanner_addr
+                    advert_keys = list(ibeacon_device.adverts.keys())
+                    matching_keys = [k for k in advert_keys if k[1] == scanner_addr]
+                    if not matching_keys and advert_keys:
+                        _LOGGER.debug(
+                            "Auto-cal: iBeacon %s has %d adverts, none from scanner %s. "
+                            "Advert scanner addresses: %s",
+                            ibeacon_addr,
+                            len(advert_keys),
+                            scanner_addr,
+                            [k[1] for k in advert_keys[:5]],  # Show first 5
+                        )
                     for advert_key, adv in ibeacon_device.adverts.items():
                         if advert_key[1] == scanner_addr:
                             advert = adv
@@ -390,22 +423,31 @@ def update_scanner_calibration(
                         break
 
             if advert is None:
+                visibility_not_found += 1
                 continue
 
-            # Use Kalman-filtered RSSI if available (already filtered by Bermuda)
-            rssi_filtered = advert.rssi_filtered
-            if rssi_filtered is None:
-                # Fall back to raw RSSI if Kalman not initialized yet
-                rssi_filtered = advert.rssi
+            visibility_found += 1
 
-            if rssi_filtered is None:
+            # IMPORTANT: Use RAW RSSI for calibration, NOT rssi_filtered!
+            # rssi_filtered includes conf_rssi_offset which would create a
+            # circular dependency (calibration based on already-calibrated values).
+            rssi_raw = advert.rssi
+
+            if rssi_raw is None:
                 continue
 
             calibration_manager.update_cross_visibility(
                 receiver_addr=scanner_addr,
                 sender_addr=other_addr,
-                rssi_filtered=rssi_filtered,
+                rssi_raw=rssi_raw,
             )
+
+    if visibility_found > 0 or visibility_not_found > 0:
+        _LOGGER.debug(
+            "Auto-cal: Visibility check complete - found: %d, not found: %d",
+            visibility_found,
+            visibility_not_found,
+        )
 
     # Recalculate suggested offsets
     return calibration_manager.calculate_suggested_offsets()

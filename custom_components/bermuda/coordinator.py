@@ -348,6 +348,44 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         self._scanners.remove(scanner_device)
         async_dispatcher_send(self.hass, SIGNAL_SCANNERS_CHANGED)
 
+    def reload_options(self) -> None:
+        """Reload options from config entry without full restart.
+
+        This preserves runtime state like scanner_calibration data
+        while applying new user configuration.
+        """
+        entry = self.config_entry
+        if not hasattr(entry, "options"):
+            return
+
+        _LOGGER.debug("Reloading options without full restart")
+
+        # Update options dict from config entry
+        for key, val in entry.options.items():
+            if key in (
+                CONF_ATTENUATION,
+                CONF_DEVICES,
+                CONF_DEVTRACK_TIMEOUT,
+                CONF_FMDN_EID_FORMAT,
+                CONF_FMDN_MODE,
+                CONF_MAX_RADIUS,
+                CONF_MAX_VELOCITY,
+                CONF_REF_POWER,
+                CONF_SMOOTHING_SAMPLES,
+                CONF_RSSI_OFFSETS,
+            ):
+                self.options[key] = val
+
+        # Update sensor interval if changed
+        new_interval = entry.options.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL)
+        if new_interval != self.sensor_interval:
+            self.sensor_interval = new_interval
+            _LOGGER.info("Sensor update interval changed to %s seconds", new_interval)
+
+        # Propagate options to existing devices
+        for device in self.devices.values():
+            device.options = self.options
+
     def get_manufacturer_from_id(self, uuid: int | str) -> tuple[str, bool] | tuple[None, None]:
         """
         An opinionated Bluetooth UUID to Name mapper.
