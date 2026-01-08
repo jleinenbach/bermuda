@@ -20,7 +20,13 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .base import FilterConfig, SignalFilter
-from .const import KALMAN_MEASUREMENT_NOISE, KALMAN_PROCESS_NOISE
+from .const import (
+    ADAPTIVE_MIN_NOISE_MULTIPLIER,
+    ADAPTIVE_NOISE_SCALE_PER_10DB,
+    ADAPTIVE_RSSI_STRONG_THRESHOLD,
+    KALMAN_MEASUREMENT_NOISE,
+    KALMAN_PROCESS_NOISE,
+)
 
 
 @dataclass
@@ -96,6 +102,68 @@ class KalmanFilter(SignalFilter):
         self.variance = (1 - kalman_gain) * predicted_variance
 
         return self.estimate
+
+    def update_adaptive(
+        self,
+        measurement: float,
+        timestamp: float | None = None,
+    ) -> float:
+        """
+        Process measurement with RSSI-adaptive measurement noise.
+
+        Scientific basis: RSSI measurement variance increases with distance.
+        Research shows SNR degrades as distance increases, meaning weaker
+        signals have higher noise variance and should be trusted less.
+
+        The measurement noise is scaled based on signal strength:
+        - At ADAPTIVE_RSSI_STRONG_THRESHOLD: uses base measurement_noise
+        - For each 10 dB below threshold: multiplies by ADAPTIVE_NOISE_SCALE_PER_10DB
+
+        Formula: R_adaptive = R_base * scale^((threshold - rssi) / 10)
+
+        This causes stronger signals to have more influence on the estimate,
+        aligning with the physical reality that stronger signals are more reliable.
+
+        Args:
+            measurement: New RSSI measurement in dBm
+            timestamp: Optional (unused, but part of interface)
+
+        Returns:
+            Filtered RSSI estimate in dBm
+
+        References:
+            - "Variational Bayesian Adaptive UKF for RSSI-based Indoor Localization"
+            - PMC5461075: "An Improved BLE Indoor Localization with Kalman-Based Fusion"
+        """
+        # Calculate adaptive measurement noise based on signal strength
+        db_below_threshold = ADAPTIVE_RSSI_STRONG_THRESHOLD - measurement
+
+        if db_below_threshold > 0:
+            # Weaker signal = higher noise (less trust)
+            noise_multiplier = ADAPTIVE_NOISE_SCALE_PER_10DB ** (db_below_threshold / 10.0)
+        else:
+            # Stronger signal = lower noise, but cap at minimum
+            noise_multiplier = max(
+                ADAPTIVE_MIN_NOISE_MULTIPLIER,
+                ADAPTIVE_NOISE_SCALE_PER_10DB ** (db_below_threshold / 10.0),
+            )
+
+        # Temporarily apply adaptive noise
+        original_noise = self.measurement_noise
+        self.measurement_noise = original_noise * noise_multiplier
+
+        # Run standard Kalman update
+        result = self.update(measurement, timestamp)
+
+        # Restore original noise for next call
+        self.measurement_noise = original_noise
+
+        return result
+
+    @property
+    def is_initialized(self) -> bool:
+        """Whether the filter has received at least one measurement."""
+        return self._initialized
 
     def get_estimate(self) -> float:
         """Return current filtered RSSI estimate."""

@@ -32,7 +32,8 @@ from .const import (
     HIST_KEEP_COUNT,
     RSSI_HISTORY_SAMPLES,
 )
-from .util import KalmanFilter, clean_charbuf, rssi_to_metres
+from .filters import KalmanFilter
+from .util import clean_charbuf, rssi_to_metres
 
 if TYPE_CHECKING:
     from bleak.backends.scanner import AdvertisementData
@@ -290,11 +291,12 @@ class BermudaAdvert(dict):
         ref_power, ref_power_source = self._get_effective_ref_power()
         adjusted_rssi = self.rssi + self.conf_rssi_offset
 
-        # Apply Kalman filter to RSSI for improved distance estimation.
-        # Scientific research shows ~27% improvement in distance accuracy.
-        # Filter is applied to RSSI (linear) before distance calc (logarithmic).
+        # Apply adaptive Kalman filter to RSSI for improved distance estimation.
+        # Uses RSSI-dependent measurement noise: stronger signals are trusted more.
+        # Scientific basis: SNR degrades with distance, so weaker signals have
+        # higher variance and should influence the estimate less.
         if reading_is_new:
-            self.rssi_filtered = self.rssi_kalman.update(adjusted_rssi)
+            self.rssi_filtered = self.rssi_kalman.update_adaptive(adjusted_rssi)
         elif self.rssi_kalman.is_initialized:
             self.rssi_filtered = self.rssi_kalman.estimate
 

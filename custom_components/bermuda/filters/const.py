@@ -80,3 +80,30 @@ CALIBRATION_MIN_PAIRS: Final = 1
 # Only update suggested offset if the new value differs by more than this.
 # Prevents oscillation due to noise around rounding boundaries.
 CALIBRATION_HYSTERESIS_DB: Final = 3
+
+# =============================================================================
+# Adaptive Kalman Filter Parameters
+# =============================================================================
+# Based on research showing RSSI measurement variance increases with distance:
+# - "Variational Bayesian Adaptive UKF for RSSI-based Indoor Localization"
+#   https://link.springer.com/article/10.1007/s12555-019-0973-9
+# - PMC5461075: SNR degrades as distance increases
+#
+# The adaptive filter scales measurement noise based on signal strength:
+# R_adaptive = R_base * scale^((threshold - rssi) / 10)
+
+# RSSI threshold (dBm) where base measurement noise applies.
+# At or above this level, the signal is considered "strong" with low variance.
+# -50 dBm is typical strong indoor signal at ~1-2m distance.
+ADAPTIVE_RSSI_STRONG_THRESHOLD: Final = -50.0
+
+# Noise scaling factor per 10 dB signal decrease.
+# For each 10 dB weaker signal, measurement noise multiplies by this factor.
+# Value of 2.0 means noise doubles every 10 dB below threshold.
+# This reflects the empirical observation that weaker signals have higher variance.
+ADAPTIVE_NOISE_SCALE_PER_10DB: Final = 2.0
+
+# Minimum noise multiplier for very strong signals.
+# Prevents over-trusting very strong signals (which can still have noise).
+# 0.5 means even very strong signals use at least 50% of base noise.
+ADAPTIVE_MIN_NOISE_MULTIPLIER: Final = 0.5

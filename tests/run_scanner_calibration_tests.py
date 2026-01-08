@@ -31,6 +31,10 @@ filters_const.CALIBRATION_MIN_SAMPLES = 50
 filters_const.CALIBRATION_MAX_HISTORY = 100
 filters_const.CALIBRATION_MIN_PAIRS = 1
 filters_const.CALIBRATION_HYSTERESIS_DB = 3
+# Adaptive Kalman filter constants
+filters_const.ADAPTIVE_RSSI_STRONG_THRESHOLD = -50.0
+filters_const.ADAPTIVE_NOISE_SCALE_PER_10DB = 2.0
+filters_const.ADAPTIVE_MIN_NOISE_MULTIPLIER = 0.5
 
 # Create package hierarchy
 custom_components = types.ModuleType('custom_components')

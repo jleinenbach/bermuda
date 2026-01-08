@@ -9,6 +9,7 @@ from math import floor
 import pytest
 
 from custom_components.bermuda import util
+from custom_components.bermuda.filters import KalmanFilter
 
 
 def test_mac_math_offset():
@@ -79,27 +80,32 @@ def test_clean_charbuf():
 
 
 class TestKalmanFilter:
-    """Tests for the KalmanFilter class."""
+    """Tests for the KalmanFilter class from filters module.
+
+    Note: KalmanFilter is in custom_components.bermuda.filters.kalman.
+    The dataclass-based filter has different interface from the removed util.py version:
+    - estimate starts at 0.0 (not None)
+    - is_initialized property indicates if first measurement received
+    - reset() clears state (no initial_estimate parameter)
+    """
 
     def test_kalman_initialization(self):
         """Test that KalmanFilter initializes with correct defaults."""
-        kf = util.KalmanFilter()
-        assert kf.estimate is None
-        assert kf.kalman_gain == 0.0
+        kf = KalmanFilter()
+        assert kf.estimate == 0.0  # Dataclass default
         assert not kf.is_initialized
 
     def test_kalman_first_measurement(self):
         """Test that first measurement initializes the filter."""
-        kf = util.KalmanFilter()
+        kf = KalmanFilter()
         result = kf.update(-70.0)
         assert result == -70.0
         assert kf.estimate == -70.0
         assert kf.is_initialized
-        assert kf.kalman_gain == 1.0  # First measurement is fully trusted
 
     def test_kalman_filters_spike(self):
         """Test that Kalman filter dampens signal spikes."""
-        kf = util.KalmanFilter(process_noise=1.0, measurement_noise=10.0)
+        kf = KalmanFilter(process_noise=1.0, measurement_noise=10.0)
         # Establish baseline at -70 dBm
         for _ in range(5):
             kf.update(-70.0)
@@ -110,13 +116,12 @@ class TestKalmanFilter:
 
         # The result should be between baseline (-70) and spike (-45)
         # In RSSI: -45 > -70 numerically (stronger signal = less negative)
-        assert baseline is not None
         assert result < -45.0  # Not fully following the spike
         assert result > baseline  # Moved toward spike but dampened
 
     def test_kalman_responds_to_approach(self):
         """Test that filter responds to genuine device approach."""
-        kf = util.KalmanFilter(process_noise=1.0, measurement_noise=10.0)
+        kf = KalmanFilter(process_noise=1.0, measurement_noise=10.0)
         results = []
         # Simulate device approaching
         for rssi in [-80, -75, -70, -65, -60, -55]:
@@ -129,7 +134,7 @@ class TestKalmanFilter:
 
     def test_kalman_reduces_variance(self):
         """Test that Kalman filter reduces measurement variance."""
-        kf = util.KalmanFilter(process_noise=1.0, measurement_noise=10.0)
+        kf = KalmanFilter(process_noise=1.0, measurement_noise=10.0)
         raw = [-60, -61, -59, -60, -62, -58, -60, -61, -59, -60]
         filtered = [kf.update(r) for r in raw]
 
@@ -139,23 +144,9 @@ class TestKalmanFilter:
         # Filtered variance should be significantly less
         assert filtered_variance < raw_variance * 0.5
 
-    def test_kalman_gain_convergence(self):
-        """Test that Kalman gain converges to steady state."""
-        kf = util.KalmanFilter(process_noise=1.0, measurement_noise=10.0)
-        gains = []
-        for _ in range(20):
-            kf.update(-60.0)
-            gains.append(kf.kalman_gain)
-
-        # Gain should decrease and converge
-        assert gains[0] == 1.0  # First measurement
-        assert gains[-1] < gains[1]  # Converging downward
-        # Should reach approximate steady state
-        assert abs(gains[-1] - gains[-2]) < 0.01
-
     def test_kalman_reset(self):
         """Test that reset clears filter state."""
-        kf = util.KalmanFilter()
+        kf = KalmanFilter()
         kf.update(-70.0)
         kf.update(-65.0)
 
@@ -163,27 +154,38 @@ class TestKalmanFilter:
 
         kf.reset()
         assert not kf.is_initialized
-        assert kf.estimate is None
-        assert kf.kalman_gain == 0.0
 
-    def test_kalman_reset_with_initial(self):
-        """Test reset with initial estimate."""
-        kf = util.KalmanFilter()
-        kf.update(-70.0)
-        kf.reset(initial_estimate=-80.0)
+    def test_kalman_adaptive_stronger_signal_more_influence(self):
+        """Test that stronger signals have more influence with adaptive update."""
+        # Test with strong signal (-50 dBm at threshold)
+        kf_strong = KalmanFilter(process_noise=1.0, measurement_noise=10.0)
+        kf_strong.update(-70.0)  # Initialize at -70
+        kf_strong.update_adaptive(-50.0)  # Strong signal update
+        strong_influence = abs(kf_strong.estimate - (-70.0))
 
-        assert kf.is_initialized
-        assert kf.estimate == -80.0
+        # Test with weak signal (-80 dBm, 30 dB below threshold)
+        kf_weak = KalmanFilter(process_noise=1.0, measurement_noise=10.0)
+        kf_weak.update(-70.0)  # Initialize at -70
+        kf_weak.update_adaptive(-80.0)  # Weak signal update
+        weak_influence = abs(kf_weak.estimate - (-70.0))
 
-    def test_kalman_parameter_tuning(self):
-        """Test that parameters affect filter behavior."""
-        # High measurement noise = trusts measurements less
-        kf_high_r = util.KalmanFilter(process_noise=1.0, measurement_noise=100.0)
-        kf_low_r = util.KalmanFilter(process_noise=1.0, measurement_noise=1.0)
+        # Strong signal should move estimate MORE (higher influence)
+        # Weak signal should move estimate LESS (lower influence)
+        assert strong_influence > weak_influence
 
-        for rssi in [-70, -65, -60]:
-            kf_high_r.update(rssi)
-            kf_low_r.update(rssi)
+    def test_kalman_adaptive_weak_signal_dampened(self):
+        """Test that very weak signals are heavily dampened."""
+        kf = KalmanFilter(process_noise=1.0, measurement_noise=10.0)
 
-        # High R should result in lower Kalman gain (trusts measurements less)
-        assert kf_high_r.kalman_gain < kf_low_r.kalman_gain
+        # Establish baseline at -60 dBm
+        for _ in range(5):
+            kf.update_adaptive(-60.0)
+
+        baseline = kf.estimate
+
+        # Apply very weak signal (-90 dBm, 40 dB below threshold)
+        # This should have minimal influence due to high adaptive noise
+        kf.update_adaptive(-90.0)
+
+        # Estimate should barely change (weak signal heavily dampened)
+        assert abs(kf.estimate - baseline) < 5.0  # Less than 5 dBm change
