@@ -23,7 +23,7 @@ from .base import FilterConfig, SignalFilter
 from .const import (
     ADAPTIVE_MIN_NOISE_MULTIPLIER,
     ADAPTIVE_NOISE_SCALE_PER_10DB,
-    ADAPTIVE_RSSI_STRONG_THRESHOLD,
+    ADAPTIVE_RSSI_OFFSET_FROM_REF,
     KALMAN_MEASUREMENT_NOISE,
     KALMAN_PROCESS_NOISE,
 )
@@ -106,6 +106,7 @@ class KalmanFilter(SignalFilter):
     def update_adaptive(
         self,
         measurement: float,
+        ref_power: float,
         timestamp: float | None = None,
     ) -> float:
         """
@@ -115,17 +116,28 @@ class KalmanFilter(SignalFilter):
         Research shows SNR degrades as distance increases, meaning weaker
         signals have higher noise variance and should be trusted less.
 
-        The measurement noise is scaled based on signal strength:
-        - At ADAPTIVE_RSSI_STRONG_THRESHOLD: uses base measurement_noise
-        - For each 10 dB below threshold: multiplies by ADAPTIVE_NOISE_SCALE_PER_10DB
+        The measurement noise is scaled based on signal strength RELATIVE to
+        the device's ref_power (calibrated RSSI at 1m). This ensures the
+        adaptive behavior works correctly regardless of device TX power.
 
         Formula: R_adaptive = R_base * scale^((threshold - rssi) / 10)
+        Where: threshold = ref_power - ADAPTIVE_RSSI_OFFSET_FROM_REF
 
-        This causes stronger signals to have more influence on the estimate,
-        aligning with the physical reality that stronger signals are more reliable.
+        Example with ref_power = -55 dBm (typical), offset = 10 dB:
+        - threshold = -65 dBm
+        - At -65 dBm (~3m): base noise
+        - At -75 dBm (~6m): 1.5x noise
+        - At -85 dBm (~15m): 2.25x noise
+
+        Example with ref_power = -94 dBm (ultra-low TX), offset = 10 dB:
+        - threshold = -104 dBm
+        - At -100 dBm (~2m): base noise * 0.7 (trusted!)
+        - At -104 dBm (~3m): base noise
+        - At -114 dBm (~6m): 1.5x noise
 
         Args:
             measurement: New RSSI measurement in dBm
+            ref_power: Device's calibrated RSSI at 1m (from beacon_power or config)
             timestamp: Optional (unused, but part of interface)
 
         Returns:
@@ -135,8 +147,12 @@ class KalmanFilter(SignalFilter):
             - "Variational Bayesian Adaptive UKF for RSSI-based Indoor Localization"
             - PMC5461075: "An Improved BLE Indoor Localization with Kalman-Based Fusion"
         """
+        # Calculate device-relative threshold
+        # Signals within OFFSET dB of ref_power are considered "strong"
+        threshold = ref_power - ADAPTIVE_RSSI_OFFSET_FROM_REF
+
         # Calculate adaptive measurement noise based on signal strength
-        db_below_threshold = ADAPTIVE_RSSI_STRONG_THRESHOLD - measurement
+        db_below_threshold = threshold - measurement
 
         if db_below_threshold > 0:
             # Weaker signal = higher noise (less trust)

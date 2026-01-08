@@ -293,11 +293,12 @@ class BermudaAdvert(dict):
         adjusted_rssi = self.rssi + self.conf_rssi_offset
 
         # Apply adaptive Kalman filter to RSSI for improved distance estimation.
-        # Uses RSSI-dependent measurement noise: stronger signals are trusted more.
+        # Uses RSSI-dependent measurement noise relative to device's ref_power.
+        # This ensures correct behavior regardless of device TX power setting.
         # Scientific basis: SNR degrades with distance, so weaker signals have
         # higher variance and should influence the estimate less.
         if reading_is_new:
-            self.rssi_filtered = self.rssi_kalman.update_adaptive(adjusted_rssi)
+            self.rssi_filtered = self.rssi_kalman.update_adaptive(adjusted_rssi, ref_power)
         elif self.rssi_kalman.is_initialized:
             self.rssi_filtered = self.rssi_kalman.estimate
 
