@@ -50,13 +50,14 @@ EMA_ALPHA_FAST: Final = 0.3
 
 # Threshold in standard deviations.
 # When cumulative deviation exceeds this, a changepoint is detected.
-# Value of 4 balances false alarms vs detection delay (ARL considerations).
-CUSUM_THRESHOLD_SIGMA: Final = 4.0
+# Higher value (10.0) needed for raw RSSI which is much more volatile than
+# Kalman-filtered RSSI. Lower values cause constant false changepoint detections.
+CUSUM_THRESHOLD_SIGMA: Final = 10.0
 
 # Drift parameter - prevents cumulative sum from growing in absence of change.
-# Expressed as fraction of standard deviation (0.5 = half sigma per sample).
-# Lower values = more sensitive, higher false alarm rate.
-CUSUM_DRIFT_SIGMA: Final = 0.5
+# Expressed as fraction of standard deviation (1.0 = one sigma per sample).
+# Higher value (1.0) needed for raw RSSI to reduce false alarm rate.
+CUSUM_DRIFT_SIGMA: Final = 1.0
 
 # =============================================================================
 # Scanner Calibration Parameters
