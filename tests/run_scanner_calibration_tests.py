@@ -383,19 +383,15 @@ def test_scanner_pair_data_initial_state():
 
 
 def test_scanner_pair_data_bidirectional():
-    """Test bidirectional data with sufficient samples using cascaded filters."""
+    """Test bidirectional data with sufficient samples using Kalman filters."""
     pair = ScannerPairData(
         scanner_a="aa:bb:cc:dd:ee:01",
         scanner_b="aa:bb:cc:dd:ee:02",
     )
-    # Use cascaded filter architecture: Kalman → AdaptiveStats
+    # Use Kalman filter for RSSI smoothing
     for _ in range(CALIBRATION_MIN_SAMPLES + 5):
-        # Stage 1: Kalman filter smooths raw RSSI
-        filtered_ab = pair.kalman_ab.update(-55.0)
-        filtered_ba = pair.kalman_ba.update(-65.0)
-        # Stage 2: AdaptiveStatistics tracks EMA and CUSUM
-        pair.stats_ab.update(filtered_ab)
-        pair.stats_ba.update(filtered_ba)
+        pair.kalman_ab.update(-55.0)
+        pair.kalman_ba.update(-65.0)
 
     assert pair.has_bidirectional_data
     # Kalman filter converges close to target value
@@ -406,18 +402,16 @@ def test_scanner_pair_data_bidirectional():
 
 
 def test_scanner_pair_data_insufficient_samples():
-    """Test bidirectional data with insufficient samples using cascaded filters."""
+    """Test bidirectional data with insufficient samples using Kalman filters."""
     pair = ScannerPairData(
         scanner_a="aa:bb:cc:dd:ee:01",
         scanner_b="aa:bb:cc:dd:ee:02",
     )
-    # Only populate one direction with enough samples (use cascaded architecture)
+    # Only populate one direction with enough samples
     for _ in range(CALIBRATION_MIN_SAMPLES - 1):
-        filtered = pair.kalman_ab.update(-55.0)
-        pair.stats_ab.update(filtered)
+        pair.kalman_ab.update(-55.0)
     for _ in range(CALIBRATION_MIN_SAMPLES):
-        filtered = pair.kalman_ba.update(-65.0)
-        pair.stats_ba.update(filtered)
+        pair.kalman_ba.update(-65.0)
 
     assert not pair.has_bidirectional_data
     assert pair.rssi_difference is None
@@ -582,15 +576,15 @@ def test_calibration_manager_get_scanner_pair_info():
     pair_info = info[0]
     assert pair_info["scanner_a"] == "aa:aa:aa:aa:aa:aa"
     assert pair_info["scanner_b"] == "bb:bb:bb:bb:bb:bb"
-    # EMA values converge close to target
+    # Kalman-filtered values converge close to target
     assert abs(pair_info["rssi_a_sees_b"] - (-55.0)) < 1.0
     assert abs(pair_info["rssi_b_sees_a"] - (-65.0)) < 1.0
     assert pair_info["bidirectional"] is True
     assert abs(pair_info["difference"] - 10.0) < 2.0
-    # Check adaptive stats are included
-    assert "stats_ab" in pair_info
-    assert "stats_ba" in pair_info
-    assert "mean" in pair_info["stats_ab"]
+    # Check Kalman filter diagnostics are included
+    assert "kalman_ab" in pair_info
+    assert "kalman_ba" in pair_info
+    assert "estimate" in pair_info["kalman_ab"]
     print("  PASS: test_calibration_manager_get_scanner_pair_info")
 
 
