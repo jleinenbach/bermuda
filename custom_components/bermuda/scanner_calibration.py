@@ -340,14 +340,44 @@ def update_scanner_calibration(
     Returns:
         Dictionary of suggested RSSI offsets per scanner
     """
-    # Build a reverse lookup: scanner_mac -> list of iBeacon/metadevice addresses
-    # that broadcast from that scanner
+    # Build a reverse lookup: any_scanner_mac -> canonical_scanner_address
+    # Scanners may have multiple MAC addresses (WiFi, BLE, Ethernet) and the
+    # iBeacon broadcasts come from the BLE MAC, which may differ from the
+    # canonical scanner address in scanner_list.
+    mac_to_scanner: dict[str, str] = {}
+    for scanner_addr in scanner_list:
+        scanner_device = devices.get(scanner_addr)
+        if scanner_device is None:
+            # Scanner not in devices dict yet, just use canonical address
+            mac_to_scanner[scanner_addr] = scanner_addr
+            continue
+
+        # Add all possible MAC addresses that could identify this scanner
+        # The canonical address
+        mac_to_scanner[scanner_addr] = scanner_addr
+
+        # BLE MAC (may differ from canonical address for ESPHome/Shelly)
+        if hasattr(scanner_device, "address_ble_mac") and scanner_device.address_ble_mac:
+            mac_to_scanner[scanner_device.address_ble_mac] = scanner_addr
+
+        # WiFi MAC
+        if hasattr(scanner_device, "address_wifi_mac") and scanner_device.address_wifi_mac:
+            mac_to_scanner[scanner_device.address_wifi_mac] = scanner_addr
+
+        # Scanner's own metadevice_sources (potential BLE MACs it broadcasts from)
+        if hasattr(scanner_device, "metadevice_sources") and scanner_device.metadevice_sources:
+            for source_mac in scanner_device.metadevice_sources:
+                mac_to_scanner[source_mac] = scanner_addr
+
+    # Build lookup: canonical_scanner_address -> list of iBeacon addresses
     scanner_to_ibeacon: dict[str, list[str]] = {addr: [] for addr in scanner_list}
     for device_addr, device in devices.items():
         if hasattr(device, "metadevice_sources") and device.metadevice_sources:
             for source_mac in device.metadevice_sources:
-                if source_mac in scanner_to_ibeacon:
-                    scanner_to_ibeacon[source_mac].append(device_addr)
+                # Look up which scanner this MAC belongs to
+                canonical_scanner = mac_to_scanner.get(source_mac)
+                if canonical_scanner is not None:
+                    scanner_to_ibeacon[canonical_scanner].append(device_addr)
 
     # Log which scanners have iBeacon broadcasts
     scanners_with_ibeacons = {k: v for k, v in scanner_to_ibeacon.items() if v}
