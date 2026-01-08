@@ -188,6 +188,45 @@ DOCS: dict[str, str | tuple[str, ...]] = {}
 
 HIST_KEEP_COUNT = 10  # How many old timestamps, rssi, etc to keep for each device/scanner pairing.
 
+# =============================================================================
+# Scanner Auto-Calibration Constants
+# =============================================================================
+# These values are derived from BLE RSSI research literature:
+# - https://www.wouterbulten.nl/posts/kalman-filters-explained-removing-noise-from-rssi-signals/
+# - https://pmc.ncbi.nlm.nih.gov/articles/PMC5461075/ (BLE Indoor Localization with Kalman)
+# - https://github.com/neXenio/BLE-Indoor-Positioning/wiki/RSSI-Measurements
+
+# Minimum cross-visibility samples before trusting scanner pair data.
+# Research shows BLE RSSI needs 10+ samples for reliable statistics.
+CALIBRATION_MIN_SAMPLES: Final = 10
+
+# Maximum RSSI history for median calculation.
+# 100 samples provides robust median while limiting memory.
+CALIBRATION_MAX_HISTORY: Final = 100
+
+# Minimum scanner pairs needed to calculate an offset.
+# With just 1 pair we can still detect relative sensitivity.
+CALIBRATION_MIN_PAIRS: Final = 1
+
+# Typical BLE RSSI standard deviation in indoor environments (dBm).
+# Research shows 3-6 dBm typical, increases significantly after 3m.
+# Wall obstructions cause ~6 dBm additional degradation.
+BLE_RSSI_TYPICAL_STDDEV: Final = 4.0
+
+# EMA alpha for adapting statistical parameters over time.
+# Lower values (0.05-0.1) = slower adaptation, more stability
+# Higher values (0.2-0.3) = faster adaptation, more responsive
+CALIBRATION_EMA_ALPHA: Final = 0.1
+
+# CUSUM changepoint detection parameters
+# Threshold in standard deviations - when cumulative deviation exceeds this,
+# a changepoint is detected. Value of 4 balances false alarms vs detection delay.
+CUSUM_THRESHOLD_SIGMA: Final = 4.0
+
+# CUSUM drift parameter - prevents cumulative sum from growing in absence of change.
+# Expressed as fraction of standard deviation (0.5 = half sigma per sample).
+CUSUM_DRIFT_SIGMA: Final = 0.5
+
 # Config entry DATA entries
 
 CONFDATA_SCANNERS = "scanners"

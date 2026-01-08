@@ -13,28 +13,132 @@ Principle:
 
 This is similar to GPS differential correction, where known reference points
 are used to improve accuracy.
+
+Architecture Notes:
+-------------------
+The calibration system uses a history-based median approach for robustness.
+Future enhancements could include:
+- Modular filter backends (Kalman, Particle, Bayesian)
+- CUSUM changepoint detection for detecting scanner hardware changes
+- Adaptive variance estimation using EMA
+
+The constants are defined in const.py and derived from BLE RSSI research:
+- Kalman R=0.008, Q=4.0 are typical for BLE indoor positioning
+- BLE RSSI std dev is typically 3-6 dBm indoors
+- CUSUM threshold of 4 sigma balances false alarms vs detection delay
 """
 
 from __future__ import annotations
 
 import logging
+import math
 import statistics
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
+
+from .const import (
+    BLE_RSSI_TYPICAL_STDDEV,
+    CALIBRATION_EMA_ALPHA,
+    CALIBRATION_MAX_HISTORY,
+    CALIBRATION_MIN_PAIRS,
+    CALIBRATION_MIN_SAMPLES,
+    CUSUM_DRIFT_SIGMA,
+    CUSUM_THRESHOLD_SIGMA,
+)
 
 if TYPE_CHECKING:
     from .bermuda_device import BermudaDevice
 
 _LOGGER = logging.getLogger(__name__)
 
-# Minimum samples before we trust cross-visibility data
-MIN_CROSS_VISIBILITY_SAMPLES = 10
 
-# Minimum scanner pairs needed to calculate an offset
-MIN_SCANNER_PAIRS = 1
+@dataclass
+class AdaptiveStatistics:
+    """
+    Self-adapting statistics using EMA for mean and variance estimation.
 
-# Maximum history size for RSSI samples (for median calculation)
-MAX_RSSI_HISTORY = 100
+    This class implements online estimation of statistical parameters that
+    adapt over time using Exponential Moving Average (EMA). This is useful
+    for detecting when underlying signal characteristics change.
+
+    Based on Welford's online algorithm combined with EMA smoothing.
+    """
+
+    mean: float = 0.0
+    variance: float = BLE_RSSI_TYPICAL_STDDEV**2  # Initialize with typical BLE variance
+    sample_count: int = 0
+    alpha: float = CALIBRATION_EMA_ALPHA
+
+    # CUSUM state for changepoint detection
+    cusum_pos: float = 0.0  # Cumulative sum for positive shifts
+    cusum_neg: float = 0.0  # Cumulative sum for negative shifts
+    last_changepoint: int = 0  # Sample count at last detected changepoint
+
+    @property
+    def stddev(self) -> float:
+        """Standard deviation derived from variance."""
+        return math.sqrt(max(self.variance, 0.1))  # Floor at 0.1 to avoid div-by-zero
+
+    def update(self, value: float) -> bool:
+        """
+        Update statistics with new value.
+
+        Returns True if a changepoint was detected (significant shift in mean).
+        """
+        self.sample_count += 1
+
+        if self.sample_count == 1:
+            # First sample - initialize
+            self.mean = value
+            return False
+
+        # EMA update for mean
+        old_mean = self.mean
+        self.mean = self.alpha * value + (1 - self.alpha) * self.mean
+
+        # EMA update for variance (using squared deviation from old mean)
+        deviation_sq = (value - old_mean) ** 2
+        self.variance = self.alpha * deviation_sq + (1 - self.alpha) * self.variance
+
+        # CUSUM changepoint detection
+        return self._update_cusum(value)
+
+    def _update_cusum(self, value: float) -> bool:
+        """
+        Update CUSUM statistics and check for changepoint.
+
+        CUSUM (Cumulative Sum) detects shifts in the mean by accumulating
+        deviations. When the cumulative sum exceeds a threshold, a
+        changepoint is signaled.
+        """
+        # Normalize deviation by standard deviation
+        z = (value - self.mean) / self.stddev
+
+        # Drift term prevents false alarms in stable conditions
+        drift = CUSUM_DRIFT_SIGMA
+
+        # Update CUSUM for positive and negative shifts
+        self.cusum_pos = max(0, self.cusum_pos + z - drift)
+        self.cusum_neg = max(0, self.cusum_neg - z - drift)
+
+        # Check for changepoint
+        if self.cusum_pos > CUSUM_THRESHOLD_SIGMA or self.cusum_neg > CUSUM_THRESHOLD_SIGMA:
+            # Reset CUSUM after detection
+            self.cusum_pos = 0.0
+            self.cusum_neg = 0.0
+            self.last_changepoint = self.sample_count
+            return True
+
+        return False
+
+    def reset(self) -> None:
+        """Reset all statistics."""
+        self.mean = 0.0
+        self.variance = BLE_RSSI_TYPICAL_STDDEV**2
+        self.sample_count = 0
+        self.cusum_pos = 0.0
+        self.cusum_neg = 0.0
+        self.last_changepoint = 0
 
 
 @dataclass
@@ -46,18 +150,21 @@ class ScannerPairData:
     # Store history of RSSI values for robust median calculation
     rssi_history_ab: list[float] = field(default_factory=list)  # When A sees B
     rssi_history_ba: list[float] = field(default_factory=list)  # When B sees A
+    # Adaptive statistics for each direction (for future changepoint detection)
+    stats_ab: AdaptiveStatistics = field(default_factory=AdaptiveStatistics)
+    stats_ba: AdaptiveStatistics = field(default_factory=AdaptiveStatistics)
 
     @property
     def rssi_a_sees_b(self) -> float | None:
         """Median RSSI when A sees B."""
-        if len(self.rssi_history_ab) < MIN_CROSS_VISIBILITY_SAMPLES:
+        if len(self.rssi_history_ab) < CALIBRATION_MIN_SAMPLES:
             return None
         return statistics.median(self.rssi_history_ab)
 
     @property
     def rssi_b_sees_a(self) -> float | None:
         """Median RSSI when B sees A."""
-        if len(self.rssi_history_ba) < MIN_CROSS_VISIBILITY_SAMPLES:
+        if len(self.rssi_history_ba) < CALIBRATION_MIN_SAMPLES:
             return None
         return statistics.median(self.rssi_history_ba)
 
@@ -75,8 +182,8 @@ class ScannerPairData:
     def has_bidirectional_data(self) -> bool:
         """Return True if both scanners can see each other with enough samples."""
         return (
-            len(self.rssi_history_ab) >= MIN_CROSS_VISIBILITY_SAMPLES
-            and len(self.rssi_history_ba) >= MIN_CROSS_VISIBILITY_SAMPLES
+            len(self.rssi_history_ab) >= CALIBRATION_MIN_SAMPLES
+            and len(self.rssi_history_ba) >= CALIBRATION_MIN_SAMPLES
         )
 
     @property
@@ -131,7 +238,7 @@ class ScannerCalibrationManager:
         receiver_addr: str,
         sender_addr: str,
         rssi_filtered: float,
-    ) -> None:
+    ) -> bool:
         """
         Update cross-visibility data when a scanner sees another scanner.
 
@@ -140,23 +247,40 @@ class ScannerCalibrationManager:
             sender_addr: Address of the scanner that sent the signal (as iBeacon)
             rssi_filtered: Kalman-filtered RSSI value (already filtered by Bermuda)
 
+        Returns:
+            True if a changepoint was detected (significant shift in RSSI),
+            indicating potential hardware or environmental change.
         """
         pair = self._get_or_create_pair(receiver_addr, sender_addr)
+        changepoint_detected = False
 
         # Add to history, keeping a rolling window
         if receiver_addr == pair.scanner_a:
             # A sees B
             pair.rssi_history_ab.append(rssi_filtered)
-            if len(pair.rssi_history_ab) > MAX_RSSI_HISTORY:
+            if len(pair.rssi_history_ab) > CALIBRATION_MAX_HISTORY:
                 pair.rssi_history_ab.pop(0)
+            # Update adaptive statistics and check for changepoint
+            changepoint_detected = pair.stats_ab.update(rssi_filtered)
         else:
             # B sees A
             pair.rssi_history_ba.append(rssi_filtered)
-            if len(pair.rssi_history_ba) > MAX_RSSI_HISTORY:
+            if len(pair.rssi_history_ba) > CALIBRATION_MAX_HISTORY:
                 pair.rssi_history_ba.pop(0)
+            # Update adaptive statistics and check for changepoint
+            changepoint_detected = pair.stats_ba.update(rssi_filtered)
+
+        if changepoint_detected:
+            _LOGGER.info(
+                "Auto-cal: Changepoint detected for %s -> %s, "
+                "RSSI characteristics may have changed",
+                receiver_addr,
+                sender_addr,
+            )
 
         self.active_scanners.add(receiver_addr)
         self.active_scanners.add(sender_addr)
+        return changepoint_detected
 
     def calculate_suggested_offsets(self) -> dict[str, float]:
         """
@@ -211,7 +335,7 @@ class ScannerCalibrationManager:
         # Calculate median offset for each scanner
         # (Already stable because we use median on RSSI history)
         for addr, contributions in offset_contributions.items():
-            if len(contributions) >= MIN_SCANNER_PAIRS:
+            if len(contributions) >= CALIBRATION_MIN_PAIRS:
                 # Use median for robustness against outliers
                 median_offset = statistics.median(contributions)
                 # Round to nearest integer dB
@@ -231,8 +355,7 @@ class ScannerCalibrationManager:
         Get human-readable info about scanner pairs for diagnostics.
 
         Returns:
-            List of dictionaries with pair information
-
+            List of dictionaries with pair information including adaptive statistics.
         """
         info: list[dict[str, Any]] = []
         for pair in self.scanner_pairs.values():
@@ -245,6 +368,17 @@ class ScannerCalibrationManager:
                 "samples_ba": pair.sample_count_ba,
                 "bidirectional": pair.has_bidirectional_data,
                 "difference": pair.rssi_difference,
+                # Adaptive statistics for monitoring stability
+                "stats_ab": {
+                    "mean": round(pair.stats_ab.mean, 1),
+                    "stddev": round(pair.stats_ab.stddev, 2),
+                    "changepoints": pair.stats_ab.last_changepoint,
+                },
+                "stats_ba": {
+                    "mean": round(pair.stats_ba.mean, 1),
+                    "stddev": round(pair.stats_ba.stddev, 2),
+                    "changepoints": pair.stats_ba.last_changepoint,
+                },
             }
             info.append(pair_info)
         return info

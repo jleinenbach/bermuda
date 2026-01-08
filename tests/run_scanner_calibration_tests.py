@@ -7,21 +7,58 @@ the full Home Assistant / Bermuda package to be loaded.
 """
 
 import sys
+import os
+import types
+
+# Add parent directory to path for imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Create a mock const module with just the calibration constants
+# (to avoid importing Home Assistant dependencies)
+const_module = types.ModuleType('custom_components.bermuda.const')
+const_module.CALIBRATION_MIN_SAMPLES = 10
+const_module.CALIBRATION_MAX_HISTORY = 100
+const_module.CALIBRATION_MIN_PAIRS = 1
+const_module.BLE_RSSI_TYPICAL_STDDEV = 4.0
+const_module.CALIBRATION_EMA_ALPHA = 0.1
+const_module.CUSUM_THRESHOLD_SIGMA = 4.0
+const_module.CUSUM_DRIFT_SIGMA = 0.5
+
+# Create package hierarchy
+custom_components = types.ModuleType('custom_components')
+bermuda = types.ModuleType('custom_components.bermuda')
+bermuda.const = const_module
+
+sys.modules['custom_components'] = custom_components
+sys.modules['custom_components.bermuda'] = bermuda
+sys.modules['custom_components.bermuda.const'] = const_module
+
+# Also create the simple .const reference
+sys.modules['.const'] = const_module
+
+# Now import the scanner_calibration module using importlib
 import importlib.util
 
-# Load the scanner_calibration module directly
 spec = importlib.util.spec_from_file_location(
-    'scanner_calibration',
-    'custom_components/bermuda/scanner_calibration.py'
+    'custom_components.bermuda.scanner_calibration',
+    'custom_components/bermuda/scanner_calibration.py',
+    submodule_search_locations=['custom_components/bermuda']
 )
 scanner_cal = importlib.util.module_from_spec(spec)
-sys.modules['scanner_calibration'] = scanner_cal
+sys.modules['custom_components.bermuda.scanner_calibration'] = scanner_cal
+
+# Patch the module's __name__ for dataclass compatibility
+scanner_cal.__package__ = 'custom_components.bermuda'
+
+# Now exec the module
 spec.loader.exec_module(scanner_cal)
 
 # Import the classes we need to test
 ScannerPairData = scanner_cal.ScannerPairData
 ScannerCalibrationManager = scanner_cal.ScannerCalibrationManager
-MIN_CROSS_VISIBILITY_SAMPLES = scanner_cal.MIN_CROSS_VISIBILITY_SAMPLES
+AdaptiveStatistics = scanner_cal.AdaptiveStatistics
+update_scanner_calibration = scanner_cal.update_scanner_calibration
+MIN_CROSS_VISIBILITY_SAMPLES = const_module.CALIBRATION_MIN_SAMPLES  # Backward compat
 
 
 def test_scanner_pair_data_initial_state():
@@ -250,8 +287,55 @@ def test_calibration_manager_no_data():
     print("  PASS: test_calibration_manager_no_data")
 
 
-# Import update_scanner_calibration for integration tests
-update_scanner_calibration = scanner_cal.update_scanner_calibration
+# update_scanner_calibration is imported at top of file
+
+
+def test_adaptive_statistics_initial_state():
+    """Test initial state of adaptive statistics."""
+    stats = AdaptiveStatistics()
+    assert stats.mean == 0.0
+    assert stats.sample_count == 0
+    assert stats.stddev > 0  # Should be initialized to BLE typical
+    print("  PASS: test_adaptive_statistics_initial_state")
+
+
+def test_adaptive_statistics_update():
+    """Test updating adaptive statistics."""
+    stats = AdaptiveStatistics()
+
+    # First update initializes mean
+    changed = stats.update(-60.0)
+    assert stats.mean == -60.0
+    assert stats.sample_count == 1
+    assert not changed  # No changepoint on first sample
+
+    # Subsequent updates use EMA
+    for _ in range(10):
+        changed = stats.update(-60.0)  # Stable signal
+    assert abs(stats.mean - (-60.0)) < 0.5  # Should be close to -60
+    assert not changed  # No changepoint for stable signal
+
+    print("  PASS: test_adaptive_statistics_update")
+
+
+def test_adaptive_statistics_changepoint_detection():
+    """Test CUSUM changepoint detection."""
+    stats = AdaptiveStatistics()
+
+    # Initialize with stable signal around -60 dBm
+    for _ in range(20):
+        stats.update(-60.0)
+
+    # Sudden shift to -80 dBm (large negative jump)
+    # Should eventually trigger changepoint
+    changepoint_detected = False
+    for _ in range(20):
+        if stats.update(-80.0):
+            changepoint_detected = True
+            break
+
+    assert changepoint_detected, "Expected changepoint detection for 20 dB shift"
+    print("  PASS: test_adaptive_statistics_changepoint_detection")
 
 
 class MockAdvert:
@@ -389,9 +473,15 @@ def run_all_tests():
     print("=" * 60 + "\n")
 
     tests = [
+        # AdaptiveStatistics tests
+        test_adaptive_statistics_initial_state,
+        test_adaptive_statistics_update,
+        test_adaptive_statistics_changepoint_detection,
+        # ScannerPairData tests
         test_scanner_pair_data_initial_state,
         test_scanner_pair_data_bidirectional,
         test_scanner_pair_data_insufficient_samples,
+        # ScannerCalibrationManager tests
         test_calibration_manager_initial_state,
         test_calibration_manager_pair_key_ordering,
         test_calibration_manager_update_cross_visibility,
