@@ -33,6 +33,12 @@ MIN_CROSS_VISIBILITY_SAMPLES = 5
 # Minimum scanner pairs needed to calculate an offset
 MIN_SCANNER_PAIRS = 1
 
+# Smoothing factor for RSSI values (0.0-1.0, lower = more smoothing)
+RSSI_SMOOTHING_FACTOR = 0.1
+
+# Hysteresis: only update suggested offset if it changes by more than this
+OFFSET_HYSTERESIS_DB = 1
+
 
 @dataclass
 class ScannerPairData:
@@ -121,14 +127,28 @@ class ScannerCalibrationManager:
         pair = self._get_or_create_pair(receiver_addr, sender_addr)
 
         # Update the correct direction based on which scanner is receiver
+        # Apply exponential smoothing to reduce fluctuations
         if receiver_addr == pair.scanner_a:
             # A sees B
-            pair.rssi_a_sees_b = rssi_filtered
-            pair.sample_count_ab = sample_count
+            if pair.rssi_a_sees_b is None:
+                pair.rssi_a_sees_b = rssi_filtered
+            else:
+                # Exponential moving average: new = alpha * current + (1-alpha) * old
+                pair.rssi_a_sees_b = (
+                    RSSI_SMOOTHING_FACTOR * rssi_filtered
+                    + (1 - RSSI_SMOOTHING_FACTOR) * pair.rssi_a_sees_b
+                )
+            pair.sample_count_ab = min(pair.sample_count_ab + 1, 1000)  # Cap at 1000
         else:
             # B sees A
-            pair.rssi_b_sees_a = rssi_filtered
-            pair.sample_count_ba = sample_count
+            if pair.rssi_b_sees_a is None:
+                pair.rssi_b_sees_a = rssi_filtered
+            else:
+                pair.rssi_b_sees_a = (
+                    RSSI_SMOOTHING_FACTOR * rssi_filtered
+                    + (1 - RSSI_SMOOTHING_FACTOR) * pair.rssi_b_sees_a
+                )
+            pair.sample_count_ba = min(pair.sample_count_ba + 1, 1000)  # Cap at 1000
 
         self.active_scanners.add(receiver_addr)
         self.active_scanners.add(sender_addr)
@@ -183,23 +203,38 @@ class ScannerCalibrationManager:
         if bidirectional_pairs > 0:
             _LOGGER.debug("Auto-cal: Found %d bidirectional pairs", bidirectional_pairs)
 
-        # Calculate median offset for each scanner
-        result: dict[str, float] = {}
+        # Calculate median offset for each scanner with hysteresis
         for addr, contributions in offset_contributions.items():
             if len(contributions) >= MIN_SCANNER_PAIRS:
                 # Use median for robustness against outliers
                 median_offset = statistics.median(contributions)
                 # Round to nearest integer dB
-                result[addr] = round(median_offset)
-                _LOGGER.debug(
-                    "Auto-cal: Suggested offset for %s: %d dB (from %d pairs)",
-                    addr,
-                    result[addr],
-                    len(contributions),
-                )
+                new_offset = round(median_offset)
 
-        self.suggested_offsets = result
-        return result
+                # Apply hysteresis: only update if change exceeds threshold
+                current_offset = self.suggested_offsets.get(addr)
+                if current_offset is None:
+                    # First time seeing this scanner
+                    self.suggested_offsets[addr] = new_offset
+                    _LOGGER.debug(
+                        "Auto-cal: Initial offset for %s: %d dB (from %d pairs)",
+                        addr,
+                        new_offset,
+                        len(contributions),
+                    )
+                elif abs(new_offset - current_offset) > OFFSET_HYSTERESIS_DB:
+                    # Change exceeds hysteresis threshold
+                    self.suggested_offsets[addr] = new_offset
+                    _LOGGER.debug(
+                        "Auto-cal: Updated offset for %s: %d -> %d dB (from %d pairs)",
+                        addr,
+                        current_offset,
+                        new_offset,
+                        len(contributions),
+                    )
+                # else: keep current offset (change too small)
+
+        return self.suggested_offsets
 
     def get_scanner_pair_info(self) -> list[dict[str, Any]]:
         """

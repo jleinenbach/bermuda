@@ -89,27 +89,28 @@ def test_calibration_manager_update_cross_visibility():
     """Test updating cross visibility with bidirectional data."""
     manager = ScannerCalibrationManager()
 
-    # A sees B
-    manager.update_cross_visibility(
-        receiver_addr="aa:aa:aa:aa:aa:aa",
-        sender_addr="bb:bb:bb:bb:bb:bb",
-        rssi_filtered=-55.0,
-        sample_count=10,
-    )
-
-    # B sees A
-    manager.update_cross_visibility(
-        receiver_addr="bb:bb:bb:bb:bb:bb",
-        sender_addr="aa:aa:aa:aa:aa:aa",
-        rssi_filtered=-65.0,
-        sample_count=10,
-    )
+    # Call multiple times to build up sample count (MIN_CROSS_VISIBILITY_SAMPLES = 5)
+    # Note: RSSI values are smoothed with exponential moving average
+    for _ in range(10):
+        # A sees B
+        manager.update_cross_visibility(
+            receiver_addr="aa:aa:aa:aa:aa:aa",
+            sender_addr="bb:bb:bb:bb:bb:bb",
+            rssi_filtered=-55.0,
+        )
+        # B sees A
+        manager.update_cross_visibility(
+            receiver_addr="bb:bb:bb:bb:bb:bb",
+            sender_addr="aa:aa:aa:aa:aa:aa",
+            rssi_filtered=-65.0,
+        )
 
     pair = manager.scanner_pairs[("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb")]
-    assert pair.rssi_a_sees_b == -55.0
-    assert pair.rssi_b_sees_a == -65.0
+    # RSSI values should converge to the input values after multiple updates
+    assert abs(pair.rssi_a_sees_b - (-55.0)) < 1.0  # Allow some smoothing variance
+    assert abs(pair.rssi_b_sees_a - (-65.0)) < 1.0
     assert pair.has_bidirectional_data
-    assert pair.rssi_difference == 10.0
+    assert abs(pair.rssi_difference - 10.0) < 2.0  # Allow some smoothing variance
     print("  PASS: test_calibration_manager_update_cross_visibility")
 
 
@@ -120,8 +121,10 @@ def test_calibration_manager_calculate_offsets_symmetric():
     # A sees B at -55, B sees A at -65
     # Difference is 10 dB, so A receives 5 dB stronger, B receives 5 dB weaker
     # A needs offset -5, B needs offset +5
-    manager.update_cross_visibility("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb", -55.0, 10)
-    manager.update_cross_visibility("bb:bb:bb:bb:bb:bb", "aa:aa:aa:aa:aa:aa", -65.0, 10)
+    # Call multiple times to build up sample count
+    for _ in range(10):
+        manager.update_cross_visibility("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb", -55.0)
+        manager.update_cross_visibility("bb:bb:bb:bb:bb:bb", "aa:aa:aa:aa:aa:aa", -65.0)
 
     offsets = manager.calculate_suggested_offsets()
 
@@ -138,18 +141,20 @@ def test_calibration_manager_calculate_offsets_multiple_pairs():
     """Test offset calculation with multiple scanner pairs."""
     manager = ScannerCalibrationManager()
 
-    # Scanner A, B, C
-    # A sees B at -55, B sees A at -65 (diff +10, A is +5 stronger)
-    manager.update_cross_visibility("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb", -55.0, 10)
-    manager.update_cross_visibility("bb:bb:bb:bb:bb:bb", "aa:aa:aa:aa:aa:aa", -65.0, 10)
+    # Call multiple times to build up sample count
+    for _ in range(10):
+        # Scanner A, B, C
+        # A sees B at -55, B sees A at -65 (diff +10, A is +5 stronger)
+        manager.update_cross_visibility("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb", -55.0)
+        manager.update_cross_visibility("bb:bb:bb:bb:bb:bb", "aa:aa:aa:aa:aa:aa", -65.0)
 
-    # A sees C at -50, C sees A at -60 (diff +10, A is +5 stronger)
-    manager.update_cross_visibility("aa:aa:aa:aa:aa:aa", "cc:cc:cc:cc:cc:cc", -50.0, 10)
-    manager.update_cross_visibility("cc:cc:cc:cc:cc:cc", "aa:aa:aa:aa:aa:aa", -60.0, 10)
+        # A sees C at -50, C sees A at -60 (diff +10, A is +5 stronger)
+        manager.update_cross_visibility("aa:aa:aa:aa:aa:aa", "cc:cc:cc:cc:cc:cc", -50.0)
+        manager.update_cross_visibility("cc:cc:cc:cc:cc:cc", "aa:aa:aa:aa:aa:aa", -60.0)
 
-    # B sees C at -58, C sees B at -58 (diff 0, both equal)
-    manager.update_cross_visibility("bb:bb:bb:bb:bb:bb", "cc:cc:cc:cc:cc:cc", -58.0, 10)
-    manager.update_cross_visibility("cc:cc:cc:cc:cc:cc", "bb:bb:bb:bb:bb:bb", -58.0, 10)
+        # B sees C at -58, C sees B at -58 (diff 0, both equal)
+        manager.update_cross_visibility("bb:bb:bb:bb:bb:bb", "cc:cc:cc:cc:cc:cc", -58.0)
+        manager.update_cross_visibility("cc:cc:cc:cc:cc:cc", "bb:bb:bb:bb:bb:bb", -58.0)
 
     offsets = manager.calculate_suggested_offsets()
 
@@ -167,8 +172,9 @@ def test_calibration_manager_offsets_rounded_to_integer():
     manager = ScannerCalibrationManager()
 
     # A sees B at -55, B sees A at -62 (diff +7, so offset = ±3.5)
-    manager.update_cross_visibility("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb", -55.0, 10)
-    manager.update_cross_visibility("bb:bb:bb:bb:bb:bb", "aa:aa:aa:aa:aa:aa", -62.0, 10)
+    for _ in range(10):
+        manager.update_cross_visibility("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb", -55.0)
+        manager.update_cross_visibility("bb:bb:bb:bb:bb:bb", "aa:aa:aa:aa:aa:aa", -62.0)
 
     offsets = manager.calculate_suggested_offsets()
 
@@ -186,8 +192,9 @@ def test_calibration_manager_equal_rssi_zero_offset():
     manager = ScannerCalibrationManager()
 
     # Both see each other at the same RSSI
-    manager.update_cross_visibility("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb", -60.0, 10)
-    manager.update_cross_visibility("bb:bb:bb:bb:bb:bb", "aa:aa:aa:aa:aa:aa", -60.0, 10)
+    for _ in range(10):
+        manager.update_cross_visibility("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb", -60.0)
+        manager.update_cross_visibility("bb:bb:bb:bb:bb:bb", "aa:aa:aa:aa:aa:aa", -60.0)
 
     offsets = manager.calculate_suggested_offsets()
 
@@ -199,7 +206,7 @@ def test_calibration_manager_equal_rssi_zero_offset():
 def test_calibration_manager_clear():
     """Test clearing calibration data."""
     manager = ScannerCalibrationManager()
-    manager.update_cross_visibility("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb", -55.0, 10)
+    manager.update_cross_visibility("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb", -55.0)
     manager.calculate_suggested_offsets()
 
     manager.clear()
@@ -213,8 +220,11 @@ def test_calibration_manager_clear():
 def test_calibration_manager_get_scanner_pair_info():
     """Test getting scanner pair info for diagnostics."""
     manager = ScannerCalibrationManager()
-    manager.update_cross_visibility("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb", -55.0, 10)
-    manager.update_cross_visibility("bb:bb:bb:bb:bb:bb", "aa:aa:aa:aa:aa:aa", -65.0, 10)
+
+    # Call multiple times to build sample count and stabilize RSSI values
+    for _ in range(10):
+        manager.update_cross_visibility("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb", -55.0)
+        manager.update_cross_visibility("bb:bb:bb:bb:bb:bb", "aa:aa:aa:aa:aa:aa", -65.0)
 
     info = manager.get_scanner_pair_info()
 
@@ -222,10 +232,11 @@ def test_calibration_manager_get_scanner_pair_info():
     pair_info = info[0]
     assert pair_info["scanner_a"] == "aa:aa:aa:aa:aa:aa"
     assert pair_info["scanner_b"] == "bb:bb:bb:bb:bb:bb"
-    assert pair_info["rssi_a_sees_b"] == -55.0
-    assert pair_info["rssi_b_sees_a"] == -65.0
+    # Allow some variance due to smoothing
+    assert abs(pair_info["rssi_a_sees_b"] - (-55.0)) < 1.0
+    assert abs(pair_info["rssi_b_sees_a"] - (-65.0)) < 1.0
     assert pair_info["bidirectional"] is True
-    assert pair_info["difference"] == 10.0
+    assert abs(pair_info["difference"] - 10.0) < 2.0
     print("  PASS: test_calibration_manager_get_scanner_pair_info")
 
 
@@ -293,7 +304,9 @@ def test_update_scanner_calibration_with_ibeacon():
 
     scanner_list = {"aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb"}
 
-    offsets = update_scanner_calibration(manager, scanner_list, devices)
+    # Call multiple times to build up sample count (MIN_CROSS_VISIBILITY_SAMPLES = 5)
+    for _ in range(10):
+        offsets = update_scanner_calibration(manager, scanner_list, devices)
 
     # A sees B at -55, B sees A at -65 (diff +10)
     # A should get -5, B should get +5
@@ -326,7 +339,9 @@ def test_update_scanner_calibration_direct_mac():
 
     scanner_list = {"aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb"}
 
-    offsets = update_scanner_calibration(manager, scanner_list, devices)
+    # Call multiple times to build up sample count
+    for _ in range(10):
+        offsets = update_scanner_calibration(manager, scanner_list, devices)
 
     assert offsets["aa:aa:aa:aa:aa:aa"] == -5
     assert offsets["bb:bb:bb:bb:bb:bb"] == 5
@@ -356,7 +371,9 @@ def test_update_scanner_calibration_unidirectional():
 
     scanner_list = {"aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb"}
 
-    offsets = update_scanner_calibration(manager, scanner_list, devices)
+    # Call multiple times - should still have no offsets because only unidirectional
+    for _ in range(10):
+        offsets = update_scanner_calibration(manager, scanner_list, devices)
 
     # No bidirectional data -> no offsets
     assert len(offsets) == 0, f"Expected no offsets, got {offsets}"
