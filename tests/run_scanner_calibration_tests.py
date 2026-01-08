@@ -713,6 +713,80 @@ def test_update_scanner_calibration_unidirectional():
     print("  PASS: test_update_scanner_calibration_unidirectional")
 
 
+class MockDeviceWithBLEMac(MockDevice):
+    """Mock device with separate BLE and WiFi MAC addresses (like ESPHome/Shelly)."""
+    def __init__(self, address, address_ble_mac=None, address_wifi_mac=None,
+                 metadevice_sources=None):
+        super().__init__(address, metadevice_sources)
+        self.address_ble_mac = address_ble_mac
+        self.address_wifi_mac = address_wifi_mac
+
+
+def test_update_scanner_calibration_mac_address_mapping():
+    """Test that calibration works when scanner canonical address differs from BLE MAC.
+
+    This tests the bug fix where ESPHome/Shelly scanners have different canonical
+    addresses (WiFi MAC or proxy ID) than their BLE MAC which broadcasts iBeacons.
+    """
+    manager = ScannerCalibrationManager()
+    num_samples = CALIBRATION_MIN_SAMPLES + 5
+
+    # Scanner A: canonical address is WiFi MAC, BLE MAC is different
+    # This simulates older ESPHome where hascanner.source was WiFi MAC
+    scanner_a = MockDeviceWithBLEMac(
+        "aa:aa:aa:aa:aa:aa",  # Canonical (WiFi) address in scanner_list
+        address_ble_mac="aa:aa:aa:aa:aa:ac",  # BLE MAC (WiFi+2)
+        address_wifi_mac="aa:aa:aa:aa:aa:aa",
+        metadevice_sources=["aa:aa:aa:aa:aa:ac"]  # Scanner's own BLE broadcast MAC
+    )
+
+    # Scanner B: same setup
+    scanner_b = MockDeviceWithBLEMac(
+        "bb:bb:bb:bb:bb:bb",
+        address_ble_mac="bb:bb:bb:bb:bb:bd",  # BLE MAC (WiFi+2)
+        address_wifi_mac="bb:bb:bb:bb:bb:bb",
+        metadevice_sources=["bb:bb:bb:bb:bb:bd"]
+    )
+
+    # iBeacon from scanner A - source is BLE MAC, not WiFi MAC!
+    ibeacon_a = MockDevice(
+        "ibeacon_uuid_a",
+        metadevice_sources=["aa:aa:aa:aa:aa:ac"]  # BLE MAC, not canonical!
+    )
+
+    # iBeacon from scanner B
+    ibeacon_b = MockDevice(
+        "ibeacon_uuid_b",
+        metadevice_sources=["bb:bb:bb:bb:bb:bd"]  # BLE MAC, not canonical!
+    )
+
+    # Scanner A sees iBeacon B with RSSI -55 (stronger)
+    ibeacon_b.adverts[("bb:bb:bb:bb:bb:bd", "aa:aa:aa:aa:aa:aa")] = MockAdvert(rssi=-55.0)
+    # Scanner B sees iBeacon A with RSSI -65 (weaker)
+    ibeacon_a.adverts[("aa:aa:aa:aa:aa:ac", "bb:bb:bb:bb:bb:bb")] = MockAdvert(rssi=-65.0)
+
+    devices = {
+        "aa:aa:aa:aa:aa:aa": scanner_a,  # Canonical address
+        "bb:bb:bb:bb:bb:bb": scanner_b,
+        "ibeacon_uuid_a": ibeacon_a,
+        "ibeacon_uuid_b": ibeacon_b,
+    }
+
+    # Scanner list uses canonical (WiFi) addresses
+    scanner_list = {"aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb"}
+
+    for _ in range(num_samples):
+        offsets = update_scanner_calibration(manager, scanner_list, devices)
+
+    # Should find bidirectional visibility via MAC mapping
+    assert len(offsets) == 2, f"Expected 2 offsets, got {len(offsets)}: {offsets}"
+    # Scanner A receives stronger (-55 vs -65) → needs negative offset
+    assert offsets["aa:aa:aa:aa:aa:aa"] == -5, f"Expected -5, got {offsets['aa:aa:aa:aa:aa:aa']}"
+    # Scanner B receives weaker → needs positive offset
+    assert offsets["bb:bb:bb:bb:bb:bb"] == 5, f"Expected 5, got {offsets['bb:bb:bb:bb:bb:bb']}"
+    print("  PASS: test_update_scanner_calibration_mac_address_mapping")
+
+
 # =============================================================================
 # Test Runner
 # =============================================================================
@@ -763,6 +837,7 @@ def run_all_tests():
         test_update_scanner_calibration_with_ibeacon,
         test_update_scanner_calibration_direct_mac,
         test_update_scanner_calibration_unidirectional,
+        test_update_scanner_calibration_mac_address_mapping,
     ]
 
     passed = 0
