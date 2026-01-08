@@ -260,8 +260,12 @@ class BermudaAdvert(dict):
         Priority order:
         1. Device-specific ref_power (user-calibrated per device)
         2. beacon_power from iBeacon advertisement (calibrated 1m RSSI)
-        3. tx_power from BLE advertisement (if valid, i.e., not -127 dBm)
-        4. Global default ref_power from user configuration
+        3. Global default ref_power from user configuration
+
+        Note: BLE tx_power is NOT used here because it represents the transmitter's
+        output power level (e.g., +8 dBm), NOT the expected RSSI at 1m (e.g., -55 dBm).
+        These are fundamentally different values. Only iBeacon beacon_power is a
+        calibrated 1m RSSI value.
 
         Returns:
             Tuple of (ref_power value, source description string)
@@ -272,9 +276,6 @@ class BermudaAdvert(dict):
         beacon_power = getattr(self._device, "beacon_power", None)
         if beacon_power is not None:
             return beacon_power, "iBeacon beacon_power"
-        # tx_power of -127 dBm is the BLE "unknown" value - ignore it
-        if self.tx_power is not None and self.tx_power != -127:
-            return self.tx_power, "BLE tx_power"
         return self.conf_ref_power, "global config default"
 
     def _update_raw_distance(self, reading_is_new=True) -> float:
