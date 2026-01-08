@@ -48,6 +48,9 @@ from .kalman import KalmanFilter
 
 # Constants
 from .const import (
+    ADAPTIVE_MIN_NOISE_MULTIPLIER,
+    ADAPTIVE_NOISE_SCALE_PER_10DB,
+    ADAPTIVE_RSSI_STRONG_THRESHOLD,
     BLE_RSSI_TYPICAL_STDDEV,
     CALIBRATION_HYSTERESIS_DB,
     CALIBRATION_MAX_HISTORY,
@@ -74,6 +77,10 @@ __all__ = [
     # Constants - Kalman
     "KALMAN_PROCESS_NOISE",
     "KALMAN_MEASUREMENT_NOISE",
+    # Constants - Adaptive Kalman
+    "ADAPTIVE_RSSI_STRONG_THRESHOLD",
+    "ADAPTIVE_NOISE_SCALE_PER_10DB",
+    "ADAPTIVE_MIN_NOISE_MULTIPLIER",
     # Constants - EMA
     "EMA_ALPHA_SLOW",
     "EMA_ALPHA_FAST",

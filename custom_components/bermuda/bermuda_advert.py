@@ -32,7 +32,8 @@ from .const import (
     HIST_KEEP_COUNT,
     RSSI_HISTORY_SAMPLES,
 )
-from .util import KalmanFilter, clean_charbuf, rssi_to_metres
+from .filters import KalmanFilter
+from .util import clean_charbuf, rssi_to_metres
 
 if TYPE_CHECKING:
     from bleak.backends.scanner import AdvertisementData
