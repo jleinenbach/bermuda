@@ -14,131 +14,29 @@ Principle:
 This is similar to GPS differential correction, where known reference points
 are used to improve accuracy.
 
-Architecture Notes:
--------------------
-The calibration system uses a history-based median approach for robustness.
-Future enhancements could include:
-- Modular filter backends (Kalman, Particle, Bayesian)
-- CUSUM changepoint detection for detecting scanner hardware changes
-- Adaptive variance estimation using EMA
-
-The constants are defined in const.py and derived from BLE RSSI research:
-- Kalman R=0.008, Q=4.0 are typical for BLE indoor positioning
-- BLE RSSI std dev is typically 3-6 dBm indoors
-- CUSUM threshold of 4 sigma balances false alarms vs detection delay
+The filtering components are provided by the `filters` submodule, which offers:
+- AdaptiveStatistics: Online mean/variance with CUSUM changepoint detection
+- Research-backed constants for BLE RSSI processing
 """
 
 from __future__ import annotations
 
 import logging
-import math
 import statistics
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from .const import (
-    BLE_RSSI_TYPICAL_STDDEV,
-    CALIBRATION_EMA_ALPHA,
+from .filters import (
+    AdaptiveStatistics,
     CALIBRATION_MAX_HISTORY,
     CALIBRATION_MIN_PAIRS,
     CALIBRATION_MIN_SAMPLES,
-    CUSUM_DRIFT_SIGMA,
-    CUSUM_THRESHOLD_SIGMA,
 )
 
 if TYPE_CHECKING:
     from .bermuda_device import BermudaDevice
 
 _LOGGER = logging.getLogger(__name__)
-
-
-@dataclass
-class AdaptiveStatistics:
-    """
-    Self-adapting statistics using EMA for mean and variance estimation.
-
-    This class implements online estimation of statistical parameters that
-    adapt over time using Exponential Moving Average (EMA). This is useful
-    for detecting when underlying signal characteristics change.
-
-    Based on Welford's online algorithm combined with EMA smoothing.
-    """
-
-    mean: float = 0.0
-    variance: float = BLE_RSSI_TYPICAL_STDDEV**2  # Initialize with typical BLE variance
-    sample_count: int = 0
-    alpha: float = CALIBRATION_EMA_ALPHA
-
-    # CUSUM state for changepoint detection
-    cusum_pos: float = 0.0  # Cumulative sum for positive shifts
-    cusum_neg: float = 0.0  # Cumulative sum for negative shifts
-    last_changepoint: int = 0  # Sample count at last detected changepoint
-
-    @property
-    def stddev(self) -> float:
-        """Standard deviation derived from variance."""
-        return math.sqrt(max(self.variance, 0.1))  # Floor at 0.1 to avoid div-by-zero
-
-    def update(self, value: float) -> bool:
-        """
-        Update statistics with new value.
-
-        Returns True if a changepoint was detected (significant shift in mean).
-        """
-        self.sample_count += 1
-
-        if self.sample_count == 1:
-            # First sample - initialize
-            self.mean = value
-            return False
-
-        # EMA update for mean
-        old_mean = self.mean
-        self.mean = self.alpha * value + (1 - self.alpha) * self.mean
-
-        # EMA update for variance (using squared deviation from old mean)
-        deviation_sq = (value - old_mean) ** 2
-        self.variance = self.alpha * deviation_sq + (1 - self.alpha) * self.variance
-
-        # CUSUM changepoint detection
-        return self._update_cusum(value)
-
-    def _update_cusum(self, value: float) -> bool:
-        """
-        Update CUSUM statistics and check for changepoint.
-
-        CUSUM (Cumulative Sum) detects shifts in the mean by accumulating
-        deviations. When the cumulative sum exceeds a threshold, a
-        changepoint is signaled.
-        """
-        # Normalize deviation by standard deviation
-        z = (value - self.mean) / self.stddev
-
-        # Drift term prevents false alarms in stable conditions
-        drift = CUSUM_DRIFT_SIGMA
-
-        # Update CUSUM for positive and negative shifts
-        self.cusum_pos = max(0, self.cusum_pos + z - drift)
-        self.cusum_neg = max(0, self.cusum_neg - z - drift)
-
-        # Check for changepoint
-        if self.cusum_pos > CUSUM_THRESHOLD_SIGMA or self.cusum_neg > CUSUM_THRESHOLD_SIGMA:
-            # Reset CUSUM after detection
-            self.cusum_pos = 0.0
-            self.cusum_neg = 0.0
-            self.last_changepoint = self.sample_count
-            return True
-
-        return False
-
-    def reset(self) -> None:
-        """Reset all statistics."""
-        self.mean = 0.0
-        self.variance = BLE_RSSI_TYPICAL_STDDEV**2
-        self.sample_count = 0
-        self.cusum_pos = 0.0
-        self.cusum_neg = 0.0
-        self.last_changepoint = 0
 
 
 @dataclass
@@ -150,7 +48,7 @@ class ScannerPairData:
     # Store history of RSSI values for robust median calculation
     rssi_history_ab: list[float] = field(default_factory=list)  # When A sees B
     rssi_history_ba: list[float] = field(default_factory=list)  # When B sees A
-    # Adaptive statistics for each direction (for future changepoint detection)
+    # Adaptive statistics for each direction (for changepoint detection)
     stats_ab: AdaptiveStatistics = field(default_factory=AdaptiveStatistics)
     stats_ba: AdaptiveStatistics = field(default_factory=AdaptiveStatistics)
 
@@ -294,7 +192,6 @@ class ScannerCalibrationManager:
 
         Returns:
             Dictionary mapping scanner addresses to suggested RSSI offsets
-
         """
         # Collect offset contributions for each scanner
         offset_contributions: dict[str, list[float]] = {
@@ -369,16 +266,8 @@ class ScannerCalibrationManager:
                 "bidirectional": pair.has_bidirectional_data,
                 "difference": pair.rssi_difference,
                 # Adaptive statistics for monitoring stability
-                "stats_ab": {
-                    "mean": round(pair.stats_ab.mean, 1),
-                    "stddev": round(pair.stats_ab.stddev, 2),
-                    "changepoints": pair.stats_ab.last_changepoint,
-                },
-                "stats_ba": {
-                    "mean": round(pair.stats_ba.mean, 1),
-                    "stddev": round(pair.stats_ba.stddev, 2),
-                    "changepoints": pair.stats_ba.last_changepoint,
-                },
+                "stats_ab": pair.stats_ab.to_dict(),
+                "stats_ba": pair.stats_ba.to_dict(),
             }
             info.append(pair_info)
         return info
@@ -408,7 +297,6 @@ def update_scanner_calibration(
 
     Returns:
         Dictionary of suggested RSSI offsets per scanner
-
     """
     # Build a reverse lookup: scanner_mac -> list of iBeacon/metadevice addresses
     # that broadcast from that scanner
