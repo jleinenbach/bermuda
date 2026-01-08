@@ -13,6 +13,10 @@ Principle:
 
 This is similar to GPS differential correction, where known reference points
 are used to improve accuracy.
+
+The filtering components are provided by the `filters` submodule, which offers:
+- AdaptiveStatistics: Online mean/variance with CUSUM changepoint detection
+- Research-backed constants for BLE RSSI processing
 """
 
 from __future__ import annotations
@@ -22,16 +26,17 @@ import statistics
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from .filters import (
+    AdaptiveStatistics,
+    CALIBRATION_MAX_HISTORY,
+    CALIBRATION_MIN_PAIRS,
+    CALIBRATION_MIN_SAMPLES,
+)
+
 if TYPE_CHECKING:
     from .bermuda_device import BermudaDevice
 
 _LOGGER = logging.getLogger(__name__)
-
-# Minimum samples before we trust cross-visibility data
-MIN_CROSS_VISIBILITY_SAMPLES = 5
-
-# Minimum scanner pairs needed to calculate an offset
-MIN_SCANNER_PAIRS = 1
 
 
 @dataclass
@@ -40,19 +45,43 @@ class ScannerPairData:
 
     scanner_a: str
     scanner_b: str
-    rssi_a_sees_b: float | None = None  # Kalman-filtered RSSI when A sees B
-    rssi_b_sees_a: float | None = None  # Kalman-filtered RSSI when B sees A
-    sample_count_ab: int = 0  # How many times A has seen B
-    sample_count_ba: int = 0  # How many times B has seen A
+    # Store history of RSSI values for robust median calculation
+    rssi_history_ab: list[float] = field(default_factory=list)  # When A sees B
+    rssi_history_ba: list[float] = field(default_factory=list)  # When B sees A
+    # Adaptive statistics for each direction (for changepoint detection)
+    stats_ab: AdaptiveStatistics = field(default_factory=AdaptiveStatistics)
+    stats_ba: AdaptiveStatistics = field(default_factory=AdaptiveStatistics)
+
+    @property
+    def rssi_a_sees_b(self) -> float | None:
+        """Median RSSI when A sees B."""
+        if len(self.rssi_history_ab) < CALIBRATION_MIN_SAMPLES:
+            return None
+        return statistics.median(self.rssi_history_ab)
+
+    @property
+    def rssi_b_sees_a(self) -> float | None:
+        """Median RSSI when B sees A."""
+        if len(self.rssi_history_ba) < CALIBRATION_MIN_SAMPLES:
+            return None
+        return statistics.median(self.rssi_history_ba)
+
+    @property
+    def sample_count_ab(self) -> int:
+        """Number of samples for A seeing B."""
+        return len(self.rssi_history_ab)
+
+    @property
+    def sample_count_ba(self) -> int:
+        """Number of samples for B seeing A."""
+        return len(self.rssi_history_ba)
 
     @property
     def has_bidirectional_data(self) -> bool:
-        """Return True if both scanners can see each other."""
+        """Return True if both scanners can see each other with enough samples."""
         return (
-            self.rssi_a_sees_b is not None
-            and self.rssi_b_sees_a is not None
-            and self.sample_count_ab >= MIN_CROSS_VISIBILITY_SAMPLES
-            and self.sample_count_ba >= MIN_CROSS_VISIBILITY_SAMPLES
+            len(self.rssi_history_ab) >= CALIBRATION_MIN_SAMPLES
+            and len(self.rssi_history_ba) >= CALIBRATION_MIN_SAMPLES
         )
 
     @property
@@ -65,10 +94,11 @@ class ScannerPairData:
         """
         if not self.has_bidirectional_data:
             return None
-        # Explicit None check for type narrowing (has_bidirectional_data guarantees these)
-        if self.rssi_a_sees_b is None or self.rssi_b_sees_a is None:
-            return None  # pragma: no cover - defensive check for type safety
-        return self.rssi_a_sees_b - self.rssi_b_sees_a
+        rssi_ab = self.rssi_a_sees_b
+        rssi_ba = self.rssi_b_sees_a
+        if rssi_ab is None or rssi_ba is None:
+            return None  # pragma: no cover
+        return rssi_ab - rssi_ba
 
 
 @dataclass
@@ -106,32 +136,49 @@ class ScannerCalibrationManager:
         receiver_addr: str,
         sender_addr: str,
         rssi_filtered: float,
-        sample_count: int = 1,
-    ) -> None:
+    ) -> bool:
         """
         Update cross-visibility data when a scanner sees another scanner.
 
         Args:
             receiver_addr: Address of the scanner that received the signal
             sender_addr: Address of the scanner that sent the signal (as iBeacon)
-            rssi_filtered: Kalman-filtered RSSI value
-            sample_count: Number of samples this reading is based on
+            rssi_filtered: Kalman-filtered RSSI value (already filtered by Bermuda)
 
+        Returns:
+            True if a changepoint was detected (significant shift in RSSI),
+            indicating potential hardware or environmental change.
         """
         pair = self._get_or_create_pair(receiver_addr, sender_addr)
+        changepoint_detected = False
 
-        # Update the correct direction based on which scanner is receiver
+        # Add to history, keeping a rolling window
         if receiver_addr == pair.scanner_a:
             # A sees B
-            pair.rssi_a_sees_b = rssi_filtered
-            pair.sample_count_ab = sample_count
+            pair.rssi_history_ab.append(rssi_filtered)
+            if len(pair.rssi_history_ab) > CALIBRATION_MAX_HISTORY:
+                pair.rssi_history_ab.pop(0)
+            # Update adaptive statistics and check for changepoint
+            changepoint_detected = pair.stats_ab.update(rssi_filtered)
         else:
             # B sees A
-            pair.rssi_b_sees_a = rssi_filtered
-            pair.sample_count_ba = sample_count
+            pair.rssi_history_ba.append(rssi_filtered)
+            if len(pair.rssi_history_ba) > CALIBRATION_MAX_HISTORY:
+                pair.rssi_history_ba.pop(0)
+            # Update adaptive statistics and check for changepoint
+            changepoint_detected = pair.stats_ba.update(rssi_filtered)
+
+        if changepoint_detected:
+            _LOGGER.info(
+                "Auto-cal: Changepoint detected for %s -> %s, "
+                "RSSI characteristics may have changed",
+                receiver_addr,
+                sender_addr,
+            )
 
         self.active_scanners.add(receiver_addr)
         self.active_scanners.add(sender_addr)
+        return changepoint_detected
 
     def calculate_suggested_offsets(self) -> dict[str, float]:
         """
@@ -145,7 +192,6 @@ class ScannerCalibrationManager:
 
         Returns:
             Dictionary mapping scanner addresses to suggested RSSI offsets
-
         """
         # Collect offset contributions for each scanner
         offset_contributions: dict[str, list[float]] = {
@@ -184,30 +230,29 @@ class ScannerCalibrationManager:
             _LOGGER.debug("Auto-cal: Found %d bidirectional pairs", bidirectional_pairs)
 
         # Calculate median offset for each scanner
-        result: dict[str, float] = {}
+        # (Already stable because we use median on RSSI history)
         for addr, contributions in offset_contributions.items():
-            if len(contributions) >= MIN_SCANNER_PAIRS:
+            if len(contributions) >= CALIBRATION_MIN_PAIRS:
                 # Use median for robustness against outliers
                 median_offset = statistics.median(contributions)
                 # Round to nearest integer dB
-                result[addr] = round(median_offset)
+                new_offset = round(median_offset)
+                self.suggested_offsets[addr] = new_offset
                 _LOGGER.debug(
-                    "Auto-cal: Suggested offset for %s: %d dB (from %d pairs)",
+                    "Auto-cal: Offset for %s: %d dB (from %d pairs)",
                     addr,
-                    result[addr],
+                    new_offset,
                     len(contributions),
                 )
 
-        self.suggested_offsets = result
-        return result
+        return self.suggested_offsets
 
     def get_scanner_pair_info(self) -> list[dict[str, Any]]:
         """
         Get human-readable info about scanner pairs for diagnostics.
 
         Returns:
-            List of dictionaries with pair information
-
+            List of dictionaries with pair information including adaptive statistics.
         """
         info: list[dict[str, Any]] = []
         for pair in self.scanner_pairs.values():
@@ -220,6 +265,9 @@ class ScannerCalibrationManager:
                 "samples_ba": pair.sample_count_ba,
                 "bidirectional": pair.has_bidirectional_data,
                 "difference": pair.rssi_difference,
+                # Adaptive statistics for monitoring stability
+                "stats_ab": pair.stats_ab.to_dict(),
+                "stats_ba": pair.stats_ba.to_dict(),
             }
             info.append(pair_info)
         return info
@@ -249,7 +297,6 @@ def update_scanner_calibration(
 
     Returns:
         Dictionary of suggested RSSI offsets per scanner
-
     """
     # Build a reverse lookup: scanner_mac -> list of iBeacon/metadevice addresses
     # that broadcast from that scanner
@@ -319,7 +366,7 @@ def update_scanner_calibration(
             if advert is None:
                 continue
 
-            # Use Kalman-filtered RSSI if available
+            # Use Kalman-filtered RSSI if available (already filtered by Bermuda)
             rssi_filtered = advert.rssi_filtered
             if rssi_filtered is None:
                 # Fall back to raw RSSI if Kalman not initialized yet
@@ -328,14 +375,10 @@ def update_scanner_calibration(
             if rssi_filtered is None:
                 continue
 
-            # Count samples from history
-            sample_count = len(getattr(advert, "hist_rssi", [])) or 1
-
             calibration_manager.update_cross_visibility(
                 receiver_addr=scanner_addr,
                 sender_addr=other_addr,
                 rssi_filtered=rssi_filtered,
-                sample_count=sample_count,
             )
 
     # Recalculate suggested offsets
