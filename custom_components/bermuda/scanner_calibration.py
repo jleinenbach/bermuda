@@ -14,9 +14,8 @@ Principle:
 This is similar to GPS differential correction, where known reference points
 are used to improve accuracy.
 
-The filtering components are provided by the `filters` submodule, which offers:
-- AdaptiveStatistics: Online mean/variance with CUSUM changepoint detection
-- Research-backed constants for BLE RSSI processing
+The filtering uses Kalman filters for optimal RSSI smoothing based on research
+from Wouter Bulten and PMC5461075 (BLE Indoor Localization).
 """
 
 from __future__ import annotations
@@ -27,7 +26,6 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from .filters import (
-    AdaptiveStatistics,
     CALIBRATION_HYSTERESIS_DB,
     CALIBRATION_MAX_HISTORY,
     CALIBRATION_MIN_PAIRS,
@@ -46,22 +44,15 @@ class ScannerPairData:
     """
     Data for a scanner pair's cross-visibility.
 
-    Uses a cascaded filter architecture:
-    1. Raw RSSI → KalmanFilter → smoothed RSSI
-    2. Smoothed RSSI → AdaptiveStatistics (EMA + CUSUM)
-
-    This ensures CUSUM changepoint detection works on filtered values,
-    avoiding false positives from raw RSSI volatility.
+    Uses Kalman filters for optimal RSSI smoothing based on research
+    (R=0.008 process noise, Q=4.0 measurement noise for BLE RSSI).
     """
 
     scanner_a: str
     scanner_b: str
-    # Kalman filters for smoothing raw RSSI (first stage of cascade)
+    # Kalman filters for smoothing raw RSSI
     kalman_ab: KalmanFilter = field(default_factory=KalmanFilter)
     kalman_ba: KalmanFilter = field(default_factory=KalmanFilter)
-    # Adaptive statistics for CUSUM on filtered values (second stage of cascade)
-    stats_ab: AdaptiveStatistics = field(default_factory=AdaptiveStatistics)
-    stats_ba: AdaptiveStatistics = field(default_factory=AdaptiveStatistics)
     # Raw RSSI history (kept for diagnostics only)
     rssi_history_ab: list[float] = field(default_factory=list)  # When A sees B
     rssi_history_ba: list[float] = field(default_factory=list)  # When B sees A
@@ -150,58 +141,36 @@ class ScannerCalibrationManager:
         receiver_addr: str,
         sender_addr: str,
         rssi_raw: float,
-    ) -> bool:
+    ) -> None:
         """
         Update cross-visibility data when a scanner sees another scanner.
 
-        Uses cascaded filter architecture:
-        1. Raw RSSI → KalmanFilter → smoothed RSSI (optimal noise reduction)
-        2. Smoothed RSSI → AdaptiveStatistics → CUSUM changepoint detection
+        Uses Kalman filter for optimal RSSI smoothing.
 
         Args:
             receiver_addr: Address of the scanner that received the signal
             sender_addr: Address of the scanner that sent the signal (as iBeacon)
             rssi_raw: RAW RSSI value (NOT adjusted by rssi_offset!)
                      Using raw RSSI is critical to avoid circular calibration.
-
-        Returns:
-            True if a changepoint was detected (significant shift in RSSI),
-            indicating potential hardware or environmental change.
         """
         pair = self._get_or_create_pair(receiver_addr, sender_addr)
-        changepoint_detected = False
 
-        # Add to history, keeping a rolling window (for diagnostics)
+        # Add to history and update Kalman filter
         if receiver_addr == pair.scanner_a:
             # A sees B
             pair.rssi_history_ab.append(rssi_raw)
             if len(pair.rssi_history_ab) > CALIBRATION_MAX_HISTORY:
                 pair.rssi_history_ab.pop(0)
-            # Stage 1: Kalman filter smooths raw RSSI
-            filtered_rssi = pair.kalman_ab.update(rssi_raw)
-            # Stage 2: AdaptiveStatistics tracks EMA and CUSUM on filtered values
-            changepoint_detected = pair.stats_ab.update(filtered_rssi)
+            pair.kalman_ab.update(rssi_raw)
         else:
             # B sees A
             pair.rssi_history_ba.append(rssi_raw)
             if len(pair.rssi_history_ba) > CALIBRATION_MAX_HISTORY:
                 pair.rssi_history_ba.pop(0)
-            # Stage 1: Kalman filter smooths raw RSSI
-            filtered_rssi = pair.kalman_ba.update(rssi_raw)
-            # Stage 2: AdaptiveStatistics tracks EMA and CUSUM on filtered values
-            changepoint_detected = pair.stats_ba.update(filtered_rssi)
-
-        if changepoint_detected:
-            _LOGGER.info(
-                "Auto-cal: Changepoint detected for %s -> %s, "
-                "RSSI characteristics may have changed",
-                receiver_addr,
-                sender_addr,
-            )
+            pair.kalman_ba.update(rssi_raw)
 
         self.active_scanners.add(receiver_addr)
         self.active_scanners.add(sender_addr)
-        return changepoint_detected
 
     def calculate_suggested_offsets(self) -> dict[str, float]:
         """
@@ -312,8 +281,8 @@ class ScannerCalibrationManager:
             scanners_with_offsets = set(self.suggested_offsets.keys())
             scanners_without_offsets = self.active_scanners - scanners_with_offsets
             if scanners_without_offsets:
-                _LOGGER.info(
-                    "Auto-cal: %d scanners WITHOUT suggested offsets: %s",
+                _LOGGER.debug(
+                    "Auto-cal: %d scanners without suggested offsets: %s",
                     len(scanners_without_offsets),
                     list(scanners_without_offsets),
                 )
@@ -325,7 +294,7 @@ class ScannerCalibrationManager:
         Get human-readable info about scanner pairs for diagnostics.
 
         Returns:
-            List of dictionaries with pair information including filter diagnostics.
+            List of dictionaries with pair information including Kalman filter diagnostics.
         """
         info: list[dict[str, Any]] = []
         for pair in self.scanner_pairs.values():
@@ -338,12 +307,9 @@ class ScannerCalibrationManager:
                 "samples_ba": pair.sample_count_ba,
                 "bidirectional": pair.has_bidirectional_data,
                 "difference": pair.rssi_difference,
-                # Kalman filter diagnostics (primary smoothing)
+                # Kalman filter diagnostics
                 "kalman_ab": pair.kalman_ab.get_diagnostics(),
                 "kalman_ba": pair.kalman_ba.get_diagnostics(),
-                # Adaptive statistics for CUSUM monitoring
-                "stats_ab": pair.stats_ab.to_dict(),
-                "stats_ba": pair.stats_ba.to_dict(),
             }
             info.append(pair_info)
         return info
