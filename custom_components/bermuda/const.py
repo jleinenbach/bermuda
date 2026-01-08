@@ -224,8 +224,48 @@ DOCS[CONF_MAX_VELOCITY] = (
 CONF_DEVTRACK_TIMEOUT, DEFAULT_DEVTRACK_TIMEOUT = "devtracker_nothome_timeout", 30
 DOCS[CONF_DEVTRACK_TIMEOUT] = "Timeout in seconds for setting devices as `Not Home` / `Away`."  # fmt: skip
 
-CONF_ATTENUATION, DEFAULT_ATTENUATION = "attenuation", 3
-DOCS[CONF_ATTENUATION] = "Factor for environmental signal attenuation."
+# Two-Slope Path Loss Model Constants
+# Based on research: PMC6165244, Wikipedia Path Loss models
+# Indoor BLE propagation has two distinct regions with different characteristics.
+
+PATH_LOSS_EXPONENT_NEAR: Final = 1.8
+"""
+Near-field path loss exponent for distances below the breakpoint.
+
+Scientifically derived value based on indoor BLE propagation research.
+In the near-field (Fresnel zone clear), signal propagation exhibits
+waveguiding effects with lower attenuation than free space (n=2.0).
+Typical indoor values range from 1.5-2.0. Value of 1.8 provides good
+accuracy for most residential/office environments.
+
+References:
+- PMC6165244: "Indoor Positioning Algorithm Based on Improved RSSI Distance Model"
+- Two-slope models show 4.9 dB std dev vs 17.2 dB for single-slope
+"""
+
+TWO_SLOPE_BREAKPOINT_METRES: Final = 6.0
+"""
+Breakpoint distance (metres) separating near-field and far-field regions.
+
+At this distance, the propagation model transitions from near-field
+(lower attenuation due to waveguiding) to far-field (higher attenuation
+due to multipath, obstacles, and environmental factors).
+
+Research indicates breakpoints typically occur at 5-10m for indoor BLE.
+Value of 6.0m provides good balance for residential environments.
+For large open spaces, consider 8-10m; for cluttered spaces, 4-5m.
+
+References:
+- Wikipedia: Two-ray ground-reflection model
+- Near-ground path loss measurements at 2.4 GHz
+"""
+
+CONF_ATTENUATION, DEFAULT_ATTENUATION = "attenuation", 3.5
+DOCS[CONF_ATTENUATION] = (
+    "Far-field path loss exponent for distances beyond ~6m. "
+    "Higher values = faster signal decay with distance. "
+    "Typical: 3.0 (open space) to 4.5 (cluttered/walls). Default: 3.5"
+)
 CONF_REF_POWER, DEFAULT_REF_POWER = "ref_power", -55.0
 DOCS[CONF_REF_POWER] = "Default RSSI for signal at 1 metre."
 

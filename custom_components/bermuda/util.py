@@ -8,7 +8,7 @@ from typing import Final
 
 from homeassistant.helpers.device_registry import format_mac
 
-from .const import MIN_DISTANCE
+from .const import MIN_DISTANCE, PATH_LOSS_EXPONENT_NEAR, TWO_SLOPE_BREAKPOINT_METRES
 
 
 class KalmanFilter:
@@ -260,21 +260,39 @@ def mac_redact(mac: str, tag: str | None = None) -> str:
 
 
 @lru_cache(1024)
-def rssi_to_metres(rssi: float, ref_power: float | None = None, attenuation: float | None = None) -> float:
+def rssi_to_metres(
+    rssi: float,
+    ref_power: float | None = None,
+    attenuation: float | None = None,
+) -> float:
     """
-    Convert instant rssi value to a distance in metres.
+    Convert RSSI value to distance using Two-Slope Path Loss Model.
 
-    Based on the information from
-    https://mdpi-res.com/d_attachment/applsci/applsci-10-02003/article_deploy/applsci-10-02003.pdf?version=1584265508
+    This model provides significantly better accuracy than single-slope models
+    by accounting for different propagation characteristics in near-field
+    vs far-field regions. Research shows ~71% reduction in standard deviation
+    (4.9 dB vs 17.2 dB) compared to single-slope models.
 
-    attenuation:    a factor representing environmental attenuation
-                    along the path. Will vary by humidity, terrain etc.
-    ref_power:      db. measured rssi when at 1m distance from rx. The will
-                    be affected by both receiver sensitivity and transmitter
-                    calibration, antenna design and orientation etc.
+    Two-Slope Model:
+    - Near-field (d < breakpoint): Uses PATH_LOSS_EXPONENT_NEAR (~1.8)
+      Due to Fresnel zone clearance and waveguiding effects
+    - Far-field (d >= breakpoint): Uses user-configured attenuation (~3.5)
+      Due to multipath, obstacles, and environmental factors
 
-    Returns a minimum of MIN_DISTANCE (0.1m) to prevent multiple sensors
-    from appearing at "0m" when signals are very strong.
+    Args:
+        rssi: Received signal strength indicator in dBm
+        ref_power: RSSI at 1 metre reference distance (dBm). Affected by
+                   receiver sensitivity, transmitter calibration, antenna design.
+        attenuation: Far-field path loss exponent (typically 3.0-4.5 for indoor).
+                     Only applies beyond TWO_SLOPE_BREAKPOINT_METRES (~6m).
+
+    Returns:
+        Distance in metres (minimum MIN_DISTANCE to prevent 0m readings).
+
+    References:
+        - PMC6165244: Indoor Positioning Algorithm Based on Improved RSSI Distance Model
+        - Two-ray ground-reflection model (Wikipedia)
+        - applsci-10-02003: BLE Indoor Localization research
     """
     if ref_power is None:
         message = "ref_power must be provided to compute distance"
@@ -283,12 +301,36 @@ def rssi_to_metres(rssi: float, ref_power: float | None = None, attenuation: flo
         message = "attenuation must be provided to compute distance"
         raise ValueError(message)
 
-    distance = 10 ** ((ref_power - rssi) / (10 * attenuation))
+    # Near-field calculation using scientifically-derived exponent
+    n_near = PATH_LOSS_EXPONENT_NEAR
+    breakpoint = TWO_SLOPE_BREAKPOINT_METRES
+
+    # Calculate distance assuming near-field propagation
+    d_near = 10 ** ((ref_power - rssi) / (10 * n_near))
+
+    if d_near <= breakpoint:
+        # Signal strength indicates we're in near-field region
+        distance = d_near
+    else:
+        # Far-field: transition to user-configured attenuation at breakpoint
+        # Calculate RSSI that would be received at breakpoint distance
+        rssi_at_breakpoint = ref_power - 10 * n_near * _log10(breakpoint)
+
+        # Continue with far-field exponent from breakpoint onwards
+        # d = breakpoint * 10^((rssi_bp - rssi) / (10 * n_far))
+        distance = breakpoint * 10 ** ((rssi_at_breakpoint - rssi) / (10 * attenuation))
+
     # Ensure MIN_DISTANCE floor; handle non-numeric types gracefully (e.g., mocks in tests)
     try:
         return max(MIN_DISTANCE, distance)
     except TypeError:
         return distance
+
+
+def _log10(x: float) -> float:
+    """Calculate log base 10 using natural log for LRU cache compatibility."""
+    import math
+    return math.log10(x)
 
 
 @lru_cache(256)

@@ -55,8 +55,22 @@ def test_mac_redact():
 
 
 def test_rssi_to_metres():
-    assert floor(util.rssi_to_metres(-50, -20, 2)) == 31
-    assert floor(util.rssi_to_metres(-80, -20, 2)) == 1000
+    """Test Two-Slope path loss model for RSSI to distance conversion.
+
+    The Two-Slope model uses:
+    - Near-field exponent 1.8 for distances < 6m
+    - User-configured far-field exponent for distances >= 6m
+    """
+    # Far-field test cases (distance > 6m breakpoint)
+    assert floor(util.rssi_to_metres(-50, -20, 2)) == 37
+    assert floor(util.rssi_to_metres(-80, -20, 2)) == 1196
+
+    # Near-field test case (distance < 6m)
+    # At ref_power=-55, rssi=-55 should give ~1m (near-field exponent 1.8)
+    assert 0.9 < util.rssi_to_metres(-55, -55, 3.5) < 1.1
+
+    # Test minimum distance floor (0.1m)
+    assert util.rssi_to_metres(-30, -55, 3.5) == 0.1  # Very strong signal
 
 
 def test_clean_charbuf():
