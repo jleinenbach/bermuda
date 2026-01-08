@@ -364,6 +364,12 @@ class BermudaAdvert(dict):
         # its own ref_power without need.
         if value != self.ref_power:
             self.ref_power = value
+            # Reset Kalman filter and distance history to avoid using stale values
+            # calculated with old ref_power (would cause incorrect distance calculations)
+            self.rssi_kalman.reset()
+            self.rssi_filtered = None
+            self.hist_distance.clear()
+            self.hist_distance_by_interval.clear()
             return self._update_raw_distance(False)
         return self.rssi_distance_raw
 
