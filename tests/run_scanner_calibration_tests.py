@@ -9,6 +9,7 @@ the full Home Assistant / Bermuda package to be loaded.
 import sys
 import os
 import types
+from abc import ABC, abstractmethod
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -42,10 +43,24 @@ sys.modules['custom_components.bermuda.filters'] = filters_pkg
 sys.modules['custom_components.bermuda.filters.const'] = filters_const
 
 # =============================================================================
-# Load the filters.adaptive module
+# Load the filters.base module
 # =============================================================================
 
 import importlib.util
+
+base_spec = importlib.util.spec_from_file_location(
+    'custom_components.bermuda.filters.base',
+    'custom_components/bermuda/filters/base.py',
+    submodule_search_locations=['custom_components/bermuda/filters']
+)
+base_module = importlib.util.module_from_spec(base_spec)
+base_module.__package__ = 'custom_components.bermuda.filters'
+sys.modules['custom_components.bermuda.filters.base'] = base_module
+base_spec.loader.exec_module(base_module)
+
+# =============================================================================
+# Load the filters.adaptive module
+# =============================================================================
 
 adaptive_spec = importlib.util.spec_from_file_location(
     'custom_components.bermuda.filters.adaptive',
@@ -57,8 +72,29 @@ adaptive_module.__package__ = 'custom_components.bermuda.filters'
 sys.modules['custom_components.bermuda.filters.adaptive'] = adaptive_module
 adaptive_spec.loader.exec_module(adaptive_module)
 
-# Now set up the filters package __init__ exports
+# =============================================================================
+# Load the filters.kalman module
+# =============================================================================
+
+kalman_spec = importlib.util.spec_from_file_location(
+    'custom_components.bermuda.filters.kalman',
+    'custom_components/bermuda/filters/kalman.py',
+    submodule_search_locations=['custom_components/bermuda/filters']
+)
+kalman_module = importlib.util.module_from_spec(kalman_spec)
+kalman_module.__package__ = 'custom_components.bermuda.filters'
+sys.modules['custom_components.bermuda.filters.kalman'] = kalman_module
+kalman_spec.loader.exec_module(kalman_module)
+
+# =============================================================================
+# Set up filters package exports
+# =============================================================================
+
+filters_pkg.SignalFilter = base_module.SignalFilter
+filters_pkg.FilterConfig = base_module.FilterConfig
 filters_pkg.AdaptiveStatistics = adaptive_module.AdaptiveStatistics
+filters_pkg.AdaptiveRobustFilter = adaptive_module.AdaptiveRobustFilter
+filters_pkg.KalmanFilter = kalman_module.KalmanFilter
 filters_pkg.CALIBRATION_MIN_SAMPLES = filters_const.CALIBRATION_MIN_SAMPLES
 filters_pkg.CALIBRATION_MAX_HISTORY = filters_const.CALIBRATION_MAX_HISTORY
 filters_pkg.CALIBRATION_MIN_PAIRS = filters_const.CALIBRATION_MIN_PAIRS
@@ -88,11 +124,177 @@ scanner_cal_spec.loader.exec_module(scanner_cal)
 # Import classes for testing
 # =============================================================================
 
+SignalFilter = base_module.SignalFilter
+FilterConfig = base_module.FilterConfig
+KalmanFilter = kalman_module.KalmanFilter
 AdaptiveStatistics = adaptive_module.AdaptiveStatistics
+AdaptiveRobustFilter = adaptive_module.AdaptiveRobustFilter
 ScannerPairData = scanner_cal.ScannerPairData
 ScannerCalibrationManager = scanner_cal.ScannerCalibrationManager
 update_scanner_calibration = scanner_cal.update_scanner_calibration
 CALIBRATION_MIN_SAMPLES = filters_const.CALIBRATION_MIN_SAMPLES
+
+
+# =============================================================================
+# SignalFilter Interface Tests
+# =============================================================================
+
+def test_signal_filter_is_abstract():
+    """Test that SignalFilter cannot be instantiated directly."""
+    try:
+        SignalFilter()
+        assert False, "Should have raised TypeError"
+    except TypeError:
+        pass
+    print("  PASS: test_signal_filter_is_abstract")
+
+
+def test_kalman_implements_signal_filter():
+    """Test that KalmanFilter implements SignalFilter interface."""
+    kf = KalmanFilter()
+    assert isinstance(kf, SignalFilter)
+    assert hasattr(kf, 'update')
+    assert hasattr(kf, 'get_estimate')
+    assert hasattr(kf, 'get_variance')
+    assert hasattr(kf, 'reset')
+    print("  PASS: test_kalman_implements_signal_filter")
+
+
+def test_adaptive_robust_implements_signal_filter():
+    """Test that AdaptiveRobustFilter implements SignalFilter interface."""
+    af = AdaptiveRobustFilter()
+    assert isinstance(af, SignalFilter)
+    assert hasattr(af, 'update')
+    assert hasattr(af, 'get_estimate')
+    assert hasattr(af, 'get_variance')
+    assert hasattr(af, 'reset')
+    print("  PASS: test_adaptive_robust_implements_signal_filter")
+
+
+# =============================================================================
+# KalmanFilter Tests
+# =============================================================================
+
+def test_kalman_filter_initial_state():
+    """Test KalmanFilter initial state."""
+    kf = KalmanFilter()
+    assert kf.sample_count == 0
+    assert not kf._initialized
+    print("  PASS: test_kalman_filter_initial_state")
+
+
+def test_kalman_filter_first_update():
+    """Test KalmanFilter first measurement initialization."""
+    kf = KalmanFilter()
+    result = kf.update(-60.0)
+    assert result == -60.0
+    assert kf.get_estimate() == -60.0
+    assert kf._initialized
+    print("  PASS: test_kalman_filter_first_update")
+
+
+def test_kalman_filter_smoothing():
+    """Test that KalmanFilter smooths noisy signal."""
+    kf = KalmanFilter()
+
+    # Feed noisy measurements around -60 dBm
+    measurements = [-60, -58, -62, -59, -61, -60, -58, -62, -60, -59]
+    for m in measurements:
+        kf.update(float(m))
+
+    # Estimate should be close to -60
+    assert abs(kf.get_estimate() - (-60)) < 2.0
+    print("  PASS: test_kalman_filter_smoothing")
+
+
+def test_kalman_filter_reset():
+    """Test KalmanFilter reset."""
+    kf = KalmanFilter()
+    kf.update(-60.0)
+    kf.update(-55.0)
+
+    kf.reset()
+
+    assert kf.sample_count == 0
+    assert not kf._initialized
+    print("  PASS: test_kalman_filter_reset")
+
+
+def test_kalman_filter_diagnostics():
+    """Test KalmanFilter diagnostics output."""
+    kf = KalmanFilter()
+    kf.update(-60.0)
+    kf.update(-55.0)
+
+    diag = kf.get_diagnostics()
+
+    assert "estimate" in diag
+    assert "variance" in diag
+    assert "kalman_gain" in diag
+    assert "sample_count" in diag
+    assert diag["sample_count"] == 2
+    print("  PASS: test_kalman_filter_diagnostics")
+
+
+# =============================================================================
+# AdaptiveRobustFilter Tests
+# =============================================================================
+
+def test_adaptive_robust_filter_initial():
+    """Test AdaptiveRobustFilter initial state."""
+    af = AdaptiveRobustFilter()
+    assert af.get_estimate() == 0.0
+    assert not af.changepoint_detected()
+    print("  PASS: test_adaptive_robust_filter_initial")
+
+
+def test_adaptive_robust_filter_update():
+    """Test AdaptiveRobustFilter updates estimate."""
+    af = AdaptiveRobustFilter()
+
+    result = af.update(-60.0)
+    assert result == -60.0
+
+    for _ in range(10):
+        af.update(-60.0)
+
+    assert abs(af.get_estimate() - (-60.0)) < 0.5
+    print("  PASS: test_adaptive_robust_filter_update")
+
+
+def test_adaptive_robust_filter_changepoint():
+    """Test AdaptiveRobustFilter changepoint detection."""
+    af = AdaptiveRobustFilter()
+
+    # Stable signal
+    for _ in range(20):
+        af.update(-60.0)
+
+    # Sudden shift
+    detected = False
+    for _ in range(20):
+        af.update(-80.0)
+        if af.changepoint_detected():
+            detected = True
+            break
+
+    assert detected, "Expected changepoint detection for 20 dB shift"
+    print("  PASS: test_adaptive_robust_filter_changepoint")
+
+
+def test_adaptive_robust_filter_diagnostics():
+    """Test AdaptiveRobustFilter diagnostics."""
+    af = AdaptiveRobustFilter()
+    for _ in range(10):
+        af.update(-55.0)
+
+    diag = af.get_diagnostics()
+
+    assert "mean" in diag
+    assert "stddev" in diag
+    assert "cusum_pos" in diag
+    assert "cusum_neg" in diag
+    print("  PASS: test_adaptive_robust_filter_diagnostics")
 
 
 # =============================================================================
@@ -493,6 +695,21 @@ def run_all_tests():
     print("=" * 60 + "\n")
 
     tests = [
+        # SignalFilter interface tests
+        test_signal_filter_is_abstract,
+        test_kalman_implements_signal_filter,
+        test_adaptive_robust_implements_signal_filter,
+        # KalmanFilter tests
+        test_kalman_filter_initial_state,
+        test_kalman_filter_first_update,
+        test_kalman_filter_smoothing,
+        test_kalman_filter_reset,
+        test_kalman_filter_diagnostics,
+        # AdaptiveRobustFilter tests
+        test_adaptive_robust_filter_initial,
+        test_adaptive_robust_filter_update,
+        test_adaptive_robust_filter_changepoint,
+        test_adaptive_robust_filter_diagnostics,
         # AdaptiveStatistics tests
         test_adaptive_statistics_initial_state,
         test_adaptive_statistics_update,

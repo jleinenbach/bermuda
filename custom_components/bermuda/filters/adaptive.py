@@ -1,9 +1,9 @@
 """
 Adaptive statistics and changepoint detection for BLE RSSI filtering.
 
-This module provides online estimation of statistical parameters that adapt
-over time, along with CUSUM-based changepoint detection for identifying
-significant shifts in signal characteristics.
+This module provides:
+- AdaptiveStatistics: Online mean/variance estimation with CUSUM changepoint detection
+- AdaptiveRobustFilter: Full SignalFilter implementation wrapping AdaptiveStatistics
 
 The design follows industrial statistical process control standards,
 adapted for the specific characteristics of BLE RSSI signals.
@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from typing import Any
 
+from .base import FilterConfig, SignalFilter
 from .const import (
     BLE_RSSI_TYPICAL_STDDEV,
     CUSUM_DRIFT_SIGMA,
@@ -144,7 +146,7 @@ class AdaptiveStatistics:
         self.cusum_neg = 0.0
         self.last_changepoint = 0
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         """Export statistics as dictionary for diagnostics."""
         return {
             "mean": round(self.mean, 1),
@@ -152,3 +154,76 @@ class AdaptiveStatistics:
             "sample_count": self.sample_count,
             "changepoints": self.last_changepoint,
         }
+
+
+@dataclass
+class AdaptiveRobustFilter(SignalFilter):
+    """
+    Robust adaptive filter implementing the SignalFilter interface.
+
+    This filter combines EMA-based estimation with CUSUM changepoint
+    detection. It's designed for scenarios where:
+    - The signal may have occasional outliers
+    - The underlying signal characteristics may change over time
+    - Detecting these changes is important
+
+    The filter wraps AdaptiveStatistics and provides the standard
+    SignalFilter interface for interoperability with other filters.
+    """
+
+    # Internal statistics engine
+    _stats: AdaptiveStatistics = field(default_factory=AdaptiveStatistics)
+
+    # Configuration
+    alpha: float = EMA_ALPHA_SLOW
+
+    # Track last changepoint detection result
+    _last_changepoint_detected: bool = False
+
+    def __post_init__(self):
+        """Initialize internal stats with configured alpha."""
+        self._stats.alpha = self.alpha
+
+    def update(self, measurement: float, timestamp: float | None = None) -> float:
+        """
+        Process a new measurement and update filter state.
+
+        Args:
+            measurement: Raw RSSI value in dBm
+            timestamp: Optional (unused, part of interface)
+
+        Returns:
+            The filtered estimate (EMA mean)
+        """
+        self._last_changepoint_detected = self._stats.update(measurement)
+        return self._stats.mean
+
+    def get_estimate(self) -> float:
+        """Return current EMA mean estimate."""
+        return self._stats.mean
+
+    def get_variance(self) -> float:
+        """Return current EMA variance estimate."""
+        return self._stats.variance
+
+    def reset(self) -> None:
+        """Reset filter to initial state."""
+        self._stats.reset()
+        self._last_changepoint_detected = False
+
+    def get_diagnostics(self) -> dict[str, Any]:
+        """Return diagnostic information including CUSUM state."""
+        diag = self._stats.to_dict()
+        diag["cusum_pos"] = round(self._stats.cusum_pos, 2)
+        diag["cusum_neg"] = round(self._stats.cusum_neg, 2)
+        diag["changepoint_detected"] = self._last_changepoint_detected
+        return diag
+
+    def changepoint_detected(self) -> bool:
+        """Return True if last update detected a changepoint."""
+        return self._last_changepoint_detected
+
+    @classmethod
+    def from_config(cls, config: FilterConfig) -> "AdaptiveRobustFilter":
+        """Create filter from configuration."""
+        return cls(alpha=config.ema_alpha)
