@@ -272,6 +272,32 @@ class ScannerCalibrationManager:
                         CALIBRATION_HYSTERESIS_DB,
                     )
 
+        # Log summary of scanner pair status for diagnostics
+        if self.scanner_pairs:
+            pairs_summary = []
+            for pair in self.scanner_pairs.values():
+                status = "✓" if pair.has_bidirectional_data else "✗"
+                pairs_summary.append(
+                    f"{pair.scanner_a[:8]}↔{pair.scanner_b[:8]}: "
+                    f"AB={pair.sample_count_ab} BA={pair.sample_count_ba} [{status}]"
+                )
+            _LOGGER.debug(
+                "Auto-cal: Scanner pair summary (%d pairs): %s",
+                len(self.scanner_pairs),
+                "; ".join(pairs_summary[:10]),  # Show first 10
+            )
+
+        # Log which scanners got offsets and which didn't
+        if self.active_scanners:
+            scanners_with_offsets = set(self.suggested_offsets.keys())
+            scanners_without_offsets = self.active_scanners - scanners_with_offsets
+            if scanners_without_offsets:
+                _LOGGER.info(
+                    "Auto-cal: %d scanners WITHOUT suggested offsets: %s",
+                    len(scanners_without_offsets),
+                    list(scanners_without_offsets),
+                )
+
         return self.suggested_offsets
 
     def get_scanner_pair_info(self) -> list[dict[str, Any]]:
