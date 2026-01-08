@@ -615,6 +615,15 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
         results_str = ""
         if device is not None and isinstance(self._last_scanner_info, dict):
             results = {}
+            # Determine effective ref_power for this device (same logic as bermuda_advert.py)
+            # Priority: device-calibrated > beacon_power > global default
+            if device.ref_power != 0:
+                effective_ref_power = device.ref_power
+            elif getattr(device, "beacon_power", None) is not None:
+                effective_ref_power = device.beacon_power
+            else:
+                effective_ref_power = self.options.get(CONF_REF_POWER, DEFAULT_REF_POWER)
+
             # Gather new estimates for distances using rssi hist and the new offset.
             for scanner in self.coordinator.scanner_list:
                 scanner_name = self.coordinator.devices[scanner].name
@@ -623,7 +632,7 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
                     results[scanner_name] = [
                         rssi_to_metres(
                             historical_rssi + cur_offset,
-                            self.options.get(CONF_REF_POWER, DEFAULT_REF_POWER),
+                            effective_ref_power,
                             self.options.get(CONF_ATTENUATION, DEFAULT_ATTENUATION),
                         )
                         for historical_rssi in scanneradvert.hist_rssi
