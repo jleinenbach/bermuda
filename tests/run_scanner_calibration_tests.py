@@ -383,18 +383,22 @@ def test_scanner_pair_data_initial_state():
 
 
 def test_scanner_pair_data_bidirectional():
-    """Test bidirectional data with sufficient samples."""
+    """Test bidirectional data with sufficient samples using cascaded filters."""
     pair = ScannerPairData(
         scanner_a="aa:bb:cc:dd:ee:01",
         scanner_b="aa:bb:cc:dd:ee:02",
     )
-    # Populate stats by updating with samples
+    # Use cascaded filter architecture: Kalman → AdaptiveStats
     for _ in range(CALIBRATION_MIN_SAMPLES + 5):
-        pair.stats_ab.update(-55.0)
-        pair.stats_ba.update(-65.0)
+        # Stage 1: Kalman filter smooths raw RSSI
+        filtered_ab = pair.kalman_ab.update(-55.0)
+        filtered_ba = pair.kalman_ba.update(-65.0)
+        # Stage 2: AdaptiveStatistics tracks EMA and CUSUM
+        pair.stats_ab.update(filtered_ab)
+        pair.stats_ba.update(filtered_ba)
 
     assert pair.has_bidirectional_data
-    # EMA converges close to target value
+    # Kalman filter converges close to target value
     assert abs(pair.rssi_a_sees_b - (-55.0)) < 1.0
     assert abs(pair.rssi_b_sees_a - (-65.0)) < 1.0
     assert abs(pair.rssi_difference - 10.0) < 2.0  # A sees B ~10 dB stronger
@@ -402,16 +406,18 @@ def test_scanner_pair_data_bidirectional():
 
 
 def test_scanner_pair_data_insufficient_samples():
-    """Test bidirectional data with insufficient samples."""
+    """Test bidirectional data with insufficient samples using cascaded filters."""
     pair = ScannerPairData(
         scanner_a="aa:bb:cc:dd:ee:01",
         scanner_b="aa:bb:cc:dd:ee:02",
     )
-    # Only populate one direction with enough samples
+    # Only populate one direction with enough samples (use cascaded architecture)
     for _ in range(CALIBRATION_MIN_SAMPLES - 1):
-        pair.stats_ab.update(-55.0)
+        filtered = pair.kalman_ab.update(-55.0)
+        pair.stats_ab.update(filtered)
     for _ in range(CALIBRATION_MIN_SAMPLES):
-        pair.stats_ba.update(-65.0)
+        filtered = pair.kalman_ba.update(-65.0)
+        pair.stats_ba.update(filtered)
 
     assert not pair.has_bidirectional_data
     assert pair.rssi_difference is None
