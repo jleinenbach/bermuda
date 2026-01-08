@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any
 
 from .filters import (
     AdaptiveStatistics,
+    CALIBRATION_HYSTERESIS_DB,
     CALIBRATION_MAX_HISTORY,
     CALIBRATION_MIN_PAIRS,
     CALIBRATION_MIN_SAMPLES,
@@ -45,43 +46,44 @@ class ScannerPairData:
 
     scanner_a: str
     scanner_b: str
-    # Store history of RSSI values for robust median calculation
-    rssi_history_ab: list[float] = field(default_factory=list)  # When A sees B
-    rssi_history_ba: list[float] = field(default_factory=list)  # When B sees A
-    # Adaptive statistics for each direction (for changepoint detection)
+    # Adaptive statistics for each direction (primary source for RSSI values)
+    # Uses EMA for smooth, stable estimates with CUSUM changepoint detection
     stats_ab: AdaptiveStatistics = field(default_factory=AdaptiveStatistics)
     stats_ba: AdaptiveStatistics = field(default_factory=AdaptiveStatistics)
+    # Raw RSSI history (kept for diagnostics, not used for offset calculation)
+    rssi_history_ab: list[float] = field(default_factory=list)  # When A sees B
+    rssi_history_ba: list[float] = field(default_factory=list)  # When B sees A
 
     @property
     def rssi_a_sees_b(self) -> float | None:
-        """Median RSSI when A sees B."""
-        if len(self.rssi_history_ab) < CALIBRATION_MIN_SAMPLES:
+        """EMA-filtered RSSI when A sees B (more stable than raw median)."""
+        if self.stats_ab.sample_count < CALIBRATION_MIN_SAMPLES:
             return None
-        return statistics.median(self.rssi_history_ab)
+        return self.stats_ab.mean
 
     @property
     def rssi_b_sees_a(self) -> float | None:
-        """Median RSSI when B sees A."""
-        if len(self.rssi_history_ba) < CALIBRATION_MIN_SAMPLES:
+        """EMA-filtered RSSI when B sees A (more stable than raw median)."""
+        if self.stats_ba.sample_count < CALIBRATION_MIN_SAMPLES:
             return None
-        return statistics.median(self.rssi_history_ba)
+        return self.stats_ba.mean
 
     @property
     def sample_count_ab(self) -> int:
         """Number of samples for A seeing B."""
-        return len(self.rssi_history_ab)
+        return self.stats_ab.sample_count
 
     @property
     def sample_count_ba(self) -> int:
         """Number of samples for B seeing A."""
-        return len(self.rssi_history_ba)
+        return self.stats_ba.sample_count
 
     @property
     def has_bidirectional_data(self) -> bool:
         """Return True if both scanners can see each other with enough samples."""
         return (
-            len(self.rssi_history_ab) >= CALIBRATION_MIN_SAMPLES
-            and len(self.rssi_history_ba) >= CALIBRATION_MIN_SAMPLES
+            self.stats_ab.sample_count >= CALIBRATION_MIN_SAMPLES
+            and self.stats_ba.sample_count >= CALIBRATION_MIN_SAMPLES
         )
 
     @property
@@ -229,21 +231,45 @@ class ScannerCalibrationManager:
         if bidirectional_pairs > 0:
             _LOGGER.debug("Auto-cal: Found %d bidirectional pairs", bidirectional_pairs)
 
-        # Calculate median offset for each scanner
-        # (Already stable because we use median on RSSI history)
+        # Calculate median offset for each scanner with hysteresis
         for addr, contributions in offset_contributions.items():
             if len(contributions) >= CALIBRATION_MIN_PAIRS:
                 # Use median for robustness against outliers
                 median_offset = statistics.median(contributions)
                 # Round to nearest integer dB
                 new_offset = round(median_offset)
-                self.suggested_offsets[addr] = new_offset
-                _LOGGER.debug(
-                    "Auto-cal: Offset for %s: %d dB (from %d pairs)",
-                    addr,
-                    new_offset,
-                    len(contributions),
-                )
+
+                # Apply hysteresis: only update if change exceeds threshold
+                current_offset = self.suggested_offsets.get(addr)
+                if current_offset is None:
+                    # First time seeing this scanner - accept initial value
+                    self.suggested_offsets[addr] = new_offset
+                    _LOGGER.debug(
+                        "Auto-cal: Initial offset for %s: %d dB (from %d pairs)",
+                        addr,
+                        new_offset,
+                        len(contributions),
+                    )
+                elif abs(new_offset - current_offset) >= CALIBRATION_HYSTERESIS_DB:
+                    # Significant change - update offset
+                    _LOGGER.info(
+                        "Auto-cal: Offset for %s changed: %d → %d dB (from %d pairs)",
+                        addr,
+                        current_offset,
+                        new_offset,
+                        len(contributions),
+                    )
+                    self.suggested_offsets[addr] = new_offset
+                else:
+                    # Change within hysteresis band - keep current value
+                    _LOGGER.debug(
+                        "Auto-cal: Offset for %s stable at %d dB "
+                        "(candidate: %d, hysteresis: %d dB)",
+                        addr,
+                        current_offset,
+                        new_offset,
+                        CALIBRATION_HYSTERESIS_DB,
+                    )
 
         return self.suggested_offsets
 
