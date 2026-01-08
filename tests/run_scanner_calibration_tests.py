@@ -450,12 +450,12 @@ def test_calibration_manager_update_cross_visibility():
         manager.update_cross_visibility(
             receiver_addr="aa:aa:aa:aa:aa:aa",
             sender_addr="bb:bb:bb:bb:bb:bb",
-            rssi_filtered=-55.0,
+            rssi_raw=-55.0,
         )
         manager.update_cross_visibility(
             receiver_addr="bb:bb:bb:bb:bb:bb",
             sender_addr="aa:aa:aa:aa:aa:aa",
-            rssi_filtered=-65.0,
+            rssi_raw=-65.0,
         )
 
     pair = manager.scanner_pairs[("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb")]
@@ -633,8 +633,9 @@ def test_update_scanner_calibration_with_ibeacon():
         metadevice_sources=["bb:bb:bb:bb:bb:bb"]
     )
 
-    ibeacon_b.adverts[("bb:bb:bb:bb:bb:bb", "aa:aa:aa:aa:aa:aa")] = MockAdvert(rssi_filtered=-55.0)
-    ibeacon_a.adverts[("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb")] = MockAdvert(rssi_filtered=-65.0)
+    # Use rssi (raw) for calibration - rssi_filtered would include offset!
+    ibeacon_b.adverts[("bb:bb:bb:bb:bb:bb", "aa:aa:aa:aa:aa:aa")] = MockAdvert(rssi=-55.0)
+    ibeacon_a.adverts[("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb")] = MockAdvert(rssi=-65.0)
 
     devices = {
         "aa:aa:aa:aa:aa:aa": scanner_a,
@@ -663,8 +664,9 @@ def test_update_scanner_calibration_direct_mac():
     scanner_a = MockDevice("aa:aa:aa:aa:aa:aa")
     scanner_b = MockDevice("bb:bb:bb:bb:bb:bb")
 
-    scanner_b.adverts[("bb:bb:bb:bb:bb:bb", "aa:aa:aa:aa:aa:aa")] = MockAdvert(rssi_filtered=-55.0)
-    scanner_a.adverts[("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb")] = MockAdvert(rssi_filtered=-65.0)
+    # Use rssi (raw) for calibration - rssi_filtered would include offset!
+    scanner_b.adverts[("bb:bb:bb:bb:bb:bb", "aa:aa:aa:aa:aa:aa")] = MockAdvert(rssi=-55.0)
+    scanner_a.adverts[("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb")] = MockAdvert(rssi=-65.0)
 
     devices = {
         "aa:aa:aa:aa:aa:aa": scanner_a,
@@ -693,7 +695,8 @@ def test_update_scanner_calibration_unidirectional():
         metadevice_sources=["bb:bb:bb:bb:bb:bb"]
     )
 
-    ibeacon_b.adverts[("bb:bb:bb:bb:bb:bb", "aa:aa:aa:aa:aa:aa")] = MockAdvert(rssi_filtered=-55.0)
+    # Use rssi (raw) for calibration
+    ibeacon_b.adverts[("bb:bb:bb:bb:bb:bb", "aa:aa:aa:aa:aa:aa")] = MockAdvert(rssi=-55.0)
 
     devices = {
         "aa:aa:aa:aa:aa:aa": scanner_a,

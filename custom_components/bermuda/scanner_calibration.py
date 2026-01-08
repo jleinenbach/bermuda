@@ -137,7 +137,7 @@ class ScannerCalibrationManager:
         self,
         receiver_addr: str,
         sender_addr: str,
-        rssi_filtered: float,
+        rssi_raw: float,
     ) -> bool:
         """
         Update cross-visibility data when a scanner sees another scanner.
@@ -145,7 +145,8 @@ class ScannerCalibrationManager:
         Args:
             receiver_addr: Address of the scanner that received the signal
             sender_addr: Address of the scanner that sent the signal (as iBeacon)
-            rssi_filtered: Kalman-filtered RSSI value (already filtered by Bermuda)
+            rssi_raw: RAW RSSI value (NOT adjusted by rssi_offset!)
+                     Using raw RSSI is critical to avoid circular calibration.
 
         Returns:
             True if a changepoint was detected (significant shift in RSSI),
@@ -157,18 +158,18 @@ class ScannerCalibrationManager:
         # Add to history, keeping a rolling window
         if receiver_addr == pair.scanner_a:
             # A sees B
-            pair.rssi_history_ab.append(rssi_filtered)
+            pair.rssi_history_ab.append(rssi_raw)
             if len(pair.rssi_history_ab) > CALIBRATION_MAX_HISTORY:
                 pair.rssi_history_ab.pop(0)
             # Update adaptive statistics and check for changepoint
-            changepoint_detected = pair.stats_ab.update(rssi_filtered)
+            changepoint_detected = pair.stats_ab.update(rssi_raw)
         else:
             # B sees A
-            pair.rssi_history_ba.append(rssi_filtered)
+            pair.rssi_history_ba.append(rssi_raw)
             if len(pair.rssi_history_ba) > CALIBRATION_MAX_HISTORY:
                 pair.rssi_history_ba.pop(0)
             # Update adaptive statistics and check for changepoint
-            changepoint_detected = pair.stats_ba.update(rssi_filtered)
+            changepoint_detected = pair.stats_ba.update(rssi_raw)
 
         if changepoint_detected:
             _LOGGER.info(
@@ -427,19 +428,18 @@ def update_scanner_calibration(
 
             visibility_found += 1
 
-            # Use Kalman-filtered RSSI if available (already filtered by Bermuda)
-            rssi_filtered = advert.rssi_filtered
-            if rssi_filtered is None:
-                # Fall back to raw RSSI if Kalman not initialized yet
-                rssi_filtered = advert.rssi
+            # IMPORTANT: Use RAW RSSI for calibration, NOT rssi_filtered!
+            # rssi_filtered includes conf_rssi_offset which would create a
+            # circular dependency (calibration based on already-calibrated values).
+            rssi_raw = advert.rssi
 
-            if rssi_filtered is None:
+            if rssi_raw is None:
                 continue
 
             calibration_manager.update_cross_visibility(
                 receiver_addr=scanner_addr,
                 sender_addr=other_addr,
-                rssi_filtered=rssi_filtered,
+                rssi_raw=rssi_raw,
             )
 
     if visibility_found > 0 or visibility_not_found > 0:
