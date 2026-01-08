@@ -91,17 +91,18 @@ CALIBRATION_HYSTERESIS_DB: Final = 3
 #
 # The adaptive filter scales measurement noise based on signal strength:
 # R_adaptive = R_base * scale^((threshold - rssi) / 10)
+# Where threshold = ref_power - ADAPTIVE_RSSI_OFFSET_FROM_REF
 
-# RSSI threshold (dBm) where base measurement noise applies.
-# At or above this level, the signal is considered "strong" with low variance.
-# -50 dBm is typical strong indoor signal at ~1-2m distance.
-ADAPTIVE_RSSI_STRONG_THRESHOLD: Final = -50.0
+# Offset (dB) from device's ref_power to define "strong signal" threshold.
+# Signals within this offset of ref_power are considered strong/reliable.
+# 10 dB below ref_power corresponds to ~3m distance (near-field).
+# This makes the threshold device-specific, not absolute.
+ADAPTIVE_RSSI_OFFSET_FROM_REF: Final = 10.0
 
-# Noise scaling factor per 10 dB signal decrease.
+# Noise scaling factor per 10 dB signal decrease below threshold.
 # For each 10 dB weaker signal, measurement noise multiplies by this factor.
-# Value of 2.0 means noise doubles every 10 dB below threshold.
-# This reflects the empirical observation that weaker signals have higher variance.
-ADAPTIVE_NOISE_SCALE_PER_10DB: Final = 2.0
+# Value of 1.5 provides moderate scaling that still trusts same-room signals.
+ADAPTIVE_NOISE_SCALE_PER_10DB: Final = 1.5
 
 # Minimum noise multiplier for very strong signals.
 # Prevents over-trusting very strong signals (which can still have noise).
