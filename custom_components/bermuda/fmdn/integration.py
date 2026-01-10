@@ -365,14 +365,12 @@ class FmdnIntegration:
                 continue
 
             # Process ALL matches to support shared trackers between multiple accounts
+            # Note: When resolve_eid_all returns multiple matches, it means the same
+            # physical tracker is registered in multiple Google accounts.
             for match in matches:
                 resolved_device_id = getattr(match, "device_id", None)
                 canonical_id = getattr(match, "canonical_id", None)
-                is_shared = bool(getattr(match, "shared", False))
 
-                if is_shared and resolved_device_id is None and canonical_id is None:
-                    _LOGGER.debug("Skipping shared FMDN match without identifiers")
-                    continue
                 if resolved_device_id is None:
                     _LOGGER.debug("Resolver returned match without device_id for candidate length %d", len(eid_bytes))
                     continue

@@ -195,13 +195,17 @@ def test_extract_fmdn_eids_sliding_window_without_frame() -> None:
     assert eid20 in candidates
 
 
-def test_shared_match_without_identifiers_skipped(
+def test_match_without_device_id_skipped(
     hass: HomeAssistant, coordinator: BermudaDataUpdateCoordinator
 ) -> None:
-    """Shared matches lacking identifiers should not create metadevices."""
+    """Matches lacking device_id should not create metadevices.
 
+    The GoogleFindMy-HA EIDMatch always includes device_id when valid,
+    so a None value indicates an invalid or incomplete match.
+    """
     resolver = MagicMock()
-    resolver.resolve_eid_all.return_value = [SimpleNamespace(shared=True, device_id=None, canonical_id=None)]
+    # Simulate a match without device_id (invalid/incomplete match)
+    resolver.resolve_eid_all.return_value = [SimpleNamespace(device_id=None, canonical_id=None)]
     hass.data[DOMAIN_GOOGLEFINDMY] = {DATA_EID_RESOLVER: resolver}
 
     source_device = coordinator._get_or_create_device("33:44:55:66:77:88")
