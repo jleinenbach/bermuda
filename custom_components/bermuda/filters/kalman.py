@@ -47,6 +47,7 @@ class KalmanFilter(SignalFilter):
         process_noise: R - variance of state transition noise
         measurement_noise: Q - variance of measurement noise
         sample_count: Number of samples processed
+
     """
 
     # Filter state
@@ -75,6 +76,7 @@ class KalmanFilter(SignalFilter):
 
         Returns:
             Filtered RSSI estimate
+
         """
         self.sample_count += 1
 
@@ -146,6 +148,7 @@ class KalmanFilter(SignalFilter):
         References:
             - "Variational Bayesian Adaptive UKF for RSSI-based Indoor Localization"
             - PMC5461075: "An Improved BLE Indoor Localization with Kalman-Based Fusion"
+
         """
         # Calculate device-relative threshold
         # Signals within OFFSET dB of ref_power are considered "strong"
@@ -212,7 +215,7 @@ class KalmanFilter(SignalFilter):
         }
 
     @classmethod
-    def from_config(cls, config: FilterConfig) -> "KalmanFilter":
+    def from_config(cls, config: FilterConfig) -> KalmanFilter:
         """Create a KalmanFilter from a FilterConfig."""
         return cls(
             process_noise=config.process_noise,

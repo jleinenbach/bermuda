@@ -163,9 +163,9 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         self.sensor_interval = entry.options.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL)
 
         # set some version flags
-        self.hass_version_min_2025_2 = HA_VERSION_MAJ > 2025 or (HA_VERSION_MAJ == 2025 and HA_VERSION_MIN >= 2)
+        self.hass_version_min_2025_2 = HA_VERSION_MAJ > 2025 or (HA_VERSION_MAJ == 2025 and HA_VERSION_MIN >= 2)  # type: ignore[comparison-overlap]
         # when habasescanner.discovered_device_timestamps became a public method.
-        self.hass_version_min_2025_4 = HA_VERSION_MAJ > 2025 or (HA_VERSION_MAJ == 2025 and HA_VERSION_MIN >= 4)
+        self.hass_version_min_2025_4 = HA_VERSION_MAJ > 2025 or (HA_VERSION_MAJ == 2025 and HA_VERSION_MIN >= 4)  # type: ignore[comparison-overlap]
 
         # ##### Redaction Data ###
         #
@@ -349,13 +349,14 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         async_dispatcher_send(self.hass, SIGNAL_SCANNERS_CHANGED)
 
     def reload_options(self) -> None:
-        """Reload options from config entry without full restart.
+        """
+        Reload options from config entry without full restart.
 
         This preserves runtime state like scanner_calibration data
         while applying new user configuration.
         """
         entry = self.config_entry
-        if not hasattr(entry, "options"):
+        if entry is None or not hasattr(entry, "options"):
             return
 
         _LOGGER.debug("Reloading options without full restart")

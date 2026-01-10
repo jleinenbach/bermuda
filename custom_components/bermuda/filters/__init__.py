@@ -40,11 +40,9 @@ Future Filters (planned):
 """
 
 # Base classes and interfaces
-from .base import FilterConfig, SignalFilter
-
 # Filter implementations
 from .adaptive import AdaptiveRobustFilter, AdaptiveStatistics
-from .kalman import KalmanFilter
+from .base import FilterConfig, SignalFilter
 
 # Constants
 from .const import (
@@ -63,33 +61,26 @@ from .const import (
     KALMAN_MEASUREMENT_NOISE,
     KALMAN_PROCESS_NOISE,
 )
+from .kalman import KalmanFilter
 
 __all__ = [
-    # Base classes
-    "SignalFilter",
-    "FilterConfig",
-    # Filter implementations
-    "KalmanFilter",
-    "AdaptiveRobustFilter",
-    "AdaptiveStatistics",
-    # Constants - BLE characteristics
-    "BLE_RSSI_TYPICAL_STDDEV",
-    # Constants - Kalman
-    "KALMAN_PROCESS_NOISE",
-    "KALMAN_MEASUREMENT_NOISE",
-    # Constants - Adaptive Kalman
-    "ADAPTIVE_RSSI_OFFSET_FROM_REF",
-    "ADAPTIVE_NOISE_SCALE_PER_10DB",
     "ADAPTIVE_MIN_NOISE_MULTIPLIER",
-    # Constants - EMA
-    "EMA_ALPHA_SLOW",
-    "EMA_ALPHA_FAST",
-    # Constants - CUSUM
-    "CUSUM_THRESHOLD_SIGMA",
-    "CUSUM_DRIFT_SIGMA",
-    # Constants - Calibration
-    "CALIBRATION_MIN_SAMPLES",
+    "ADAPTIVE_NOISE_SCALE_PER_10DB",
+    "ADAPTIVE_RSSI_OFFSET_FROM_REF",
+    "BLE_RSSI_TYPICAL_STDDEV",
+    "CALIBRATION_HYSTERESIS_DB",
     "CALIBRATION_MAX_HISTORY",
     "CALIBRATION_MIN_PAIRS",
-    "CALIBRATION_HYSTERESIS_DB",
+    "CALIBRATION_MIN_SAMPLES",
+    "CUSUM_DRIFT_SIGMA",
+    "CUSUM_THRESHOLD_SIGMA",
+    "EMA_ALPHA_FAST",
+    "EMA_ALPHA_SLOW",
+    "KALMAN_MEASUREMENT_NOISE",
+    "KALMAN_PROCESS_NOISE",
+    "AdaptiveRobustFilter",
+    "AdaptiveStatistics",
+    "FilterConfig",
+    "KalmanFilter",
+    "SignalFilter",
 ]

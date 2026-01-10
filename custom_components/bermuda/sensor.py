@@ -189,7 +189,7 @@ class BermudaSensor(BermudaEntity, SensorEntity):
             return self._device.area_last_seen_icon
         if self.name == "Floor":
             return self._device.floor_icon
-        return super().icon
+        return super().icon  # type: ignore[no-any-return]
         # return "mdi:floor-plan" or "mdi:map-marker-distance" or "mdi:signal-distance-variant"
 
     @property
@@ -198,7 +198,7 @@ class BermudaSensor(BermudaEntity, SensorEntity):
         return self.name in ["Area", "Distance", "Floor"]
 
     @property
-    def device_class(self) -> str: # type: ignore[override]
+    def device_class(self) -> str:
         """Return de device class of the sensor."""
         # There isn't one for "Area Names" so we'll arbitrarily define our own.
         return "bermuda__custom_device_class"
@@ -295,7 +295,7 @@ class BermudaSensorRssi(BermudaSensor):
         return self._cached_ratelimit(self._device.area_rssi, fast_falling=False, fast_rising=True)  # type: ignore[no-any-return]
 
     @property
-    def device_class(self) -> str: # type: ignore[override]
+    def device_class(self) -> str:
         return SensorDeviceClass.SIGNAL_STRENGTH
 
     @property
@@ -332,7 +332,7 @@ class BermudaSensorRange(BermudaSensor):
         return None
 
     @property
-    def device_class(self) -> str: # type: ignore[override]
+    def device_class(self) -> str:
         return SensorDeviceClass.DISTANCE
 
     @property
@@ -488,7 +488,7 @@ class BermudaGlobalSensor(BermudaGlobalEntity, SensorEntity):
         return "Area"
 
     @property
-    def device_class(self) -> str: # type: ignore[override]
+    def device_class(self) -> str:
         """Return de device class of the sensor."""
         return "bermuda__custom_device_class"
 

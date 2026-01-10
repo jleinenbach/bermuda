@@ -58,8 +58,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: BermudaConfigEntry) -> b
         # Known data processing exceptions
         _LOGGER.error("Coordinator refresh failed with %s: %s", type(ex).__name__, ex)
         await on_failure()
-    except Exception as ex:
-        # Unexpected exception - log with full traceback for debugging
+    except Exception as ex:  # noqa: BLE001
+        # Catch-all for unexpected errors from coordinator refresh
         _LOGGER.exception("Unexpected error during coordinator refresh: %s", ex)
         await on_failure()
     if not coordinator.last_update_success:
@@ -145,7 +145,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: BermudaConfigEntry) -> 
 
 
 async def async_reload_entry(hass: HomeAssistant, entry: BermudaConfigEntry) -> None:
-    """Handle options update without full reload.
+    """
+    Handle options update without full reload.
 
     This preserves runtime state (like scanner calibration data)
     while applying new configuration options.

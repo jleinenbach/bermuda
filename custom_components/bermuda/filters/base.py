@@ -55,8 +55,8 @@ class SignalFilter(ABC):
 
         Returns:
             The filtered/smoothed estimate after incorporating this measurement
+
         """
-        pass
 
     @abstractmethod
     def get_estimate(self) -> float:
@@ -65,8 +65,8 @@ class SignalFilter(ABC):
 
         Returns:
             Current filtered RSSI estimate in dBm
+
         """
-        pass
 
     @abstractmethod
     def get_variance(self) -> float:
@@ -78,13 +78,12 @@ class SignalFilter(ABC):
             - Weighting in multi-sensor fusion
             - Confidence intervals
             - Adaptive algorithm tuning
+
         """
-        pass
 
     @abstractmethod
     def reset(self) -> None:
         """Reset filter state to initial conditions."""
-        pass
 
     def get_diagnostics(self) -> dict[str, Any]:
         """
@@ -93,6 +92,7 @@ class SignalFilter(ABC):
         Returns:
             Dictionary with filter-specific diagnostic data.
             Default implementation returns basic state.
+
         """
         return {
             "estimate": self.get_estimate(),

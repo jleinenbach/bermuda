@@ -98,10 +98,11 @@ class FmdnIntegration:
         Args:
             device_id: HA Device Registry ID (always used for address generation)
             canonical_id: Kept for API compatibility and future diagnostics (not used)
+
         """
         return normalize_identifier(f"fmdn:{device_id}")
 
-    def _get_cached_metadevice(self, fmdn_device_id: str) -> "BermudaDevice | None":
+    def _get_cached_metadevice(self, fmdn_device_id: str) -> BermudaDevice | None:
         """
         Look up a metadevice by fmdn_device_id using the O(1) cache.
 
@@ -186,7 +187,7 @@ class FmdnIntegration:
             )
             self.manager.record_resolution_failure(eid_bytes, source_mac, EidResolutionStatus.RESOLVER_ERROR)
             return None, EidResolutionStatus.RESOLVER_ERROR
-        except Exception as ex:  # pylint: disable=broad-exception-caught
+        except Exception as ex:  # noqa: BLE001  # pylint: disable=broad-exception-caught
             # Catch-all for unexpected errors from external resolver
             _LOGGER.warning(
                 "Unexpected %s from EID resolver: %s",
@@ -203,7 +204,7 @@ class FmdnIntegration:
         # Match found - will be recorded by caller with device_id
         return match, EidResolutionStatus.NOT_EVALUATED
 
-    def process_resolution_all_with_status(  # pylint: disable=too-many-return-statements
+    def process_resolution_all_with_status(  # noqa: PLR0911  # pylint: disable=too-many-return-statements
         self, eid_bytes: bytes, source_mac: str
     ) -> tuple[list[Any], EidResolutionStatus]:
         """
@@ -245,7 +246,7 @@ class FmdnIntegration:
                     ex,
                 )
                 resolve_all_failed = True
-            except Exception as ex:  # pylint: disable=broad-exception-caught
+            except Exception as ex:  # noqa: BLE001  # pylint: disable=broad-exception-caught
                 # Catch-all for unexpected errors from external resolver
                 _LOGGER.warning(
                     "Unexpected %s from resolve_eid_all: %s - falling back to resolve_eid",
@@ -271,7 +272,7 @@ class FmdnIntegration:
             )
             self.manager.record_resolution_failure(eid_bytes, source_mac, EidResolutionStatus.RESOLVER_ERROR)
             return [], EidResolutionStatus.RESOLVER_ERROR
-        except Exception as ex:  # pylint: disable=broad-exception-caught
+        except Exception as ex:  # noqa: BLE001  # pylint: disable=broad-exception-caught
             # Catch-all for unexpected errors from external resolver
             _LOGGER.warning(
                 "Unexpected %s from EID resolver: %s",
@@ -428,12 +429,12 @@ class FmdnIntegration:
 
         Returns the identifier matching the resolver's format, or None.
         """
-        canonical_id = None
+        canonical_id: str | None = None
         for identifier in fmdn_device.identifiers:
             if len(identifier) != 2 or identifier[0] != DOMAIN_GOOGLEFINDMY:
                 continue
             # Found a googlefindmy identifier
-            id_value = identifier[1]
+            id_value: str = str(identifier[1])
             colon_count = id_value.count(":")
             # Prefer the "entry_id:device_id" format (1 colon) as it matches
             # what the EID resolver returns for canonical_id

@@ -47,6 +47,7 @@ class AdaptiveStatistics:
         cusum_pos: CUSUM statistic for positive shifts
         cusum_neg: CUSUM statistic for negative shifts
         last_changepoint: Sample count at last detected changepoint
+
     """
 
     mean: float = 0.0
@@ -75,6 +76,7 @@ class AdaptiveStatistics:
         Returns:
             True if a changepoint was detected (significant shift in mean),
             False otherwise.
+
         """
         self.sample_count += 1
 
@@ -113,6 +115,7 @@ class AdaptiveStatistics:
 
         Returns:
             True if a changepoint was detected, False otherwise.
+
         """
         # Normalize deviation by standard deviation (z-score)
         z = (value - self.mean) / self.stddev
@@ -180,7 +183,7 @@ class AdaptiveRobustFilter(SignalFilter):
     # Track last changepoint detection result
     _last_changepoint_detected: bool = False
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """Initialize internal stats with configured alpha."""
         self._stats.alpha = self.alpha
 
@@ -194,6 +197,7 @@ class AdaptiveRobustFilter(SignalFilter):
 
         Returns:
             The filtered estimate (EMA mean)
+
         """
         self._last_changepoint_detected = self._stats.update(measurement)
         return self._stats.mean
@@ -224,6 +228,6 @@ class AdaptiveRobustFilter(SignalFilter):
         return self._last_changepoint_detected
 
     @classmethod
-    def from_config(cls, config: FilterConfig) -> "AdaptiveRobustFilter":
+    def from_config(cls, config: FilterConfig) -> AdaptiveRobustFilter:
         """Create filter from configuration."""
         return cls(alpha=config.ema_alpha)
