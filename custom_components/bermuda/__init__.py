@@ -54,8 +54,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: BermudaConfigEntry) -> b
 
     try:
         await coordinator.async_refresh()
-    except Exception as ex:  # noqa: BLE001
-        _LOGGER.exception(ex)
+    except (ValueError, TypeError, AttributeError, KeyError) as ex:
+        # Known data processing exceptions
+        _LOGGER.error("Coordinator refresh failed with %s: %s", type(ex).__name__, ex)
+        await on_failure()
+    except Exception as ex:
+        # Unexpected exception - log with full traceback for debugging
+        _LOGGER.exception("Unexpected error during coordinator refresh: %s", ex)
         await on_failure()
     if not coordinator.last_update_success:
         await on_failure()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from homeassistant.const import Platform
@@ -53,6 +54,10 @@ class FmdnIntegration:
         """Initialize the FMDN integration."""
         self.coordinator = coordinator
         self.manager = BermudaFmdnManager()
+        # Cache for O(1) lookup of metadevice by fmdn_device_id
+        self._fmdn_device_id_cache: dict[str, str] = {}
+        # Lock to prevent race conditions during metadevice registration
+        self._registration_lock = threading.Lock()
 
     def get_resolver(self) -> EidResolver | None:
         """Return the googlefindmy resolver from ``hass.data`` when present."""
@@ -89,6 +94,30 @@ class FmdnIntegration:
         # canonical_id is kept as parameter for future use (logging, diagnostics)
         # but not used for address generation to ensure stability
         return normalize_identifier(f"fmdn:{device_id}")
+
+    def _get_cached_metadevice(self, fmdn_device_id: str) -> "BermudaDevice | None":
+        """
+        Look up a metadevice by fmdn_device_id using the O(1) cache.
+
+        Returns the metadevice if found, None otherwise.
+        """
+        if not fmdn_device_id:
+            return None
+
+        # Check cache first (O(1) lookup)
+        if fmdn_device_id in self._fmdn_device_id_cache:
+            cached_address = self._fmdn_device_id_cache[fmdn_device_id]
+            if cached_address in self.coordinator.metadevices:
+                return self.coordinator.metadevices[cached_address]
+            # Cache entry is stale, remove it
+            del self._fmdn_device_id_cache[fmdn_device_id]
+
+        return None
+
+    def _update_cache(self, fmdn_device_id: str, metadevice_address: str) -> None:
+        """Update the fmdn_device_id → metadevice_address cache."""
+        if fmdn_device_id:
+            self._fmdn_device_id_cache[fmdn_device_id] = metadevice_address
 
     @staticmethod
     def normalize_eid_bytes(eid_data: bytes | bytearray | memoryview | str | None) -> bytes | None:
@@ -142,8 +171,23 @@ class FmdnIntegration:
 
         try:
             match = resolver.resolve_eid(normalized_eid)
-        except Exception:  # noqa: BLE001
-            _LOGGER.debug("Resolver raised while processing EID payload", exc_info=True)
+        except (ValueError, TypeError, AttributeError, KeyError) as ex:
+            # Known exceptions from data processing issues
+            _LOGGER.debug(
+                "Resolver raised %s while processing EID payload: %s",
+                type(ex).__name__,
+                ex,
+            )
+            self.manager.record_resolution_failure(eid_bytes, source_mac, EidResolutionStatus.RESOLVER_ERROR)
+            return None, EidResolutionStatus.RESOLVER_ERROR
+        except Exception as ex:
+            # Unexpected exception - log at warning level for visibility
+            _LOGGER.warning(
+                "Unexpected %s from EID resolver: %s",
+                type(ex).__name__,
+                ex,
+                exc_info=True,
+            )
             self.manager.record_resolution_failure(eid_bytes, source_mac, EidResolutionStatus.RESOLVER_ERROR)
             return None, EidResolutionStatus.RESOLVER_ERROR
 
@@ -181,20 +225,54 @@ class FmdnIntegration:
 
         # Try resolve_eid_all first (returns all matches for shared trackers)
         resolve_all = getattr(resolver, "resolve_eid_all", None)
+        resolve_all_failed = False
         if callable(resolve_all):
             try:
                 matches = resolve_all(normalized_eid)
                 if matches:
                     return matches, EidResolutionStatus.NOT_EVALUATED
-            except Exception:  # noqa: BLE001
-                _LOGGER.debug("Resolver raised while processing EID payload with resolve_eid_all", exc_info=True)
-                # Fall through to try resolve_eid as fallback
+            except (ValueError, TypeError, AttributeError, KeyError) as ex:
+                # Known exceptions from data processing issues
+                _LOGGER.debug(
+                    "resolve_eid_all raised %s: %s - falling back to resolve_eid",
+                    type(ex).__name__,
+                    ex,
+                )
+                resolve_all_failed = True
+            except Exception as ex:
+                # Unexpected exception - log at warning level for visibility
+                _LOGGER.warning(
+                    "Unexpected %s from resolve_eid_all: %s - falling back to resolve_eid",
+                    type(ex).__name__,
+                    ex,
+                    exc_info=True,
+                )
+                resolve_all_failed = True
 
         # Fallback to resolve_eid (single match) for older GoogleFindMy versions
+        # or when resolve_eid_all failed
+        if resolve_all_failed:
+            _LOGGER.debug("Attempting fallback to resolve_eid after resolve_eid_all failure")
+
         try:
             single_match = resolver.resolve_eid(normalized_eid)
-        except Exception:  # noqa: BLE001
-            _LOGGER.debug("Resolver raised while processing EID payload", exc_info=True)
+        except (ValueError, TypeError, AttributeError, KeyError) as ex:
+            # Known exceptions from data processing issues
+            _LOGGER.debug(
+                "Resolver raised %s while processing EID payload: %s",
+                type(ex).__name__,
+                ex,
+            )
+            self.manager.record_resolution_failure(eid_bytes, source_mac, EidResolutionStatus.RESOLVER_ERROR)
+            return [], EidResolutionStatus.RESOLVER_ERROR
+        except Exception as ex:
+            # Unexpected exception - log at warning level for visibility
+            _LOGGER.warning(
+                "Unexpected %s from EID resolver: %s",
+                type(ex).__name__,
+                ex,
+                exc_info=True,
+            )
             self.manager.record_resolution_failure(eid_bytes, source_mac, EidResolutionStatus.RESOLVER_ERROR)
             return [], EidResolutionStatus.RESOLVER_ERROR
 
@@ -206,45 +284,49 @@ class FmdnIntegration:
         return [single_match], EidResolutionStatus.NOT_EVALUATED
 
     def register_source(self, source_device: BermudaDevice, metadevice_address: str, match: Any) -> None:
-        """Attach a rotating FMDN source MAC to its stable metadevice container."""
+        """
+        Attach a rotating FMDN source MAC to its stable metadevice container.
+
+        Uses a lock to prevent race conditions when multiple advertisements
+        are processed concurrently, and a cache for O(1) metadevice lookup.
+        """
         fmdn_device_id = getattr(match, "device_id", None)
 
-        # IMPORTANT: Before creating a new metadevice, check if one already exists
-        # for this fmdn_device_id. This prevents duplicate devices when
-        # discover_fmdn_metadevices() has already created a metadevice with a
-        # different canonical_id format from the device registry identifiers.
-        # The fmdn_device_id is the HA Device Registry ID, which is stable.
-        existing_metadevice = None
-        if fmdn_device_id:
-            for existing in self.coordinator.metadevices.values():
-                if existing.fmdn_device_id == fmdn_device_id:
-                    existing_metadevice = existing
-                    _LOGGER.debug(
-                        "Found existing FMDN metadevice %s for device_id %s in register_source",
-                        existing.address,
-                        fmdn_device_id,
-                    )
-                    break
+        # Use lock to prevent race conditions during metadevice creation
+        with self._registration_lock:
+            # IMPORTANT: Before creating a new metadevice, check if one already exists
+            # for this fmdn_device_id. Uses O(1) cache lookup instead of O(n) iteration.
+            existing_metadevice = self._get_cached_metadevice(fmdn_device_id) if fmdn_device_id else None
 
-        if existing_metadevice is not None:
-            metadevice = existing_metadevice
-        else:
-            metadevice = self.coordinator._get_or_create_device(metadevice_address)  # noqa: SLF001
+            if existing_metadevice is not None:
+                metadevice = existing_metadevice
+                _LOGGER.debug(
+                    "Found cached FMDN metadevice %s for device_id %s",
+                    existing_metadevice.address,
+                    fmdn_device_id,
+                )
+            else:
+                metadevice = self.coordinator._get_or_create_device(metadevice_address)  # noqa: SLF001
 
-        metadevice.metadevice_type.add(METADEVICE_FMDN_DEVICE)
-        metadevice.address_type = ADDR_TYPE_FMDN_DEVICE
-        metadevice.fmdn_device_id = fmdn_device_id
-        # Update fmdn_canonical_id from the resolver if not already set
-        canonical_id = getattr(match, "canonical_id", None)
-        if canonical_id and (metadevice.fmdn_canonical_id is None):
-            metadevice.fmdn_canonical_id = canonical_id
-        # Since the googlefindmy integration discovered this device, we always
-        # create sensors for them (like Private BLE Devices).
-        metadevice.create_sensor = True
+            metadevice.metadevice_type.add(METADEVICE_FMDN_DEVICE)
+            metadevice.address_type = ADDR_TYPE_FMDN_DEVICE
+            metadevice.fmdn_device_id = fmdn_device_id
+            # Update fmdn_canonical_id from the resolver if not already set
+            canonical_id = getattr(match, "canonical_id", None)
+            if canonical_id and (metadevice.fmdn_canonical_id is None):
+                metadevice.fmdn_canonical_id = canonical_id
+            # Since the googlefindmy integration discovered this device, we always
+            # create sensors for them (like Private BLE Devices).
+            metadevice.create_sensor = True
 
-        if metadevice.address not in self.coordinator.metadevices:
-            self.coordinator.metadevices[metadevice.address] = metadevice
+            if metadevice.address not in self.coordinator.metadevices:
+                self.coordinator.metadevices[metadevice.address] = metadevice
 
+            # Update cache for future O(1) lookups
+            if fmdn_device_id:
+                self._update_cache(fmdn_device_id, metadevice.address)
+
+        # These operations don't need the lock
         if metadevice.fmdn_device_id and (device_entry := self.coordinator.dr.async_get(metadevice.fmdn_device_id)):
             metadevice.name_devreg = device_entry.name
             metadevice.name_by_user = device_entry.name_by_user
@@ -398,25 +480,20 @@ class FmdnIntegration:
                             canonical_id = fmdn_entity.unique_id
 
                         # IMPORTANT: Before creating a new metadevice, check if one already
-                        # exists for this fmdn_device_id. This prevents duplicate devices when
+                        # exists for this fmdn_device_id. Uses O(1) cache lookup instead
+                        # of O(n) iteration. This prevents duplicate devices when
                         # register_source() has already created a metadevice from BLE
                         # advertisements with a different canonical_id format.
-                        # The fmdn_device_id is the HA Device Registry ID, which is stable
-                        # and consistent between both registration paths.
-                        existing_metadevice = None
-                        for existing in self.coordinator.metadevices.values():
-                            if existing.fmdn_device_id == fmdn_device.id:
-                                existing_metadevice = existing
-                                _LOGGER.debug(
-                                    "Found existing FMDN metadevice %s for device_id %s",
-                                    existing.address,
-                                    fmdn_device.id,
-                                )
-                                break
+                        existing_metadevice = self._get_cached_metadevice(fmdn_device.id)
 
                         if existing_metadevice is not None:
                             # Use the existing metadevice created by register_source
                             metadevice = existing_metadevice
+                            _LOGGER.debug(
+                                "Found cached FMDN metadevice %s for device_id %s",
+                                existing_metadevice.address,
+                                fmdn_device.id,
+                            )
                         else:
                             # Use the canonical_id as the basis for the metadevice address
                             # This matches the format used by register_source when
@@ -445,6 +522,9 @@ class FmdnIntegration:
                         # Add metadevice to list so it gets included in update_metadevices
                         if metadevice.address not in self.coordinator.metadevices:
                             self.coordinator.metadevices[metadevice.address] = metadevice
+
+                        # Update cache for future O(1) lookups
+                        self._update_cache(fmdn_device.id, metadevice.address)
 
                         _LOGGER.debug(
                             "Registered FMDN metadevice %s for %s",
