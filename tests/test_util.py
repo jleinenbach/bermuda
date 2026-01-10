@@ -157,16 +157,19 @@ class TestKalmanFilter:
 
     def test_kalman_adaptive_stronger_signal_more_influence(self):
         """Test that stronger signals have more influence with adaptive update."""
-        # Test with strong signal (-50 dBm at threshold)
+        # ref_power of -55 dBm is typical for BLE at 1m
+        ref_power = -55.0
+
+        # Test with strong signal (-50 dBm, above threshold)
         kf_strong = KalmanFilter(process_noise=1.0, measurement_noise=10.0)
         kf_strong.update(-70.0)  # Initialize at -70
-        kf_strong.update_adaptive(-50.0)  # Strong signal update
+        kf_strong.update_adaptive(-50.0, ref_power)  # Strong signal update
         strong_influence = abs(kf_strong.estimate - (-70.0))
 
-        # Test with weak signal (-80 dBm, 30 dB below threshold)
+        # Test with weak signal (-80 dBm, below threshold)
         kf_weak = KalmanFilter(process_noise=1.0, measurement_noise=10.0)
         kf_weak.update(-70.0)  # Initialize at -70
-        kf_weak.update_adaptive(-80.0)  # Weak signal update
+        kf_weak.update_adaptive(-80.0, ref_power)  # Weak signal update
         weak_influence = abs(kf_weak.estimate - (-70.0))
 
         # Strong signal should move estimate MORE (higher influence)
@@ -175,17 +178,18 @@ class TestKalmanFilter:
 
     def test_kalman_adaptive_weak_signal_dampened(self):
         """Test that very weak signals are heavily dampened."""
+        ref_power = -55.0  # typical BLE ref_power at 1m
         kf = KalmanFilter(process_noise=1.0, measurement_noise=10.0)
 
         # Establish baseline at -60 dBm
         for _ in range(5):
-            kf.update_adaptive(-60.0)
+            kf.update_adaptive(-60.0, ref_power)
 
         baseline = kf.estimate
 
-        # Apply very weak signal (-90 dBm, 40 dB below threshold)
+        # Apply very weak signal (-90 dBm, far below threshold)
         # This should have minimal influence due to high adaptive noise
-        kf.update_adaptive(-90.0)
+        kf.update_adaptive(-90.0, ref_power)
 
         # Estimate should barely change (weak signal heavily dampened)
         assert abs(kf.estimate - baseline) < 5.0  # Less than 5 dBm change
