@@ -1772,6 +1772,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             if cross_floor and inc_floor_id is not None:
                 incumbent_floor_witnesses = 0
                 challenger_floor_witnesses = 0
+                challenger_floor_distances: list[float] = []
                 # Collect floor levels from all contending scanners for sandwich logic
                 witness_floor_levels: set[int] = set()
                 for witness_adv in device.adverts.values():
@@ -1782,10 +1783,13 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                         continue
                     witness_floor = getattr(witness_scanner, "floor_id", None)
                     witness_level = getattr(witness_scanner, "floor_level", None)
+                    witness_dist = _effective_distance(witness_adv)
                     if witness_floor == inc_floor_id:
                         incumbent_floor_witnesses += 1
                     if witness_floor == chal_floor_id:
                         challenger_floor_witnesses += 1
+                        if witness_dist is not None:
+                            challenger_floor_distances.append(witness_dist)
                     if isinstance(witness_level, int):
                         witness_floor_levels.add(witness_level)
 
@@ -1807,6 +1811,26 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                     imbalance_margin = 0.15 * witness_imbalance
                     cross_floor_margin = min(0.70, cross_floor_margin + imbalance_margin)
                     cross_floor_escape = min(0.85, cross_floor_escape + imbalance_margin)
+
+                # Distance-Weighted Near-Field Protection: If incumbent is very close (near-field)
+                # and challenger floor witnesses are significantly further away, add strong protection.
+                # Physical reasoning: BLE signal follows inverse-square law. A device 2m away has
+                # ~4x stronger signal than one 4m away. Multiple distant scanners shouldn't override
+                # a single close scanner just by "voting together".
+                near_field_threshold = 3.0  # meters - considered "very close"
+                if incumbent_distance <= near_field_threshold and challenger_floor_distances:
+                    # Calculate minimum distance on challenger floor (best case for challenger)
+                    min_challenger_dist = min(challenger_floor_distances)
+                    # If even the closest challenger witness is significantly further than incumbent,
+                    # add extra protection proportional to the distance ratio
+                    if min_challenger_dist > incumbent_distance:
+                        distance_ratio = min_challenger_dist / incumbent_distance
+                        # If ratio >= 2.0 (challenger at least 2x further), add strong protection
+                        # Scale: ratio 1.5 = +10%, ratio 2.0 = +20%, ratio 3.0 = +40%
+                        if distance_ratio >= 1.5:
+                            ratio_margin = 0.20 * (distance_ratio - 1.0)
+                            cross_floor_margin = min(0.80, cross_floor_margin + ratio_margin)
+                            cross_floor_escape = min(0.95, cross_floor_escape + ratio_margin)
 
                 # Floor-Sandwich Logic: If the incumbent floor is "sandwiched" between
                 # floors that also see the device, it's very likely the device is actually
