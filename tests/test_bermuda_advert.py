@@ -335,3 +335,261 @@ def test_median_smoothing_stable_readings(bermuda_advert: BermudaAdvert) -> None
     assert 2.9 <= bermuda_advert.rssi_distance <= 3.1, (
         f"Expected stable median ~3.0m, got {bermuda_advert.rssi_distance}m"
     )
+
+
+class TestConfigOptionsDynamicReading:
+    """Tests for dynamic reading of config options from the options dict.
+
+    These tests verify the fix for the bug where RSSI offsets and other
+    config options were cached at BermudaAdvert initialization time,
+    causing settings changes to not take effect until a full restart.
+    The fix converts these attributes to properties that read dynamically
+    from the options dictionary.
+    """
+
+    def test_conf_rssi_offset_reads_dynamically(
+        self,
+        mock_parent_device: MagicMock,
+        mock_advertisement_data: MagicMock,
+        mock_scanner_device: MagicMock,
+    ) -> None:
+        """Test that conf_rssi_offset reads from options dynamically.
+
+        This verifies that changing RSSI offsets in options takes effect
+        immediately without requiring a restart.
+        """
+        scanner_address = normalize_mac("11:22:33:44:55:66")
+        options: dict[str, Any] = {
+            CONF_RSSI_OFFSETS: {scanner_address: 5},
+            CONF_REF_POWER: -59,
+            CONF_ATTENUATION: 2.0,
+            CONF_MAX_VELOCITY: 3.0,
+            CONF_SMOOTHING_SAMPLES: 5,
+        }
+        advert = BermudaAdvert(
+            parent_device=mock_parent_device,
+            advertisementdata=mock_advertisement_data,
+            options=options,
+            scanner_device=mock_scanner_device,
+        )
+
+        # Initial value should be 5
+        assert advert.conf_rssi_offset == 5
+
+        # Change the offset in options - should take effect immediately
+        options[CONF_RSSI_OFFSETS][scanner_address] = 10
+        assert advert.conf_rssi_offset == 10
+
+        # Change to negative value
+        options[CONF_RSSI_OFFSETS][scanner_address] = -15
+        assert advert.conf_rssi_offset == -15
+
+        # Remove the scanner from offsets - should default to 0
+        del options[CONF_RSSI_OFFSETS][scanner_address]
+        assert advert.conf_rssi_offset == 0
+
+        # Remove RSSI_OFFSETS entirely - should default to 0
+        del options[CONF_RSSI_OFFSETS]
+        assert advert.conf_rssi_offset == 0
+
+    def test_conf_ref_power_reads_dynamically(
+        self,
+        mock_parent_device: MagicMock,
+        mock_advertisement_data: MagicMock,
+        mock_scanner_device: MagicMock,
+    ) -> None:
+        """Test that conf_ref_power reads from options dynamically."""
+        options: dict[str, Any] = {
+            CONF_RSSI_OFFSETS: {},
+            CONF_REF_POWER: -59,
+            CONF_ATTENUATION: 2.0,
+            CONF_MAX_VELOCITY: 3.0,
+            CONF_SMOOTHING_SAMPLES: 5,
+        }
+        advert = BermudaAdvert(
+            parent_device=mock_parent_device,
+            advertisementdata=mock_advertisement_data,
+            options=options,
+            scanner_device=mock_scanner_device,
+        )
+
+        assert advert.conf_ref_power == -59
+
+        # Change ref_power - should take effect immediately
+        options[CONF_REF_POWER] = -65
+        assert advert.conf_ref_power == -65
+
+    def test_conf_attenuation_reads_dynamically(
+        self,
+        mock_parent_device: MagicMock,
+        mock_advertisement_data: MagicMock,
+        mock_scanner_device: MagicMock,
+    ) -> None:
+        """Test that conf_attenuation reads from options dynamically."""
+        options: dict[str, Any] = {
+            CONF_RSSI_OFFSETS: {},
+            CONF_REF_POWER: -59,
+            CONF_ATTENUATION: 2.0,
+            CONF_MAX_VELOCITY: 3.0,
+            CONF_SMOOTHING_SAMPLES: 5,
+        }
+        advert = BermudaAdvert(
+            parent_device=mock_parent_device,
+            advertisementdata=mock_advertisement_data,
+            options=options,
+            scanner_device=mock_scanner_device,
+        )
+
+        assert advert.conf_attenuation == 2.0
+
+        # Change attenuation - should take effect immediately
+        options[CONF_ATTENUATION] = 3.5
+        assert advert.conf_attenuation == 3.5
+
+    def test_conf_max_velocity_reads_dynamically(
+        self,
+        mock_parent_device: MagicMock,
+        mock_advertisement_data: MagicMock,
+        mock_scanner_device: MagicMock,
+    ) -> None:
+        """Test that conf_max_velocity reads from options dynamically."""
+        options: dict[str, Any] = {
+            CONF_RSSI_OFFSETS: {},
+            CONF_REF_POWER: -59,
+            CONF_ATTENUATION: 2.0,
+            CONF_MAX_VELOCITY: 3.0,
+            CONF_SMOOTHING_SAMPLES: 5,
+        }
+        advert = BermudaAdvert(
+            parent_device=mock_parent_device,
+            advertisementdata=mock_advertisement_data,
+            options=options,
+            scanner_device=mock_scanner_device,
+        )
+
+        assert advert.conf_max_velocity == 3.0
+
+        # Change max_velocity - should take effect immediately
+        options[CONF_MAX_VELOCITY] = 5.0
+        assert advert.conf_max_velocity == 5.0
+
+    def test_conf_smoothing_samples_reads_dynamically(
+        self,
+        mock_parent_device: MagicMock,
+        mock_advertisement_data: MagicMock,
+        mock_scanner_device: MagicMock,
+    ) -> None:
+        """Test that conf_smoothing_samples reads from options dynamically."""
+        options: dict[str, Any] = {
+            CONF_RSSI_OFFSETS: {},
+            CONF_REF_POWER: -59,
+            CONF_ATTENUATION: 2.0,
+            CONF_MAX_VELOCITY: 3.0,
+            CONF_SMOOTHING_SAMPLES: 5,
+        }
+        advert = BermudaAdvert(
+            parent_device=mock_parent_device,
+            advertisementdata=mock_advertisement_data,
+            options=options,
+            scanner_device=mock_scanner_device,
+        )
+
+        assert advert.conf_smoothing_samples == 5
+
+        # Change smoothing_samples - should take effect immediately
+        options[CONF_SMOOTHING_SAMPLES] = 10
+        assert advert.conf_smoothing_samples == 10
+
+    def test_rssi_offset_affects_distance_calculation(
+        self,
+        mock_parent_device: MagicMock,
+        mock_advertisement_data: MagicMock,
+        mock_scanner_device: MagicMock,
+    ) -> None:
+        """Test that changing RSSI offset affects distance calculations.
+
+        This is a regression test for the bug where saved RSSI offsets
+        were not being applied to distance calculations after a reboot.
+        """
+        scanner_address = normalize_mac("11:22:33:44:55:66")
+        options: dict[str, Any] = {
+            CONF_RSSI_OFFSETS: {scanner_address: 0},  # Start with 0 offset
+            CONF_REF_POWER: -59,
+            CONF_ATTENUATION: 2.0,
+            CONF_MAX_VELOCITY: 3.0,
+            CONF_SMOOTHING_SAMPLES: 5,
+        }
+
+        advert = BermudaAdvert(
+            parent_device=mock_parent_device,
+            advertisementdata=mock_advertisement_data,
+            options=options,
+            scanner_device=mock_scanner_device,
+        )
+
+        # Get initial distance with 0 offset
+        initial_distance = advert.rssi_distance_raw
+
+        # Now change RSSI offset to +10 (stronger signal = closer)
+        options[CONF_RSSI_OFFSETS][scanner_address] = 10
+
+        # Force recalculation
+        advert._update_raw_distance(reading_is_new=False)
+        distance_with_positive_offset = advert.rssi_distance_raw
+
+        # With positive offset, adjusted RSSI is stronger, so distance should be smaller
+        assert distance_with_positive_offset < initial_distance, (
+            f"Distance with +10 offset ({distance_with_positive_offset}m) "
+            f"should be less than with 0 offset ({initial_distance}m)"
+        )
+
+        # Change to negative offset (weaker signal = farther)
+        options[CONF_RSSI_OFFSETS][scanner_address] = -10
+        advert._update_raw_distance(reading_is_new=False)
+        distance_with_negative_offset = advert.rssi_distance_raw
+
+        # With negative offset, adjusted RSSI is weaker, so distance should be larger
+        assert distance_with_negative_offset > initial_distance, (
+            f"Distance with -10 offset ({distance_with_negative_offset}m) "
+            f"should be greater than with 0 offset ({initial_distance}m)"
+        )
+
+    def test_options_shared_reference_behavior(
+        self,
+        mock_parent_device: MagicMock,
+        mock_advertisement_data: MagicMock,
+        mock_scanner_device: MagicMock,
+    ) -> None:
+        """Test that advert uses shared options dict reference.
+
+        This simulates how the coordinator's reload_options() method works:
+        it updates the shared options dict, and all adverts should see
+        the changes immediately via their reference to that dict.
+        """
+        scanner_address = normalize_mac("11:22:33:44:55:66")
+        # This simulates coordinator.options - a shared dict
+        shared_options: dict[str, Any] = {
+            CONF_RSSI_OFFSETS: {scanner_address: 5},
+            CONF_REF_POWER: -59,
+            CONF_ATTENUATION: 2.0,
+            CONF_MAX_VELOCITY: 3.0,
+            CONF_SMOOTHING_SAMPLES: 5,
+        }
+
+        advert = BermudaAdvert(
+            parent_device=mock_parent_device,
+            advertisementdata=mock_advertisement_data,
+            options=shared_options,
+            scanner_device=mock_scanner_device,
+        )
+
+        # Verify initial value
+        assert advert.conf_rssi_offset == 5
+
+        # Simulate what reload_options() does: update the shared dict
+        shared_options[CONF_RSSI_OFFSETS] = {scanner_address: 20}
+
+        # The advert should see the new value immediately
+        assert advert.conf_rssi_offset == 20, (
+            "Advert should see updated RSSI offset after shared options dict is modified"
+        )

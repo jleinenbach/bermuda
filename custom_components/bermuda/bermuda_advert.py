@@ -73,7 +73,8 @@ class BermudaAdvert(dict):
 
     @property
     def conf_rssi_offset(self) -> int:
-        """Get RSSI offset for this scanner from options.
+        """
+        Get RSSI offset for this scanner from options.
 
         Reads dynamically from options to ensure settings changes take effect immediately.
         """
@@ -81,7 +82,8 @@ class BermudaAdvert(dict):
 
     @property
     def conf_ref_power(self) -> float | None:
-        """Get reference power from options.
+        """
+        Get reference power from options.
 
         Reads dynamically from options to ensure settings changes take effect immediately.
         """
@@ -89,7 +91,8 @@ class BermudaAdvert(dict):
 
     @property
     def conf_attenuation(self) -> float | None:
-        """Get attenuation from options.
+        """
+        Get attenuation from options.
 
         Reads dynamically from options to ensure settings changes take effect immediately.
         """
@@ -97,7 +100,8 @@ class BermudaAdvert(dict):
 
     @property
     def conf_max_velocity(self) -> float | None:
-        """Get max velocity from options.
+        """
+        Get max velocity from options.
 
         Reads dynamically from options to ensure settings changes take effect immediately.
         """
@@ -105,7 +109,8 @@ class BermudaAdvert(dict):
 
     @property
     def conf_smoothing_samples(self) -> int | None:
-        """Get smoothing samples from options.
+        """
+        Get smoothing samples from options.
 
         Reads dynamically from options to ensure settings changes take effect immediately.
         """
