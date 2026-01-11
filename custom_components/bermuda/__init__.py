@@ -10,8 +10,7 @@ https://github.com/agittins/bermuda
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import timedelta
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from homeassistant.core import callback
 from homeassistant.exceptions import ConfigEntryNotReady
@@ -73,61 +72,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: BermudaConfigEntry) -> b
     return True
 
 
-def _sanitize_timedelta_values(data: dict[str, Any]) -> dict[str, Any]:
-    """
-    Convert any timedelta values to float seconds for JSON serialization.
-
-    This fixes a bug where timedelta objects could end up in config entry
-    data/options, causing JSON serialization errors when Home Assistant
-    tries to save the config entry to storage.
-    """
-    sanitized = {}
-    for key, value in data.items():
-        if isinstance(value, timedelta):
-            # Convert timedelta to total seconds (float)
-            sanitized[key] = value.total_seconds()
-            _LOGGER.warning(
-                "Converted timedelta value for key '%s' to seconds: %s",
-                key,
-                sanitized[key],
-            )
-        elif isinstance(value, dict):
-            # Recursively sanitize nested dicts
-            sanitized[key] = _sanitize_timedelta_values(value)
-        else:
-            sanitized[key] = value
-    return sanitized
-
-
 async def async_migrate_entry(hass: HomeAssistant, config_entry: BermudaConfigEntry) -> bool:
     """Migrate previous config entries."""
     _LOGGER.debug("Migrating config from version %s.%s", config_entry.version, config_entry.minor_version)
     _oldversion = f"{config_entry.version}.{config_entry.minor_version}"
-
-    if config_entry.version == 1:
-        # Version 1 -> 2: Sanitize any timedelta values in options/data
-        # This fixes TypeError: Type is not JSON serializable: datetime.timedelta
-        new_options = _sanitize_timedelta_values(dict(config_entry.options))
-        new_data = _sanitize_timedelta_values(dict(config_entry.data))
-
-        # Check if any changes were made
-        options_changed = new_options != dict(config_entry.options)
-        data_changed = new_data != dict(config_entry.data)
-
-        if options_changed or data_changed:
-            _LOGGER.info(
-                "Migrating config entry: sanitizing timedelta values (options_changed=%s, data_changed=%s)",
-                options_changed,
-                data_changed,
-            )
-
-        hass.config_entries.async_update_entry(
-            config_entry,
-            data=new_data,
-            options=new_options,
-            version=2,
-        )
-        _LOGGER.info("Migrated config entry from version 1 to version 2")
 
     if config_entry.version == 3:  # it won't be.
         # Bogus version for now, wanted to placeholder the migrate_entries / unique_id thing.
