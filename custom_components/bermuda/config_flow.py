@@ -73,7 +73,7 @@ if TYPE_CHECKING:
 class BermudaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
     """Config flow for bermuda."""
 
-    VERSION = 1
+    VERSION = 2
     # CONNECTION_CLASS = config_entries.CONN_CLASS_CLOUD_POLL
 
     def __init__(self) -> None:
@@ -96,9 +96,7 @@ class BermudaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(step_id="user", description_placeholders={"name": NAME})
 
-    async def async_step_user(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
+    async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """
         Handle a flow initialized by the user.
 
@@ -146,9 +144,7 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
         self._last_attenuation = None
         self._last_scanner_info = None
 
-    async def async_step_init(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:  # pylint: disable=unused-argument
+    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:  # pylint: disable=unused-argument
         """Manage the options."""
         self.coordinator = self.config_entry.runtime_data.coordinator
         self.devices = self.coordinator.devices
@@ -207,9 +203,7 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
             description_placeholders=messages,
         )
 
-    async def async_step_globalopts(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
+    async def async_step_globalopts(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Handle global options flow."""
         if user_input is not None:
             self.options.update(user_input)
@@ -248,9 +242,7 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
 
         return self.async_show_form(step_id="globalopts", data_schema=vol.Schema(data_schema))
 
-    async def async_step_selectdevices(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
+    async def async_step_selectdevices(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Handle a flow initialized by the user."""
         coordinator = self.config_entry.runtime_data.coordinator
 
@@ -404,9 +396,7 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
 
         return self.async_show_form(step_id="selectdevices", data_schema=vol.Schema(data_schema))
 
-    async def async_step_calibration1_global(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
+    async def async_step_calibration1_global(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         # FIXME: This is ridiculous. But I can't yet find a better way.
         _ugly_token_hack = {
             # These are work-arounds for (broken?) placeholder substitutions.
@@ -543,9 +533,7 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
             },
         )
 
-    async def async_step_calibration2_scanners(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
+    async def async_step_calibration2_scanners(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """
         Per-scanner calibration of rssi_offset.
 
