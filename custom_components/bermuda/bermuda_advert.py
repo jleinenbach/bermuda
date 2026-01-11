@@ -71,6 +71,46 @@ class BermudaAdvert(dict):
         """The device-mac / scanner mac uniquely identifies a received advertisement pair."""
         return hash((self.device_address, self.scanner_address))
 
+    @property
+    def conf_rssi_offset(self) -> int:
+        """Get RSSI offset for this scanner from options.
+
+        Reads dynamically from options to ensure settings changes take effect immediately.
+        """
+        return self.options.get(CONF_RSSI_OFFSETS, {}).get(self.scanner_address, 0)
+
+    @property
+    def conf_ref_power(self) -> float | None:
+        """Get reference power from options.
+
+        Reads dynamically from options to ensure settings changes take effect immediately.
+        """
+        return self.options.get(CONF_REF_POWER)
+
+    @property
+    def conf_attenuation(self) -> float | None:
+        """Get attenuation from options.
+
+        Reads dynamically from options to ensure settings changes take effect immediately.
+        """
+        return self.options.get(CONF_ATTENUATION)
+
+    @property
+    def conf_max_velocity(self) -> float | None:
+        """Get max velocity from options.
+
+        Reads dynamically from options to ensure settings changes take effect immediately.
+        """
+        return self.options.get(CONF_MAX_VELOCITY)
+
+    @property
+    def conf_smoothing_samples(self) -> int | None:
+        """Get smoothing samples from options.
+
+        Reads dynamically from options to ensure settings changes take effect immediately.
+        """
+        return self.options.get(CONF_SMOOTHING_SAMPLES)
+
     def __init__(
         self,
         parent_device: BermudaDevice,  # The device being tracked
@@ -103,11 +143,10 @@ class BermudaAdvert(dict):
         self.hist_rssi_by_interval: list[float] = []  # Raw RSSI history for physical proximity checks
         self.hist_interval = []  # WARNING: This is actually "age of ad when we polled"
         self.hist_velocity: list[float] = []  # Effective velocity versus previous stamped reading
-        self.conf_rssi_offset = self.options.get(CONF_RSSI_OFFSETS, {}).get(self.scanner_address, 0)
-        self.conf_ref_power = self.options.get(CONF_REF_POWER)
-        self.conf_attenuation = self.options.get(CONF_ATTENUATION)
-        self.conf_max_velocity = self.options.get(CONF_MAX_VELOCITY)
-        self.conf_smoothing_samples = self.options.get(CONF_SMOOTHING_SAMPLES)
+        # Note: conf_rssi_offset, conf_ref_power, conf_attenuation, conf_max_velocity,
+        # and conf_smoothing_samples are now properties that read from self.options
+        # dynamically. This ensures settings changes (including RSSI offsets) take
+        # effect immediately without requiring a restart.
         self.local_name: list[tuple[str, bytes]] = []
         self.manufacturer_data: list[dict[int, bytes]] = []
         self.service_data: list[dict[str, bytes]] = []
