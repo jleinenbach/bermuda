@@ -28,6 +28,9 @@ from .const import (
     CONF_REF_POWER,
     CONF_RSSI_OFFSETS,
     CONF_SMOOTHING_SAMPLES,
+    DEFAULT_MAX_VELOCITY,
+    DEFAULT_REF_POWER,
+    DEFAULT_SMOOTHING_SAMPLES,
     DISTANCE_INFINITE,
     HIST_KEEP_COUNT,
     RSSI_HISTORY_SAMPLES,
@@ -46,7 +49,7 @@ if TYPE_CHECKING:
 # https://github.com/astral-sh/ruff/issues/4244
 
 
-class BermudaAdvert(dict):
+class BermudaAdvert(dict[str, Any]):
     """
     Represents details from a scanner relevant to a specific device.
 
@@ -67,7 +70,7 @@ class BermudaAdvert(dict):
 
     """
 
-    def __hash__(self) -> int:
+    def __hash__(self) -> int:  # type: ignore[override]
         """The device-mac / scanner mac uniquely identifies a received advertisement pair."""
         return hash((self.device_address, self.scanner_address))
 
@@ -78,7 +81,8 @@ class BermudaAdvert(dict):
 
         Reads dynamically from options to ensure settings changes take effect immediately.
         """
-        return self.options.get(CONF_RSSI_OFFSETS, {}).get(self.scanner_address, 0)
+        rssi_offsets: dict[str, int] = self.options.get(CONF_RSSI_OFFSETS, {})
+        return rssi_offsets.get(self.scanner_address, 0)
 
     @property
     def conf_ref_power(self) -> float | None:
@@ -87,7 +91,8 @@ class BermudaAdvert(dict):
 
         Reads dynamically from options to ensure settings changes take effect immediately.
         """
-        return self.options.get(CONF_REF_POWER)
+        value: float | None = self.options.get(CONF_REF_POWER)
+        return value
 
     @property
     def conf_attenuation(self) -> float | None:
@@ -96,7 +101,8 @@ class BermudaAdvert(dict):
 
         Reads dynamically from options to ensure settings changes take effect immediately.
         """
-        return self.options.get(CONF_ATTENUATION)
+        value: float | None = self.options.get(CONF_ATTENUATION)
+        return value
 
     @property
     def conf_max_velocity(self) -> float | None:
@@ -105,7 +111,8 @@ class BermudaAdvert(dict):
 
         Reads dynamically from options to ensure settings changes take effect immediately.
         """
-        return self.options.get(CONF_MAX_VELOCITY)
+        value: float | None = self.options.get(CONF_MAX_VELOCITY)
+        return value
 
     @property
     def conf_smoothing_samples(self) -> int | None:
@@ -114,13 +121,14 @@ class BermudaAdvert(dict):
 
         Reads dynamically from options to ensure settings changes take effect immediately.
         """
-        return self.options.get(CONF_SMOOTHING_SAMPLES)
+        value: int | None = self.options.get(CONF_SMOOTHING_SAMPLES)
+        return value
 
     def __init__(
         self,
         parent_device: BermudaDevice,  # The device being tracked
         advertisementdata: AdvertisementData,  # The advertisement info from the device, received by the scanner
-        options,
+        options: dict[str, Any],
         scanner_device: BermudaDevice,  # The scanner device that "saw" it.
         *,
         nowstamp: float | None = None,
@@ -146,7 +154,7 @@ class BermudaAdvert(dict):
         self.hist_distance: list[float] = []
         self.hist_distance_by_interval: list[float] = []  # updated per-interval
         self.hist_rssi_by_interval: list[float] = []  # Raw RSSI history for physical proximity checks
-        self.hist_interval = []  # WARNING: This is actually "age of ad when we polled"
+        self.hist_interval: list[float] = []  # WARNING: This is actually "age of ad when we polled"
         self.hist_velocity: list[float] = []  # Effective velocity versus previous stamped reading
         # Note: conf_rssi_offset, conf_ref_power, conf_attenuation, conf_max_velocity,
         # and conf_smoothing_samples are now properties that read from self.options
@@ -170,7 +178,7 @@ class BermudaAdvert(dict):
         # Just pass the rest on to update...
         self.update_advertisement(advertisementdata, self.scanner_device, nowstamp=nowstamp)
 
-    def apply_new_scanner(self, scanner_device: BermudaDevice):
+    def apply_new_scanner(self, scanner_device: BermudaDevice) -> None:
         self.name: str = scanner_device.name  # or scandata.scanner.name
         self.scanner_device = scanner_device  # links to the source device
         if self.scanner_address != scanner_device.address:
@@ -182,7 +190,7 @@ class BermudaAdvert(dict):
 
     def update_advertisement(
         self, advertisementdata: AdvertisementData, scanner_device: BermudaDevice, *, nowstamp: float | None = None
-    ):
+    ) -> None:
         """
         Refresh the advert with the latest packet from a scanner.
 
@@ -206,10 +214,10 @@ class BermudaAdvert(dict):
         stamp_now = nowstamp if nowstamp is not None else monotonic_time_coarse()
 
         if self.scanner_device.area_id is None:
-            last_check = getattr(self.scanner_device, "last_devreg_check", 0.0)
+            last_check: float = getattr(self.scanner_device, "last_devreg_check", 0.0)
             if stamp_now - last_check > 60:
-                self.scanner_device.async_as_scanner_resolve_device_entries()
-                self.scanner_device.last_devreg_check = stamp_now
+                self.scanner_device.async_as_scanner_resolve_device_entries()  # type: ignore[no-untyped-call]
+                self.scanner_device.last_devreg_check = stamp_now  # type: ignore[attr-defined]
                 if isinstance(self.scanner_device.area_id, str) and self.scanner_device.area_id != "":
                     self.area_id = self.scanner_device.area_id
                     self.area_name = self.scanner_device.area_name
@@ -282,7 +290,7 @@ class BermudaAdvert(dict):
 
         if len(self.service_data) == 0 or self.service_data[0] != advertisementdata.service_data:
             self.service_data.insert(0, advertisementdata.service_data)
-            if advertisementdata.service_data not in self.manufacturer_data[1:]:
+            if advertisementdata.service_data not in self.manufacturer_data[1:]:  # type: ignore[comparison-overlap]
                 _want_name_update = True
             del self.service_data[HIST_KEEP_COUNT:]
 
@@ -317,12 +325,15 @@ class BermudaAdvert(dict):
         """
         if self.ref_power != 0:
             return self.ref_power, "device-calibrated"
-        beacon_power = getattr(self._device, "beacon_power", None)
+        beacon_power: float | None = getattr(self._device, "beacon_power", None)
         if beacon_power is not None:
             return beacon_power, "iBeacon beacon_power"
-        return self.conf_ref_power, "global config default"
+        ref_power = self.conf_ref_power
+        if ref_power is None:
+            ref_power = DEFAULT_REF_POWER
+        return ref_power, "global config default"
 
-    def _update_raw_distance(self, reading_is_new=True) -> float:
+    def _update_raw_distance(self, *, reading_is_new: bool = True) -> float:
         """
         Converts rssi to raw distance and updates history stack and
         returns the new raw distance.
@@ -334,6 +345,9 @@ class BermudaAdvert(dict):
         setting change (such as altering a device's ref_power setting).
         """
         ref_power, ref_power_source = self._get_effective_ref_power()
+        if self.rssi is None:
+            self.rssi_distance_raw = DISTANCE_INFINITE
+            return DISTANCE_INFINITE
         adjusted_rssi = self.rssi + self.conf_rssi_offset
 
         # Apply adaptive Kalman filter to RSSI for improved distance estimation.
@@ -414,7 +428,13 @@ class BermudaAdvert(dict):
             self.rssi_filtered = None
             self.hist_distance.clear()
             self.hist_distance_by_interval.clear()
-            return self._update_raw_distance(False)
+            # Clear related parallel history arrays to maintain sync (hist_stamp and
+            # hist_distance must stay in sync for velocity calculations)
+            self.hist_stamp.clear()
+            self.hist_rssi.clear()
+            self.hist_interval.clear()
+            self.hist_velocity.clear()
+            return self._update_raw_distance(reading_is_new=False)
         return self.rssi_distance_raw
 
     def _clear_stale_history(self) -> None:
@@ -442,9 +462,7 @@ class BermudaAdvert(dict):
 
         # Fallback: Calculate median of distance history
         if len(self.hist_distance_by_interval) > 0:
-            sorted_distances = sorted(
-                d for d in self.hist_distance_by_interval if d is not None
-            )
+            sorted_distances = sorted(d for d in self.hist_distance_by_interval if d is not None)
             if sorted_distances:
                 n = len(sorted_distances)
                 mid = n // 2
@@ -493,7 +511,7 @@ class BermudaAdvert(dict):
                 self._clear_stale_history()
 
         else:
-            if len(self.hist_stamp) > 1:
+            if len(self.hist_stamp) > 1 and len(self.hist_distance) > 1:
                 velo_newdistance = self.hist_distance[0]
                 velo_newstamp = self.hist_stamp[0]
                 peak_velocity = 0.0
@@ -525,7 +543,8 @@ class BermudaAdvert(dict):
             # Use absolute velocity to catch impossible speeds in BOTH directions.
             # A device jumping from 10m to 1m in 1 second (-9 m/s) is just as
             # impossible as jumping from 1m to 10m (+9 m/s).
-            if abs(velocity) > self.conf_max_velocity:
+            max_velocity = self.conf_max_velocity if self.conf_max_velocity is not None else DEFAULT_MAX_VELOCITY
+            if abs(velocity) > max_velocity:
                 if self._device.create_sensor:
                     _LOGGER.debug(
                         "This sparrow %s flies too fast (%2fm/s), ignoring",
@@ -539,8 +558,11 @@ class BermudaAdvert(dict):
             else:
                 self.hist_distance_by_interval.insert(0, self.rssi_distance_raw)
 
-            if len(self.hist_distance_by_interval) > self.conf_smoothing_samples:
-                del self.hist_distance_by_interval[self.conf_smoothing_samples :]
+            smoothing_samples = (
+                self.conf_smoothing_samples if self.conf_smoothing_samples is not None else DEFAULT_SMOOTHING_SAMPLES
+            )
+            if len(self.hist_distance_by_interval) > smoothing_samples:
+                del self.hist_distance_by_interval[smoothing_samples:]
 
             # Update raw RSSI history for physical proximity checks
             if self.rssi is not None:

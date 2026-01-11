@@ -23,7 +23,6 @@ from custom_components.bermuda.const import (
 from custom_components.bermuda.util import normalize_mac
 
 
-
 @pytest.fixture
 def mock_parent_device() -> MagicMock:
     """Fixture for mocking the parent BermudaDevice."""
@@ -121,6 +120,53 @@ def test_set_ref_power(bermuda_advert: BermudaAdvert) -> None:
     new_distance = bermuda_advert.set_ref_power(-65)
     assert bermuda_advert.ref_power == -65
     assert new_distance is not None
+
+
+def test_set_ref_power_clears_all_history_lists(bermuda_advert: BermudaAdvert) -> None:
+    """Test that set_ref_power clears all paired history lists to maintain sync.
+
+    This is a regression test for a bug where set_ref_power only cleared
+    hist_distance but not hist_stamp, causing an IndexError when calculate_data()
+    tried to access hist_distance[1] after checking len(hist_stamp) > 1.
+    """
+    # Set up history in all lists that should stay in sync
+    bermuda_advert.hist_stamp = [100.0, 99.0, 98.0]
+    bermuda_advert.hist_rssi = [-70, -71, -72]
+    bermuda_advert.hist_distance = [5.0, 5.1, 5.2]
+    bermuda_advert.hist_distance_by_interval = [5.0, 5.1]
+    bermuda_advert.hist_interval = [1.0, 1.0]
+    bermuda_advert.hist_velocity = [0.1, 0.1]
+
+    # Change ref_power
+    bermuda_advert.set_ref_power(-65)
+
+    # All paired history lists should be cleared
+    assert len(bermuda_advert.hist_stamp) == 0, "hist_stamp should be cleared"
+    assert len(bermuda_advert.hist_rssi) == 0, "hist_rssi should be cleared"
+    assert len(bermuda_advert.hist_distance) == 0, "hist_distance should be cleared"
+    assert len(bermuda_advert.hist_distance_by_interval) == 0, "hist_distance_by_interval should be cleared"
+    assert len(bermuda_advert.hist_interval) == 0, "hist_interval should be cleared"
+    assert len(bermuda_advert.hist_velocity) == 0, "hist_velocity should be cleared"
+
+
+def test_calculate_data_handles_mismatched_history_lists(bermuda_advert: BermudaAdvert) -> None:
+    """Test that calculate_data handles mismatched hist_stamp and hist_distance gracefully.
+
+    This is a defensive test to ensure that even if hist_stamp and hist_distance
+    somehow get out of sync, calculate_data() doesn't crash with IndexError.
+    """
+    # Set up mismatched lists: hist_stamp has 2+ entries but hist_distance has only 1
+    bermuda_advert.hist_stamp = [100.0, 99.0, 98.0]
+    bermuda_advert.hist_distance = [5.0]  # Only one entry!
+    bermuda_advert.new_stamp = 101.0
+    bermuda_advert.stamp = 100.0
+    bermuda_advert.rssi_distance_raw = 4.5
+
+    # This should NOT raise IndexError
+    bermuda_advert.calculate_data()
+
+    # Verify it completed without crashing
+    assert bermuda_advert.rssi_distance is not None
 
 
 def test_calculate_data_device_arrived(bermuda_advert: BermudaAdvert) -> None:

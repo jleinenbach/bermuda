@@ -163,9 +163,9 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         self.sensor_interval = entry.options.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL)
 
         # set some version flags
-        self.hass_version_min_2025_2 = HA_VERSION_MAJ > 2025 or (HA_VERSION_MAJ == 2025 and HA_VERSION_MIN >= 2)  # type: ignore[comparison-overlap]
+        self.hass_version_min_2025_2 = HA_VERSION_MAJ > 2025 or (HA_VERSION_MAJ == 2025 and HA_VERSION_MIN >= 2)
         # when habasescanner.discovered_device_timestamps became a public method.
-        self.hass_version_min_2025_4 = HA_VERSION_MAJ > 2025 or (HA_VERSION_MAJ == 2025 and HA_VERSION_MIN >= 4)  # type: ignore[comparison-overlap]
+        self.hass_version_min_2025_4 = HA_VERSION_MAJ > 2025 or (HA_VERSION_MAJ == 2025 and HA_VERSION_MIN >= 4)
 
         # ##### Redaction Data ###
         #
@@ -2232,9 +2232,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                 if _use_physical_rssi_priority and not is_cross_floor:
                     winner_rssi = winner.median_rssi() if hasattr(winner, "median_rssi") else None
                     incumbent_rssi = (
-                        device.area_advert.median_rssi()
-                        if hasattr(device.area_advert, "median_rssi")
-                        else None
+                        device.area_advert.median_rssi() if hasattr(device.area_advert, "median_rssi") else None
                     )
                     if winner_rssi is not None and incumbent_rssi is not None:
                         rssi_advantage = winner_rssi - incumbent_rssi
