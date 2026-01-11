@@ -414,6 +414,12 @@ class BermudaAdvert(dict):
             self.rssi_filtered = None
             self.hist_distance.clear()
             self.hist_distance_by_interval.clear()
+            # Clear related parallel history arrays to maintain sync (hist_stamp and
+            # hist_distance must stay in sync for velocity calculations)
+            self.hist_stamp.clear()
+            self.hist_rssi.clear()
+            self.hist_interval.clear()
+            self.hist_velocity.clear()
             return self._update_raw_distance(False)
         return self.rssi_distance_raw
 
@@ -493,7 +499,7 @@ class BermudaAdvert(dict):
                 self._clear_stale_history()
 
         else:
-            if len(self.hist_stamp) > 1:
+            if len(self.hist_stamp) > 1 and len(self.hist_distance) > 1:
                 velo_newdistance = self.hist_distance[0]
                 velo_newstamp = self.hist_stamp[0]
                 peak_velocity = 0.0
