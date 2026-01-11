@@ -166,10 +166,11 @@ class TestMinimumDistance:
     def test_rssi_to_metres_normal_distance_unchanged(self):
         """Normal distances should not be affected by MIN_DISTANCE."""
         # Normal signal: rssi = -65, ref_power = -55, attenuation = 3
-        # distance = 10^((-55 - (-65)) / 30) = 10^(0.33) = 2.15m
+        # Using Two-Slope Path Loss Model (near-field exponent ~1.8)
+        # distance = 10^((-55 - (-65)) / (10 * 1.8)) = 10^(0.556) ≈ 3.59m
         distance = rssi_to_metres(-65, -55, 3)
         assert distance > MIN_DISTANCE
-        assert distance == pytest.approx(2.15, rel=0.1)
+        assert distance == pytest.approx(3.59, rel=0.1)
 
     def test_rssi_to_metres_at_ref_power_equals_one_meter(self):
         """Signal at ref_power should equal exactly 1 meter."""

@@ -152,6 +152,7 @@ class ScannerCalibrationManager:
             sender_addr: Address of the scanner that sent the signal (as iBeacon)
             rssi_raw: RAW RSSI value (NOT adjusted by rssi_offset!)
                      Using raw RSSI is critical to avoid circular calibration.
+
         """
         pair = self._get_or_create_pair(receiver_addr, sender_addr)
 
@@ -184,6 +185,7 @@ class ScannerCalibrationManager:
 
         Returns:
             Dictionary mapping scanner addresses to suggested RSSI offsets
+
         """
         # Collect offset contributions for each scanner
         offset_contributions: dict[str, list[float]] = {
@@ -295,6 +297,7 @@ class ScannerCalibrationManager:
 
         Returns:
             List of dictionaries with pair information including Kalman filter diagnostics.
+
         """
         info: list[dict[str, Any]] = []
         for pair in self.scanner_pairs.values():
@@ -321,7 +324,7 @@ class ScannerCalibrationManager:
         self.active_scanners.clear()
 
 
-def update_scanner_calibration(
+def update_scanner_calibration(  # noqa: C901
     calibration_manager: ScannerCalibrationManager,
     scanner_list: set[str],
     devices: dict[str, BermudaDevice],
@@ -339,6 +342,7 @@ def update_scanner_calibration(
 
     Returns:
         Dictionary of suggested RSSI offsets per scanner
+
     """
     # Build a reverse lookup: any_scanner_mac -> canonical_scanner_address
     # Scanners may have multiple MAC addresses (WiFi, BLE, Ethernet) and the

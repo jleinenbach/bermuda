@@ -50,12 +50,12 @@ EMA_ALPHA_FAST: Final = 0.3
 
 # Threshold in standard deviations.
 # When cumulative deviation exceeds this, a changepoint is detected.
-# Value of 4σ balances false alarms vs detection delay (ARL considerations).
+# Value of 4 sigma balances false alarms vs detection delay (ARL considerations).
 # Works correctly when CUSUM is applied to Kalman-filtered values.
 CUSUM_THRESHOLD_SIGMA: Final = 4.0
 
 # Drift parameter - prevents cumulative sum from growing in absence of change.
-# Expressed as fraction of standard deviation (0.5σ per sample).
+# Expressed as fraction of standard deviation (0.5 sigma per sample).
 # Works correctly when CUSUM is applied to Kalman-filtered values.
 CUSUM_DRIFT_SIGMA: Final = 0.5
 

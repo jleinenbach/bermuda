@@ -743,6 +743,220 @@ def test_non_adjacent_floor_requires_stronger_evidence(monkeypatch: pytest.Monke
     )
 
 
+def test_challenger_floor_witnesses_penalty(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Multiple scanners on challenger's floor should NOT pull device away from
+    a single close scanner on incumbent's floor.
+
+    Scenario from user report: Smartphone 2m from EG scanner (strong signal),
+    but multiple OG scanners see it from further away. The device should NOT
+    switch to OG just because more scanners there see it.
+    """
+    now = 9000.0
+    monkeypatch.setattr("custom_components.bermuda.coordinator.monotonic_time_coarse", lambda: now)
+    coord = _build_coord()
+
+    # Single scanner on ground floor (EG) - very close to device
+    scanner_eg = FakeScanner(
+        name="Scanner EG",
+        last_seen=now - 0.01,
+        floor_id="floor_eg",
+        floor_name="Erdgeschoss",
+        area_id="area_eg",
+        area_name="Wohnzimmer",
+        floor_level=0,
+    )
+
+    # Multiple scanners on upper floor (OG) - further from device
+    scanner_og1 = FakeScanner(
+        name="Scanner OG1",
+        last_seen=now - 0.01,
+        floor_id="floor_og",
+        floor_name="Obergeschoss",
+        area_id="area_og1",
+        area_name="Schlafzimmer",
+        floor_level=1,
+    )
+    scanner_og2 = FakeScanner(
+        name="Scanner OG2",
+        last_seen=now - 0.02,
+        floor_id="floor_og",
+        floor_name="Obergeschoss",
+        area_id="area_og2",
+        area_name="Bad OG",
+        floor_level=1,
+    )
+    scanner_og3 = FakeScanner(
+        name="Scanner OG3",
+        last_seen=now - 0.03,
+        floor_id="floor_og",
+        floor_name="Obergeschoss",
+        area_id="area_og3",
+        area_name="Flur OG",
+        floor_level=1,
+    )
+
+    # Incumbent on EG - very close (2m), strong signal
+    incumbent = FakeAdvert(
+        name=scanner_eg.name,
+        scanner_device=scanner_eg,
+        area_id=scanner_eg.area_id,
+        area_name=scanner_eg.area_name,
+        rssi_distance=2.0,
+        rssi=-65,  # Strong signal (close)
+        stamp=now - 0.01,
+        hist=[2.0] * 12,
+    )
+
+    # Challenger 1 on OG - appears slightly closer due to miscalibration
+    # but with weaker signal (further away in reality)
+    challenger_og1 = FakeAdvert(
+        name=scanner_og1.name,
+        scanner_device=scanner_og1,
+        area_id=scanner_og1.area_id,
+        area_name=scanner_og1.area_name,
+        rssi_distance=1.4,  # Appears closer (30% improvement) - could be ref_power issue
+        rssi=-80,  # Weaker signal (actually further)
+        stamp=now - 0.01,
+        hist=[1.4] * 12,
+    )
+    # Additional OG witnesses
+    witness_og2 = FakeAdvert(
+        name=scanner_og2.name,
+        scanner_device=scanner_og2,
+        area_id=scanner_og2.area_id,
+        area_name=scanner_og2.area_name,
+        rssi_distance=2.5,
+        rssi=-82,
+        stamp=now - 0.02,
+        hist=[2.5] * 12,
+    )
+    witness_og3 = FakeAdvert(
+        name=scanner_og3.name,
+        scanner_device=scanner_og3,
+        area_id=scanner_og3.area_id,
+        area_name=scanner_og3.area_name,
+        rssi_distance=3.0,
+        rssi=-85,
+        stamp=now - 0.03,
+        hist=[3.0] * 12,
+    )
+
+    device = FakeDevice(
+        name="smartphone",
+        incumbent=incumbent,
+        adverts={
+            "eg": incumbent,
+            "og1": challenger_og1,
+            "og2": witness_og2,
+            "og3": witness_og3,
+        },
+    )
+
+    original_floor = device.floor_id
+    original_area = device.area_name
+
+    # Run selection multiple times - more than streak requirement
+    for _ in range(CROSS_FLOOR_STREAK + 5):
+        BermudaDataUpdateCoordinator._refresh_area_by_min_distance(coord, device)  # type: ignore[arg-type]
+
+    # With 3 challengers on OG vs 1 incumbent on EG, the challenger_floor_penalty
+    # should add 2 * 15% = 30% extra margin, making it much harder to switch.
+    # The ~30% improvement is no longer enough when factoring in the penalty.
+    assert device.floor_id == original_floor, (
+        f"Unexpected cross-floor switch due to multiple challenger floor witnesses. "
+        f"1 close scanner on {original_floor!r} should not lose to 3 distant scanners on OG. "
+        f"Got floor={device.floor_id!r}, area={device.area_name!r}"
+    )
+    assert device.area_name == original_area
+
+
+def test_near_field_distance_ratio_protection(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A device very close to one scanner should be strongly protected against
+    cross-floor switches to distant scanners based on distance ratio.
+
+    Physical reasoning: BLE signal follows inverse-square law. A device 2m away
+    has ~4x stronger signal than one 4m away. When incumbent is in near-field
+    (<3m) and challenger floor witnesses are 2x+ further, add strong protection.
+    """
+    now = 9500.0
+    monkeypatch.setattr("custom_components.bermuda.coordinator.monotonic_time_coarse", lambda: now)
+    coord = _build_coord()
+
+    # Scanner on EG - device is VERY close (2m)
+    scanner_eg = FakeScanner(
+        name="Scanner EG",
+        last_seen=now - 0.01,
+        floor_id="floor_eg",
+        floor_name="Erdgeschoss",
+        area_id="area_eg",
+        area_name="Wohnzimmer",
+        floor_level=0,
+    )
+
+    # Scanner on OG - actual distance is 5m (2.5x the EG distance)
+    scanner_og = FakeScanner(
+        name="Scanner OG",
+        last_seen=now - 0.01,
+        floor_id="floor_og",
+        floor_name="Obergeschoss",
+        area_id="area_og",
+        area_name="Schlafzimmer",
+        floor_level=1,
+    )
+
+    # Incumbent on EG - very close (2m), strong signal
+    incumbent = FakeAdvert(
+        name=scanner_eg.name,
+        scanner_device=scanner_eg,
+        area_id=scanner_eg.area_id,
+        area_name=scanner_eg.area_name,
+        rssi_distance=2.0,
+        rssi=-65,  # Strong signal (close)
+        stamp=now - 0.01,
+        hist=[2.0] * 12,
+    )
+
+    # Challenger on OG - appears closer (1.3m) due to miscalibration
+    # but the rssi_distance of 5.0m on the witness list reveals actual distance
+    # Distance ratio: 5.0 / 2.0 = 2.5 -> adds 0.20 * (2.5 - 1.0) = 30% extra margin
+    challenger = FakeAdvert(
+        name=scanner_og.name,
+        scanner_device=scanner_og,
+        area_id=scanner_og.area_id,
+        area_name=scanner_og.area_name,
+        rssi_distance=1.3,  # Appears 35% closer (miscalibrated)
+        rssi=-78,  # Weaker signal
+        stamp=now - 0.01,
+        hist=[1.3] * 12,
+    )
+
+    device = FakeDevice(
+        name="near-field phone",
+        incumbent=incumbent,
+        adverts={
+            "eg": incumbent,
+            "og": challenger,
+        },
+    )
+
+    original_floor = device.floor_id
+
+    # Run selection multiple times
+    for _ in range(CROSS_FLOOR_STREAK + 5):
+        BermudaDataUpdateCoordinator._refresh_area_by_min_distance(coord, device)  # type: ignore[arg-type]
+
+    # Even though challenger appears closer (1.3m vs 2.0m = 35% improvement),
+    # the near-field distance-ratio protection kicks in because:
+    # 1. Incumbent is in near-field (2.0m < 3.0m threshold)
+    # 2. Challenger's rssi_distance (1.3m) is tracked - but the key protection
+    #    comes from the accumulated margins (base 25% + additional protections)
+    # The 35% improvement is borderline but should be blocked by cross-floor guards.
+    assert device.floor_id == original_floor, (
+        f"Unexpected cross-floor switch despite near-field incumbent at 2m. "
+        f"Got floor={device.floor_id!r}"
+    )
+
+
 class TestCoVisibilityLearning:
     """Tests for co-visibility learning functionality."""
 

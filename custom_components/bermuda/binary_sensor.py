@@ -36,7 +36,7 @@ class BermudaBinarySensor(BermudaEntity, BinarySensorEntity):
         return f"{DEFAULT_NAME}_binary_sensor"
 
     @property
-    def device_class(self) -> str: # type: ignore[override]
+    def device_class(self) -> str:  # type: ignore[override]
         """Return the class of this binary_sensor."""
         return BINARY_SENSOR_DEVICE_CLASS
 

@@ -97,6 +97,62 @@ def _sliding_window_candidates(payload: bytes, candidate_lengths: Sequence[int])
     return candidates
 
 
+def _mode_strip_frame_20(
+    payload: bytes,
+    candidate_lengths: Sequence[int],
+    frame_type: int | None,
+) -> set[bytes]:
+    """
+    Handle FMDN_EID_FORMAT_STRIP_FRAME_20 extraction mode.
+
+    Returns the first configured length from the normalized EID.
+    """
+    candidates: set[bytes] = set()
+    if not candidate_lengths:
+        return candidates
+
+    first_len = candidate_lengths[0]
+    if len(payload) >= first_len:
+        candidates.add(bytes(payload[:first_len]))
+    # If frame_type is None (bare EID), also include full payload if it matches
+    if frame_type is None and len(payload) in candidate_lengths:
+        candidates.add(bytes(payload))
+    return candidates
+
+
+def _mode_strip_frame_all(
+    payload: bytes,
+    candidate_lengths: Sequence[int],
+) -> set[bytes]:
+    """
+    Handle FMDN_EID_FORMAT_STRIP_FRAME_ALL extraction mode.
+
+    Returns the normalized EID and its prefixes.
+    """
+    candidates: set[bytes] = set()
+    if payload:
+        candidates.add(bytes(payload))
+        candidates.update(_prefix_candidates(payload, candidate_lengths))
+    return candidates
+
+
+def _mode_auto(
+    payload: bytes,
+    candidate_lengths: Sequence[int],
+) -> set[bytes]:
+    """
+    Handle FMDN_EID_FORMAT_AUTO extraction mode.
+
+    Uses broader heuristics: prefix + checksum-trim + sliding windows.
+    """
+    candidates: set[bytes] = set()
+    candidates.add(bytes(payload))
+    candidates.update(_prefix_candidates(payload, candidate_lengths))
+    candidates.update(_auto_trim_checksum_candidates(payload, candidate_lengths))
+    candidates.update(_sliding_window_candidates(payload, candidate_lengths))
+    return candidates
+
+
 def _prefix_candidates(payload: bytes, candidate_lengths: Sequence[int]) -> set[bytes]:
     """Generate deterministic prefix candidates (payload[:len]) for each configured length."""
     candidates: set[bytes] = set()
@@ -183,6 +239,77 @@ def _extract_eid_payload(payload: bytes) -> ExtractedEid | None:
     return None
 
 
+def _apply_mode_extraction(
+    base_payload: bytes,
+    mode: str,
+    candidate_lengths: Sequence[int],
+    frame_type: int | None,
+) -> set[bytes]:
+    """Apply mode-specific extraction to a base payload."""
+    if mode == FMDN_EID_FORMAT_STRIP_FRAME_20:
+        return _mode_strip_frame_20(base_payload, candidate_lengths, frame_type)
+    if mode == FMDN_EID_FORMAT_STRIP_FRAME_ALL:
+        return _mode_strip_frame_all(base_payload, candidate_lengths)
+    # Default: auto mode
+    return _mode_auto(base_payload, candidate_lengths)
+
+
+def _candidates_from_extracted(
+    extracted: ExtractedEid,
+    mode: str,
+    candidate_lengths: Sequence[int],
+    payload_len: int,
+) -> set[bytes]:
+    """Generate candidates from a successfully extracted EID."""
+    base_eid = extracted.eid
+    frame_type = extracted.frame_type
+
+    # Validate payload before extraction
+    if mode == FMDN_EID_FORMAT_STRIP_FRAME_20:
+        if not candidate_lengths or len(base_eid) < candidate_lengths[0]:
+            _log_malformed(mode, frame_type or 0x00, payload_len, "short_after_frame")
+    elif mode == FMDN_EID_FORMAT_STRIP_FRAME_ALL:
+        if not base_eid:
+            _log_malformed(mode, frame_type or 0x00, payload_len, "no_payload_after_frame")
+
+    return _apply_mode_extraction(base_eid, mode, candidate_lengths, frame_type)
+
+
+def _candidates_from_raw(
+    payload: bytes,
+    mode: str,
+    candidate_lengths: Sequence[int],
+) -> set[bytes]:
+    """Generate candidates from raw payload when extraction failed."""
+    frame_type = payload[0] if payload else 0x00
+    payload_len = len(payload)
+
+    _log_malformed(mode, frame_type, payload_len, "frame_type")
+
+    # If payload starts with a known frame type, try extracting after it
+    if payload and payload[0] in _FHN_FRAME_TYPES:
+        after_frame = payload[1:]
+        is_short = not candidate_lengths or len(after_frame) < candidate_lengths[0]
+        if mode == FMDN_EID_FORMAT_STRIP_FRAME_20 and is_short:
+            _log_malformed(mode, frame_type, payload_len, "short_after_frame")
+        elif mode == FMDN_EID_FORMAT_STRIP_FRAME_ALL and not after_frame:
+            _log_malformed(mode, frame_type, payload_len, "no_payload_after_frame")
+        return _apply_mode_extraction(after_frame, mode, candidate_lengths, frame_type)
+
+    # No frame byte detected - handle specially for strip_frame_20
+    if mode == FMDN_EID_FORMAT_STRIP_FRAME_20 and candidate_lengths:
+        candidates: set[bytes] = set()
+        first_len = candidate_lengths[0]
+        if len(payload) >= first_len + 1:
+            candidates.add(bytes(payload[1 : 1 + first_len]))
+        elif len(payload) >= first_len:
+            candidates.add(bytes(payload[:first_len]))
+        return candidates
+
+    # For other modes, apply extraction to raw payload
+    return _apply_mode_extraction(payload, mode, candidate_lengths, None)
+
+
 def _candidates_from_payload(
     payload: bytes,
     *,
@@ -193,7 +320,6 @@ def _candidates_from_payload(
     if not payload:
         return set()
 
-    candidates: set[bytes] = set()
     extracted = _extract_eid_payload(payload)
     frame_type = (
         extracted.frame_type
@@ -202,63 +328,11 @@ def _candidates_from_payload(
     )
     payload_len = len(payload)
 
-    # Non-auto modes should be deterministic and cheap:
-    # - strip_frame_20: first configured length from the normalized EID
-    # - strip_frame_all: normalized EID and its prefixes
-    # Auto mode may use broader heuristics (prefix + checksum-trim + sliding windows).
-
+    # Route to appropriate extraction path
     if extracted is not None:
-        base_eid = extracted.eid
-        if mode == FMDN_EID_FORMAT_STRIP_FRAME_20:
-            if candidate_lengths and len(base_eid) >= candidate_lengths[0]:
-                candidates.add(bytes(base_eid[: candidate_lengths[0]]))
-            else:
-                _log_malformed(mode, frame_type, payload_len, "short_after_frame")
-            if extracted.frame_type is None and len(base_eid) in candidate_lengths:
-                candidates.add(bytes(base_eid))
-        elif mode == FMDN_EID_FORMAT_STRIP_FRAME_ALL:
-            if not base_eid:
-                _log_malformed(mode, frame_type, payload_len, "no_payload_after_frame")
-            else:
-                candidates.add(bytes(base_eid))
-                candidates.update(_prefix_candidates(base_eid, candidate_lengths))
-        else:
-            candidates.add(bytes(base_eid))
-            candidates.update(_prefix_candidates(base_eid, candidate_lengths))
-            candidates.update(_auto_trim_checksum_candidates(base_eid, candidate_lengths))
-            candidates.update(_sliding_window_candidates(base_eid, candidate_lengths))
+        candidates = _candidates_from_extracted(extracted, mode, candidate_lengths, payload_len)
     else:
-        _log_malformed(mode, frame_type, payload_len, "frame_type")
-        if payload and payload[0] in _FHN_FRAME_TYPES:
-            after_frame = payload[1:]
-            if mode == FMDN_EID_FORMAT_STRIP_FRAME_20:
-                if candidate_lengths and len(after_frame) >= candidate_lengths[0]:
-                    candidates.add(bytes(after_frame[: candidate_lengths[0]]))
-                else:
-                    _log_malformed(mode, frame_type, payload_len, "short_after_frame")
-            elif mode == FMDN_EID_FORMAT_STRIP_FRAME_ALL:
-                if not after_frame:
-                    _log_malformed(mode, frame_type, payload_len, "no_payload_after_frame")
-                else:
-                    candidates.add(bytes(after_frame))
-                    candidates.update(_prefix_candidates(after_frame, candidate_lengths))
-            else:
-                candidates.update(_prefix_candidates(after_frame, candidate_lengths))
-                candidates.update(_auto_trim_checksum_candidates(after_frame, candidate_lengths))
-                candidates.update(_sliding_window_candidates(after_frame, candidate_lengths))
-        elif mode == FMDN_EID_FORMAT_STRIP_FRAME_20:
-            if candidate_lengths:
-                if len(payload) >= candidate_lengths[0] + 1:
-                    candidates.add(bytes(payload[1 : 1 + candidate_lengths[0]]))
-                elif len(payload) >= candidate_lengths[0]:
-                    candidates.add(bytes(payload[: candidate_lengths[0]]))
-        elif mode == FMDN_EID_FORMAT_STRIP_FRAME_ALL:
-            candidates.add(bytes(payload))
-            candidates.update(_prefix_candidates(payload, candidate_lengths))
-        else:
-            candidates.update(_prefix_candidates(payload, candidate_lengths))
-            candidates.update(_auto_trim_checksum_candidates(payload, candidate_lengths))
-            candidates.update(_sliding_window_candidates(payload, candidate_lengths))
+        candidates = _candidates_from_raw(payload, mode, candidate_lengths)
 
     if not candidates:
         _log_malformed(mode, frame_type, payload_len, "no_candidates")
