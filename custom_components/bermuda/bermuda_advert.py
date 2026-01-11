@@ -448,9 +448,7 @@ class BermudaAdvert(dict):
 
         # Fallback: Calculate median of distance history
         if len(self.hist_distance_by_interval) > 0:
-            sorted_distances = sorted(
-                d for d in self.hist_distance_by_interval if d is not None
-            )
+            sorted_distances = sorted(d for d in self.hist_distance_by_interval if d is not None)
             if sorted_distances:
                 n = len(sorted_distances)
                 mid = n // 2

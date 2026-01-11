@@ -23,7 +23,6 @@ from custom_components.bermuda.const import (
 from custom_components.bermuda.util import normalize_mac
 
 
-
 @pytest.fixture
 def mock_parent_device() -> MagicMock:
     """Fixture for mocking the parent BermudaDevice."""
