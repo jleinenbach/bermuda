@@ -107,12 +107,14 @@ from .const import (
     SIGNAL_SCANNERS_CHANGED,
     UPDATE_INTERVAL,
 )
+from .correlation import AreaProfile, CorrelationStore, z_scores_to_confidence
 from .fmdn import FmdnIntegration
 from .scanner_calibration import ScannerCalibrationManager, update_scanner_calibration
 from .util import is_mac_address, mac_explode_formats, normalize_address, normalize_mac
 
 Cancellable = Callable[[], None]
 DUMP_DEVICE_SOFT_LIMIT = 1200
+CORRELATION_SAVE_INTERVAL = 300  # Save learned correlations every 5 minutes
 
 
 if TYPE_CHECKING:
@@ -163,9 +165,12 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         self.sensor_interval = entry.options.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL)
 
         # set some version flags
-        self.hass_version_min_2025_2 = HA_VERSION_MAJ > 2025 or (HA_VERSION_MAJ == 2025 and HA_VERSION_MIN >= 2)
+        # Cast to int to avoid mypy literal comparison warnings when HA version is known at import time
+        _ha_maj = int(HA_VERSION_MAJ)
+        _ha_min = int(HA_VERSION_MIN)
+        self.hass_version_min_2025_2 = _ha_maj > 2025 or (_ha_maj == 2025 and _ha_min >= 2)
         # when habasescanner.discovered_device_timestamps became a public method.
-        self.hass_version_min_2025_4 = HA_VERSION_MAJ > 2025 or (HA_VERSION_MAJ == 2025 and HA_VERSION_MIN >= 4)
+        self.hass_version_min_2025_4 = _ha_maj > 2025 or (_ha_maj == 2025 and _ha_min >= 4)
 
         # ##### Redaction Data ###
         #
@@ -208,6 +213,12 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         self.irk_manager = BermudaIrkManager()
         self.fmdn = FmdnIntegration(self)
         self.scanner_calibration = ScannerCalibrationManager()
+
+        # Scanner correlation learning for improved area localization
+        self.correlation_store = CorrelationStore(hass)
+        self.correlations: dict[str, dict[str, AreaProfile]] = {}
+        self._correlations_loaded = False
+        self._last_correlation_save: float = 0
 
         self.ar = ar.async_get(self.hass)
         self.er = er.async_get(self.hass)
@@ -731,8 +742,25 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
     async def _async_update_data(self) -> bool:
         """Implementation of DataUpdateCoordinator update_data function."""
-        # return False
-        return self._async_update_data_internal()
+        # Load correlations on first update
+        if not self._correlations_loaded:
+            self.correlations = await self.correlation_store.async_load()
+            self._correlations_loaded = True
+            self._last_correlation_save = monotonic_time_coarse()
+            _LOGGER.debug(
+                "Loaded scanner correlations for %d devices",
+                len(self.correlations),
+            )
+
+        result = self._async_update_data_internal()
+
+        # Periodically save correlations
+        nowstamp = monotonic_time_coarse()
+        if nowstamp - self._last_correlation_save > CORRELATION_SAVE_INTERVAL:
+            await self.correlation_store.async_save(self.correlations)
+            self._last_correlation_save = nowstamp
+
+        return result
 
     def _async_update_data_internal(self) -> bool:
         """
@@ -1432,6 +1460,45 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             return getattr(areas, "name", "invalid_area")
         return None
 
+    def _get_correlation_confidence(
+        self,
+        device_address: str,
+        area_id: str,
+        primary_rssi: float | None,
+        current_readings: dict[str, float],
+    ) -> float:
+        """
+        Calculate correlation confidence for a device in an area.
+
+        Compares observed RSSI patterns against learned expectations.
+
+        Args:
+            device_address: The device's address.
+            area_id: The area to check confidence for.
+            primary_rssi: RSSI from the primary scanner.
+            current_readings: Map of scanner_id to RSSI for all visible scanners.
+
+        Returns:
+            Confidence value 0.0-1.0. Returns 1.0 if no learned data exists.
+
+        """
+        if device_address not in self.correlations:
+            return 1.0
+        if area_id not in self.correlations[device_address]:
+            return 1.0
+        if primary_rssi is None:
+            return 1.0
+
+        profile = self.correlations[device_address][area_id]
+        if profile.mature_correlation_count == 0:
+            return 1.0
+
+        z_scores = profile.get_z_scores(primary_rssi, current_readings)
+        if not z_scores:
+            return 1.0
+
+        return z_scores_to_confidence(z_scores)
+
     def _refresh_areas_by_min_distance(self):
         """Set area for ALL devices based on closest beacon."""
         for device in self.devices.values():
@@ -2097,6 +2164,33 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                 all_candidate_scanners = known_scanners | visible_scanners
                 device.update_co_visibility(advert.area_id, visible_scanners, all_candidate_scanners)
 
+                # Update scanner correlations - learn RSSI relationships for this area
+                if advert.rssi is not None:
+                    other_readings: dict[str, float] = {}
+                    for other_adv in device.adverts.values():
+                        if (
+                            other_adv is not advert
+                            and _within_evidence(other_adv)
+                            and other_adv.rssi is not None
+                            and other_adv.scanner_address is not None
+                        ):
+                            other_readings[other_adv.scanner_address] = other_adv.rssi
+
+                    if other_readings:
+                        # Ensure device entry exists in correlations
+                        if device.address not in self.correlations:
+                            self.correlations[device.address] = {}
+                        # Ensure area entry exists for this device
+                        if advert.area_id not in self.correlations[device.address]:
+                            self.correlations[device.address][advert.area_id] = AreaProfile(
+                                area_id=advert.area_id,
+                            )
+                        # Update the profile with current readings
+                        self.correlations[device.address][advert.area_id].update(
+                            primary_rssi=advert.rssi,
+                            other_readings=other_readings,
+                        )
+
         if winner is None:
             candidates: list[tuple[float, BermudaAdvert]] = []
             for adv in device.adverts.values():
@@ -2192,6 +2286,23 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             # This makes it harder to switch when expected co-scanners are missing
             if winner_confidence < 0.7 and incumbent_confidence > winner_confidence + 0.2:
                 # Double the streak requirement when co-visibility is suspicious
+                streak_target = max(streak_target, streak_target * 2)
+
+            # Scanner Correlation Confidence Check: Compare learned RSSI patterns
+            # If the winner's area has patterns that don't match what we've learned,
+            # but the incumbent does match, prefer the incumbent.
+            current_readings: dict[str, float] = {
+                adv.scanner_address: adv.rssi
+                for adv in device.adverts.values()
+                if _within_evidence(adv) and adv.rssi is not None and adv.scanner_address is not None
+            }
+            winner_corr_confidence = self._get_correlation_confidence(
+                device.address, winner.area_id, winner.rssi, current_readings
+            )
+            incumbent_corr_confidence = self._get_correlation_confidence(
+                device.address, device.area_advert.area_id, device.area_advert.rssi, current_readings
+            )
+            if winner_corr_confidence < 0.5 and incumbent_corr_confidence > winner_corr_confidence + 0.3:
                 streak_target = max(streak_target, streak_target * 2)
 
         if device.area_advert is None and winner is not None:
