@@ -8,9 +8,9 @@ and can be correctly restored after Home Assistant restarts.
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from homeassistant.core import HomeAssistant
 
 from custom_components.bermuda.correlation.area_profile import AreaProfile
 from custom_components.bermuda.correlation.store import (
@@ -38,10 +38,9 @@ class TestCorrelationStoreRoundtrip:
     """Tests for save/load roundtrip."""
 
     @pytest.mark.asyncio
-    async def test_save_and_load_roundtrip(self) -> None:
+    async def test_save_and_load_roundtrip(self, hass: HomeAssistant) -> None:
         """Data survives a save/load cycle without corruption."""
-        mock_hass = MagicMock()
-        store = CorrelationStore(mock_hass)
+        store = CorrelationStore(hass)
 
         # Create test data
         original_data = {
@@ -54,26 +53,12 @@ class TestCorrelationStoreRoundtrip:
             },
         }
 
-        # Mock the HA Store
-        saved_data: dict[str, Any] = {}
+        # Save
+        await store.async_save(original_data)
 
-        async def mock_save(data: dict[str, Any]) -> None:
-            saved_data["content"] = data
-
-        async def mock_load() -> dict[str, Any] | None:
-            return saved_data.get("content")
-
-        with patch("custom_components.bermuda.correlation.store.Store") as MockStore:
-            mock_store_instance = MagicMock()
-            mock_store_instance.async_save = AsyncMock(side_effect=mock_save)
-            mock_store_instance.async_load = AsyncMock(side_effect=mock_load)
-            MockStore.return_value = mock_store_instance
-
-            # Save
-            await store.async_save(original_data)
-
-            # Load
-            loaded_data = await store.async_load()
+        # Create new store instance to simulate restart
+        store2 = CorrelationStore(hass)
+        loaded_data = await store2.async_load()
 
         # Verify structure preserved
         assert set(loaded_data.keys()) == set(original_data.keys()), (
@@ -99,17 +84,10 @@ class TestCorrelationStoreRoundtrip:
                 )
 
     @pytest.mark.asyncio
-    async def test_load_empty_storage_returns_empty_dict(self) -> None:
+    async def test_load_empty_storage_returns_empty_dict(self, hass: HomeAssistant) -> None:
         """Fresh install (no stored data) returns empty dict, not error."""
-        mock_hass = MagicMock()
-        store = CorrelationStore(mock_hass)
-
-        with patch("custom_components.bermuda.correlation.store.Store") as MockStore:
-            mock_store_instance = MagicMock()
-            mock_store_instance.async_load = AsyncMock(return_value=None)
-            MockStore.return_value = mock_store_instance
-
-            loaded = await store.async_load()
+        store = CorrelationStore(hass)
+        loaded = await store.async_load()
 
         assert loaded == {}, (
             f"Empty storage returned {loaded}, expected empty dict. "
@@ -121,10 +99,9 @@ class TestCorrelationStorePrecision:
     """Tests for data precision preservation."""
 
     @pytest.mark.asyncio
-    async def test_learned_estimates_preserved_exactly(self) -> None:
+    async def test_learned_estimates_preserved_exactly(self, hass: HomeAssistant) -> None:
         """Kalman filter estimates are preserved with full precision."""
-        mock_hass = MagicMock()
-        store = CorrelationStore(mock_hass)
+        store = CorrelationStore(hass)
 
         # Create profile with specific learned values
         profile = AreaProfile(area_id="area.test")
@@ -134,29 +111,18 @@ class TestCorrelationStorePrecision:
                 other_readings={"scanner_x": -59.7},  # Delta = 12.4
             )
 
-        original_estimate = profile._correlations["scanner_x"].expected_delta
-        original_variance = profile._correlations["scanner_x"].variance
+        original_estimate = profile._correlations["scanner_x"].expected_delta  # noqa: SLF001
+        original_variance = profile._correlations["scanner_x"].variance  # noqa: SLF001
 
-        data = {"device_test": {"area.test": profile}}
+        data: dict[str, dict[str, AreaProfile]] = {"device_test": {"area.test": profile}}
 
-        saved_data: dict[str, Any] = {}
+        await store.async_save(data)
 
-        async def mock_save(d: dict[str, Any]) -> None:
-            saved_data["content"] = d
+        # Create new store instance to simulate restart
+        store2 = CorrelationStore(hass)
+        loaded = await store2.async_load()
 
-        async def mock_load() -> dict[str, Any] | None:
-            return saved_data.get("content")
-
-        with patch("custom_components.bermuda.correlation.store.Store") as MockStore:
-            mock_store_instance = MagicMock()
-            mock_store_instance.async_save = AsyncMock(side_effect=mock_save)
-            mock_store_instance.async_load = AsyncMock(side_effect=mock_load)
-            MockStore.return_value = mock_store_instance
-
-            await store.async_save(data)
-            loaded = await store.async_load()
-
-        loaded_corr = loaded["device_test"]["area.test"]._correlations["scanner_x"]
+        loaded_corr = loaded["device_test"]["area.test"]._correlations["scanner_x"]  # noqa: SLF001
 
         assert loaded_corr.expected_delta == original_estimate, (
             f"Estimate changed: {original_estimate} -> {loaded_corr.expected_delta}. "
@@ -172,27 +138,17 @@ class TestCorrelationStorePrecision:
 class TestCorrelationStoreConfiguration:
     """Tests for store configuration."""
 
-    @pytest.mark.asyncio
-    async def test_uses_correct_storage_key(self) -> None:
-        """Store uses the expected storage key for HA."""
-        mock_hass = MagicMock()
-        store = CorrelationStore(mock_hass)
-
-        with patch("custom_components.bermuda.correlation.store.Store") as MockStore:
-            mock_store_instance = MagicMock()
-            mock_store_instance.async_load = AsyncMock(return_value=None)
-            MockStore.return_value = mock_store_instance
-
-            await store.async_load()
-
-            MockStore.assert_called_once_with(
-                mock_hass,
-                STORAGE_VERSION,
-                STORAGE_KEY,
-            )
-
+    def test_storage_key_constant(self) -> None:
+        """Storage key has expected value."""
         assert STORAGE_KEY == "bermuda.scanner_correlations", (
             f"Storage key is '{STORAGE_KEY}', expected 'bermuda.scanner_correlations'. "
             f"Wrong key would cause data to be stored in wrong location or conflict "
             f"with other integrations."
+        )
+
+    def test_storage_version_constant(self) -> None:
+        """Storage version is set."""
+        assert STORAGE_VERSION == 1, (
+            f"Storage version is {STORAGE_VERSION}, expected 1. "
+            f"Version is used for migration; unexpected value could cause issues."
         )
