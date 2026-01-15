@@ -1457,6 +1457,45 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             return getattr(areas, "name", "invalid_area")
         return None
 
+    def _get_correlation_confidence(
+        self,
+        device_address: str,
+        area_id: str,
+        primary_rssi: float | None,
+        current_readings: dict[str, float],
+    ) -> float:
+        """
+        Calculate correlation confidence for a device in an area.
+
+        Compares observed RSSI patterns against learned expectations.
+
+        Args:
+            device_address: The device's address.
+            area_id: The area to check confidence for.
+            primary_rssi: RSSI from the primary scanner.
+            current_readings: Map of scanner_id to RSSI for all visible scanners.
+
+        Returns:
+            Confidence value 0.0-1.0. Returns 1.0 if no learned data exists.
+
+        """
+        if device_address not in self.correlations:
+            return 1.0
+        if area_id not in self.correlations[device_address]:
+            return 1.0
+        if primary_rssi is None:
+            return 1.0
+
+        profile = self.correlations[device_address][area_id]
+        if profile.mature_correlation_count == 0:
+            return 1.0
+
+        z_scores = profile.get_z_scores(primary_rssi, current_readings)
+        if not z_scores:
+            return 1.0
+
+        return z_scores_to_confidence(z_scores)
+
     def _refresh_areas_by_min_distance(self):
         """Set area for ALL devices based on closest beacon."""
         for device in self.devices.values():
@@ -2249,37 +2288,19 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             # Scanner Correlation Confidence Check: Compare learned RSSI patterns
             # If the winner's area has patterns that don't match what we've learned,
             # but the incumbent does match, prefer the incumbent.
-            if device.address in self.correlations:
-                device_correlations = self.correlations[device.address]
-                # Gather current RSSI readings for z-score calculation
-                current_readings: dict[str, float] = {}
-                for adv in device.adverts.values():
-                    if _within_evidence(adv) and adv.rssi is not None and adv.scanner_device_id is not None:
-                        current_readings[adv.scanner_device_id] = adv.rssi
-
-                winner_corr_confidence = 1.0
-                incumbent_corr_confidence = 1.0
-
-                # Check winner's correlation confidence
-                if winner.area_id in device_correlations:
-                    winner_profile = device_correlations[winner.area_id]
-                    if winner_profile.mature_correlation_count > 0 and winner.rssi is not None:
-                        z_scores = winner_profile.get_z_scores(winner.rssi, current_readings)
-                        if z_scores:
-                            winner_corr_confidence = z_scores_to_confidence(z_scores)
-
-                # Check incumbent's correlation confidence
-                if device.area_advert.area_id in device_correlations:
-                    incumbent_profile = device_correlations[device.area_advert.area_id]
-                    incumbent_rssi = device.area_advert.rssi
-                    if incumbent_profile.mature_correlation_count > 0 and incumbent_rssi is not None:
-                        z_scores = incumbent_profile.get_z_scores(incumbent_rssi, current_readings)
-                        if z_scores:
-                            incumbent_corr_confidence = z_scores_to_confidence(z_scores)
-
-                # If winner patterns don't match but incumbent patterns do, increase streak
-                if winner_corr_confidence < 0.5 and incumbent_corr_confidence > winner_corr_confidence + 0.3:
-                    streak_target = max(streak_target, streak_target * 2)
+            current_readings: dict[str, float] = {
+                adv.scanner_device_id: adv.rssi
+                for adv in device.adverts.values()
+                if _within_evidence(adv) and adv.rssi is not None and adv.scanner_device_id is not None
+            }
+            winner_corr_confidence = self._get_correlation_confidence(
+                device.address, winner.area_id, winner.rssi, current_readings
+            )
+            incumbent_corr_confidence = self._get_correlation_confidence(
+                device.address, device.area_advert.area_id, device.area_advert.rssi, current_readings
+            )
+            if winner_corr_confidence < 0.5 and incumbent_corr_confidence > winner_corr_confidence + 0.3:
+                streak_target = max(streak_target, streak_target * 2)
 
         if device.area_advert is None and winner is not None:
             # Bootstrap immediately when we have no area yet; don't wait for streak logic.
