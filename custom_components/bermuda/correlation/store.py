@@ -50,6 +50,7 @@ class CorrelationStore:
             Empty dict on first run or if storage is empty.
 
         """
+        # pylint: disable=import-outside-toplevel
         from homeassistant.helpers.storage import Store  # noqa: PLC0415
 
         self._store = Store(
@@ -77,6 +78,7 @@ class CorrelationStore:
 
         """
         if self._store is None:
+            # pylint: disable=import-outside-toplevel
             from homeassistant.helpers.storage import Store  # noqa: PLC0415
 
             self._store = Store(

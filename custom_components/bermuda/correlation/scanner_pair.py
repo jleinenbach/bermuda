@@ -147,5 +147,5 @@ class ScannerPairCorrelation:
         corr._kalman.estimate = data["estimate"]
         corr._kalman.variance = data["variance"]
         corr._kalman.sample_count = data["samples"]
-        corr._kalman._initialized = data["samples"] > 0  # noqa: SLF001
+        corr._kalman._initialized = data["samples"] > 0  # noqa: SLF001  # pylint: disable=protected-access
         return corr
