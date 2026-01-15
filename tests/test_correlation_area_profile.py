@@ -150,6 +150,61 @@ class TestAreaProfileZScores:
         )
         assert isinstance(samples, int), f"Sample count is {type(samples).__name__}, expected int."
 
+    def test_z_scores_ignores_unknown_scanners(self) -> None:
+        """Z-scores are not returned for scanners not in the profile."""
+        profile = AreaProfile(area_id="area.office")
+
+        # Learn only scanner_a
+        for _ in range(50):
+            profile.update(
+                primary_rssi=-50.0,
+                other_readings={"scanner_a": -60.0},
+            )
+
+        # Request z-scores including unknown scanner_b
+        z_scores = profile.get_z_scores(
+            primary_rssi=-50.0,
+            other_readings={"scanner_a": -60.0, "scanner_b": -70.0},
+        )
+
+        # Should only return z-score for scanner_a, ignore scanner_b
+        assert len(z_scores) == 1, (
+            f"Expected 1 z-score for known scanner, got {len(z_scores)}. Unknown scanners should be silently ignored."
+        )
+        assert z_scores[0][0] == "scanner_a"
+
+    def test_weighted_z_scores_ignores_unknown_and_immature(self) -> None:
+        """Weighted z-scores skip unknown scanners and immature correlations."""
+        profile = AreaProfile(area_id="area.office")
+
+        # Learn scanner_a (mature) and scanner_b (immature)
+        for _ in range(50):
+            profile.update(
+                primary_rssi=-50.0,
+                other_readings={"scanner_a": -60.0},
+            )
+        for _ in range(5):  # Not enough for maturity
+            profile.update(
+                primary_rssi=-50.0,
+                other_readings={"scanner_b": -65.0},
+            )
+
+        # Request including unknown scanner_c
+        weighted = profile.get_weighted_z_scores(
+            primary_rssi=-50.0,
+            other_readings={
+                "scanner_a": -60.0,
+                "scanner_b": -65.0,
+                "scanner_c": -70.0,
+            },
+        )
+
+        # Should only return scanner_a (mature and known)
+        assert len(weighted) == 1, (
+            f"Expected 1 weighted z-score, got {len(weighted)}. Unknown/immature scanners should be excluded."
+        )
+        assert weighted[0][0] == "scanner_a"
+
 
 class TestAreaProfileMemoryLimit:
     """Tests for memory limit enforcement."""
