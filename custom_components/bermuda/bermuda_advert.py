@@ -368,8 +368,9 @@ class BermudaAdvert(dict[str, Any]):
         # This suggests calibration may be needed. At 0cm distance, RSSI should still
         # be somewhat below ref_power due to near-field effects and antenna coupling.
         # If RSSI exceeds ref_power by more than ~25 dB, the ref_power is likely wrong.
+        # Only warn if the suggested ref_power differs by at least 5 dB from current value.
         rssi_headroom = adjusted_rssi - ref_power
-        if rssi_headroom > 25:
+        if rssi_headroom >= 30:
             _LOGGER_SPAM_LESS.warning(
                 f"calibration_warning_{self.device_address}",
                 "Device %s has RSSI %.0f dBm which is %.0f dB stronger than ref_power %.0f dBm (from %s). "
