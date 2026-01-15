@@ -79,7 +79,7 @@ class ScannerPairCorrelation:
     @property
     def std_dev(self) -> float:
         """Return standard deviation of the estimate."""
-        return self.variance**0.5
+        return float(self.variance**0.5)
 
     @property
     def sample_count(self) -> int:

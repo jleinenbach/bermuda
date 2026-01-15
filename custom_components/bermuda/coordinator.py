@@ -165,9 +165,12 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         self.sensor_interval = entry.options.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL)
 
         # set some version flags
-        self.hass_version_min_2025_2 = HA_VERSION_MAJ > 2025 or (HA_VERSION_MAJ == 2025 and HA_VERSION_MIN >= 2)
+        # Cast to int to avoid mypy literal comparison warnings when HA version is known at import time
+        _ha_maj = int(HA_VERSION_MAJ)
+        _ha_min = int(HA_VERSION_MIN)
+        self.hass_version_min_2025_2 = _ha_maj > 2025 or (_ha_maj == 2025 and _ha_min >= 2)
         # when habasescanner.discovered_device_timestamps became a public method.
-        self.hass_version_min_2025_4 = HA_VERSION_MAJ > 2025 or (HA_VERSION_MAJ == 2025 and HA_VERSION_MIN >= 4)
+        self.hass_version_min_2025_4 = _ha_maj > 2025 or (_ha_maj == 2025 and _ha_min >= 4)
 
         # ##### Redaction Data ###
         #
@@ -2169,9 +2172,9 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                             other_adv is not advert
                             and _within_evidence(other_adv)
                             and other_adv.rssi is not None
-                            and other_adv.scanner_device_id is not None
+                            and other_adv.scanner_address is not None
                         ):
-                            other_readings[other_adv.scanner_device_id] = other_adv.rssi
+                            other_readings[other_adv.scanner_address] = other_adv.rssi
 
                     if other_readings:
                         # Ensure device entry exists in correlations
@@ -2289,9 +2292,9 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             # If the winner's area has patterns that don't match what we've learned,
             # but the incumbent does match, prefer the incumbent.
             current_readings: dict[str, float] = {
-                adv.scanner_device_id: adv.rssi
+                adv.scanner_address: adv.rssi
                 for adv in device.adverts.values()
-                if _within_evidence(adv) and adv.rssi is not None and adv.scanner_device_id is not None
+                if _within_evidence(adv) and adv.rssi is not None and adv.scanner_address is not None
             }
             winner_corr_confidence = self._get_correlation_confidence(
                 device.address, winner.area_id, winner.rssi, current_readings
