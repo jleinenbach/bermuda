@@ -167,6 +167,43 @@ except Exception:
 | `INCUMBENT_MARGIN_PERCENT` | 0.08 | 8% closer required to challenge |
 | `INCUMBENT_MARGIN_METERS` | 0.20 | OR 0.2m closer required |
 | `CROSS_FLOOR_MIN_HISTORY` | 8 | Min history for cross-floor historical checks |
+| `DWELL_TIME_MOVING_SECONDS` | 120 | 0-2 min: recently moved state |
+| `DWELL_TIME_SETTLING_SECONDS` | 600 | 2-10 min: settling in state |
+| `MARGIN_MOVING_PERCENT` | 0.05 | 5% margin when moving |
+| `MARGIN_STATIONARY_PERCENT` | 0.15 | 15% margin when stationary |
+
+## Signal Processing Architecture (`filters/`)
+
+Modular filter system for BLE RSSI signal processing:
+
+| Filter | File | Status | Purpose |
+|--------|------|--------|---------|
+| `SignalFilter` | `base.py` | ✅ | Abstract base class for all filters |
+| `KalmanFilter` | `kalman.py` | ✅ | 1D linear Kalman for RSSI smoothing |
+| `AdaptiveRobustFilter` | `adaptive.py` | ✅ | EMA + CUSUM changepoint detection |
+| `UnscentedKalmanFilter` | `ukf.py` | 🚧 | Multi-scanner fusion with fingerprints |
+
+### Filter Interface
+
+```python
+class SignalFilter(ABC):
+    def update(self, measurement: float, timestamp: float | None = None) -> float: ...
+    def get_estimate(self) -> float: ...
+    def get_variance(self) -> float: ...
+    def reset(self) -> None: ...
+```
+
+### Kalman Filter Usage
+
+```python
+from custom_components.bermuda.filters import KalmanFilter
+
+filter = KalmanFilter()
+filtered_rssi = filter.update(raw_rssi)
+
+# Adaptive variant (adjusts noise based on signal strength)
+filtered_rssi = filter.update_adaptive(raw_rssi, ref_power=-55)
+```
 
 ## Recent Changes (Session Notes)
 
@@ -180,6 +217,102 @@ except Exception:
 - **Solution**: Absolute RSSI profile learning - secondary scanner patterns protect area
 - **Files**: `correlation/scanner_absolute.py`, `correlation/area_profile.py`, `coordinator.py`
 
+### Dwell Time Based Stability
+- **Problem**: Static stability margin doesn't account for how long device has been stationary
+- **Solution**: Dynamic margins based on movement state (MOVING → SETTLING → STATIONARY)
+- **Files**: `const.py`, `bermuda_device.py`, `coordinator.py`
+- **Key methods**: `get_movement_state()`, `get_dwell_time()`, `area_changed_at`
+
 ### Test Fixture Updates
 - Added `correlations`, `_correlations_loaded`, `_last_correlation_save`, `correlation_store` to coordinator mocks
 - Added `scanner_address` to FakeAdvert, `address` to FakeDevice
+- Added `get_movement_state()` and `area_changed_at` to FakeDevice
+
+## Lessons Learned
+
+### 1. State Transitions Need Careful Handling
+
+When tracking state (like `area_changed_at`), consider ALL transition paths:
+- Normal: `"Kitchen" → "Office"` ✅
+- Initial: `None → "Kitchen"` (first assignment)
+- Re-acquisition: `None → "Kitchen"` (after scanner outage)
+
+**Fix**: Check both `old_area is not None` AND `area_changed_at != 0.0`:
+```python
+if old_area != self.area_name:
+    if old_area is not None or self.area_changed_at != 0.0:
+        self.area_changed_at = stamp_now
+```
+
+### 2. Test Fixtures Must Mirror Production Classes
+
+When adding new attributes/methods to production classes, update ALL test fixtures:
+- `FakeDevice` in `test_area_selection_cross_floor_guard.py`
+- Any mock objects in other test files
+
+### 3. Kalman Filter Already Uses Fingerprints
+
+The `correlation/` system uses `KalmanFilter` internally:
+- `ScannerAbsoluteRssi` wraps `KalmanFilter` for per-scanner RSSI learning
+- `ScannerPairCorrelation` uses Kalman for delta tracking
+
+This provides foundation for UKF integration.
+
+### 4. Line Length in Log Messages
+
+Ruff enforces 120 char limit. Split long format strings:
+```python
+# BAD (too long)
+_LOGGER.debug("Stability margin (%s): %s rejected (%.2fm improvement, %.1f%% < required %.1f%% or %.2fm)", ...)
+
+# GOOD (split string)
+_LOGGER.debug(
+    "Stability margin (%s): %s rejected "
+    "(%.2fm, %.1f%% < %.1f%% or %.2fm)",
+    ...
+)
+```
+
+### 5. Python 3.13 Required
+
+The codebase uses Python 3.12+ features like `type` aliases:
+```python
+type BermudaConfigEntry = "ConfigEntry[BermudaData]"  # Requires Python 3.12+
+```
+
+Always use `python3.13 -m venv venv` for the virtual environment.
+
+## Future Architecture: UKF + Fingerprint Fusion
+
+### Current Limitation
+
+Each scanner filtered independently, then heuristic rules combine them:
+```
+Scanner 1 → Kalman → RSSI₁ ─┐
+Scanner 2 → Kalman → RSSI₂ ─┼─→ Min-Distance Heuristic → Room
+Scanner 3 → Kalman → RSSI₃ ─┘
+```
+
+### Planned UKF Architecture
+
+Multi-scanner state vector with Mahalanobis fingerprint matching:
+```
+                    ┌─────────────────────────────────────┐
+Scanner 1 ──┐       │ UKF State: [rssi₁, rssi₂, rssi₃]   │
+Scanner 2 ──┼──────→│ Covariance: P (cross-correlation)  │
+Scanner 3 ──┘       │ Process: RSSI drifts slowly        │
+                    └────────────────┬────────────────────┘
+                                     │
+                                     ▼
+                    ┌─────────────────────────────────────┐
+                    │ Fingerprint Match (Mahalanobis)     │
+                    │ D² = (x̂ - μ_area)ᵀ Σ⁻¹ (x̂ - μ_area) │
+                    │ Room = argmin(D²)                   │
+                    └─────────────────────────────────────┘
+```
+
+### Benefits
+- Cross-correlation between scanners preserved
+- Partial observations handled gracefully (scanner offline)
+- Probabilistic room assignment instead of binary
+- Optimal fusion of UKF uncertainty + fingerprint variance
