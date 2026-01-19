@@ -97,6 +97,23 @@ CROSS_FLOOR_STREAK: Final = 6  # Consecutive wins needed before applying a cross
 INCUMBENT_MARGIN_PERCENT: Final = 0.08  # 8% closer required to challenge incumbent
 INCUMBENT_MARGIN_METERS: Final = 0.20  # OR 0.2m closer required (whichever is easier to meet)
 
+# Dwell time based stability - margin increases with time in area
+# This makes it harder to switch rooms the longer a device stays stationary
+DWELL_TIME_MOVING_SECONDS: Final = 120  # 0-2 min: recently moved, lower threshold
+DWELL_TIME_SETTLING_SECONDS: Final = 600  # 2-10 min: settling in, normal threshold
+# After SETTLING: stationary, higher threshold
+
+# Movement state constants
+MOVEMENT_STATE_MOVING: Final = "moving"  # Recently changed rooms
+MOVEMENT_STATE_SETTLING: Final = "settling"  # Been in room a while
+MOVEMENT_STATE_STATIONARY: Final = "stationary"  # Been in room long time
+
+# Stability margins for each movement state
+MARGIN_MOVING_PERCENT: Final = 0.05  # 5% - easier to switch when moving
+MARGIN_SETTLING_PERCENT: Final = 0.08  # 8% - normal threshold (same as base)
+MARGIN_STATIONARY_PERCENT: Final = 0.15  # 15% - harder to switch when stationary
+MARGIN_STATIONARY_METERS: Final = 0.30  # 0.3m - also increase absolute threshold
+
 # Physical RSSI Priority - prevents offset-boosted signals from winning over physically closer sensors
 MIN_DISTANCE: Final = 0.1  # Minimum distance in metres (prevents multiple sensors at "0m")
 CONF_USE_PHYSICAL_RSSI_PRIORITY = "use_physical_rssi_priority"

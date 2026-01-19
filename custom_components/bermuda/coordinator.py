@@ -89,10 +89,15 @@ from .const import (
     DOMAIN_PRIVATE_BLE_DEVICE,
     EVIDENCE_WINDOW_SECONDS,
     INCUMBENT_MARGIN_METERS,
-    INCUMBENT_MARGIN_PERCENT,
+    MARGIN_MOVING_PERCENT,
+    MARGIN_SETTLING_PERCENT,
+    MARGIN_STATIONARY_METERS,
+    MARGIN_STATIONARY_PERCENT,
     METADEVICE_IBEACON_DEVICE,
     METADEVICE_TYPE_IBEACON_SOURCE,
     METADEVICE_TYPE_PRIVATE_BLE_SOURCE,
+    MOVEMENT_STATE_MOVING,
+    MOVEMENT_STATE_SETTLING,
     PRUNE_MAX_COUNT,
     PRUNE_TIME_DEFAULT,
     PRUNE_TIME_FMDN,
@@ -1845,7 +1850,10 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
             # STABILITY CHECK: Challenger must be SIGNIFICANTLY closer to challenge incumbent.
             # This prevents flickering when distances are nearly equal (e.g., 2.0m vs 2.1m).
-            # Challenger must improve by at least INCUMBENT_MARGIN_PERCENT OR INCUMBENT_MARGIN_METERS.
+            # The margin is DYNAMIC based on how long the device has been in the current area:
+            # - MOVING (0-2 min): Lower threshold (5%) - easier to switch when moving
+            # - SETTLING (2-10 min): Normal threshold (8%) - device is settling in
+            # - STATIONARY (10+ min): Higher threshold (15%) - harder to switch when stationary
             # NOTE: Skip this check if:
             # - Challenger passed via RSSI override (distance already suspect due to offset gaming)
             # - Distances are essentially equal (let tie-breaking logic handle it)
@@ -1855,21 +1863,34 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                 # When distances are equal or challenger is further, other checks apply
                 if distance_improvement > 0:
                     percent_improvement = distance_improvement / incumbent_distance if incumbent_distance > 0 else 0
+
+                    # Dynamic margin based on dwell time
+                    movement_state = device.get_movement_state(stamp_now=nowstamp)
+                    if movement_state == MOVEMENT_STATE_MOVING:
+                        required_percent = MARGIN_MOVING_PERCENT
+                        required_meters = INCUMBENT_MARGIN_METERS  # Keep base meters threshold
+                    elif movement_state == MOVEMENT_STATE_SETTLING:
+                        required_percent = MARGIN_SETTLING_PERCENT
+                        required_meters = INCUMBENT_MARGIN_METERS
+                    else:  # STATIONARY
+                        required_percent = MARGIN_STATIONARY_PERCENT
+                        required_meters = MARGIN_STATIONARY_METERS
+
                     # Must meet either the percentage OR absolute threshold (whichever is easier)
                     meets_stability_margin = (
-                        percent_improvement >= INCUMBENT_MARGIN_PERCENT
-                        or distance_improvement >= INCUMBENT_MARGIN_METERS
+                        percent_improvement >= required_percent or distance_improvement >= required_meters
                     )
                     if not meets_stability_margin:
                         # Challenger is closer but not significantly - incumbent keeps advantage
                         if _superchatty:
                             _LOGGER.debug(
-                                "Stability margin: %s rejected (%.2fm improvement, %.1f%% < required %.1f%% or %.2fm)",
+                                "Stability margin (%s): %s rejected (%.2fm, %.1f%% < %.1f%% or %.2fm)",
+                                movement_state,
                                 challenger.name,
                                 distance_improvement,
                                 percent_improvement * 100,
-                                INCUMBENT_MARGIN_PERCENT * 100,
-                                INCUMBENT_MARGIN_METERS,
+                                required_percent * 100,
+                                required_meters,
                             )
                         continue
 

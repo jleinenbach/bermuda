@@ -53,6 +53,8 @@ from .const import (
     DEFAULT_FMDN_MODE,
     DISTANCE_RETENTION_SECONDS,
     DOMAIN,
+    DWELL_TIME_MOVING_SECONDS,
+    DWELL_TIME_SETTLING_SECONDS,
     EVIDENCE_WINDOW_SECONDS,
     FMDN_MODE_BOTH,
     FMDN_MODE_RESOLVED_ONLY,
@@ -64,6 +66,9 @@ from .const import (
     METADEVICE_PRIVATE_BLE_DEVICE,
     METADEVICE_TYPE_FMDN_SOURCE,
     METADEVICE_TYPE_IBEACON_SOURCE,
+    MOVEMENT_STATE_MOVING,
+    MOVEMENT_STATE_SETTLING,
+    MOVEMENT_STATE_STATIONARY,
 )
 from .util import is_mac_address, mac_math_offset, normalize_address, normalize_mac
 
@@ -175,6 +180,11 @@ class BermudaDevice(dict):
         self.pending_area_id: str | None = None
         self.pending_floor_id: str | None = None
         self.pending_streak: int = 0
+
+        # Dwell time tracking - when did the device enter the current area?
+        # Used to calculate movement state (MOVING -> SETTLING -> STATIONARY)
+        self.area_changed_at: float = 0.0  # monotonic timestamp of last area change
+
         self._async_process_address_type()
 
     def _async_process_address_type(self):
@@ -681,6 +691,44 @@ class BermudaDevice(dict):
             # new measurement(s) immediately.
             self.ref_power_changed = monotonic_time_coarse()
 
+    def get_movement_state(self, *, stamp_now: float | None = None) -> str:
+        """
+        Determine movement state based on dwell time in current area.
+
+        Returns one of:
+        - MOVEMENT_STATE_MOVING: Recently changed rooms (0 to DWELL_TIME_MOVING_SECONDS)
+        - MOVEMENT_STATE_SETTLING: Been in room a while (MOVING to SETTLING seconds)
+        - MOVEMENT_STATE_STATIONARY: Been in room long time (beyond SETTLING seconds)
+
+        The movement state affects how strict the stability margin is for switching rooms.
+        When stationary, a challenger must be significantly closer to trigger a room change.
+        """
+        nowstamp = stamp_now if stamp_now is not None else monotonic_time_coarse()
+
+        # If area_changed_at is 0, device has never changed area (or just initialized)
+        # Treat as stationary to prevent initial flapping
+        if self.area_changed_at == 0.0:
+            return MOVEMENT_STATE_STATIONARY
+
+        dwell_time = nowstamp - self.area_changed_at
+
+        if dwell_time < DWELL_TIME_MOVING_SECONDS:
+            return MOVEMENT_STATE_MOVING
+        if dwell_time < DWELL_TIME_SETTLING_SECONDS:
+            return MOVEMENT_STATE_SETTLING
+        return MOVEMENT_STATE_STATIONARY
+
+    def get_dwell_time(self, *, stamp_now: float | None = None) -> float:
+        """
+        Get time in seconds since device entered current area.
+
+        Returns 0.0 if area_changed_at has not been set (device never moved).
+        """
+        if self.area_changed_at == 0.0:
+            return 0.0
+        nowstamp = stamp_now if stamp_now is not None else monotonic_time_coarse()
+        return max(0.0, nowstamp - self.area_changed_at)
+
     def _area_state_age(self, stamp_now: float) -> float | None:
         """Return the age of the last applied area selection."""
         if self.area_state_stamp is None:
@@ -995,6 +1043,10 @@ class BermudaDevice(dict):
 
             self.area_state_source = getattr(bermuda_advert, "scanner_address", None)
             self.area_state_retained = False
+
+            # Track dwell time: update area_changed_at when area actually changes
+            if old_area != self.area_name and old_area is not None:
+                self.area_changed_at = stamp_now
 
             if (old_area != self.area_name or distance is None) and self.create_sensor:
                 _LOGGER.debug("Device %s was in '%s', now '%s'", self.name, old_area, self.area_name)
