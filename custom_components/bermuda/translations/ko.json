@@ -92,6 +92,16 @@
             "area": {
                 "name": "구역"
             }
+        },
+        "select": {
+            "training_room": {
+                "name": "훈련 공간",
+                "state": {}
+            },
+            "training_floor": {
+                "name": "훈련 층",
+                "state": {}
+            }
         }
     },
     "services": {

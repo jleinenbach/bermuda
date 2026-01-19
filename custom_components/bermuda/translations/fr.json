@@ -27,5 +27,25 @@
         }
       }
     }
+  },
+  "entity": {
+    "sensor": {
+      "distance": {
+        "name": "Distance"
+      },
+      "area": {
+        "name": "Zone"
+      }
+    },
+    "select": {
+      "training_room": {
+        "name": "Salle d'entraînement",
+        "state": {}
+      },
+      "training_floor": {
+        "name": "Étage d'entraînement",
+        "state": {}
+      }
+    }
   }
 }

@@ -92,6 +92,16 @@
       "area": {
         "name": "Περιοχή"
       }
+    },
+    "select": {
+      "training_room": {
+        "name": "Δωμάτιο Εκπαίδευσης",
+        "state": {}
+      },
+      "training_floor": {
+        "name": "Όροφος Εκπαίδευσης",
+        "state": {}
+      }
     }
   },
   "services": {
