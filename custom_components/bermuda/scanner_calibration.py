@@ -188,17 +188,14 @@ class ScannerCalibrationManager:
 
         """
         # Collect offset contributions for each scanner
-        offset_contributions: dict[str, list[float]] = {
-            addr: [] for addr in self.active_scanners
-        }
+        offset_contributions: dict[str, list[float]] = {addr: [] for addr in self.active_scanners}
 
         bidirectional_pairs = 0
         for pair in self.scanner_pairs.values():
             diff = pair.rssi_difference
             if diff is None:
                 _LOGGER.debug(
-                    "Auto-cal pair %s <-> %s: not bidirectional yet "
-                    "(A sees B: %s/%d, B sees A: %s/%d)",
+                    "Auto-cal pair %s <-> %s: not bidirectional yet (A sees B: %s/%d, B sees A: %s/%d)",
                     pair.scanner_a,
                     pair.scanner_b,
                     pair.rssi_a_sees_b,
@@ -255,8 +252,7 @@ class ScannerCalibrationManager:
                 else:
                     # Change within hysteresis band - keep current value
                     _LOGGER.debug(
-                        "Auto-cal: Offset for %s stable at %d dB "
-                        "(candidate: %d, hysteresis: %d dB)",
+                        "Auto-cal: Offset for %s stable at %d dB (candidate: %d, hysteresis: %d dB)",
                         addr,
                         current_offset,
                         new_offset,
@@ -451,8 +447,7 @@ def update_scanner_calibration(  # noqa: C901
                     matching_keys = [k for k in advert_keys if k[1] == scanner_addr]
                     if not matching_keys and advert_keys:
                         _LOGGER.debug(
-                            "Auto-cal: iBeacon %s has %d adverts, none from scanner %s. "
-                            "Advert scanner addresses: %s",
+                            "Auto-cal: iBeacon %s has %d adverts, none from scanner %s. Advert scanner addresses: %s",
                             ibeacon_addr,
                             len(advert_keys),
                             scanner_addr,

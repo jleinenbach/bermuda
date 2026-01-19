@@ -89,8 +89,13 @@ DISTANCE_RETENTION_SECONDS: Final = AREA_RETENTION_SECONDS
 EVIDENCE_WINDOW_SECONDS: Final = AREA_RETENTION_SECONDS
 CROSS_FLOOR_MIN_HISTORY: Final = 8  # Minimum history length before cross-floor wins via historical checks.
 SAME_FLOOR_MIN_HISTORY: Final = 3  # Minimum history length before same-floor wins can occur.
-SAME_FLOOR_STREAK: Final = 2  # Consecutive wins needed before applying a same-floor switch.
-CROSS_FLOOR_STREAK: Final = 3  # Consecutive wins needed before applying a cross-floor switch.
+SAME_FLOOR_STREAK: Final = 4  # Consecutive wins needed before applying a same-floor switch.
+CROSS_FLOOR_STREAK: Final = 6  # Consecutive wins needed before applying a cross-floor switch.
+
+# Incumbent stability margin - challenger must be significantly closer to even compete
+# This prevents flickering when distances are nearly equal
+INCUMBENT_MARGIN_PERCENT: Final = 0.08  # 8% closer required to challenge incumbent
+INCUMBENT_MARGIN_METERS: Final = 0.20  # OR 0.2m closer required (whichever is easier to meet)
 
 # Physical RSSI Priority - prevents offset-boosted signals from winning over physically closer sensors
 MIN_DISTANCE: Final = 0.1  # Minimum distance in metres (prevents multiple sensors at "0m")

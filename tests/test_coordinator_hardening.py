@@ -164,9 +164,7 @@ async def test_async_update_data_returns_internal_result(hass: HomeAssistant) ->
 
 
 @pytest.mark.asyncio
-async def test_dump_devices_limits_when_over_soft_cap(
-    monkeypatch: pytest.MonkeyPatch, hass: HomeAssistant
-) -> None:
+async def test_dump_devices_limits_when_over_soft_cap(monkeypatch: pytest.MonkeyPatch, hass: HomeAssistant) -> None:
     """Dump service should fall back when device graph is oversized."""
     monkeypatch.setattr(coordinator_mod, "DUMP_DEVICE_SOFT_LIMIT", 2)
     coordinator = _make_coordinator(hass)

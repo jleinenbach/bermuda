@@ -29,12 +29,14 @@ Architecture:
 
 from .area_profile import AreaProfile
 from .confidence import weighted_z_scores_to_confidence, z_scores_to_confidence
+from .scanner_absolute import ScannerAbsoluteRssi
 from .scanner_pair import ScannerPairCorrelation
 from .store import CorrelationStore
 
 __all__ = [
     "AreaProfile",
     "CorrelationStore",
+    "ScannerAbsoluteRssi",
     "ScannerPairCorrelation",
     "weighted_z_scores_to_confidence",
     "z_scores_to_confidence",

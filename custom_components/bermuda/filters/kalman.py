@@ -206,9 +206,7 @@ class KalmanFilter(SignalFilter):
             "variance": round(self.variance, 4),
             "std_dev": round(self.variance**0.5, 2),
             "sample_count": self.sample_count,
-            "kalman_gain": round(
-                self.variance / (self.variance + self.measurement_noise), 4
-            )
+            "kalman_gain": round(self.variance / (self.variance + self.measurement_noise), 4)
             if self._initialized
             else 0.0,
             "initialized": self._initialized,

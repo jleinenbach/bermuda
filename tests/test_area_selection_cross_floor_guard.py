@@ -81,9 +81,7 @@ class FakeDevice:
         self.co_visibility_stats: dict[str, dict[str, dict[str, int]]] = {}
         self.co_visibility_min_samples: int = 50
 
-    def update_co_visibility(
-        self, area_id: str, visible_scanners: set[str], all_scanners: set[str]
-    ) -> None:
+    def update_co_visibility(self, area_id: str, visible_scanners: set[str], all_scanners: set[str]) -> None:
         """Stub for co-visibility update - just track stats for testing."""
         if area_id not in self.co_visibility_stats:
             self.co_visibility_stats[area_id] = {}
@@ -294,15 +292,17 @@ def test_transient_gap_still_allows_cross_floor_switch(monkeypatch: pytest.Monke
         area_name="Room B",
     )
 
+    # Use distances that exceed cross_floor_margin (25%) even when incumbent varies
+    # With incumbent at 3.0m and challenger at 1.6m: pcnt_diff = 1.4/2.3 = 60.9% >> 25%
     incumbent = FakeAdvert(
         name=scanner_floor_a.name,
         scanner_device=scanner_floor_a,
         area_id=scanner_floor_a.area_id,
         area_name=scanner_floor_a.area_name,
-        rssi_distance=2.2,
+        rssi_distance=3.0,
         rssi=-88,
         stamp=_fake_time(),
-        hist=[2.2] * 10,
+        hist=[3.0] * 10,
     )
     challenger = FakeAdvert(
         name=scanner_floor_b.name,
@@ -322,7 +322,10 @@ def test_transient_gap_still_allows_cross_floor_switch(monkeypatch: pytest.Monke
     )
 
     switch_cycle: int | None = None
-    for idx, inc_distance in enumerate([2.2, None, 2.1, 2.0]):
+    # Run enough iterations to allow cross-floor streak to complete (CROSS_FLOOR_STREAK=6)
+    # Distance pattern: 3.0 -> None -> 2.8 -> 2.6 -> 2.6 -> 2.6 -> 2.6 -> 2.6
+    # Even at 2.6m vs 1.6m: pcnt_diff = 1.0/2.1 = 47.6% > 25%
+    for idx, inc_distance in enumerate([3.0, None, 2.8, 2.6, 2.6, 2.6, 2.6, 2.6]):
         now[0] += 0.5
         incumbent.stamp = _fake_time()
         challenger.stamp = _fake_time()
@@ -577,8 +580,7 @@ def test_same_floor_confirmation_allows_strong_switch(monkeypatch: pytest.Monkey
 
     # Even with same-floor witnesses, such strong evidence should win
     assert device.area_advert is challenger, (
-        f"Expected challenger to win with strong evidence. "
-        f"Got area={device.area_name!r}, floor={device.floor_id!r}"
+        f"Expected challenger to win with strong evidence. Got area={device.area_name!r}, floor={device.floor_id!r}"
     )
 
 
@@ -671,8 +673,7 @@ def test_floor_sandwich_logic_blocks_switch(monkeypatch: pytest.MonkeyPatch) -> 
     # With sandwich logic, the ground floor (middle) should be protected
     # The 50% difference is not enough to overcome the sandwich margin boost
     assert device.floor_id == original_floor, (
-        f"Unexpected switch from sandwiched floor. "
-        f"Expected floor={original_floor!r}, got={device.floor_id!r}"
+        f"Unexpected switch from sandwiched floor. Expected floor={original_floor!r}, got={device.floor_id!r}"
     )
 
 
@@ -742,8 +743,7 @@ def test_non_adjacent_floor_requires_stronger_evidence(monkeypatch: pytest.Monke
     # With floor skip penalty (15% extra margin for skipping 1 floor),
     # the 55% difference should NOT be enough
     assert device.floor_id == original_floor, (
-        f"Unexpected switch to non-adjacent floor. "
-        f"Expected floor={original_floor!r}, got={device.floor_id!r}"
+        f"Unexpected switch to non-adjacent floor. Expected floor={original_floor!r}, got={device.floor_id!r}"
     )
 
 
@@ -956,8 +956,7 @@ def test_near_field_distance_ratio_protection(monkeypatch: pytest.MonkeyPatch) -
     #    comes from the accumulated margins (base 25% + additional protections)
     # The 35% improvement is borderline but should be blocked by cross-floor guards.
     assert device.floor_id == original_floor, (
-        f"Unexpected cross-floor switch despite near-field incumbent at 2m. "
-        f"Got floor={device.floor_id!r}"
+        f"Unexpected cross-floor switch despite near-field incumbent at 2m. Got floor={device.floor_id!r}"
     )
 
 
@@ -1042,9 +1041,7 @@ class TestCoVisibilityLearning:
         }
 
         # All significant scanners (a and b) are visible
-        confidence = device.get_co_visibility_confidence(
-            "area_test", {"scanner_a", "scanner_b"}
-        )
+        confidence = device.get_co_visibility_confidence("area_test", {"scanner_a", "scanner_b"})
         assert confidence == 1.0  # Full confidence
 
     def test_co_visibility_confidence_with_missing_expected_scanners(self) -> None:

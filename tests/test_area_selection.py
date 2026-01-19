@@ -509,7 +509,9 @@ def test_cross_floor_switch_requires_sustained_advantage(coordinator: BermudaDat
     assert device.area_advert is challenger  # type: ignore[comparison-overlap]
 
 
-def test_area_selection_retained_when_no_winner(monkeypatch: pytest.MonkeyPatch, coordinator: BermudaDataUpdateCoordinator) -> None:
+def test_area_selection_retained_when_no_winner(
+    monkeypatch: pytest.MonkeyPatch, coordinator: BermudaDataUpdateCoordinator
+) -> None:
     """Last known area should be retained across gaps shorter than the retention window."""
     current_time = [1000.0]
     _patch_monotonic_time(monkeypatch, current_time)
@@ -530,7 +532,9 @@ def test_area_selection_retained_when_no_winner(monkeypatch: pytest.MonkeyPatch,
     assert metadata["last_good_area_age_s"] == pytest.approx(AREA_MAX_AD_AGE + 1)
 
 
-def test_retained_area_expires_after_window(monkeypatch: pytest.MonkeyPatch, coordinator: BermudaDataUpdateCoordinator) -> None:
+def test_retained_area_expires_after_window(
+    monkeypatch: pytest.MonkeyPatch, coordinator: BermudaDataUpdateCoordinator
+) -> None:
     """Retained selections must eventually clear when the retention window elapses."""
     current_time = [2000.0]
     _patch_monotonic_time(monkeypatch, current_time)
@@ -549,7 +553,9 @@ def test_retained_area_expires_after_window(monkeypatch: pytest.MonkeyPatch, coo
     assert metadata["last_good_area_age_s"] is None
 
 
-def test_fresh_advert_replaces_retained_state(monkeypatch: pytest.MonkeyPatch, coordinator: BermudaDataUpdateCoordinator) -> None:
+def test_fresh_advert_replaces_retained_state(
+    monkeypatch: pytest.MonkeyPatch, coordinator: BermudaDataUpdateCoordinator
+) -> None:
     """A new contender should override retained state and reset staleness metadata."""
     current_time = [3000.0]
     _patch_monotonic_time(monkeypatch, current_time)
@@ -590,7 +596,9 @@ def test_rssi_winner_does_not_keep_old_distance(coordinator: BermudaDataUpdateCo
     assert device.area_distance is None
 
 
-def test_stale_advert_still_applies_area(monkeypatch: pytest.MonkeyPatch, coordinator: BermudaDataUpdateCoordinator) -> None:
+def test_stale_advert_still_applies_area(
+    monkeypatch: pytest.MonkeyPatch, coordinator: BermudaDataUpdateCoordinator
+) -> None:
     """Initial stale adverts should still populate area/floor and mark stale metadata."""
     current_time = [5000.0]
     _patch_monotonic_time(monkeypatch, current_time)
@@ -607,7 +615,9 @@ def test_stale_advert_still_applies_area(monkeypatch: pytest.MonkeyPatch, coordi
     assert metadata["area_is_stale"] is True
 
 
-def test_stale_incumbent_ignored_by_rssi_fallback(monkeypatch: pytest.MonkeyPatch, coordinator: BermudaDataUpdateCoordinator) -> None:
+def test_stale_incumbent_ignored_by_rssi_fallback(
+    monkeypatch: pytest.MonkeyPatch, coordinator: BermudaDataUpdateCoordinator
+) -> None:
     """Stale incumbent should not block a fresh RSSI-only challenger within evidence window."""
     current_time = [7000.0]
     _patch_monotonic_time(monkeypatch, current_time)
@@ -626,7 +636,9 @@ def test_stale_incumbent_ignored_by_rssi_fallback(monkeypatch: pytest.MonkeyPatc
     assert device.area_distance is None
 
 
-def test_all_stale_adverts_result_in_no_winner(monkeypatch: pytest.MonkeyPatch, coordinator: BermudaDataUpdateCoordinator) -> None:
+def test_all_stale_adverts_result_in_no_winner(
+    monkeypatch: pytest.MonkeyPatch, coordinator: BermudaDataUpdateCoordinator
+) -> None:
     """When all adverts are outside the evidence window, winner should be None."""
     current_time = [8000.0]
     _patch_monotonic_time(monkeypatch, current_time)
@@ -643,7 +655,9 @@ def test_all_stale_adverts_result_in_no_winner(monkeypatch: pytest.MonkeyPatch, 
     assert metadata["area_retained"] is False
 
 
-def test_rssi_hysteresis_respected_within_evidence(monkeypatch: pytest.MonkeyPatch, coordinator: BermudaDataUpdateCoordinator) -> None:
+def test_rssi_hysteresis_respected_within_evidence(
+    monkeypatch: pytest.MonkeyPatch, coordinator: BermudaDataUpdateCoordinator
+) -> None:
     """RSSI hysteresis should keep the incumbent when both adverts are fresh and close."""
     current_time = [9000.0]
     _patch_monotonic_time(monkeypatch, current_time)
@@ -660,7 +674,9 @@ def test_rssi_hysteresis_respected_within_evidence(monkeypatch: pytest.MonkeyPat
     assert device.area_distance is None
 
 
-def test_set_ref_power_fast_acquire_when_lost(monkeypatch: pytest.MonkeyPatch, coordinator: BermudaDataUpdateCoordinator) -> None:
+def test_set_ref_power_fast_acquire_when_lost(
+    monkeypatch: pytest.MonkeyPatch, coordinator: BermudaDataUpdateCoordinator
+) -> None:
     """Ref power recalcs may fast-acquire when no current area is set."""
     current_time = [10000.0]
     _patch_monotonic_time(monkeypatch, current_time)
@@ -694,7 +710,9 @@ def test_set_ref_power_fast_acquire_when_lost(monkeypatch: pytest.MonkeyPatch, c
     assert device.last_seen == stale_stamp
 
 
-def test_set_ref_power_updates_distance_only_with_evidence(monkeypatch: pytest.MonkeyPatch, coordinator: BermudaDataUpdateCoordinator) -> None:
+def test_set_ref_power_updates_distance_only_with_evidence(
+    monkeypatch: pytest.MonkeyPatch, coordinator: BermudaDataUpdateCoordinator
+) -> None:
     """Ref power recalcs may refresh distance when evidence is fresh without minting new presence."""
     current_time = [11000.0]
     _patch_monotonic_time(monkeypatch, current_time)
@@ -731,7 +749,9 @@ def test_set_ref_power_updates_distance_only_with_evidence(monkeypatch: pytest.M
     assert device.area_state_stamp == baseline_stamp
 
 
-def test_last_seen_not_refreshed_without_new_advert(monkeypatch: pytest.MonkeyPatch, coordinator: BermudaDataUpdateCoordinator) -> None:
+def test_last_seen_not_refreshed_without_new_advert(
+    monkeypatch: pytest.MonkeyPatch, coordinator: BermudaDataUpdateCoordinator
+) -> None:
     """last_seen must not advance when re-applying the same advert without new evidence."""
     current_time = [12000.0]
     _patch_monotonic_time(monkeypatch, current_time)
@@ -751,7 +771,9 @@ def test_last_seen_not_refreshed_without_new_advert(monkeypatch: pytest.MonkeyPa
     assert device.area_id == "area-stale"
 
 
-def test_presence_respects_devtracker_timeout(monkeypatch: pytest.MonkeyPatch, coordinator: BermudaDataUpdateCoordinator) -> None:
+def test_presence_respects_devtracker_timeout(
+    monkeypatch: pytest.MonkeyPatch, coordinator: BermudaDataUpdateCoordinator
+) -> None:
     """Device tracker presence should time out based on last_seen, not retention."""
     current_time = [13000.0]
     _patch_monotonic_time(monkeypatch, current_time)
@@ -769,7 +791,9 @@ def test_presence_respects_devtracker_timeout(monkeypatch: pytest.MonkeyPatch, c
     assert device.zone == STATE_NOT_HOME
 
 
-def test_last_seen_advances_only_with_newer_advert(monkeypatch: pytest.MonkeyPatch, coordinator: BermudaDataUpdateCoordinator) -> None:
+def test_last_seen_advances_only_with_newer_advert(
+    monkeypatch: pytest.MonkeyPatch, coordinator: BermudaDataUpdateCoordinator
+) -> None:
     """last_seen should advance when a newer advert arrives, not on repeated cycles."""
     current_time = [14000.0]
     _patch_monotonic_time(monkeypatch, current_time)
@@ -789,7 +813,9 @@ def test_last_seen_advances_only_with_newer_advert(monkeypatch: pytest.MonkeyPat
     assert device.last_seen == pytest.approx(second.stamp)
 
 
-def test_stale_advert_expires_after_evidence_window(monkeypatch: pytest.MonkeyPatch, coordinator: BermudaDataUpdateCoordinator) -> None:
+def test_stale_advert_expires_after_evidence_window(
+    monkeypatch: pytest.MonkeyPatch, coordinator: BermudaDataUpdateCoordinator
+) -> None:
     """Stale adverts left in memory must not prevent expiry after retention window."""
     current_time = [6000.0]
     _patch_monotonic_time(monkeypatch, current_time)

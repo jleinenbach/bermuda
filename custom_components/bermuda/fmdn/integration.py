@@ -78,7 +78,9 @@ class FmdnIntegration:
         return cast("EidResolver", resolver)
 
     def format_metadevice_address(
-        self, device_id: str, canonical_id: str | None  # pylint: disable=unused-argument
+        self,
+        device_id: str,
+        canonical_id: str | None,  # pylint: disable=unused-argument
     ) -> str:
         """
         Return the canonical key for an FMDN metadevice.
@@ -384,9 +386,7 @@ class FmdnIntegration:
                     continue
 
                 # Successfully resolved - record in FMDN manager
-                self.manager.record_resolution_success(
-                    eid_bytes, device.address, str(resolved_device_id), canonical_id
-                )
+                self.manager.record_resolution_success(eid_bytes, device.address, str(resolved_device_id), canonical_id)
                 any_resolved = True
 
                 metadevice_address = self.format_metadevice_address(str(resolved_device_id), canonical_id)
@@ -511,9 +511,7 @@ class FmdnIntegration:
 
         _LOGGER.debug("Refreshing FMDN Device list from googlefindmy integration")
 
-        fmdn_entries = self.coordinator.hass.config_entries.async_entries(
-            DOMAIN_GOOGLEFINDMY, include_disabled=False
-        )
+        fmdn_entries = self.coordinator.hass.config_entries.async_entries(DOMAIN_GOOGLEFINDMY, include_disabled=False)
         for fmdn_entry in fmdn_entries:
             fmdn_entities = self.coordinator.er.entities.get_entries_for_config_entry_id(fmdn_entry.entry_id)
             for fmdn_entity in fmdn_entities:
