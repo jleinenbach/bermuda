@@ -1708,6 +1708,10 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                 and (device.create_sensor or device.create_tracker_done)  # include tracked or tracker devices
                 # or device.metadevice_type in METADEVICE_SOURCETYPES  # and any source devices for PBLE, ibeacon etc
             ):
+                # Skip devices that are manually locked to an area
+                if device.area_locked_id is not None:
+                    # Device is locked - keep its current area, don't auto-detect
+                    continue
                 # Try UKF first if enabled; fall back to min-distance if UKF cannot decide
                 if use_ukf and self._refresh_area_by_ukf(device):
                     continue

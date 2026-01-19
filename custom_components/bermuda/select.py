@@ -147,12 +147,19 @@ class BermudaTrainingRoomSelect(BermudaEntity, SelectEntity):
         self._room_override_id = target_area.id
         self._initialized = True
 
+        # LOCK the device to this area - prevents automatic detection from overriding
+        self._device.area_locked_id = target_area.id
+        self._device.area_locked_name = option
+        # Also set the actual area immediately
+        self._device.area_id = target_area.id
+        self._device.area_name = option
+
         # Update UI immediately before training starts
         self.async_write_ha_state()
 
         # Train the fingerprint with multiple samples for stronger weight
         _LOGGER.info(
-            "Training fingerprint for device %s in room %s (%d samples)...",
+            "Training and LOCKING device %s to room %s (%d samples)...",
             self._device.name,
             option,
             TRAINING_SAMPLE_COUNT,
@@ -183,6 +190,9 @@ class BermudaTrainingRoomSelect(BermudaEntity, SelectEntity):
         # Clear room selection when floor changes to prevent wrong training
         self._room_override_name = None
         self._room_override_id = None
+        # Clear the area lock - device will return to auto-detection
+        self._device.area_locked_id = None
+        self._device.area_locked_name = None
         # Keep initialized=True so we don't re-init from auto-detect
         self.async_write_ha_state()
 

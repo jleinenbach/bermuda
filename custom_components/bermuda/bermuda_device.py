@@ -186,6 +186,11 @@ class BermudaDevice(dict):
         # Used to calculate movement state (MOVING -> SETTLING -> STATIONARY)
         self.area_changed_at: float = 0.0  # monotonic timestamp of last area change
 
+        # Manual area lock - when set, automatic area detection is bypassed
+        # Set by manual fingerprint training, cleared by user or explicit unlock
+        self.area_locked_id: str | None = None
+        self.area_locked_name: str | None = None
+
         self._async_process_address_type()
 
     def _async_process_address_type(self):
