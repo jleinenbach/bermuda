@@ -1713,12 +1713,26 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             # properly replaced by in-range challengers.
             # HOWEVER: For cross-floor switches, we still require minimum history to prevent
             # a device jumping to a different floor just because the current scanner went stale.
+            # Bug Fix: Also check incumbent's history - if incumbent has substantial history
+            # but challenger has minimal history, require challenger to prove itself longer.
             if current_incumbent is soft_incumbent and not _is_distance_contender(soft_incumbent):
                 if cross_floor:
                     challenger_hist = challenger.hist_distance_by_interval
+                    incumbent_hist = soft_incumbent.hist_distance_by_interval if soft_incumbent else []
+                    # Require challenger to have minimum history
                     if len(challenger_hist) < CROSS_FLOOR_MIN_HISTORY:
                         tests.reason = "LOSS - soft incumbent but cross-floor history too short"
                         continue
+                    # Bug Fix: If incumbent has substantial history (was recently valid),
+                    # require challenger to have comparable or better history before winning.
+                    # This prevents a new scanner with just 8 samples from beating a
+                    # well-established incumbent that temporarily lost distance measurement.
+                    if len(incumbent_hist) >= CROSS_FLOOR_MIN_HISTORY * 2:
+                        # Incumbent was well-established - require challenger to have at least
+                        # the same amount of history to prove it's consistently closer
+                        if len(challenger_hist) < len(incumbent_hist) // 2:
+                            tests.reason = "LOSS - soft incumbent has substantial history, challenger needs more"
+                            continue
                 tests.reason = "WIN - soft incumbent failed distance contention"
                 incumbent = challenger
                 soft_incumbent = None
@@ -2063,12 +2077,19 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         _superchatty = False
 
         rssi_fallback_margin = 3.0
+        rssi_fallback_cross_floor_margin = 6.0  # Bug Fix: Higher margin for cross-floor RSSI switches
         winner = incumbent or soft_incumbent
 
         if not has_distance_contender:
 
             def _evidence_ok(advert: BermudaAdvert | None) -> bool:
                 return _within_evidence(advert)
+
+            def _get_floor_id(advert: BermudaAdvert | None) -> str | None:
+                """Get floor_id from advert's scanner device."""
+                if advert is None or advert.scanner_device is None:
+                    return None
+                return getattr(advert.scanner_device, "floor_id", None)
 
             fallback_candidates: list[BermudaAdvert] = []
             for adv in device.adverts.values():
@@ -2092,6 +2113,23 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                 )
                 best_rssi = best_by_rssi.rssi
                 incumbent_rssi = incumbent_candidate.rssi if incumbent_candidate is not None else None
+
+                # Bug Fix: Check if this is a cross-floor switch and apply stricter margin
+                rssi_is_cross_floor = False
+                if incumbent_candidate is not None and best_by_rssi is not incumbent_candidate:
+                    inc_floor = _get_floor_id(incumbent_candidate)
+                    best_floor = _get_floor_id(best_by_rssi)
+                    rssi_is_cross_floor = (
+                        inc_floor is not None
+                        and best_floor is not None
+                        and inc_floor != best_floor
+                    )
+
+                # Use higher margin for cross-floor RSSI switches
+                effective_rssi_margin = (
+                    rssi_fallback_cross_floor_margin if rssi_is_cross_floor else rssi_fallback_margin
+                )
+
                 if incumbent_candidate is None:
                     winner = best_by_rssi
                     tests.reason = "WIN via RSSI fallback (no incumbent within evidence)"
@@ -2099,10 +2137,18 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                     winner = best_by_rssi
                     tests.reason = "WIN via RSSI fallback (no distance contenders)"
                 elif best_rssi is not None and (
-                    incumbent_rssi is None or best_rssi >= incumbent_rssi + rssi_fallback_margin
+                    incumbent_rssi is None or best_rssi >= incumbent_rssi + effective_rssi_margin
                 ):
-                    winner = best_by_rssi
-                    tests.reason = "WIN via RSSI fallback margin"
+                    # Bug Fix: For cross-floor RSSI switches, don't apply immediately -
+                    # let the streak logic handle it to provide stability
+                    if rssi_is_cross_floor:
+                        # Don't set winner here - let streak logic below handle the switch
+                        # This ensures cross-floor RSSI switches also require confirmation
+                        winner = incumbent_candidate  # Keep incumbent, challenger goes through streak
+                        tests.reason = "HOLD via RSSI cross-floor protection (needs streak confirmation)"
+                    else:
+                        winner = best_by_rssi
+                        tests.reason = "WIN via RSSI fallback margin"
                 else:
                     winner = incumbent_candidate
                     tests.reason = "HOLD via RSSI fallback hysteresis"
@@ -2267,30 +2313,21 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         cross_floor = _resolve_cross_floor(device.area_advert, winner)
         streak_target = CROSS_FLOOR_STREAK if cross_floor else SAME_FLOOR_STREAK
 
-        # Co-Visibility Confidence Check: If the winner's area has low co-visibility
-        # confidence (expected scanners are missing) but the incumbent has high
-        # confidence, prefer the incumbent. This helps detect false positives where
-        # a device appears closer to a scanner but the typical co-scanners are missing.
-        if (
-            device.area_advert is not None
-            and winner is not None
-            and winner.area_id is not None
-            and device.area_advert.area_id is not None
-            and winner.area_id != device.area_advert.area_id
-        ):
+        # Bug Fix: Calculate confidence scores ALWAYS, not just when area differs.
+        # These scores are used both for streak_target adjustment AND for streak validation.
+        # Previously, confidence was only checked when winner.area_id != incumbent.area_id,
+        # which meant the streak could build up before confidence was ever evaluated.
+        winner_confidence = 1.0
+        incumbent_confidence = 1.0
+        winner_corr_confidence = 1.0
+        incumbent_corr_confidence = 1.0
+        low_confidence_winner = False
+
+        if winner is not None and winner.area_id is not None:
             visible_scanners = _get_visible_scanners()
             winner_confidence = device.get_co_visibility_confidence(winner.area_id, visible_scanners)
-            incumbent_confidence = device.get_co_visibility_confidence(device.area_advert.area_id, visible_scanners)
 
-            # If winner has significantly lower confidence than incumbent, increase streak target
-            # This makes it harder to switch when expected co-scanners are missing
-            if winner_confidence < 0.7 and incumbent_confidence > winner_confidence + 0.2:
-                # Double the streak requirement when co-visibility is suspicious
-                streak_target = max(streak_target, streak_target * 2)
-
-            # Scanner Correlation Confidence Check: Compare learned RSSI patterns
-            # If the winner's area has patterns that don't match what we've learned,
-            # but the incumbent does match, prefer the incumbent.
+            # Scanner Correlation Confidence Check
             current_readings: dict[str, float] = {
                 adv.scanner_address: adv.rssi
                 for adv in device.adverts.values()
@@ -2299,11 +2336,29 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             winner_corr_confidence = self._get_correlation_confidence(
                 device.address, winner.area_id, winner.rssi, current_readings
             )
-            incumbent_corr_confidence = self._get_correlation_confidence(
-                device.address, device.area_advert.area_id, device.area_advert.rssi, current_readings
-            )
-            if winner_corr_confidence < 0.5 and incumbent_corr_confidence > winner_corr_confidence + 0.3:
-                streak_target = max(streak_target, streak_target * 2)
+
+            if device.area_advert is not None and device.area_advert.area_id is not None:
+                incumbent_confidence = device.get_co_visibility_confidence(
+                    device.area_advert.area_id, visible_scanners
+                )
+                incumbent_corr_confidence = self._get_correlation_confidence(
+                    device.address, device.area_advert.area_id, device.area_advert.rssi, current_readings
+                )
+
+            # Check if winner has suspiciously low confidence
+            if winner.area_id != (device.area_advert.area_id if device.area_advert else None):
+                # Co-Visibility Confidence Check: If the winner's area has low co-visibility
+                # confidence (expected scanners are missing) but the incumbent has high
+                # confidence, prefer the incumbent.
+                if winner_confidence < 0.7 and incumbent_confidence > winner_confidence + 0.2:
+                    # Double the streak requirement when co-visibility is suspicious
+                    streak_target = max(streak_target, streak_target * 2)
+                    low_confidence_winner = True
+
+                # Correlation confidence check
+                if winner_corr_confidence < 0.5 and incumbent_corr_confidence > winner_corr_confidence + 0.3:
+                    streak_target = max(streak_target, streak_target * 2)
+                    low_confidence_winner = True
 
         if device.area_advert is None and winner is not None:
             # Bootstrap immediately when we have no area yet; don't wait for streak logic.
@@ -2350,25 +2405,75 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                         if rssi_advantage > RSSI_CONSISTENCY_MARGIN_DB:
                             significant_rssi_advantage = True
 
-        if winner is not None and (
-            not _is_distance_contender(device.area_advert)
-            or area_advert_stale
-            or significant_improvement_same_floor
-            or significant_rssi_advantage
-        ):
+        # Bug Fix: Bootstrap exceptions should NOT bypass cross-floor protection.
+        # Only allow immediate switch if:
+        # 1. It's NOT a cross-floor switch, OR
+        # 2. The incumbent is truly invalid (stale or not a distance contender)
+        # Previously, significant_improvement_same_floor and significant_rssi_advantage
+        # could trigger immediate switches even for cross-floor cases due to the OR logic.
+        is_cross_floor_switch = _resolve_cross_floor(device.area_advert, winner)
+        incumbent_truly_invalid = (
+            not _is_distance_contender(device.area_advert) or area_advert_stale
+        )
+        same_floor_fast_track = (
+            not is_cross_floor_switch
+            and (significant_improvement_same_floor or significant_rssi_advantage)
+        )
+
+        if winner is not None and (incumbent_truly_invalid or same_floor_fast_track):
             device.pending_area_id = None
             device.pending_floor_id = None
             device.pending_streak = 0
             _apply_selection(winner)
             return
 
-        if device.pending_area_id == winner.area_id and device.pending_floor_id == getattr(
-            winner.scanner_device, "floor_id", None
-        ):
-            device.pending_streak += 1
+        # Bug Fix: Improved streak logic for multi-room fluctuations.
+        # When a device fluctuates between multiple rooms (A→B→C→A), the streak was
+        # always reset to 1, preventing any room from reaching the threshold.
+        # New logic: If the winner matches the pending candidate, increment streak.
+        # If winner matches current area_advert, reset pending state (device is stable).
+        # If winner is a NEW third candidate, only reset if it's more promising.
+        winner_floor_id = getattr(winner.scanner_device, "floor_id", None)
+
+        if device.pending_area_id == winner.area_id and device.pending_floor_id == winner_floor_id:
+            # Winner matches pending candidate - increment streak
+            # Bug Fix: Only increment if winner has acceptable confidence.
+            # If confidence is very low, don't count this cycle toward the streak.
+            # This prevents accumulating streak during intermittent false readings.
+            if low_confidence_winner and winner_confidence < 0.5:
+                # Very low confidence - don't increment streak this cycle
+                pass
+            else:
+                device.pending_streak += 1
+        elif device.pending_area_id is not None and device.pending_area_id != winner.area_id:
+            # A different candidate appeared - check if we should switch candidates
+            # Only switch if the new candidate is significantly closer than our pending one
+            pending_advert = next(
+                (adv for adv in device.adverts.values() if adv.area_id == device.pending_area_id),
+                None,
+            )
+            pending_dist = _effective_distance(pending_advert) if pending_advert else None
+            winner_dist = _effective_distance(winner)
+
+            # If winner is significantly closer (>20% improvement), switch to new candidate
+            # Otherwise, don't reset - keep building streak for the pending candidate
+            if pending_dist is not None and winner_dist is not None:
+                improvement = (pending_dist - winner_dist) / pending_dist if pending_dist > 0 else 0
+                if improvement > 0.20:
+                    # Significant improvement - switch to new candidate
+                    device.pending_area_id = winner.area_id
+                    device.pending_floor_id = winner_floor_id
+                    device.pending_streak = 1
+                # else: keep current pending candidate, don't increment streak
+            else:
+                # No valid distance comparison - reset to new candidate
+                device.pending_area_id = winner.area_id
+                device.pending_floor_id = winner_floor_id
+                device.pending_streak = 1
         else:
+            # First pending candidate or same floor different area
             device.pending_area_id = winner.area_id
-            device.pending_floor_id = getattr(winner.scanner_device, "floor_id", None)
+            device.pending_floor_id = winner_floor_id
             device.pending_streak = 1
 
         if device.pending_streak >= streak_target:

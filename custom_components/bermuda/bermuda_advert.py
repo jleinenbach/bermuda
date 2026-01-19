@@ -439,7 +439,13 @@ class BermudaAdvert(dict[str, Any]):
         return self.rssi_distance_raw
 
     def _clear_stale_history(self) -> None:
-        """Clear distance and RSSI history when advert is stale."""
+        """Clear distance and RSSI history when advert is stale.
+
+        Bug Fix: Also clear hist_distance to maintain synchronization between
+        the two distance history lists. Previously only hist_distance_by_interval
+        was cleared, which could cause desynchronization where hist_distance
+        retained old values while hist_distance_by_interval was empty.
+        """
         self.rssi_distance = None
         self.rssi_filtered = None
         self.rssi_kalman.reset()  # Reset Kalman filter state for fresh start
@@ -447,6 +453,15 @@ class BermudaAdvert(dict[str, Any]):
             self.hist_distance_by_interval.clear()
         if len(self.hist_rssi_by_interval) > 0:
             self.hist_rssi_by_interval.clear()
+        # Bug Fix: Also clear hist_distance to maintain sync with hist_distance_by_interval
+        # This prevents velocity calculations from using stale data when area selection
+        # uses fresh (empty) hist_distance_by_interval data.
+        if len(self.hist_distance) > 0:
+            self.hist_distance.clear()
+        if len(self.hist_stamp) > 0:
+            self.hist_stamp.clear()
+        if len(self.hist_velocity) > 0:
+            self.hist_velocity.clear()
 
     def _compute_smoothed_distance(self) -> float:
         """
@@ -488,8 +503,14 @@ class BermudaAdvert(dict[str, Any]):
         if self.rssi_distance is None and new_stamp is not None:
             self.rssi_distance = self.rssi_distance_raw
             if self.rssi_distance_raw is not None:
+                # Bug Fix: When initializing hist_distance_by_interval, also ensure
+                # hist_distance is synchronized. This prevents the two lists from
+                # having inconsistent data when one is cleared but the other isn't.
                 self.hist_distance_by_interval.clear()
                 self.hist_distance_by_interval.append(self.rssi_distance_raw)
+                # Sync hist_distance if it's empty or has stale data
+                if len(self.hist_distance) == 0:
+                    self.hist_distance.append(self.rssi_distance_raw)
 
         # ADAPTIVE TIMEOUT: Use device's MAXIMUM observed advertisement interval to determine staleness.
         # Using MAX instead of AVG ensures we don't mark devices as stale during deep sleep cycles.
