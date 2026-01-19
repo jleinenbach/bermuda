@@ -403,6 +403,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                 CONF_REF_POWER,
                 CONF_SMOOTHING_SAMPLES,
                 CONF_RSSI_OFFSETS,
+                CONF_USE_UKF_AREA_SELECTION,
             ):
                 self.options[key] = val
 
