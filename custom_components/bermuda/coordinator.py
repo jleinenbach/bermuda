@@ -88,6 +88,8 @@ from .const import (
     DOMAIN_GOOGLEFINDMY,
     DOMAIN_PRIVATE_BLE_DEVICE,
     EVIDENCE_WINDOW_SECONDS,
+    INCUMBENT_MARGIN_METERS,
+    INCUMBENT_MARGIN_PERCENT,
     METADEVICE_IBEACON_DEVICE,
     METADEVICE_TYPE_IBEACON_SOURCE,
     METADEVICE_TYPE_PRIVATE_BLE_SOURCE,
@@ -1430,7 +1432,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         # Use the advert's adaptive timeout if available, otherwise fall back to default.
         # The adaptive timeout is calculated per-advert based on MAX(observed intervals) x 2,
         # which handles devices with variable advertisement intervals (e.g., smartphone deep sleep).
-        max_age = getattr(advert, "adaptive_timeout", AREA_MAX_AD_AGE_DEFAULT)
+        max_age = getattr(advert, "adaptive_timeout", None) or AREA_MAX_AD_AGE_DEFAULT
         # Clamp to absolute limit to prevent runaway values
         max_age = min(max_age, AREA_MAX_AD_AGE_LIMIT)
 
@@ -1780,6 +1782,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                     # Positive value means challenger has stronger physical signal
                     challenger_rssi_advantage = challenger_median_rssi - incumbent_median_rssi
 
+            passed_via_rssi_override = False
             if incumbent_distance < challenger_distance:
                 # Incumbent appears closer. Normally we would reject the challenger here.
                 # BUT if RSSI priority is enabled and challenger has significantly stronger
@@ -1787,6 +1790,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                 if _use_physical_rssi_priority and challenger_rssi_advantage > RSSI_CONSISTENCY_MARGIN_DB:
                     # Challenger has much stronger signal despite appearing further on distance
                     # Allow it to proceed - the distance ranking may be wrong due to offsets
+                    passed_via_rssi_override = True
                     if _superchatty:
                         _LOGGER.info(
                             "RSSI priority override: %s allowed despite further distance "
@@ -1798,6 +1802,36 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                 else:
                     # we are not even closer!
                     continue
+
+            # STABILITY CHECK: Challenger must be SIGNIFICANTLY closer to challenge incumbent.
+            # This prevents flickering when distances are nearly equal (e.g., 2.0m vs 2.1m).
+            # Challenger must improve by at least INCUMBENT_MARGIN_PERCENT OR INCUMBENT_MARGIN_METERS.
+            # NOTE: Skip this check if:
+            # - Challenger passed via RSSI override (distance already suspect due to offset gaming)
+            # - Distances are essentially equal (let tie-breaking logic handle it)
+            if not passed_via_rssi_override:
+                distance_improvement = incumbent_distance - challenger_distance
+                # Only apply stability margin if challenger is actually closer (not equal)
+                # When distances are equal or challenger is further, other checks apply
+                if distance_improvement > 0:
+                    percent_improvement = distance_improvement / incumbent_distance if incumbent_distance > 0 else 0
+                    # Must meet either the percentage OR absolute threshold (whichever is easier)
+                    meets_stability_margin = (
+                        percent_improvement >= INCUMBENT_MARGIN_PERCENT
+                        or distance_improvement >= INCUMBENT_MARGIN_METERS
+                    )
+                    if not meets_stability_margin:
+                        # Challenger is closer but not significantly - incumbent keeps advantage
+                        if _superchatty:
+                            _LOGGER.debug(
+                                "Stability margin: %s rejected (%.2fm improvement, %.1f%% < required %.1f%% or %.2fm)",
+                                challenger.name,
+                                distance_improvement,
+                                percent_improvement * 100,
+                                INCUMBENT_MARGIN_PERCENT * 100,
+                                INCUMBENT_MARGIN_METERS,
+                            )
+                        continue
 
             # Physical RSSI Priority Check: If challenger appears closer on distance but
             # has significantly weaker physical signal, it may be winning only due to offset.
@@ -2369,7 +2403,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         significant_improvement_same_floor = False
         significant_rssi_advantage = False
         if device.area_advert is not None:
-            max_age = getattr(device.area_advert, "adaptive_timeout", AREA_MAX_AD_AGE_DEFAULT)
+            max_age = getattr(device.area_advert, "adaptive_timeout", None) or AREA_MAX_AD_AGE_DEFAULT
             max_age = min(max_age, AREA_MAX_AD_AGE_LIMIT)
             area_advert_stale = device.area_advert.stamp < nowstamp - max_age
             # Check for significant improvement (>30% distance difference) on same floor only
