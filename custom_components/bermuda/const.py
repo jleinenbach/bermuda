@@ -102,6 +102,10 @@ INCUMBENT_MARGIN_METERS: Final = 0.20  # OR 0.2m closer required (whichever is e
 # This makes it harder to switch rooms the longer a device stays stationary
 DWELL_TIME_MOVING_SECONDS: Final = 120  # 0-2 min: recently moved, lower threshold
 DWELL_TIME_SETTLING_SECONDS: Final = 600  # 2-10 min: settling in, normal threshold
+
+# Area lock auto-unlock - if the locked scanner hasn't seen the device for this long,
+# the lock is released and auto-detection resumes (device probably left the room)
+AREA_LOCK_TIMEOUT_SECONDS: Final = 60  # 60 seconds without signal from locked scanner
 # After SETTLING: stationary, higher threshold
 
 # Movement state constants

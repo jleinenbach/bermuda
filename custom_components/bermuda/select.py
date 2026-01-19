@@ -20,6 +20,9 @@ if TYPE_CHECKING:
     from . import BermudaConfigEntry
     from .coordinator import BermudaDataUpdateCoordinator
 
+# Number of training samples to apply for stronger fingerprint weight
+TRAINING_SAMPLE_COUNT = 10
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -54,12 +57,13 @@ class BermudaTrainingRoomSelect(BermudaEntity, SelectEntity):
     """
     Select entity for manually training room fingerprints.
 
-    Displays the currently detected room for a device.
-    When the user selects a different room, the current RSSI readings
-    are used to train the fingerprint for that room.
+    Shows the currently selected training room for a device.
+    This is NOT automatically updated by detection - it's a manual override.
+    When initialized, it shows the auto-detected room, but once set by the user
+    it stays fixed until the user changes it again.
 
-    Room options are filtered based on the selected floor to prevent
-    training fingerprints for rooms on the wrong floor.
+    When the user selects a room, the current RSSI readings are used to train
+    the fingerprint for that room (with multiple samples for stronger weight).
     """
 
     _attr_should_poll = False
@@ -79,8 +83,11 @@ class BermudaTrainingRoomSelect(BermudaEntity, SelectEntity):
         super().__init__(coordinator, entry, address)
         self._area_registry = ar.async_get(coordinator.hass)
         self._floor_select = floor_select
-        # Track if room needs explicit selection after floor change
-        self._awaiting_room_selection = False
+        # Persistent room override - does NOT follow auto-detection
+        # None means "not yet initialized" - will be set from auto-detect on first access
+        self._room_override_name: str | None = None
+        self._room_override_id: str | None = None
+        self._initialized: bool = False
 
     @property
     def _effective_floor_id(self) -> str | None:
@@ -107,11 +114,14 @@ class BermudaTrainingRoomSelect(BermudaEntity, SelectEntity):
 
     @property
     def current_option(self) -> str | None:
-        """Return the currently detected area, or None if awaiting selection."""
-        # If floor was changed and room not yet selected, show no selection
-        if self._awaiting_room_selection:
-            return None
-        return self._device.area_name
+        """Return the current room selection (persistent, not auto-updated)."""
+        # Initialize from auto-detected value only once
+        if not self._initialized:
+            self._room_override_name = self._device.area_name
+            self._room_override_id = self._device.area_id
+            self._initialized = True
+
+        return self._room_override_name
 
     async def async_select_option(self, option: str) -> None:
         """Handle user selecting a room - train fingerprint for that room."""
@@ -132,28 +142,70 @@ class BermudaTrainingRoomSelect(BermudaEntity, SelectEntity):
             )
             return
 
-        # Clear the awaiting flag since user explicitly selected a room
-        self._awaiting_room_selection = False
+        # Set the persistent override FIRST (so UI updates immediately)
+        self._room_override_name = option
+        self._room_override_id = target_area.id
+        self._initialized = True
 
-        # Train the fingerprint for this area
-        await self.coordinator.async_train_fingerprint(
-            device_address=self.address,
-            target_area_id=target_area.id,
+        # LOCK the device to this area - prevents automatic detection from overriding
+        self._device.area_locked_id = target_area.id
+        self._device.area_locked_name = option
+        # Record the primary scanner (closest to the device) for auto-unlock detection
+        # When this scanner stops seeing the device, the lock is released
+        if self._device.area_advert is not None:
+            self._device.area_locked_scanner_addr = self._device.area_advert.scanner_address
+        else:
+            # Fallback: try to find any scanner in this area
+            self._device.area_locked_scanner_addr = None
+            for advert in self._device.adverts.values():
+                if advert.area_id == target_area.id and advert.scanner_address is not None:
+                    self._device.area_locked_scanner_addr = advert.scanner_address
+                    break
+        # Also set the actual area immediately
+        self._device.area_id = target_area.id
+        self._device.area_name = option
+
+        # Update UI immediately before training starts
+        self.async_write_ha_state()
+
+        # Train the fingerprint with multiple samples for stronger weight
+        _LOGGER.info(
+            "Training and LOCKING device %s to room %s (%d samples)...",
+            self._device.name,
+            option,
+            TRAINING_SAMPLE_COUNT,
         )
 
+        for i in range(TRAINING_SAMPLE_COUNT):
+            success = await self.coordinator.async_train_fingerprint(
+                device_address=self.address,
+                target_area_id=target_area.id,
+            )
+            if not success:
+                _LOGGER.warning(
+                    "Training sample %d/%d failed for %s",
+                    i + 1,
+                    TRAINING_SAMPLE_COUNT,
+                    self._device.name,
+                )
+                break
+
         _LOGGER.info(
-            "Trained fingerprint for device %s in room %s",
+            "Fingerprint training complete for device %s in room %s",
             self._device.name,
             option,
         )
 
-        self.async_write_ha_state()
-
     def on_floor_changed(self) -> None:
         """Called by floor select when floor is changed by user."""
-        # Mark that we're awaiting explicit room selection
-        self._awaiting_room_selection = True
-        # Update state to reflect the cleared room
+        # Clear room selection when floor changes to prevent wrong training
+        self._room_override_name = None
+        self._room_override_id = None
+        # Clear the area lock - device will return to auto-detection
+        self._device.area_locked_id = None
+        self._device.area_locked_name = None
+        self._device.area_locked_scanner_addr = None
+        # Keep initialized=True so we don't re-init from auto-detect
         self.async_write_ha_state()
 
     @property
@@ -166,9 +218,13 @@ class BermudaTrainingFloorSelect(BermudaEntity, SelectEntity):
     """
     Select entity for setting floor for fingerprint training.
 
-    Displays the currently detected floor for a device.
-    When the user selects a different floor, the room selection is cleared
-    to prevent training fingerprints for the wrong room.
+    Shows the currently selected training floor for a device.
+    This is NOT automatically updated by detection - it's a manual override.
+    When initialized, it shows the auto-detected floor, but once set by the user
+    it stays fixed until the user changes it again.
+
+    When the floor is changed, the room selection is cleared to prevent
+    training fingerprints for rooms on the wrong floor.
     """
 
     _attr_should_poll = False
@@ -186,9 +242,11 @@ class BermudaTrainingFloorSelect(BermudaEntity, SelectEntity):
         """Initialize the floor training select."""
         super().__init__(coordinator, entry, address)
         self._floor_registry = fr.async_get(coordinator.hass)
-        # Track floor override (None = use detected floor)
+        # Persistent floor override - does NOT follow auto-detection
+        # None means "not yet initialized" - will be set from auto-detect on first access
         self.floor_override_id: str | None = None
         self._floor_override_name: str | None = None
+        self._initialized: bool = False
         # Reference to room select (set after creation)
         self._room_select: BermudaTrainingRoomSelect | None = None
 
@@ -209,10 +267,14 @@ class BermudaTrainingFloorSelect(BermudaEntity, SelectEntity):
 
     @property
     def current_option(self) -> str | None:
-        """Return the floor override or detected floor."""
-        if self._floor_override_name is not None:
-            return self._floor_override_name
-        return self._device.floor_name
+        """Return the current floor selection (persistent, not auto-updated)."""
+        # Initialize from auto-detected value only once
+        if not self._initialized:
+            self._floor_override_name = self._device.floor_name
+            self.floor_override_id = self._device.floor_id
+            self._initialized = True
+
+        return self._floor_override_name
 
     async def async_select_option(self, option: str) -> None:
         """Handle user selecting a floor - clear room and set override."""
@@ -225,14 +287,14 @@ class BermudaTrainingFloorSelect(BermudaEntity, SelectEntity):
             return
 
         # Check if this is actually a change from current
-        current_floor_id = self.floor_override_id or self._device.floor_id
-        if target_floor.floor_id == current_floor_id:
+        if target_floor.floor_id == self.floor_override_id:
             # Same floor, no change needed
             return
 
-        # Set the floor override
+        # Set the persistent override
         self.floor_override_id = target_floor.floor_id
         self._floor_override_name = option
+        self._initialized = True
 
         _LOGGER.info(
             "Floor override set for %s: %s - room selection cleared",
