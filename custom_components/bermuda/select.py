@@ -57,10 +57,9 @@ class BermudaTrainingRoomSelect(BermudaEntity, SelectEntity):
     """
     Select entity for manually training room fingerprints.
 
-    Shows the currently selected training room for a device.
-    This is NOT automatically updated by detection - it's a manual override.
-    When initialized, it shows the auto-detected room, but once set by the user
-    it stays fixed until the user changes it again.
+    IMPORTANT: Both floor and room start EMPTY - no pre-selection.
+    The user must explicitly select floor and room to trigger training.
+    This avoids confusion when the auto-detected room is already correct.
 
     When the user selects a room, the current RSSI readings are used to train
     the fingerprint for that room (with multiple samples for stronger weight).
@@ -83,19 +82,15 @@ class BermudaTrainingRoomSelect(BermudaEntity, SelectEntity):
         super().__init__(coordinator, entry, address)
         self._area_registry = ar.async_get(coordinator.hass)
         self._floor_select = floor_select
-        # Persistent room override - does NOT follow auto-detection
-        # None means "not yet initialized" - will be set from auto-detect on first access
+        # Start empty - user must explicitly select
         self._room_override_name: str | None = None
         self._room_override_id: str | None = None
-        self._initialized: bool = False
 
     @property
     def _effective_floor_id(self) -> str | None:
-        """Return the floor ID to filter rooms by (override or detected)."""
-        # Use floor override if set, otherwise use detected floor
-        if self._floor_select.floor_override_id is not None:
-            return self._floor_select.floor_override_id
-        return self._device.floor_id
+        """Return the floor ID to filter rooms by."""
+        # Only use floor override - don't fall back to auto-detected
+        return self._floor_select.floor_override_id
 
     @property
     def options(self) -> list[str]:
@@ -107,20 +102,14 @@ class BermudaTrainingRoomSelect(BermudaEntity, SelectEntity):
             # Filter to only rooms on the selected floor
             filtered_areas = [a for a in areas if a.floor_id == floor_id]
         else:
-            # No floor filter - show all rooms
+            # No floor selected - show all rooms
             filtered_areas = list(areas)
 
         return sorted([area.name for area in filtered_areas])
 
     @property
     def current_option(self) -> str | None:
-        """Return the current room selection (persistent, not auto-updated)."""
-        # Initialize from auto-detected value only once
-        if not self._initialized:
-            self._room_override_name = self._device.area_name
-            self._room_override_id = self._device.area_id
-            self._initialized = True
-
+        """Return the current room selection (starts empty, no auto-detect)."""
         return self._room_override_name
 
     async def async_select_option(self, option: str) -> None:
@@ -133,7 +122,7 @@ class BermudaTrainingRoomSelect(BermudaEntity, SelectEntity):
             _LOGGER.warning("Could not find area '%s' for training", option)
             return
 
-        # Verify room is on the correct floor (safety check)
+        # Verify room is on the correct floor (if floor is selected)
         expected_floor_id = self._effective_floor_id
         if expected_floor_id is not None and target_area.floor_id != expected_floor_id:
             _LOGGER.warning(
@@ -145,7 +134,6 @@ class BermudaTrainingRoomSelect(BermudaEntity, SelectEntity):
         # Set the persistent override FIRST (so UI updates immediately)
         self._room_override_name = option
         self._room_override_id = target_area.id
-        self._initialized = True
 
         # LOCK the device to this area - prevents automatic detection from overriding
         self._device.area_locked_id = target_area.id
@@ -198,14 +186,13 @@ class BermudaTrainingRoomSelect(BermudaEntity, SelectEntity):
 
     def on_floor_changed(self) -> None:
         """Called by floor select when floor is changed by user."""
-        # Clear room selection when floor changes to prevent wrong training
+        # Clear room selection when floor changes
         self._room_override_name = None
         self._room_override_id = None
         # Clear the area lock - device will return to auto-detection
         self._device.area_locked_id = None
         self._device.area_locked_name = None
         self._device.area_locked_scanner_addr = None
-        # Keep initialized=True so we don't re-init from auto-detect
         self.async_write_ha_state()
 
     @property
@@ -218,13 +205,9 @@ class BermudaTrainingFloorSelect(BermudaEntity, SelectEntity):
     """
     Select entity for setting floor for fingerprint training.
 
-    Shows the currently selected training floor for a device.
-    This is NOT automatically updated by detection - it's a manual override.
-    When initialized, it shows the auto-detected floor, but once set by the user
-    it stays fixed until the user changes it again.
-
-    When the floor is changed, the room selection is cleared to prevent
-    training fingerprints for rooms on the wrong floor.
+    IMPORTANT: Starts EMPTY - no pre-selection from auto-detect.
+    The user must explicitly select a floor before selecting a room.
+    When the floor is changed, the room selection is cleared.
     """
 
     _attr_should_poll = False
@@ -242,11 +225,9 @@ class BermudaTrainingFloorSelect(BermudaEntity, SelectEntity):
         """Initialize the floor training select."""
         super().__init__(coordinator, entry, address)
         self._floor_registry = fr.async_get(coordinator.hass)
-        # Persistent floor override - does NOT follow auto-detection
-        # None means "not yet initialized" - will be set from auto-detect on first access
+        # Start empty - user must explicitly select
         self.floor_override_id: str | None = None
         self._floor_override_name: str | None = None
-        self._initialized: bool = False
         # Reference to room select (set after creation)
         self._room_select: BermudaTrainingRoomSelect | None = None
 
@@ -267,17 +248,11 @@ class BermudaTrainingFloorSelect(BermudaEntity, SelectEntity):
 
     @property
     def current_option(self) -> str | None:
-        """Return the current floor selection (persistent, not auto-updated)."""
-        # Initialize from auto-detected value only once
-        if not self._initialized:
-            self._floor_override_name = self._device.floor_name
-            self.floor_override_id = self._device.floor_id
-            self._initialized = True
-
+        """Return the current floor selection (starts empty, no auto-detect)."""
         return self._floor_override_name
 
     async def async_select_option(self, option: str) -> None:
-        """Handle user selecting a floor - clear room and set override."""
+        """Handle user selecting a floor - clear room selection."""
         # Find the floor_id for this floor name
         floors = self._floor_registry.async_list_floors()
         target_floor = next((f for f in floors if f.name == option), None)
@@ -286,18 +261,12 @@ class BermudaTrainingFloorSelect(BermudaEntity, SelectEntity):
             _LOGGER.warning("Could not find floor '%s'", option)
             return
 
-        # Check if this is actually a change from current
-        if target_floor.floor_id == self.floor_override_id:
-            # Same floor, no change needed
-            return
-
         # Set the persistent override
         self.floor_override_id = target_floor.floor_id
         self._floor_override_name = option
-        self._initialized = True
 
-        _LOGGER.info(
-            "Floor override set for %s: %s - room selection cleared",
+        _LOGGER.debug(
+            "Floor selected for training %s: %s",
             self._device.name,
             option,
         )
