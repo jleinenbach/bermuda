@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # =============================================================================
 
 # Create the filters.const module with actual constants
-filters_const = types.ModuleType('custom_components.bermuda.filters.const')
+filters_const = types.ModuleType("custom_components.bermuda.filters.const")
 filters_const.BLE_RSSI_TYPICAL_STDDEV = 4.0
 filters_const.KALMAN_PROCESS_NOISE = 0.008
 filters_const.KALMAN_MEASUREMENT_NOISE = 4.0
@@ -37,15 +37,15 @@ filters_const.ADAPTIVE_NOISE_SCALE_PER_10DB = 1.5
 filters_const.ADAPTIVE_MIN_NOISE_MULTIPLIER = 0.5
 
 # Create package hierarchy
-custom_components = types.ModuleType('custom_components')
-bermuda = types.ModuleType('custom_components.bermuda')
-filters_pkg = types.ModuleType('custom_components.bermuda.filters')
+custom_components = types.ModuleType("custom_components")
+bermuda = types.ModuleType("custom_components.bermuda")
+filters_pkg = types.ModuleType("custom_components.bermuda.filters")
 
 # Register modules
-sys.modules['custom_components'] = custom_components
-sys.modules['custom_components.bermuda'] = bermuda
-sys.modules['custom_components.bermuda.filters'] = filters_pkg
-sys.modules['custom_components.bermuda.filters.const'] = filters_const
+sys.modules["custom_components"] = custom_components
+sys.modules["custom_components.bermuda"] = bermuda
+sys.modules["custom_components.bermuda.filters"] = filters_pkg
+sys.modules["custom_components.bermuda.filters.const"] = filters_const
 
 # =============================================================================
 # Load the filters.base module
@@ -54,13 +54,13 @@ sys.modules['custom_components.bermuda.filters.const'] = filters_const
 import importlib.util
 
 base_spec = importlib.util.spec_from_file_location(
-    'custom_components.bermuda.filters.base',
-    'custom_components/bermuda/filters/base.py',
-    submodule_search_locations=['custom_components/bermuda/filters']
+    "custom_components.bermuda.filters.base",
+    "custom_components/bermuda/filters/base.py",
+    submodule_search_locations=["custom_components/bermuda/filters"],
 )
 base_module = importlib.util.module_from_spec(base_spec)
-base_module.__package__ = 'custom_components.bermuda.filters'
-sys.modules['custom_components.bermuda.filters.base'] = base_module
+base_module.__package__ = "custom_components.bermuda.filters"
+sys.modules["custom_components.bermuda.filters.base"] = base_module
 base_spec.loader.exec_module(base_module)
 
 # =============================================================================
@@ -68,13 +68,13 @@ base_spec.loader.exec_module(base_module)
 # =============================================================================
 
 adaptive_spec = importlib.util.spec_from_file_location(
-    'custom_components.bermuda.filters.adaptive',
-    'custom_components/bermuda/filters/adaptive.py',
-    submodule_search_locations=['custom_components/bermuda/filters']
+    "custom_components.bermuda.filters.adaptive",
+    "custom_components/bermuda/filters/adaptive.py",
+    submodule_search_locations=["custom_components/bermuda/filters"],
 )
 adaptive_module = importlib.util.module_from_spec(adaptive_spec)
-adaptive_module.__package__ = 'custom_components.bermuda.filters'
-sys.modules['custom_components.bermuda.filters.adaptive'] = adaptive_module
+adaptive_module.__package__ = "custom_components.bermuda.filters"
+sys.modules["custom_components.bermuda.filters.adaptive"] = adaptive_module
 adaptive_spec.loader.exec_module(adaptive_module)
 
 # =============================================================================
@@ -82,13 +82,13 @@ adaptive_spec.loader.exec_module(adaptive_module)
 # =============================================================================
 
 kalman_spec = importlib.util.spec_from_file_location(
-    'custom_components.bermuda.filters.kalman',
-    'custom_components/bermuda/filters/kalman.py',
-    submodule_search_locations=['custom_components/bermuda/filters']
+    "custom_components.bermuda.filters.kalman",
+    "custom_components/bermuda/filters/kalman.py",
+    submodule_search_locations=["custom_components/bermuda/filters"],
 )
 kalman_module = importlib.util.module_from_spec(kalman_spec)
-kalman_module.__package__ = 'custom_components.bermuda.filters'
-sys.modules['custom_components.bermuda.filters.kalman'] = kalman_module
+kalman_module.__package__ = "custom_components.bermuda.filters"
+sys.modules["custom_components.bermuda.filters.kalman"] = kalman_module
 kalman_spec.loader.exec_module(kalman_module)
 
 # =============================================================================
@@ -117,13 +117,13 @@ filters_pkg.KALMAN_MEASUREMENT_NOISE = filters_const.KALMAN_MEASUREMENT_NOISE
 # =============================================================================
 
 scanner_cal_spec = importlib.util.spec_from_file_location(
-    'custom_components.bermuda.scanner_calibration',
-    'custom_components/bermuda/scanner_calibration.py',
-    submodule_search_locations=['custom_components/bermuda']
+    "custom_components.bermuda.scanner_calibration",
+    "custom_components/bermuda/scanner_calibration.py",
+    submodule_search_locations=["custom_components/bermuda"],
 )
 scanner_cal = importlib.util.module_from_spec(scanner_cal_spec)
-scanner_cal.__package__ = 'custom_components.bermuda'
-sys.modules['custom_components.bermuda.scanner_calibration'] = scanner_cal
+scanner_cal.__package__ = "custom_components.bermuda"
+sys.modules["custom_components.bermuda.scanner_calibration"] = scanner_cal
 scanner_cal_spec.loader.exec_module(scanner_cal)
 
 # =============================================================================
@@ -145,6 +145,7 @@ CALIBRATION_MIN_SAMPLES = filters_const.CALIBRATION_MIN_SAMPLES
 # SignalFilter Interface Tests
 # =============================================================================
 
+
 def test_signal_filter_is_abstract():
     """Test that SignalFilter cannot be instantiated directly."""
     try:
@@ -159,10 +160,10 @@ def test_kalman_implements_signal_filter():
     """Test that KalmanFilter implements SignalFilter interface."""
     kf = KalmanFilter()
     assert isinstance(kf, SignalFilter)
-    assert hasattr(kf, 'update')
-    assert hasattr(kf, 'get_estimate')
-    assert hasattr(kf, 'get_variance')
-    assert hasattr(kf, 'reset')
+    assert hasattr(kf, "update")
+    assert hasattr(kf, "get_estimate")
+    assert hasattr(kf, "get_variance")
+    assert hasattr(kf, "reset")
     print("  PASS: test_kalman_implements_signal_filter")
 
 
@@ -170,16 +171,17 @@ def test_adaptive_robust_implements_signal_filter():
     """Test that AdaptiveRobustFilter implements SignalFilter interface."""
     af = AdaptiveRobustFilter()
     assert isinstance(af, SignalFilter)
-    assert hasattr(af, 'update')
-    assert hasattr(af, 'get_estimate')
-    assert hasattr(af, 'get_variance')
-    assert hasattr(af, 'reset')
+    assert hasattr(af, "update")
+    assert hasattr(af, "get_estimate")
+    assert hasattr(af, "get_variance")
+    assert hasattr(af, "reset")
     print("  PASS: test_adaptive_robust_implements_signal_filter")
 
 
 # =============================================================================
 # KalmanFilter Tests
 # =============================================================================
+
 
 def test_kalman_filter_initial_state():
     """Test KalmanFilter initial state."""
@@ -246,6 +248,7 @@ def test_kalman_filter_diagnostics():
 # AdaptiveRobustFilter Tests
 # =============================================================================
 
+
 def test_adaptive_robust_filter_initial():
     """Test AdaptiveRobustFilter initial state."""
     af = AdaptiveRobustFilter()
@@ -306,6 +309,7 @@ def test_adaptive_robust_filter_diagnostics():
 # =============================================================================
 # AdaptiveStatistics Tests
 # =============================================================================
+
 
 def test_adaptive_statistics_initial_state():
     """Test initial state of adaptive statistics."""
@@ -374,6 +378,7 @@ def test_adaptive_statistics_to_dict():
 # ScannerPairData Tests
 # =============================================================================
 
+
 def test_scanner_pair_data_initial_state():
     """Test initial state of pair data."""
     pair = ScannerPairData(scanner_a="aa:bb:cc:dd:ee:01", scanner_b="aa:bb:cc:dd:ee:02")
@@ -425,6 +430,7 @@ def test_scanner_pair_data_insufficient_samples():
 # =============================================================================
 # ScannerCalibrationManager Tests
 # =============================================================================
+
 
 def test_calibration_manager_initial_state():
     """Test initial state of calibration manager."""
@@ -604,8 +610,10 @@ def test_calibration_manager_no_data():
 # Integration Tests
 # =============================================================================
 
+
 class MockAdvert:
     """Mock advert for testing."""
+
     def __init__(self, rssi=-60.0, rssi_filtered=-60.0):
         self.rssi = rssi
         self.rssi_filtered = rssi_filtered
@@ -614,6 +622,7 @@ class MockAdvert:
 
 class MockDevice:
     """Mock device for testing."""
+
     def __init__(self, address, metadevice_sources=None):
         self.address = address
         self.metadevice_sources = metadevice_sources or []
@@ -626,16 +635,10 @@ def test_update_scanner_calibration_with_ibeacon():
     num_samples = CALIBRATION_MIN_SAMPLES + 5
 
     scanner_a = MockDevice("aa:aa:aa:aa:aa:aa")
-    ibeacon_a = MockDevice(
-        "ibeacon_uuid_a",
-        metadevice_sources=["aa:aa:aa:aa:aa:aa"]
-    )
+    ibeacon_a = MockDevice("ibeacon_uuid_a", metadevice_sources=["aa:aa:aa:aa:aa:aa"])
 
     scanner_b = MockDevice("bb:bb:bb:bb:bb:bb")
-    ibeacon_b = MockDevice(
-        "ibeacon_uuid_b",
-        metadevice_sources=["bb:bb:bb:bb:bb:bb"]
-    )
+    ibeacon_b = MockDevice("ibeacon_uuid_b", metadevice_sources=["bb:bb:bb:bb:bb:bb"])
 
     # Use rssi (raw) for calibration - rssi_filtered would include offset!
     ibeacon_b.adverts[("bb:bb:bb:bb:bb:bb", "aa:aa:aa:aa:aa:aa")] = MockAdvert(rssi=-55.0)
@@ -694,10 +697,7 @@ def test_update_scanner_calibration_unidirectional():
 
     scanner_a = MockDevice("aa:aa:aa:aa:aa:aa")
     scanner_b = MockDevice("bb:bb:bb:bb:bb:bb")
-    ibeacon_b = MockDevice(
-        "ibeacon_uuid_b",
-        metadevice_sources=["bb:bb:bb:bb:bb:bb"]
-    )
+    ibeacon_b = MockDevice("ibeacon_uuid_b", metadevice_sources=["bb:bb:bb:bb:bb:bb"])
 
     # Use rssi (raw) for calibration
     ibeacon_b.adverts[("bb:bb:bb:bb:bb:bb", "aa:aa:aa:aa:aa:aa")] = MockAdvert(rssi=-55.0)
@@ -719,8 +719,8 @@ def test_update_scanner_calibration_unidirectional():
 
 class MockDeviceWithBLEMac(MockDevice):
     """Mock device with separate BLE and WiFi MAC addresses (like ESPHome/Shelly)."""
-    def __init__(self, address, address_ble_mac=None, address_wifi_mac=None,
-                 metadevice_sources=None):
+
+    def __init__(self, address, address_ble_mac=None, address_wifi_mac=None, metadevice_sources=None):
         super().__init__(address, metadevice_sources)
         self.address_ble_mac = address_ble_mac
         self.address_wifi_mac = address_wifi_mac
@@ -741,7 +741,7 @@ def test_update_scanner_calibration_mac_address_mapping():
         "aa:aa:aa:aa:aa:aa",  # Canonical (WiFi) address in scanner_list
         address_ble_mac="aa:aa:aa:aa:aa:ac",  # BLE MAC (WiFi+2)
         address_wifi_mac="aa:aa:aa:aa:aa:aa",
-        metadevice_sources=["aa:aa:aa:aa:aa:ac"]  # Scanner's own BLE broadcast MAC
+        metadevice_sources=["aa:aa:aa:aa:aa:ac"],  # Scanner's own BLE broadcast MAC
     )
 
     # Scanner B: same setup
@@ -749,19 +749,19 @@ def test_update_scanner_calibration_mac_address_mapping():
         "bb:bb:bb:bb:bb:bb",
         address_ble_mac="bb:bb:bb:bb:bb:bd",  # BLE MAC (WiFi+2)
         address_wifi_mac="bb:bb:bb:bb:bb:bb",
-        metadevice_sources=["bb:bb:bb:bb:bb:bd"]
+        metadevice_sources=["bb:bb:bb:bb:bb:bd"],
     )
 
     # iBeacon from scanner A - source is BLE MAC, not WiFi MAC!
     ibeacon_a = MockDevice(
         "ibeacon_uuid_a",
-        metadevice_sources=["aa:aa:aa:aa:aa:ac"]  # BLE MAC, not canonical!
+        metadevice_sources=["aa:aa:aa:aa:aa:ac"],  # BLE MAC, not canonical!
     )
 
     # iBeacon from scanner B
     ibeacon_b = MockDevice(
         "ibeacon_uuid_b",
-        metadevice_sources=["bb:bb:bb:bb:bb:bd"]  # BLE MAC, not canonical!
+        metadevice_sources=["bb:bb:bb:bb:bb:bd"],  # BLE MAC, not canonical!
     )
 
     # Scanner A sees iBeacon B with RSSI -55 (stronger)
@@ -794,6 +794,7 @@ def test_update_scanner_calibration_mac_address_mapping():
 # =============================================================================
 # Test Runner
 # =============================================================================
+
 
 def run_all_tests():
     """Run all tests."""
@@ -857,6 +858,7 @@ def run_all_tests():
         except Exception as e:
             print(f"  ERROR: {test.__name__}: {e}")
             import traceback
+
             traceback.print_exc()
             failed += 1
 

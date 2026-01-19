@@ -281,7 +281,9 @@ def test_future_stamp_skips_scanner_last_seen(monkeypatch: pytest.MonkeyPatch, h
     assert len(device.adverts) == 1
 
 
-def test_process_advertisement_sets_distance_stamp_from_advert(monkeypatch: pytest.MonkeyPatch, hass: HomeAssistant) -> None:
+def test_process_advertisement_sets_distance_stamp_from_advert(
+    monkeypatch: pytest.MonkeyPatch, hass: HomeAssistant
+) -> None:
     """Remote scanner stamps must carry through to distance_stamp (production path)."""
     coordinator = _make_coordinator(hass)
     device = coordinator._get_or_create_device("AA:BB:CC:DD:EE:0D")

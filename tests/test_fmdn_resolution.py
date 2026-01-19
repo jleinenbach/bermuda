@@ -196,9 +196,7 @@ def test_extract_fmdn_eids_sliding_window_without_frame() -> None:
     assert eid20 in candidates
 
 
-def test_match_without_device_id_skipped(
-    hass: HomeAssistant, coordinator: BermudaDataUpdateCoordinator
-) -> None:
+def test_match_without_device_id_skipped(hass: HomeAssistant, coordinator: BermudaDataUpdateCoordinator) -> None:
     """Matches lacking device_id should not create metadevices.
 
     The GoogleFindMy-HA EIDMatch always includes device_id when valid,
@@ -218,9 +216,7 @@ def test_match_without_device_id_skipped(
     assert METADEVICE_TYPE_FMDN_SOURCE in source_device.metadevice_type
 
 
-def test_deduplicates_metadevices_by_device_id(
-    hass: HomeAssistant, coordinator: BermudaDataUpdateCoordinator
-) -> None:
+def test_deduplicates_metadevices_by_device_id(hass: HomeAssistant, coordinator: BermudaDataUpdateCoordinator) -> None:
     """Ensure multiple sources map to the same metadevice via device_id.
 
     The metadevice address is now based solely on device_id (HA Device Registry ID)
@@ -290,9 +286,7 @@ def test_shared_tracker_creates_metadevices_for_all_accounts(
         assert metadevice.create_sensor is True
 
 
-def test_shared_tracker_fallback_to_resolve_eid(
-    hass: HomeAssistant, coordinator: BermudaDataUpdateCoordinator
-) -> None:
+def test_shared_tracker_fallback_to_resolve_eid(hass: HomeAssistant, coordinator: BermudaDataUpdateCoordinator) -> None:
     """Ensure fallback to resolve_eid when resolve_eid_all is not available.
 
     For older versions of GoogleFindMy that don't have resolve_eid_all,
@@ -302,9 +296,7 @@ def test_shared_tracker_fallback_to_resolve_eid(
 
     # Simulate older GoogleFindMy without resolve_eid_all
     del resolver.resolve_eid_all
-    resolver.resolve_eid.return_value = SimpleNamespace(
-        device_id="legacy-device-id", canonical_id="legacy-canonical"
-    )
+    resolver.resolve_eid.return_value = SimpleNamespace(device_id="legacy-device-id", canonical_id="legacy-canonical")
 
     hass.data[DOMAIN_GOOGLEFINDMY] = {DATA_EID_RESOLVER: resolver}
 

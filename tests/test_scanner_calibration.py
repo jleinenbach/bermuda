@@ -307,8 +307,7 @@ class TestUpdateScannerCalibration:
 
         devices = {
             "aa:aa:aa:aa:aa:aa": MockDevice(
-                "aa:aa:aa:aa:aa:aa",
-                adverts={("bb:bb:bb:bb:bb:bb", "aa:aa:aa:aa:aa:aa"): advert_a_sees_b}
+                "aa:aa:aa:aa:aa:aa", adverts={("bb:bb:bb:bb:bb:bb", "aa:aa:aa:aa:aa:aa"): advert_a_sees_b}
             ),
             "bb:bb:bb:bb:bb:bb": MockDevice("bb:bb:bb:bb:bb:bb"),
         }
@@ -333,12 +332,12 @@ class TestUpdateScannerCalibration:
             "aa:aa:aa:aa:aa:aa": MockDevice(
                 "aa:aa:aa:aa:aa:aa",
                 # A's adverts: when B sees A, the advert is stored here
-                adverts={("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb"): advert_b_sees_a}
+                adverts={("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb"): advert_b_sees_a},
             ),
             "bb:bb:bb:bb:bb:bb": MockDevice(
                 "bb:bb:bb:bb:bb:bb",
                 # B's adverts: when A sees B, the advert is stored here
-                adverts={("bb:bb:bb:bb:bb:bb", "aa:aa:aa:aa:aa:aa"): advert_a_sees_b}
+                adverts={("bb:bb:bb:bb:bb:bb", "aa:aa:aa:aa:aa:aa"): advert_a_sees_b},
             ),
         }
 
@@ -366,12 +365,10 @@ class TestUpdateScannerCalibration:
 
         devices = {
             "aa:aa:aa:aa:aa:aa": MockDevice(
-                "aa:aa:aa:aa:aa:aa",
-                adverts={("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb"): advert_b_sees_a}
+                "aa:aa:aa:aa:aa:aa", adverts={("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb"): advert_b_sees_a}
             ),
             "bb:bb:bb:bb:bb:bb": MockDevice(
-                "bb:bb:bb:bb:bb:bb",
-                adverts={("bb:bb:bb:bb:bb:bb", "aa:aa:aa:aa:aa:aa"): advert_a_sees_b}
+                "bb:bb:bb:bb:bb:bb", adverts={("bb:bb:bb:bb:bb:bb", "aa:aa:aa:aa:aa:aa"): advert_a_sees_b}
             ),
         }
 
@@ -391,19 +388,20 @@ class TestUpdateScannerCalibration:
         # Scanner B broadcasts as iBeacon with different MAC "cc:cc:cc:cc:cc:cc"
         # Advert stored on the iBeacon device (cc:cc) with key (cc, A)
         # Note: update_scanner_calibration uses raw rssi
-        advert_a_sees_b_via_ibeacon = MockAdvert(rssi=-55.0, rssi_filtered=-55.0, hist_rssi=[-55] * CALIBRATION_MIN_SAMPLES)
+        advert_a_sees_b_via_ibeacon = MockAdvert(
+            rssi=-55.0, rssi_filtered=-55.0, hist_rssi=[-55] * CALIBRATION_MIN_SAMPLES
+        )
         # B sees A: stored on A with key (A, B)
         advert_b_sees_a = MockAdvert(rssi=-65.0, rssi_filtered=-65.0, hist_rssi=[-65] * CALIBRATION_MIN_SAMPLES)
 
         devices = {
             "aa:aa:aa:aa:aa:aa": MockDevice(
-                "aa:aa:aa:aa:aa:aa",
-                adverts={("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb"): advert_b_sees_a}
+                "aa:aa:aa:aa:aa:aa", adverts={("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb"): advert_b_sees_a}
             ),
             "bb:bb:bb:bb:bb:bb": MockDevice(
                 "bb:bb:bb:bb:bb:bb",
                 adverts={("bb:bb:bb:bb:bb:bb", "aa:aa:aa:aa:aa:aa"): advert_a_sees_b_via_ibeacon},
-                metadevice_sources=["cc:cc:cc:cc:cc:cc"]  # B's iBeacon MAC
+                metadevice_sources=["cc:cc:cc:cc:cc:cc"],  # B's iBeacon MAC
             ),
         }
 
@@ -429,8 +427,7 @@ class TestEdgeCases:
 
         devices = {
             "aa:aa:aa:aa:aa:aa": MockDevice(
-                "aa:aa:aa:aa:aa:aa",
-                adverts={("bb:bb:bb:bb:bb:bb", "aa:aa:aa:aa:aa:aa"): advert_a_sees_b}
+                "aa:aa:aa:aa:aa:aa", adverts={("bb:bb:bb:bb:bb:bb", "aa:aa:aa:aa:aa:aa"): advert_a_sees_b}
             ),
             "bb:bb:bb:bb:bb:bb": MockDevice("bb:bb:bb:bb:bb:bb"),
         }
@@ -469,12 +466,12 @@ class TestEdgeCases:
             "aa:aa:aa:aa:aa:aa": MockDevice(
                 "aa:aa:aa:aa:aa:aa",
                 # A's adverts: when B sees A, the advert is stored here
-                adverts={("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb"): advert_b_sees_a}
+                adverts={("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb"): advert_b_sees_a},
             ),
             "bb:bb:bb:bb:bb:bb": MockDevice(
                 "bb:bb:bb:bb:bb:bb",
                 # B's adverts: when A sees B, the advert is stored here
-                adverts={("bb:bb:bb:bb:bb:bb", "aa:aa:aa:aa:aa:aa"): advert_a_sees_b}
+                adverts={("bb:bb:bb:bb:bb:bb", "aa:aa:aa:aa:aa:aa"): advert_a_sees_b},
             ),
         }
 

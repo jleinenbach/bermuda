@@ -142,9 +142,7 @@ def test_private_ble_device_calculate_data_preserves_create_sensor(
     assert metadevice.create_sensor is True
 
 
-def test_fmdn_do_init_flag_triggers_discovery(
-    hass: HomeAssistant, coordinator: BermudaDataUpdateCoordinator
-) -> None:
+def test_fmdn_do_init_flag_triggers_discovery(hass: HomeAssistant, coordinator: BermudaDataUpdateCoordinator) -> None:
     """_do_fmdn_device_init flag should trigger discover_fmdn_metadevices."""
     # Initially, flag is False
     assert coordinator._do_fmdn_device_init is False
@@ -183,9 +181,7 @@ def test_fmdn_device_not_in_configured_devices_still_tracked(
     assert metadevice.create_sensor is True
 
 
-def test_fmdn_device_has_fmdn_device_id(
-    hass: HomeAssistant, coordinator: BermudaDataUpdateCoordinator
-) -> None:
+def test_fmdn_device_has_fmdn_device_id(hass: HomeAssistant, coordinator: BermudaDataUpdateCoordinator) -> None:
     """FMDN metadevices should have fmdn_device_id set for device congealment."""
     resolver = MagicMock()
     match = SimpleNamespace(device_id="googlefindmy-device-id", canonical_id="canonical-uuid")
@@ -204,9 +200,7 @@ def test_fmdn_device_has_fmdn_device_id(
     assert metadevice.fmdn_device_id == "googlefindmy-device-id"
 
 
-def test_fmdn_device_has_fmdn_canonical_id(
-    hass: HomeAssistant, coordinator: BermudaDataUpdateCoordinator
-) -> None:
+def test_fmdn_device_has_fmdn_canonical_id(hass: HomeAssistant, coordinator: BermudaDataUpdateCoordinator) -> None:
     """FMDN metadevices should have fmdn_canonical_id set for consistent addressing."""
     resolver = MagicMock()
     match = SimpleNamespace(device_id="fmdn-device-5", canonical_id="canonical-uuid-5")
