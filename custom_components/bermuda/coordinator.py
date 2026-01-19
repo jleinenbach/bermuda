@@ -1732,16 +1732,25 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                             device.area_locked_name = None
                             device.area_locked_scanner_addr = None
                         elif nowstamp - locked_advert.stamp > AREA_LOCK_TIMEOUT_SECONDS:
-                            # Locked scanner hasn't seen device recently - unlock
-                            _LOGGER.info(
-                                "Auto-unlocking %s: locked scanner %s hasn't seen device for %.0fs",
-                                device.name,
-                                device.area_locked_scanner_addr,
-                                nowstamp - locked_advert.stamp,
-                            )
-                            device.area_locked_id = None
-                            device.area_locked_name = None
-                            device.area_locked_scanner_addr = None
+                            # Locked scanner hasn't seen device recently.
+                            # Only unlock if device is seen elsewhere - prevents false unlock
+                            # for USB/BlueZ scanners that don't update stamp when RSSI stable.
+                            if nowstamp - device.last_seen < AREA_LOCK_TIMEOUT_SECONDS:
+                                # Device seen elsewhere but not by locked scanner - unlock
+                                _LOGGER.info(
+                                    "Auto-unlocking %s: locked scanner %s stale (%.0fs) "
+                                    "but device seen elsewhere (%.0fs ago)",
+                                    device.name,
+                                    device.area_locked_scanner_addr,
+                                    nowstamp - locked_advert.stamp,
+                                    nowstamp - device.last_seen,
+                                )
+                                device.area_locked_id = None
+                                device.area_locked_name = None
+                                device.area_locked_scanner_addr = None
+                            else:
+                                # Device not seen anywhere - keep locked (may be offline)
+                                continue
                         else:
                             # Device is still locked and scanner sees it - skip auto-detect
                             continue
