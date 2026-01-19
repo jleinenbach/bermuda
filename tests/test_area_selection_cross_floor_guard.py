@@ -6,7 +6,11 @@ from dataclasses import dataclass
 
 import pytest
 
-from custom_components.bermuda.const import CONF_MAX_RADIUS, CROSS_FLOOR_STREAK
+from custom_components.bermuda.const import (
+    CONF_MAX_RADIUS,
+    CROSS_FLOOR_STREAK,
+    MOVEMENT_STATE_STATIONARY,
+)
 from custom_components.bermuda.coordinator import BermudaDataUpdateCoordinator
 
 
@@ -80,6 +84,12 @@ class FakeDevice:
         # Co-visibility learning (stub for testing)
         self.co_visibility_stats: dict[str, dict[str, dict[str, int]]] = {}
         self.co_visibility_min_samples: int = 50
+        # Dwell time tracking (stub for testing)
+        self.area_changed_at: float = 0.0
+
+    def get_movement_state(self, *, stamp_now: float | None = None) -> str:
+        """Stub for movement state - returns stationary for tests (hardest to switch)."""
+        return MOVEMENT_STATE_STATIONARY
 
     def update_co_visibility(self, area_id: str, visible_scanners: set[str], all_scanners: set[str]) -> None:
         """Stub for co-visibility update - just track stats for testing."""
