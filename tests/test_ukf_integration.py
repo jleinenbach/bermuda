@@ -78,6 +78,7 @@ class FakeDevice:
         self.area_changed_at: float = 0.0
         self.area_locked_id: str | None = None
         self.area_locked_name: str | None = None
+        self.area_locked_scanner_addr: str | None = None
 
     def apply_scanner_selection(self, advert: FakeAdvert | None, nowstamp: float = 0.0) -> None:
         """Apply scanner selection."""

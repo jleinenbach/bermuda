@@ -58,6 +58,7 @@ from .const import (
     _LOGGER,
     _LOGGER_SPAM_LESS,
     ADDR_TYPE_PRIVATE_BLE_DEVICE,
+    AREA_LOCK_TIMEOUT_SECONDS,
     AREA_MAX_AD_AGE_DEFAULT,
     AREA_MAX_AD_AGE_LIMIT,
     BDADDR_TYPE_NOT_MAC48,
@@ -1701,6 +1702,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
     def _refresh_areas_by_min_distance(self):
         """Set area for ALL devices based on closest beacon (or UKF if enabled)."""
         use_ukf = self.options.get(CONF_USE_UKF_AREA_SELECTION, DEFAULT_USE_UKF_AREA_SELECTION)
+        nowstamp = monotonic_time_coarse()
 
         for device in self.devices.values():
             if (
@@ -1708,10 +1710,45 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                 and (device.create_sensor or device.create_tracker_done)  # include tracked or tracker devices
                 # or device.metadevice_type in METADEVICE_SOURCETYPES  # and any source devices for PBLE, ibeacon etc
             ):
-                # Skip devices that are manually locked to an area
+                # Check if device is manually locked to an area
                 if device.area_locked_id is not None:
-                    # Device is locked - keep its current area, don't auto-detect
-                    continue
+                    # Check if the locked scanner still sees the device
+                    # If not seen for AREA_LOCK_TIMEOUT_SECONDS, auto-unlock
+                    if device.area_locked_scanner_addr is not None:
+                        locked_advert = None
+                        for advert in device.adverts.values():
+                            if advert.scanner_address == device.area_locked_scanner_addr:
+                                locked_advert = advert
+                                break
+
+                        if locked_advert is None or locked_advert.stamp is None:
+                            # No advert from locked scanner - unlock immediately
+                            _LOGGER.info(
+                                "Auto-unlocking %s: locked scanner %s has no advert",
+                                device.name,
+                                device.area_locked_scanner_addr,
+                            )
+                            device.area_locked_id = None
+                            device.area_locked_name = None
+                            device.area_locked_scanner_addr = None
+                        elif nowstamp - locked_advert.stamp > AREA_LOCK_TIMEOUT_SECONDS:
+                            # Locked scanner hasn't seen device recently - unlock
+                            _LOGGER.info(
+                                "Auto-unlocking %s: locked scanner %s hasn't seen device for %.0fs",
+                                device.name,
+                                device.area_locked_scanner_addr,
+                                nowstamp - locked_advert.stamp,
+                            )
+                            device.area_locked_id = None
+                            device.area_locked_name = None
+                            device.area_locked_scanner_addr = None
+                        else:
+                            # Device is still locked and scanner sees it - skip auto-detect
+                            continue
+                    else:
+                        # No scanner address recorded - keep locked (legacy behavior)
+                        continue
+
                 # Try UKF first if enabled; fall back to min-distance if UKF cannot decide
                 if use_ukf and self._refresh_area_by_ukf(device):
                     continue

@@ -150,6 +150,17 @@ class BermudaTrainingRoomSelect(BermudaEntity, SelectEntity):
         # LOCK the device to this area - prevents automatic detection from overriding
         self._device.area_locked_id = target_area.id
         self._device.area_locked_name = option
+        # Record the primary scanner (closest to the device) for auto-unlock detection
+        # When this scanner stops seeing the device, the lock is released
+        if self._device.area_advert is not None:
+            self._device.area_locked_scanner_addr = self._device.area_advert.scanner_address
+        else:
+            # Fallback: try to find any scanner in this area
+            self._device.area_locked_scanner_addr = None
+            for advert in self._device.adverts.values():
+                if advert.area_id == target_area.id and advert.scanner_address is not None:
+                    self._device.area_locked_scanner_addr = advert.scanner_address
+                    break
         # Also set the actual area immediately
         self._device.area_id = target_area.id
         self._device.area_name = option
@@ -193,6 +204,7 @@ class BermudaTrainingRoomSelect(BermudaEntity, SelectEntity):
         # Clear the area lock - device will return to auto-detection
         self._device.area_locked_id = None
         self._device.area_locked_name = None
+        self._device.area_locked_scanner_addr = None
         # Keep initialized=True so we don't re-init from auto-detect
         self.async_write_ha_state()
 

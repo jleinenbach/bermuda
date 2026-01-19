@@ -190,6 +190,7 @@ class BermudaDevice(dict):
         # Set by manual fingerprint training, cleared by user or explicit unlock
         self.area_locked_id: str | None = None
         self.area_locked_name: str | None = None
+        self.area_locked_scanner_addr: str | None = None  # Scanner that was primary when locked
 
         self._async_process_address_type()
 
