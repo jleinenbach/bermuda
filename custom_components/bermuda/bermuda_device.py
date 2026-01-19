@@ -1045,8 +1045,12 @@ class BermudaDevice(dict):
             self.area_state_retained = False
 
             # Track dwell time: update area_changed_at when area actually changes
-            if old_area != self.area_name and old_area is not None:
-                self.area_changed_at = stamp_now
+            # This includes re-acquisition from None (e.g., after scanner outage)
+            # Exception: keep area_changed_at=0 for brand new devices (never had area)
+            # so they start as STATIONARY to prevent initial flapping
+            if old_area != self.area_name:
+                if old_area is not None or self.area_changed_at != 0.0:
+                    self.area_changed_at = stamp_now
 
             if (old_area != self.area_name or distance is None) and self.create_sensor:
                 _LOGGER.debug("Device %s was in '%s', now '%s'", self.name, old_area, self.area_name)

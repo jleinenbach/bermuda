@@ -1,0 +1,589 @@
+"""
+Unscented Kalman Filter for multi-scanner BLE RSSI fusion.
+
+The UKF handles non-linear relationships between state and measurements
+by using sigma points instead of linearization (as in EKF). This is
+particularly useful for BLE positioning where:
+
+1. Multiple scanners provide correlated measurements
+2. The path-loss model (RSSI → distance) is non-linear
+3. Partial observations occur (some scanners don't see the device)
+
+This implementation tracks RSSI values from multiple scanners as a
+state vector, enabling proper cross-correlation handling and optimal
+fusion with learned fingerprint profiles.
+
+Architecture:
+    State: x = [rssi₁, rssi₂, ..., rssi_N] for N known scanners
+    Process: RSSI drifts slowly (device movement between areas)
+    Measurement: Observed RSSI from visible scanners (partial)
+    Fingerprint: Compare state to learned area profiles (Mahalanobis)
+
+References:
+    - Julier, S.J., Uhlmann, J.K. (2004). Unscented filtering and nonlinear estimation
+    - Wan, E.A., Van Der Merwe, R. (2000). The unscented Kalman filter for nonlinear estimation
+    - Research: "Variational Bayesian Adaptive UKF for RSSI-based Indoor Localization"
+
+Note on naming:
+    Traditional Kalman notation uses P, Q, K, R for covariance, process noise,
+    gain, and measurement noise. This implementation uses lowercase names
+    (p_cov, q_noise, k_gain, r_noise) to comply with Python conventions.
+
+"""
+
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any
+
+from .base import SignalFilter
+from .const import KALMAN_MEASUREMENT_NOISE
+
+if TYPE_CHECKING:
+    from custom_components.bermuda.correlation.area_profile import AreaProfile
+
+
+# =============================================================================
+# UKF Constants
+# =============================================================================
+
+# UKF tuning parameters (van der Merwe defaults)
+UKF_ALPHA: float = 0.001  # Spread of sigma points (small = tight around mean)
+UKF_BETA: float = 2.0  # Prior knowledge about distribution (2 = Gaussian)
+UKF_KAPPA: float = 0.0  # Secondary scaling parameter
+
+# Process noise for multi-scanner state (per second)
+# Higher than 1D Kalman because we're tracking multiple correlated values
+UKF_PROCESS_NOISE_PER_SECOND: float = 0.5
+
+# Measurement noise for RSSI observations
+UKF_MEASUREMENT_NOISE: float = KALMAN_MEASUREMENT_NOISE
+
+# Minimum variance to prevent numerical issues
+MIN_VARIANCE: float = 0.01
+
+# Default RSSI for unobserved scanners (very weak signal)
+DEFAULT_RSSI: float = -100.0
+
+
+def _cholesky_decompose(matrix: list[list[float]]) -> list[list[float]]:
+    """
+    Compute Cholesky decomposition L such that matrix = L @ L.T.
+
+    Uses the Cholesky-Banachiewicz algorithm. Returns lower triangular matrix.
+    Raises ValueError if matrix is not positive definite.
+    """
+    n = len(matrix)
+    lower = [[0.0] * n for _ in range(n)]
+
+    for i in range(n):
+        for j in range(i + 1):
+            sum_k = sum(lower[i][k] * lower[j][k] for k in range(j))
+
+            if i == j:
+                val = matrix[i][i] - sum_k
+                if val <= 0:
+                    # Matrix not positive definite - add small regularization
+                    val = MIN_VARIANCE
+                lower[i][j] = math.sqrt(val)
+            elif lower[j][j] == 0:
+                lower[i][j] = 0.0
+            else:
+                lower[i][j] = (matrix[i][j] - sum_k) / lower[j][j]
+
+    return lower
+
+
+def _matrix_add(a: list[list[float]], b: list[list[float]], scale_b: float = 1.0) -> list[list[float]]:
+    """Add two matrices: result = a + scale_b * b."""
+    n = len(a)
+    return [[a[i][j] + scale_b * b[i][j] for j in range(n)] for i in range(n)]
+
+
+def _matrix_multiply(a: list[list[float]], b: list[list[float]]) -> list[list[float]]:
+    """Multiply two matrices."""
+    n = len(a)
+    m = len(b[0])
+    k = len(b)
+    return [[sum(a[i][p] * b[p][j] for p in range(k)) for j in range(m)] for i in range(n)]
+
+
+def _matrix_transpose(a: list[list[float]]) -> list[list[float]]:
+    """Transpose a matrix."""
+    n = len(a)
+    m = len(a[0])
+    return [[a[j][i] for j in range(n)] for i in range(m)]
+
+
+def _matrix_inverse(matrix: list[list[float]]) -> list[list[float]]:
+    """
+    Compute matrix inverse using Gauss-Jordan elimination.
+
+    For small matrices (typical BLE scanner count 3-10), this is efficient.
+    """
+    n = len(matrix)
+    # Create augmented matrix [A | I]
+    aug = [row[:] + [1.0 if i == j else 0.0 for j in range(n)] for i, row in enumerate(matrix)]
+
+    # Forward elimination
+    for col in range(n):
+        # Find pivot
+        max_row = col
+        for row in range(col + 1, n):
+            if abs(aug[row][col]) > abs(aug[max_row][col]):
+                max_row = row
+        aug[col], aug[max_row] = aug[max_row], aug[col]
+
+        # Check for singular matrix
+        if abs(aug[col][col]) < 1e-10:
+            # Add regularization
+            aug[col][col] = MIN_VARIANCE
+
+        # Eliminate column
+        for row in range(n):
+            if row != col:
+                factor = aug[row][col] / aug[col][col]
+                for j in range(2 * n):
+                    aug[row][j] -= factor * aug[col][j]
+
+    # Normalize rows
+    for i in range(n):
+        divisor = aug[i][i]
+        for j in range(2 * n):
+            aug[i][j] /= divisor
+
+    # Extract inverse
+    return [row[n:] for row in aug]
+
+
+def _outer_product(a: list[float], b: list[float]) -> list[list[float]]:
+    """Compute outer product of two vectors."""
+    return [[a[i] * b[j] for j in range(len(b))] for i in range(len(a))]
+
+
+def _identity_matrix(n: int, scale: float = 1.0) -> list[list[float]]:
+    """Create scaled identity matrix."""
+    return [[scale if i == j else 0.0 for j in range(n)] for i in range(n)]
+
+
+@dataclass
+class UnscentedKalmanFilter(SignalFilter):
+    """
+    Multi-scanner Unscented Kalman Filter for BLE RSSI fusion.
+
+    Tracks RSSI values from multiple scanners as a state vector,
+    properly handling cross-correlations and partial observations.
+
+    The UKF uses sigma points to propagate uncertainty through
+    non-linear transformations, making it suitable for:
+    - Log-distance path loss models
+    - Fingerprint matching with Mahalanobis distance
+    - Sensor fusion with different noise characteristics
+
+    Attributes:
+        scanner_addresses: List of scanner MAC addresses (defines state order)
+        state: State vector [rssi₁, rssi₂, ..., rssi_N]
+        covariance: Covariance matrix (N x N)
+
+    Example:
+        ukf = UnscentedKalmanFilter(scanner_addresses=["AA:BB:...", "CC:DD:..."])
+        ukf.predict(dt=1.0)
+        ukf.update({"AA:BB:...": -65.0, "CC:DD:...": -78.0})
+        matches = ukf.match_fingerprints(area_profiles)
+
+    """
+
+    scanner_addresses: list[str] = field(default_factory=list)
+
+    # State vector and covariance (internal, use properties for access)
+    _x: list[float] = field(default_factory=list, repr=False)
+    _p_cov: list[list[float]] = field(default_factory=list, repr=False)
+
+    # UKF parameters
+    alpha: float = UKF_ALPHA
+    beta: float = UKF_BETA
+    kappa: float = UKF_KAPPA
+
+    # Noise parameters
+    process_noise: float = UKF_PROCESS_NOISE_PER_SECOND
+    measurement_noise: float = UKF_MEASUREMENT_NOISE
+
+    # Sample count for interface compatibility
+    sample_count: int = 0
+    _initialized: bool = False
+
+    def __post_init__(self) -> None:
+        """Initialize state vector and covariance if scanners provided."""
+        if self.scanner_addresses and not self._initialized:
+            self._initialize_state()
+
+    def _initialize_state(self) -> None:
+        """Initialize state vector and covariance matrix."""
+        n = len(self.scanner_addresses)
+        if n == 0:
+            return
+
+        # Initialize state to default RSSI (very weak signal)
+        self._x = [DEFAULT_RSSI] * n
+
+        # Initialize covariance with high uncertainty
+        self._p_cov = _identity_matrix(n, self.measurement_noise * 10)
+
+        self._initialized = True
+
+    def add_scanner(self, address: str) -> int:
+        """
+        Add a new scanner to track.
+
+        Args:
+            address: Scanner MAC address
+
+        Returns:
+            Index of the scanner in the state vector
+
+        """
+        if address in self.scanner_addresses:
+            return self.scanner_addresses.index(address)
+
+        self.scanner_addresses.append(address)
+        n = len(self.scanner_addresses)
+
+        if not self._initialized:
+            self._initialize_state()
+        else:
+            # Extend state vector
+            self._x.append(DEFAULT_RSSI)
+
+            # Extend covariance matrix
+            high_var = self.measurement_noise * 10
+            for row in self._p_cov:
+                row.append(0.0)  # No correlation with new scanner initially
+            self._p_cov.append([0.0] * (n - 1) + [high_var])
+
+        return n - 1
+
+    @property
+    def n_scanners(self) -> int:
+        """Return number of tracked scanners."""
+        return len(self.scanner_addresses)
+
+    @property
+    def state(self) -> list[float]:
+        """Return current state estimate."""
+        return self._x.copy()
+
+    @property
+    def covariance(self) -> list[list[float]]:
+        """Return current covariance matrix."""
+        return [row.copy() for row in self._p_cov]
+
+    def _compute_sigma_points(self) -> tuple[list[list[float]], list[float], list[float]]:
+        """
+        Compute sigma points for the UKF.
+
+        Returns:
+            Tuple of (sigma_points, weights_mean, weights_cov)
+            - sigma_points: 2n+1 points, each of dimension n
+            - weights_mean: weights for mean calculation
+            - weights_cov: weights for covariance calculation
+
+        """
+        n = self.n_scanners
+        if n == 0:
+            return [], [], []
+
+        # Scaling parameters
+        lambda_ = self.alpha**2 * (n + self.kappa) - n
+        gamma = math.sqrt(n + lambda_)
+
+        # Weights
+        w0_mean = lambda_ / (n + lambda_)
+        w0_cov = w0_mean + (1 - self.alpha**2 + self.beta)
+        wi = 1.0 / (2.0 * (n + lambda_))
+
+        weights_mean = [w0_mean] + [wi] * (2 * n)
+        weights_cov = [w0_cov] + [wi] * (2 * n)
+
+        # Compute sqrt(P) using Cholesky decomposition
+        try:
+            sqrt_cov = _cholesky_decompose(self._p_cov)
+        except ValueError:
+            # Fallback: use diagonal sqrt
+            sqrt_cov = _identity_matrix(n)
+            for i in range(n):
+                sqrt_cov[i][i] = math.sqrt(max(self._p_cov[i][i], MIN_VARIANCE))
+
+        # Scale by gamma
+        scaled_sqrt = [[gamma * sqrt_cov[i][j] for j in range(n)] for i in range(n)]
+
+        # Generate sigma points: [x, x + sqrt(P), x - sqrt(P)]
+        sigma_points: list[list[float]] = [self._x.copy()]
+
+        for j in range(n):
+            # x + column j of scaled sqrt(P)
+            point_plus = [self._x[i] + scaled_sqrt[i][j] for i in range(n)]
+            sigma_points.append(point_plus)
+
+            # x - column j of scaled sqrt(P)
+            point_minus = [self._x[i] - scaled_sqrt[i][j] for i in range(n)]
+            sigma_points.append(point_minus)
+
+        return sigma_points, weights_mean, weights_cov
+
+    def predict(self, dt: float = 1.0) -> None:
+        """
+        Predict step: propagate state forward in time.
+
+        For RSSI tracking, the process model is nearly static:
+        RSSI values don't change unless the device moves.
+        Process noise increases with time to allow for gradual drift.
+
+        Args:
+            dt: Time delta in seconds since last update
+
+        """
+        if not self._initialized or self.n_scanners == 0:
+            return
+
+        # Process noise scales with time
+        # Longer time = more uncertainty (device might have moved)
+        q_noise = _identity_matrix(self.n_scanners, self.process_noise * dt)
+
+        # P = P + Q (covariance grows with process noise)
+        self._p_cov = _matrix_add(self._p_cov, q_noise)
+
+    def update(self, measurement: float, timestamp: float | None = None) -> float:
+        """
+        SignalFilter interface: update with single measurement.
+
+        For multi-scanner UKF, this adds the measurement to internal buffer.
+        Use update_multi() for proper multi-scanner updates.
+
+        Args:
+            measurement: RSSI value (not directly usable without scanner address)
+            timestamp: Optional timestamp
+
+        Returns:
+            The measurement (unchanged, as we can't process without address)
+
+        """
+        self.sample_count += 1
+        return measurement
+
+    def update_multi(self, measurements: dict[str, float]) -> list[float]:
+        """
+        Update with multi-scanner RSSI measurements.
+
+        Handles partial observations: if some scanners don't see the device,
+        their state uncertainty grows but the overall estimate remains valid.
+
+        Args:
+            measurements: Dict of scanner_address -> RSSI value
+
+        Returns:
+            Updated state vector
+
+        """
+        if not measurements:
+            return self._x.copy()
+
+        # Ensure all scanners are tracked
+        for addr in measurements:
+            if addr not in self.scanner_addresses:
+                self.add_scanner(addr)
+
+        if not self._initialized:
+            self._initialize_state()
+
+        n = self.n_scanners
+        self.sample_count += 1
+
+        # Build measurement vector and observation matrix
+        # Only include scanners that provided measurements
+        observed_indices: list[int] = []
+        z: list[float] = []
+
+        for i, addr in enumerate(self.scanner_addresses):
+            if addr in measurements:
+                observed_indices.append(i)
+                z.append(measurements[addr])
+
+        if not observed_indices:
+            return self._x.copy()
+
+        m = len(observed_indices)  # Number of observations
+
+        # Generate sigma points
+        sigma_points, weights_mean, weights_cov = self._compute_sigma_points()
+
+        # Transform sigma points through observation model
+        # H selects observed components: z_sigma[k] = sigma_points[k][observed_indices]
+        z_sigma = [[sp[i] for i in observed_indices] for sp in sigma_points]
+
+        # Predicted measurement mean
+        z_mean = [sum(weights_mean[k] * z_sigma[k][j] for k in range(len(sigma_points))) for j in range(m)]
+
+        # Innovation covariance pzz = sum(w * (z - z_mean) @ (z - z_mean).T) + R
+        pzz: list[list[float]] = [[0.0] * m for _ in range(m)]
+        for k in range(len(sigma_points)):
+            diff = [z_sigma[k][j] - z_mean[j] for j in range(m)]
+            outer = _outer_product(diff, diff)
+            for i in range(m):
+                for j in range(m):
+                    pzz[i][j] += weights_cov[k] * outer[i][j]
+
+        # Add measurement noise
+        r_noise = _identity_matrix(m, self.measurement_noise)
+        pzz = _matrix_add(pzz, r_noise)
+
+        # Cross-covariance pxz = sum(w * (x - x_mean) @ (z - z_mean).T)
+        pxz: list[list[float]] = [[0.0] * m for _ in range(n)]
+        for k in range(len(sigma_points)):
+            x_diff = [sigma_points[k][i] - self._x[i] for i in range(n)]
+            z_diff = [z_sigma[k][j] - z_mean[j] for j in range(m)]
+            outer = _outer_product(x_diff, z_diff)
+            for i in range(n):
+                for j in range(m):
+                    pxz[i][j] += weights_cov[k] * outer[i][j]
+
+        # Kalman gain k_gain = pxz @ inv(pzz)
+        try:
+            pzz_inv = _matrix_inverse(pzz)
+        except (ValueError, ZeroDivisionError):
+            # Fallback: use diagonal inverse
+            pzz_inv = _identity_matrix(m)
+            for i in range(m):
+                pzz_inv[i][i] = 1.0 / max(pzz[i][i], MIN_VARIANCE)
+
+        k_gain = _matrix_multiply(pxz, pzz_inv)
+
+        # Innovation
+        innovation = [z[j] - z_mean[j] for j in range(m)]
+
+        # Update state: x = x + K @ innovation
+        for i in range(n):
+            self._x[i] += sum(k_gain[i][j] * innovation[j] for j in range(m))
+
+        # Update covariance: P = P - K @ Pzz @ K.T
+        k_pzz = _matrix_multiply(k_gain, pzz)
+        k_t = _matrix_transpose(k_gain)
+        k_pzz_k_t = _matrix_multiply(k_pzz, k_t)
+        self._p_cov = _matrix_add(self._p_cov, k_pzz_k_t, scale_b=-1.0)
+
+        # Ensure P remains positive semi-definite (numerical stability)
+        for i in range(n):
+            self._p_cov[i][i] = max(self._p_cov[i][i], MIN_VARIANCE)
+
+        return self._x.copy()
+
+    def match_fingerprints(
+        self,
+        area_profiles: dict[str, AreaProfile],
+    ) -> list[tuple[str, float, float]]:
+        """
+        Compare current UKF state to learned area fingerprints.
+
+        Uses Mahalanobis distance which accounts for:
+        1. Current state uncertainty (from UKF covariance P)
+        2. Fingerprint variance (from learned profiles)
+
+        The combined distance properly weights confident estimates
+        more heavily than uncertain ones.
+
+        Args:
+            area_profiles: Dict of area_id -> AreaProfile with learned fingerprints
+
+        Returns:
+            List of (area_id, mahalanobis_distance, match_score) sorted by score.
+            - mahalanobis_distance: Statistical distance (lower = better match)
+            - match_score: Normalized score 0-1 (higher = better match)
+
+        """
+        results: list[tuple[str, float, float]] = []
+
+        for area_id, profile in area_profiles.items():
+            # Build fingerprint mean and variance for matching scanners
+            fp_mean: list[float] = []
+            fp_var: list[float] = []
+            state_indices: list[int] = []
+
+            for i, addr in enumerate(self.scanner_addresses):
+                # Access internal dict (using profile's interface would be cleaner)
+                if hasattr(profile, "_absolute_profiles"):
+                    abs_profiles = profile._absolute_profiles  # noqa: SLF001
+                    if addr in abs_profiles:
+                        abs_profile = abs_profiles[addr]
+                        if hasattr(abs_profile, "is_mature") and abs_profile.is_mature:
+                            fp_mean.append(abs_profile.expected_rssi)
+                            fp_var.append(abs_profile.variance)
+                            state_indices.append(i)
+
+            if len(state_indices) < 2:
+                continue  # Not enough overlap
+
+            # Extract relevant state components
+            x_sub = [self._x[i] for i in state_indices]
+            n_sub = len(state_indices)
+
+            # Build sub-covariance matrix for matched scanners
+            p_sub = [[self._p_cov[state_indices[i]][state_indices[j]] for j in range(n_sub)] for i in range(n_sub)]
+
+            # Combined covariance: UKF uncertainty + fingerprint variance
+            combined_cov = [[p_sub[i][j] + (fp_var[i] if i == j else 0.0) for j in range(n_sub)] for i in range(n_sub)]
+
+            # Mahalanobis distance: d² = (x - μ)ᵀ Σ⁻¹ (x - μ)
+            diff = [x_sub[i] - fp_mean[i] for i in range(n_sub)]
+
+            try:
+                cov_inv = _matrix_inverse(combined_cov)
+            except (ValueError, ZeroDivisionError):
+                continue
+
+            # d² = diff @ cov_inv @ diff
+            d_squared = sum(diff[i] * sum(cov_inv[i][j] * diff[j] for j in range(n_sub)) for i in range(n_sub))
+
+            # Convert to match score (0-1, higher = better)
+            # Using exponential decay: score = exp(-d²/2) similar to Gaussian likelihood
+            match_score = math.exp(-d_squared / (2 * n_sub))
+
+            results.append((area_id, d_squared, match_score))
+
+        # Sort by match score (descending)
+        return sorted(results, key=lambda x: -x[2])
+
+    def get_estimate(self) -> float:
+        """Return mean of state vector (for SignalFilter interface)."""
+        if not self._x:
+            return DEFAULT_RSSI
+        return sum(self._x) / len(self._x)
+
+    def get_variance(self) -> float:
+        """Return average diagonal variance (for SignalFilter interface)."""
+        if not self._p_cov:
+            return self.measurement_noise
+        n = len(self._p_cov)
+        return sum(self._p_cov[i][i] for i in range(n)) / n
+
+    def reset(self) -> None:
+        """Reset filter to initial state."""
+        self._x = []
+        self._p_cov = []
+        self.scanner_addresses = []
+        self.sample_count = 0
+        self._initialized = False
+
+    def get_diagnostics(self) -> dict[str, Any]:
+        """Return diagnostic information for debugging."""
+        diag: dict[str, Any] = {
+            "n_scanners": self.n_scanners,
+            "sample_count": self.sample_count,
+            "initialized": self._initialized,
+        }
+
+        if self._initialized and self.n_scanners > 0:
+            diag["state"] = {addr: round(self._x[i], 1) for i, addr in enumerate(self.scanner_addresses)}
+            diag["variances"] = {addr: round(self._p_cov[i][i], 2) for i, addr in enumerate(self.scanner_addresses)}
+            diag["avg_variance"] = round(self.get_variance(), 2)
+
+        return diag

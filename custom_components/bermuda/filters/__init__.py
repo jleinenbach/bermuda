@@ -62,6 +62,7 @@ from .const import (
     KALMAN_PROCESS_NOISE,
 )
 from .kalman import KalmanFilter
+from .ukf import UnscentedKalmanFilter
 
 __all__ = [
     "ADAPTIVE_MIN_NOISE_MULTIPLIER",
@@ -83,4 +84,5 @@ __all__ = [
     "FilterConfig",
     "KalmanFilter",
     "SignalFilter",
+    "UnscentedKalmanFilter",
 ]

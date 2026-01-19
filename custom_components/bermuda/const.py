@@ -122,6 +122,12 @@ RSSI_CONSISTENCY_MARGIN_DB: Final = 8.0  # dB - max allowed RSSI disadvantage fo
 RSSI_HISTORY_SAMPLES: Final = 5  # Samples for median calculation
 RSSI_CONSECUTIVE_WINS: Final = 2  # Consecutive cycles required before switching
 
+# UKF (Unscented Kalman Filter) Area Selection - experimental multi-scanner fusion
+CONF_USE_UKF_AREA_SELECTION = "use_ukf_area_selection"
+DEFAULT_USE_UKF_AREA_SELECTION: Final = False  # Disabled by default; experimental feature
+UKF_MIN_MATCH_SCORE: Final = 0.3  # Minimum match score (0-1) to consider a fingerprint match
+UKF_MIN_SCANNERS: Final = 2  # Minimum scanners needed for UKF to make a decision
+
 # Beacon-handling constants. Source devices are tracked by MAC-address and are the
 # originators of beacon-like data. We then create a "meta-device" for the beacon's
 # uuid. Other non-static-mac protocols should use this method as well, by adding their
