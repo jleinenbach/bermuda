@@ -168,6 +168,7 @@ class BermudaDevice(dict):
         self.create_sensor_done: bool = False  # Sensor should now exist
         self.create_tracker_done: bool = False  # device_tracker should now exist
         self.create_number_done: bool = False
+        self.create_select_done: bool = False  # Select entities should now exist
         self.create_button_done: bool = False
         self.create_all_done: bool = False  # All platform entities are done and ready.
         self.last_seen: float = 0  # stamp from most recent scanner spotting. monotonic_time_coarse
