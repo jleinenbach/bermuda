@@ -181,7 +181,7 @@ Modular filter system for BLE RSSI signal processing:
 | `SignalFilter` | `base.py` | ✅ | Abstract base class for all filters |
 | `KalmanFilter` | `kalman.py` | ✅ | 1D linear Kalman for RSSI smoothing |
 | `AdaptiveRobustFilter` | `adaptive.py` | ✅ | EMA + CUSUM changepoint detection |
-| `UnscentedKalmanFilter` | `ukf.py` | 🚧 | Multi-scanner fusion with fingerprints |
+| `UnscentedKalmanFilter` | `ukf.py` | ✅ | Multi-scanner fusion with fingerprints (experimental) |
 
 ### Filter Interface
 
@@ -282,20 +282,29 @@ type BermudaConfigEntry = "ConfigEntry[BermudaData]"  # Requires Python 3.12+
 
 Always use `python3.13 -m venv venv` for the virtual environment.
 
-## Future Architecture: UKF + Fingerprint Fusion
+## UKF + Fingerprint Fusion (Implemented)
 
-### Current Limitation
+### Implementation Status: ✅ Complete (Experimental)
 
-Each scanner filtered independently, then heuristic rules combine them:
+All planned phases have been implemented:
+
+| Phase | Description | Status |
+|-------|-------------|--------|
+| Phase 1 | UKF core in `filters/ukf.py` | ✅ Complete |
+| Phase 2 | Integration with AreaProfile fingerprints | ✅ Complete |
+| Phase 3 | Parallel operation with min-distance heuristic | ✅ Complete (fallback) |
+| Phase 4 | Configurable toggle | ✅ Complete |
+
+### Architecture Overview
+
+**Standard Mode (Default):**
 ```
 Scanner 1 → Kalman → RSSI₁ ─┐
 Scanner 2 → Kalman → RSSI₂ ─┼─→ Min-Distance Heuristic → Room
 Scanner 3 → Kalman → RSSI₃ ─┘
 ```
 
-### Planned UKF Architecture
-
-Multi-scanner state vector with Mahalanobis fingerprint matching:
+**UKF Mode (Experimental, opt-in via `use_ukf_area_selection`):**
 ```
                     ┌─────────────────────────────────────┐
 Scanner 1 ──┐       │ UKF State: [rssi₁, rssi₂, rssi₃]   │
@@ -307,12 +316,58 @@ Scanner 3 ──┘       │ Process: RSSI drifts slowly        │
                     ┌─────────────────────────────────────┐
                     │ Fingerprint Match (Mahalanobis)     │
                     │ D² = (x̂ - μ_area)ᵀ Σ⁻¹ (x̂ - μ_area) │
-                    │ Room = argmin(D²)                   │
-                    └─────────────────────────────────────┘
+                    │ Room = argmin_area(D²)              │
+                    └────────────────┬────────────────────┘
+                                     │
+                         ┌───────────┴───────────┐
+                         │ Match score ≥ 0.3?    │
+                         └───────────┬───────────┘
+                              Yes ↓      ↓ No
+                         ┌─────────────────────────┐
+                         │ Apply UKF │ Fallback to│
+                         │ Decision  │ Min-Distance│
+                         └─────────────────────────┘
 ```
 
-### Benefits
-- Cross-correlation between scanners preserved
-- Partial observations handled gracefully (scanner offline)
-- Probabilistic room assignment instead of binary
-- Optimal fusion of UKF uncertainty + fingerprint variance
+### Implementation Details
+
+**Key Files:**
+- `filters/ukf.py` - Pure Python UKF implementation (~600 lines)
+- `coordinator.py` - Integration: `_refresh_area_by_ukf()`, `device_ukfs` dict
+- `const.py` - `CONF_USE_UKF_AREA_SELECTION`, `UKF_MIN_MATCH_SCORE`, `UKF_MIN_SCANNERS`
+
+**Plan Deviations:**
+1. **Pure Python vs NumPy**: Implemented without numpy dependency for HA compatibility
+   - Custom matrix operations: `_cholesky_decompose`, `_matrix_inverse`, etc.
+   - Slightly slower but no extra dependencies
+2. **Fallback Integration**: UKF tries first, falls back to min-distance if:
+   - Fewer than 2 scanners visible
+   - No learned fingerprints for device
+   - Match score below threshold (0.3)
+3. **Lowercase Naming**: Standard Kalman notation (P, Q, K, R) renamed to `p_cov`, `q_noise`, `k_gain`, `r_noise` per Python conventions
+
+**Configuration:**
+```yaml
+# In HA UI: Settings → Integrations → Bermuda → Configure → Global Options
+use_ukf_area_selection: false  # Default: disabled (experimental)
+```
+
+**Constants:**
+| Constant | Value | Purpose |
+|----------|-------|---------|
+| `UKF_MIN_SCANNERS` | 2 | Minimum scanners for UKF decision |
+| `UKF_MIN_MATCH_SCORE` | 0.3 | Minimum fingerprint match confidence |
+
+### Benefits Achieved
+- Cross-correlation between scanners preserved in covariance matrix
+- Partial observations handled gracefully (scanner offline → uncertainty grows)
+- Probabilistic room assignment via Mahalanobis distance
+- Optimal fusion: UKF uncertainty + fingerprint variance combined
+
+### Next Steps (Future Work)
+
+1. **Field Testing**: Enable on test installations, compare with min-distance
+2. **Tuning**: Adjust `UKF_MIN_MATCH_SCORE` based on real-world data
+3. **Diagnostics**: Add UKF state to dump_devices service output
+4. **Hybrid Mode**: Combine UKF confidence with min-distance for tiebreaking
+5. **Performance**: Profile UKF overhead on large scanner networks
