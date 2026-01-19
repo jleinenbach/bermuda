@@ -1717,7 +1717,47 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             # a device jumping to a different floor just because the current scanner went stale.
             # Bug Fix: Also check incumbent's history - if incumbent has substantial history
             # but challenger has minimal history, require challenger to prove itself longer.
+            # NEW: Absolute profile rescue - if secondary scanner readings match learned profile
+            # for current area, the device is likely still there even if primary scanner is offline.
             if current_incumbent is soft_incumbent and not _is_distance_contender(soft_incumbent):
+                # ABSOLUTE PROFILE RESCUE: Check if secondary readings still match current area
+                # This prevents room switches when the primary scanner temporarily goes offline
+                # but other scanners still show the typical pattern for this area.
+                if current_incumbent.area_id is not None:
+                    current_area_id = current_incumbent.area_id
+                    if device.address in self.correlations and current_area_id in self.correlations[device.address]:
+                        profile = self.correlations[device.address][current_area_id]
+                        # Gather RSSI readings from all visible scanners
+                        all_readings: dict[str, float] = {}
+                        for other_adv in device.adverts.values():
+                            if (
+                                _within_evidence(other_adv)
+                                and other_adv.rssi is not None
+                                and other_adv.scanner_address is not None
+                            ):
+                                all_readings[other_adv.scanner_address] = other_adv.rssi
+
+                        # Check if we have enough mature absolute profiles to validate
+                        if profile.mature_absolute_count >= 2:
+                            z_scores = profile.get_absolute_z_scores(all_readings)
+                            if len(z_scores) >= 2:
+                                # Calculate average z-score (lower = better match)
+                                avg_z = sum(z for _, z in z_scores) / len(z_scores)
+                                # If readings match learned profile well (z < 2.0), protect area
+                                if avg_z < 2.0:
+                                    tests.reason = (
+                                        f"LOSS - absolute profile match (z={avg_z:.2f}) protects current area"
+                                    )
+                                    if _superchatty:
+                                        _LOGGER.debug(
+                                            "%s: Absolute profile rescue - secondary readings match "
+                                            "%s profile (avg_z=%.2f, scanners=%d)",
+                                            device.name,
+                                            current_area_id,
+                                            avg_z,
+                                            len(z_scores),
+                                        )
+                                    continue
                 if cross_floor:
                     challenger_hist = challenger.hist_distance_by_interval
                     incumbent_hist = soft_incumbent.hist_distance_by_interval if soft_incumbent else []
@@ -2261,10 +2301,11 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                             self.correlations[device.address][advert.area_id] = AreaProfile(
                                 area_id=advert.area_id,
                             )
-                        # Update the profile with current readings
+                        # Update the profile with current readings (including primary scanner for absolute tracking)
                         self.correlations[device.address][advert.area_id].update(
                             primary_rssi=advert.rssi,
                             other_readings=other_readings,
+                            primary_scanner_addr=advert.scanner_address,
                         )
 
         if winner is None:
