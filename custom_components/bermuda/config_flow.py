@@ -37,6 +37,7 @@ from .const import (
     CONF_SCANNERS,
     CONF_SMOOTHING_SAMPLES,
     CONF_UPDATE_INTERVAL,
+    CONF_USE_UKF_AREA_SELECTION,
     DEFAULT_ATTENUATION,
     DEFAULT_DEVTRACK_TIMEOUT,
     DEFAULT_FMDN_MODE,
@@ -45,6 +46,7 @@ from .const import (
     DEFAULT_REF_POWER,
     DEFAULT_SMOOTHING_SAMPLES,
     DEFAULT_UPDATE_INTERVAL,
+    DEFAULT_USE_UKF_AREA_SELECTION,
     DISTANCE_INFINITE,
     DOMAIN,
     DOMAIN_GOOGLEFINDMY,
@@ -238,6 +240,10 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
                 CONF_REF_POWER,
                 default=self.options.get(CONF_REF_POWER, DEFAULT_REF_POWER),
             ): vol.Coerce(float),
+            vol.Optional(
+                CONF_USE_UKF_AREA_SELECTION,
+                default=self.options.get(CONF_USE_UKF_AREA_SELECTION, DEFAULT_USE_UKF_AREA_SELECTION),
+            ): bool,
         }
 
         return self.async_show_form(step_id="globalopts", data_schema=vol.Schema(data_schema))

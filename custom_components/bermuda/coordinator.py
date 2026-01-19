@@ -74,6 +74,7 @@ from .const import (
     CONF_SMOOTHING_SAMPLES,
     CONF_UPDATE_INTERVAL,
     CONF_USE_PHYSICAL_RSSI_PRIORITY,
+    CONF_USE_UKF_AREA_SELECTION,
     CROSS_FLOOR_MIN_HISTORY,
     CROSS_FLOOR_STREAK,
     DEFAULT_ATTENUATION,
@@ -84,6 +85,7 @@ from .const import (
     DEFAULT_SMOOTHING_SAMPLES,
     DEFAULT_UPDATE_INTERVAL,
     DEFAULT_USE_PHYSICAL_RSSI_PRIORITY,
+    DEFAULT_USE_UKF_AREA_SELECTION,
     DOMAIN,
     DOMAIN_GOOGLEFINDMY,
     DOMAIN_PRIVATE_BLE_DEVICE,
@@ -112,9 +114,12 @@ from .const import (
     SAVEOUT_COOLDOWN,
     SIGNAL_DEVICE_NEW,
     SIGNAL_SCANNERS_CHANGED,
+    UKF_MIN_MATCH_SCORE,
+    UKF_MIN_SCANNERS,
     UPDATE_INTERVAL,
 )
 from .correlation import AreaProfile, CorrelationStore, z_scores_to_confidence
+from .filters import UnscentedKalmanFilter
 from .fmdn import FmdnIntegration
 from .scanner_calibration import ScannerCalibrationManager, update_scanner_calibration
 from .util import is_mac_address, mac_explode_formats, normalize_address, normalize_mac
@@ -227,6 +232,10 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         self._correlations_loaded = False
         self._last_correlation_save: float = 0
 
+        # UKF (Unscented Kalman Filter) instances per device for multi-scanner fusion
+        # Key: device address, Value: UKF instance tracking RSSI from all visible scanners
+        self.device_ukfs: dict[str, UnscentedKalmanFilter] = {}
+
         self.ar = ar.async_get(self.hass)
         self.er = er.async_get(self.hass)
         self.dr = dr.async_get(self.hass)
@@ -288,6 +297,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         self.options[CONF_SMOOTHING_SAMPLES] = DEFAULT_SMOOTHING_SAMPLES
         self.options[CONF_UPDATE_INTERVAL] = DEFAULT_UPDATE_INTERVAL
         self.options[CONF_RSSI_OFFSETS] = {}
+        self.options[CONF_USE_UKF_AREA_SELECTION] = DEFAULT_USE_UKF_AREA_SELECTION
 
         if hasattr(entry, "options"):
             # Firstly, on some calls (specifically during reload after settings changes)
@@ -306,6 +316,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                     CONF_REF_POWER,
                     CONF_SMOOTHING_SAMPLES,
                     CONF_RSSI_OFFSETS,
+                    CONF_USE_UKF_AREA_SELECTION,
                 ):
                     self.options[key] = val
 
@@ -1506,14 +1517,100 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
         return z_scores_to_confidence(z_scores)
 
+    def _refresh_area_by_ukf(self, device: BermudaDevice) -> bool:
+        """
+        Use UKF (Unscented Kalman Filter) for area selection via fingerprint matching.
+
+        This method maintains a per-device UKF that fuses RSSI readings from all visible
+        scanners. It then matches the fused state against learned area fingerprints to
+        determine the most likely area.
+
+        Returns True if a decision was made (area may or may not have changed),
+        False if UKF cannot make a decision (e.g., insufficient scanners or profiles).
+        """
+        nowstamp = monotonic_time_coarse()
+
+        # Collect RSSI readings from all visible scanners
+        rssi_readings: dict[str, float] = {}
+        for advert in device.adverts.values():
+            if (
+                advert.rssi is not None
+                and advert.scanner_address is not None
+                and advert.stamp is not None
+                and nowstamp - advert.stamp < EVIDENCE_WINDOW_SECONDS
+            ):
+                rssi_readings[advert.scanner_address] = advert.rssi
+
+        # Need minimum scanners for UKF to be useful
+        if len(rssi_readings) < UKF_MIN_SCANNERS:
+            return False
+
+        # Get or create UKF for this device
+        if device.address not in self.device_ukfs:
+            self.device_ukfs[device.address] = UnscentedKalmanFilter()
+
+        ukf = self.device_ukfs[device.address]
+
+        # Update UKF with current measurements
+        ukf.predict(dt=UPDATE_INTERVAL)
+        ukf.update_multi(rssi_readings)
+
+        # Check if we have learned fingerprints for this device
+        if device.address not in self.correlations:
+            return False
+
+        device_profiles = self.correlations[device.address]
+
+        # Match against learned area profiles
+        matches = ukf.match_fingerprints(device_profiles)
+
+        if not matches:
+            return False
+
+        # Get best match
+        best_area_id, _d_squared, match_score = matches[0]
+
+        # Check if match score meets minimum threshold
+        if match_score < UKF_MIN_MATCH_SCORE:
+            return False
+
+        # Find the advert corresponding to the best area
+        best_advert: BermudaAdvert | None = None
+        for advert in device.adverts.values():
+            if advert.area_id == best_area_id:
+                best_advert = advert
+                break
+
+        if best_advert is None:
+            # No current advert for the matched area - check if we can use any
+            # advert with a scanner in that area
+            for advert in device.adverts.values():
+                if advert.scanner_device is not None:
+                    scanner_area = getattr(advert.scanner_device, "area_id", None)
+                    if scanner_area == best_area_id:
+                        best_advert = advert
+                        break
+
+        if best_advert is None:
+            return False
+
+        # Apply the selection using the device's standard method
+        device.apply_scanner_selection(best_advert, nowstamp=nowstamp)
+        return True
+
     def _refresh_areas_by_min_distance(self):
-        """Set area for ALL devices based on closest beacon."""
+        """Set area for ALL devices based on closest beacon (or UKF if enabled)."""
+        use_ukf = self.options.get(CONF_USE_UKF_AREA_SELECTION, DEFAULT_USE_UKF_AREA_SELECTION)
+
         for device in self.devices.values():
             if (
                 not device.is_scanner
                 and (device.create_sensor or device.create_tracker_done)  # include tracked or tracker devices
                 # or device.metadevice_type in METADEVICE_SOURCETYPES  # and any source devices for PBLE, ibeacon etc
             ):
+                # Try UKF first if enabled; fall back to min-distance if UKF cannot decide
+                if use_ukf and self._refresh_area_by_ukf(device):
+                    continue
                 self._refresh_area_by_min_distance(device)
 
     @dataclass

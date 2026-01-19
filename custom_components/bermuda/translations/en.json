@@ -38,7 +38,8 @@
           "smoothing_samples": "Smoothing Samples - how many samples to use for smoothing distance readings.",
           "attenuation": "Attenuation - Far-field path loss exponent (applies beyond ~6m). Typical: 3.0-4.5.",
           "ref_power": "Reference Power - Default rssi at 1 metre distance, for distance calibration.",
-          "configured_devices": "Configured Devices - Select which Bluetooth devices or Beacons to track with Sensors."
+          "configured_devices": "Configured Devices - Select which Bluetooth devices or Beacons to track with Sensors.",
+          "use_ukf_area_selection": "Use UKF Area Selection (Experimental) - Multi-scanner RSSI fusion for improved room detection."
         },
         "data_description": {
           "max_area_radius": "In the simple `AREA` feature, a device will be marked as being in the AREA of it's closest receiver, if inside this radius. If you set it small, devices will go to `unknown` between receivers, but if large devices will always appear as in their closest Area.",
@@ -47,7 +48,8 @@
           "update_interval": "Shortening distances will still trigger immediately, but increasing distances will be rate limited by this to reduce how much your database grows.",
           "smoothing_samples": "How many samples to average distance smoothing. Bigger numbers make for slower distance increases. Shortening distances are not affected. 10 or 20 seems good.",
           "attenuation": "Two-Slope model: Near-field (<6m) uses fixed exponent 1.8. Adjust this far-field exponent for distances beyond 6m.",
-          "ref_power": "Put your most-common beacon 1 metre (3.28') away from your most-common proxy / scanner. Adjust ref_power until the distance sensor shows a lowest (not average) distance of 1 metre."
+          "ref_power": "Put your most-common beacon 1 metre (3.28') away from your most-common proxy / scanner. Adjust ref_power until the distance sensor shows a lowest (not average) distance of 1 metre.",
+          "use_ukf_area_selection": "Enable Unscented Kalman Filter for area selection. This experimental feature fuses RSSI from multiple scanners using learned room fingerprints. Falls back to standard distance-based selection when insufficient data is available."
         }
       },
       "selectdevices": {
