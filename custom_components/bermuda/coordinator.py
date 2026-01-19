@@ -2119,11 +2119,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                 if incumbent_candidate is not None and best_by_rssi is not incumbent_candidate:
                     inc_floor = _get_floor_id(incumbent_candidate)
                     best_floor = _get_floor_id(best_by_rssi)
-                    rssi_is_cross_floor = (
-                        inc_floor is not None
-                        and best_floor is not None
-                        and inc_floor != best_floor
-                    )
+                    rssi_is_cross_floor = inc_floor is not None and best_floor is not None and inc_floor != best_floor
 
                 # Use higher margin for cross-floor RSSI switches
                 effective_rssi_margin = (
@@ -2338,9 +2334,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             )
 
             if device.area_advert is not None and device.area_advert.area_id is not None:
-                incumbent_confidence = device.get_co_visibility_confidence(
-                    device.area_advert.area_id, visible_scanners
-                )
+                incumbent_confidence = device.get_co_visibility_confidence(device.area_advert.area_id, visible_scanners)
                 incumbent_corr_confidence = self._get_correlation_confidence(
                     device.address, device.area_advert.area_id, device.area_advert.rssi, current_readings
                 )
@@ -2412,12 +2406,9 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         # Previously, significant_improvement_same_floor and significant_rssi_advantage
         # could trigger immediate switches even for cross-floor cases due to the OR logic.
         is_cross_floor_switch = _resolve_cross_floor(device.area_advert, winner)
-        incumbent_truly_invalid = (
-            not _is_distance_contender(device.area_advert) or area_advert_stale
-        )
-        same_floor_fast_track = (
-            not is_cross_floor_switch
-            and (significant_improvement_same_floor or significant_rssi_advantage)
+        incumbent_truly_invalid = not _is_distance_contender(device.area_advert) or area_advert_stale
+        same_floor_fast_track = not is_cross_floor_switch and (
+            significant_improvement_same_floor or significant_rssi_advantage
         )
 
         if winner is not None and (incumbent_truly_invalid or same_floor_fast_track):

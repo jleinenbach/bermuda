@@ -439,12 +439,12 @@ class BermudaAdvert(dict[str, Any]):
         return self.rssi_distance_raw
 
     def _clear_stale_history(self) -> None:
-        """Clear distance and RSSI history when advert is stale.
+        """
+        Clear distance and RSSI history when advert is stale.
 
-        Bug Fix: Also clear hist_distance to maintain synchronization between
-        the two distance history lists. Previously only hist_distance_by_interval
-        was cleared, which could cause desynchronization where hist_distance
-        retained old values while hist_distance_by_interval was empty.
+        Also clears hist_distance to maintain synchronization between the two
+        distance history lists. Previously only hist_distance_by_interval was
+        cleared, which could cause desynchronization.
         """
         self.rssi_distance = None
         self.rssi_filtered = None
