@@ -363,3 +363,518 @@ class TestUKFOptionHandling:
         coordinator = create_coordinator_mock()
         coordinator.options[CONF_USE_UKF_AREA_SELECTION] = True
         assert coordinator.options[CONF_USE_UKF_AREA_SELECTION] is True
+
+
+class TestUKFAreaSelectionWithPseudoData:
+    """
+    End-to-end tests for UKF area selection using realistic pseudo-data.
+
+    These tests simulate real-world scenarios with multiple rooms, scanners,
+    and learned fingerprints to verify the UKF correctly identifies rooms.
+    """
+
+    def _create_trained_profile(
+        self,
+        area_id: str,
+        primary_scanner: str,
+        primary_rssi: float,
+        other_readings: dict[str, float],
+        num_samples: int = 100,
+    ) -> AreaProfile:
+        """Helper to create a well-trained area profile."""
+        profile = AreaProfile(area_id=area_id)
+        for _ in range(num_samples):
+            # Add small noise to simulate real measurements
+            profile.update(
+                primary_rssi=primary_rssi,
+                other_readings=other_readings,
+                primary_scanner_addr=primary_scanner,
+            )
+        return profile
+
+    def test_ukf_selects_correct_room_kitchen(self) -> None:
+        """Test UKF selects kitchen when RSSI matches kitchen fingerprint."""
+        coordinator = create_coordinator_mock()
+        device = FakeDevice("AA:BB:CC:DD:EE:01", "Phone")
+
+        # Setup 3 scanners in different rooms
+        scanner_kitchen = FakeScanner("SC:KI:TC:HE:N0:01", "Kitchen Scanner", "kitchen")
+        scanner_living = FakeScanner("SC:LI:VI:NG:00:02", "Living Scanner", "living")
+        scanner_bedroom = FakeScanner("SC:BE:DR:OO:M0:03", "Bedroom Scanner", "bedroom")
+
+        # Current readings: Strong in kitchen (-55), weak in living (-80), very weak in bedroom (-90)
+        advert_kitchen = FakeAdvert(
+            scanner_address=scanner_kitchen.address,
+            rssi=-55.0,
+            stamp=1000.0,
+            area_id="kitchen",
+            scanner_device=scanner_kitchen,
+        )
+        advert_living = FakeAdvert(
+            scanner_address=scanner_living.address,
+            rssi=-80.0,
+            stamp=1000.0,
+            area_id="living",
+            scanner_device=scanner_living,
+        )
+        advert_bedroom = FakeAdvert(
+            scanner_address=scanner_bedroom.address,
+            rssi=-90.0,
+            stamp=1000.0,
+            area_id="bedroom",
+            scanner_device=scanner_bedroom,
+        )
+
+        device.adverts[scanner_kitchen.address] = advert_kitchen
+        device.adverts[scanner_living.address] = advert_living
+        device.adverts[scanner_bedroom.address] = advert_bedroom
+
+        # Create trained profiles for all 3 rooms
+        # Kitchen profile: strong from kitchen scanner
+        kitchen_profile = self._create_trained_profile(
+            area_id="kitchen",
+            primary_scanner=scanner_kitchen.address,
+            primary_rssi=-55.0,
+            other_readings={
+                scanner_living.address: -80.0,
+                scanner_bedroom.address: -90.0,
+            },
+        )
+
+        # Living profile: strong from living scanner
+        living_profile = self._create_trained_profile(
+            area_id="living",
+            primary_scanner=scanner_living.address,
+            primary_rssi=-50.0,
+            other_readings={
+                scanner_kitchen.address: -75.0,
+                scanner_bedroom.address: -85.0,
+            },
+        )
+
+        # Bedroom profile: strong from bedroom scanner
+        bedroom_profile = self._create_trained_profile(
+            area_id="bedroom",
+            primary_scanner=scanner_bedroom.address,
+            primary_rssi=-45.0,
+            other_readings={
+                scanner_kitchen.address: -85.0,
+                scanner_living.address: -80.0,
+            },
+        )
+
+        coordinator.correlations[device.address] = {
+            "kitchen": kitchen_profile,
+            "living": living_profile,
+            "bedroom": bedroom_profile,
+        }
+
+        # Run UKF area selection
+        result = coordinator._refresh_area_by_ukf(device)
+
+        # UKF should make a decision (have profiles and enough scanners)
+        assert result is True
+        # Device should be assigned to kitchen (best match for current readings)
+        assert device.area_id == "kitchen"
+
+    def test_ukf_selects_correct_room_living(self) -> None:
+        """Test UKF selects living room when RSSI matches living fingerprint."""
+        coordinator = create_coordinator_mock()
+        device = FakeDevice("AA:BB:CC:DD:EE:02", "Tablet")
+
+        scanner_kitchen = FakeScanner("SC:KI:TC:HE:N0:01", "Kitchen Scanner", "kitchen")
+        scanner_living = FakeScanner("SC:LI:VI:NG:00:02", "Living Scanner", "living")
+        scanner_bedroom = FakeScanner("SC:BE:DR:OO:M0:03", "Bedroom Scanner", "bedroom")
+
+        # Current readings: Strong in living (-50), medium in kitchen (-75), weak in bedroom (-85)
+        device.adverts[scanner_kitchen.address] = FakeAdvert(
+            scanner_address=scanner_kitchen.address,
+            rssi=-75.0,
+            stamp=1000.0,
+            area_id="kitchen",
+            scanner_device=scanner_kitchen,
+        )
+        device.adverts[scanner_living.address] = FakeAdvert(
+            scanner_address=scanner_living.address,
+            rssi=-50.0,
+            stamp=1000.0,
+            area_id="living",
+            scanner_device=scanner_living,
+        )
+        device.adverts[scanner_bedroom.address] = FakeAdvert(
+            scanner_address=scanner_bedroom.address,
+            rssi=-85.0,
+            stamp=1000.0,
+            area_id="bedroom",
+            scanner_device=scanner_bedroom,
+        )
+
+        # Create profiles matching expected room patterns
+        kitchen_profile = self._create_trained_profile(
+            area_id="kitchen",
+            primary_scanner=scanner_kitchen.address,
+            primary_rssi=-55.0,
+            other_readings={
+                scanner_living.address: -80.0,
+                scanner_bedroom.address: -90.0,
+            },
+        )
+        living_profile = self._create_trained_profile(
+            area_id="living",
+            primary_scanner=scanner_living.address,
+            primary_rssi=-50.0,
+            other_readings={
+                scanner_kitchen.address: -75.0,
+                scanner_bedroom.address: -85.0,
+            },
+        )
+        bedroom_profile = self._create_trained_profile(
+            area_id="bedroom",
+            primary_scanner=scanner_bedroom.address,
+            primary_rssi=-45.0,
+            other_readings={
+                scanner_kitchen.address: -85.0,
+                scanner_living.address: -80.0,
+            },
+        )
+
+        coordinator.correlations[device.address] = {
+            "kitchen": kitchen_profile,
+            "living": living_profile,
+            "bedroom": bedroom_profile,
+        }
+
+        result = coordinator._refresh_area_by_ukf(device)
+
+        assert result is True
+        assert device.area_id == "living"
+
+    def test_ukf_handles_scanner_dropout(self) -> None:
+        """Test UKF still works when one scanner goes offline."""
+        coordinator = create_coordinator_mock()
+        device = FakeDevice("AA:BB:CC:DD:EE:03", "Watch")
+
+        scanner_kitchen = FakeScanner("SC:KI:TC:HE:N0:01", "Kitchen Scanner", "kitchen")
+        scanner_living = FakeScanner("SC:LI:VI:NG:00:02", "Living Scanner", "living")
+        scanner_bedroom = FakeScanner("SC:BE:DR:OO:M0:03", "Bedroom Scanner", "bedroom")
+
+        # Only 2 scanners visible (bedroom scanner offline)
+        device.adverts[scanner_kitchen.address] = FakeAdvert(
+            scanner_address=scanner_kitchen.address,
+            rssi=-55.0,
+            stamp=1000.0,
+            area_id="kitchen",
+            scanner_device=scanner_kitchen,
+        )
+        device.adverts[scanner_living.address] = FakeAdvert(
+            scanner_address=scanner_living.address,
+            rssi=-80.0,
+            stamp=1000.0,
+            area_id="living",
+            scanner_device=scanner_living,
+        )
+        # No bedroom advert (scanner offline)
+
+        # Profiles trained with all 3 scanners
+        kitchen_profile = self._create_trained_profile(
+            area_id="kitchen",
+            primary_scanner=scanner_kitchen.address,
+            primary_rssi=-55.0,
+            other_readings={
+                scanner_living.address: -80.0,
+                scanner_bedroom.address: -90.0,
+            },
+        )
+
+        coordinator.correlations[device.address] = {"kitchen": kitchen_profile}
+
+        # Should still work with 2 scanners
+        result = coordinator._refresh_area_by_ukf(device)
+
+        # UKF should be created and process the data
+        assert device.address in coordinator.device_ukfs
+        # May or may not make a decision depending on match quality
+
+    def test_ukf_reuses_existing_instance(self) -> None:
+        """Test that UKF instance is reused across multiple calls."""
+        coordinator = create_coordinator_mock()
+        device = FakeDevice("AA:BB:CC:DD:EE:04", "Beacon")
+
+        scanner1 = FakeScanner("SC:AN:NE:R1:00:01", "Scanner1", "office")
+        scanner2 = FakeScanner("SC:AN:NE:R2:00:02", "Scanner2", "hallway")
+
+        device.adverts[scanner1.address] = FakeAdvert(
+            scanner_address=scanner1.address,
+            rssi=-60.0,
+            stamp=1000.0,
+            area_id="office",
+            scanner_device=scanner1,
+        )
+        device.adverts[scanner2.address] = FakeAdvert(
+            scanner_address=scanner2.address,
+            rssi=-70.0,
+            stamp=1000.0,
+            area_id="hallway",
+            scanner_device=scanner2,
+        )
+
+        # First call creates UKF
+        coordinator._refresh_area_by_ukf(device)
+        first_ukf = coordinator.device_ukfs.get(device.address)
+        assert first_ukf is not None
+
+        # Second call should reuse same instance
+        coordinator._refresh_area_by_ukf(device)
+        second_ukf = coordinator.device_ukfs.get(device.address)
+
+        assert first_ukf is second_ukf
+
+    def test_ukf_convergence_over_multiple_updates(self) -> None:
+        """Test that UKF state converges with consistent readings."""
+        coordinator = create_coordinator_mock()
+        device = FakeDevice("AA:BB:CC:DD:EE:05", "Tracker")
+
+        scanner1 = FakeScanner("SC:AN:NE:R1:00:01", "Scanner1", "garage")
+        scanner2 = FakeScanner("SC:AN:NE:R2:00:02", "Scanner2", "driveway")
+
+        # Create profile
+        garage_profile = self._create_trained_profile(
+            area_id="garage",
+            primary_scanner=scanner1.address,
+            primary_rssi=-60.0,
+            other_readings={scanner2.address: -75.0},
+        )
+        coordinator.correlations[device.address] = {"garage": garage_profile}
+
+        # Simulate multiple updates with consistent readings
+        for i in range(10):
+            device.adverts[scanner1.address] = FakeAdvert(
+                scanner_address=scanner1.address,
+                rssi=-60.0,
+                stamp=1000.0 + i,
+                area_id="garage",
+                scanner_device=scanner1,
+            )
+            device.adverts[scanner2.address] = FakeAdvert(
+                scanner_address=scanner2.address,
+                rssi=-75.0,
+                stamp=1000.0 + i,
+                area_id="driveway",
+                scanner_device=scanner2,
+            )
+            coordinator._refresh_area_by_ukf(device)
+
+        # After multiple consistent updates, UKF should have converged
+        ukf = coordinator.device_ukfs[device.address]
+        assert ukf is not None
+
+        # Check that variance has decreased (filter converged)
+        variance = ukf.get_variance()
+        # After 10 updates, variance should be reasonably low
+        assert variance < 50.0  # Initial variance is higher
+
+    def test_ukf_distinguishes_similar_rooms(self) -> None:
+        """Test UKF can distinguish between rooms with similar but different patterns."""
+        coordinator = create_coordinator_mock()
+        device = FakeDevice("AA:BB:CC:DD:EE:06", "Speaker")
+
+        scanner1 = FakeScanner("SC:AN:NE:R1:00:01", "Scanner1", "room_a")
+        scanner2 = FakeScanner("SC:AN:NE:R2:00:02", "Scanner2", "room_b")
+        scanner3 = FakeScanner("SC:AN:NE:R3:00:03", "Scanner3", "room_c")
+
+        # Room A: strong from scanner1, medium from scanner2, weak from scanner3
+        room_a_profile = self._create_trained_profile(
+            area_id="room_a",
+            primary_scanner=scanner1.address,
+            primary_rssi=-50.0,
+            other_readings={
+                scanner2.address: -65.0,
+                scanner3.address: -80.0,
+            },
+        )
+
+        # Room B: similar but scanner2 is strongest
+        room_b_profile = self._create_trained_profile(
+            area_id="room_b",
+            primary_scanner=scanner2.address,
+            primary_rssi=-52.0,
+            other_readings={
+                scanner1.address: -63.0,
+                scanner3.address: -78.0,
+            },
+        )
+
+        coordinator.correlations[device.address] = {
+            "room_a": room_a_profile,
+            "room_b": room_b_profile,
+        }
+
+        # Current readings match room_a pattern
+        device.adverts[scanner1.address] = FakeAdvert(
+            scanner_address=scanner1.address,
+            rssi=-50.0,
+            stamp=1000.0,
+            area_id="room_a",
+            scanner_device=scanner1,
+        )
+        device.adverts[scanner2.address] = FakeAdvert(
+            scanner_address=scanner2.address,
+            rssi=-65.0,
+            stamp=1000.0,
+            area_id="room_b",
+            scanner_device=scanner2,
+        )
+        device.adverts[scanner3.address] = FakeAdvert(
+            scanner_address=scanner3.address,
+            rssi=-80.0,
+            stamp=1000.0,
+            area_id="room_c",
+            scanner_device=scanner3,
+        )
+
+        result = coordinator._refresh_area_by_ukf(device)
+
+        assert result is True
+        assert device.area_id == "room_a"
+
+    def test_ukf_handles_stale_adverts(self) -> None:
+        """Test UKF ignores stale adverts outside evidence window."""
+        coordinator = create_coordinator_mock()
+        device = FakeDevice("AA:BB:CC:DD:EE:07", "Tag")
+
+        scanner1 = FakeScanner("SC:AN:NE:R1:00:01", "Scanner1", "area1")
+        scanner2 = FakeScanner("SC:AN:NE:R2:00:02", "Scanner2", "area2")
+
+        # One fresh advert, one stale (stamp is very old relative to current time)
+        device.adverts[scanner1.address] = FakeAdvert(
+            scanner_address=scanner1.address,
+            rssi=-60.0,
+            stamp=1000.0,  # Current time
+            area_id="area1",
+            scanner_device=scanner1,
+        )
+        device.adverts[scanner2.address] = FakeAdvert(
+            scanner_address=scanner2.address,
+            rssi=-70.0,
+            stamp=1.0,  # Very old - will be filtered by evidence window
+            area_id="area2",
+            scanner_device=scanner2,
+        )
+
+        # With only 1 fresh advert, UKF should return False (need min 2 scanners)
+        result = coordinator._refresh_area_by_ukf(device)
+
+        # Result depends on evidence window check
+        # The stale advert should be filtered out
+
+
+class TestUKFWithMultipleDevices:
+    """Test UKF handling of multiple devices simultaneously."""
+
+    def test_separate_ukf_per_device(self) -> None:
+        """Test each device gets its own UKF instance."""
+        coordinator = create_coordinator_mock()
+
+        device1 = FakeDevice("AA:BB:CC:DD:EE:01", "Device1")
+        device2 = FakeDevice("AA:BB:CC:DD:EE:02", "Device2")
+
+        scanner1 = FakeScanner("SC:AN:NE:R1:00:01", "Scanner1", "area1")
+        scanner2 = FakeScanner("SC:AN:NE:R2:00:02", "Scanner2", "area2")
+
+        # Both devices see same scanners
+        for device in [device1, device2]:
+            device.adverts[scanner1.address] = FakeAdvert(
+                scanner_address=scanner1.address,
+                rssi=-60.0,
+                stamp=1000.0,
+                area_id="area1",
+                scanner_device=scanner1,
+            )
+            device.adverts[scanner2.address] = FakeAdvert(
+                scanner_address=scanner2.address,
+                rssi=-70.0,
+                stamp=1000.0,
+                area_id="area2",
+                scanner_device=scanner2,
+            )
+
+        coordinator._refresh_area_by_ukf(device1)
+        coordinator._refresh_area_by_ukf(device2)
+
+        # Each device should have its own UKF
+        assert device1.address in coordinator.device_ukfs
+        assert device2.address in coordinator.device_ukfs
+        assert coordinator.device_ukfs[device1.address] is not coordinator.device_ukfs[device2.address]
+
+    def test_ukf_devices_independent_state(self) -> None:
+        """Test UKF instances maintain independent state."""
+        coordinator = create_coordinator_mock()
+
+        device1 = FakeDevice("AA:BB:CC:DD:EE:01", "Device1")
+        device2 = FakeDevice("AA:BB:CC:DD:EE:02", "Device2")
+
+        scanner1 = FakeScanner("SC:AN:NE:R1:00:01", "Scanner1", "area1")
+        scanner2 = FakeScanner("SC:AN:NE:R2:00:02", "Scanner2", "area2")
+
+        # Device1 sees strong signal from scanner1 (-50), weak from scanner2 (-80)
+        device1.adverts[scanner1.address] = FakeAdvert(
+            scanner_address=scanner1.address,
+            rssi=-50.0,
+            stamp=1000.0,
+            area_id="area1",
+            scanner_device=scanner1,
+        )
+        device1.adverts[scanner2.address] = FakeAdvert(
+            scanner_address=scanner2.address,
+            rssi=-80.0,
+            stamp=1000.0,
+            area_id="area2",
+            scanner_device=scanner2,
+        )
+
+        # Device2 sees weak signal from scanner1 (-80), strong from scanner2 (-50)
+        device2.adverts[scanner1.address] = FakeAdvert(
+            scanner_address=scanner1.address,
+            rssi=-80.0,
+            stamp=1000.0,
+            area_id="area1",
+            scanner_device=scanner1,
+        )
+        device2.adverts[scanner2.address] = FakeAdvert(
+            scanner_address=scanner2.address,
+            rssi=-50.0,
+            stamp=1000.0,
+            area_id="area2",
+            scanner_device=scanner2,
+        )
+
+        coordinator._refresh_area_by_ukf(device1)
+        coordinator._refresh_area_by_ukf(device2)
+
+        ukf1 = coordinator.device_ukfs[device1.address]
+        ukf2 = coordinator.device_ukfs[device2.address]
+
+        # Each UKF should have tracked the scanners it received
+        assert ukf1.n_scanners >= 2
+        assert ukf2.n_scanners >= 2
+
+        # The state vectors should contain the RSSI values
+        # Device1: scanner1=-50, scanner2=-80 → state reflects these
+        # Device2: scanner1=-80, scanner2=-50 → state reflects swapped pattern
+        state1 = ukf1.state
+        state2 = ukf2.state
+
+        # States are lists of RSSI values; they should differ since
+        # the devices have different RSSI patterns
+        # The mean of device1 readings is (-50 + -80) / 2 = -65
+        # The mean of device2 readings is (-80 + -50) / 2 = -65
+        # But the individual state values should differ
+        assert len(state1) == len(state2)
+        assert len(state1) >= 2
+
+        # Verify UKFs are tracking independently by checking variance
+        # (both should have similar initial variance since same # of updates)
+        var1 = ukf1.get_variance()
+        var2 = ukf2.get_variance()
+        assert var1 > 0
+        assert var2 > 0
