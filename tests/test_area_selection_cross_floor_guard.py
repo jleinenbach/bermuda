@@ -46,6 +46,7 @@ class FakeAdvert:
     ) -> None:
         self.name = name
         self.scanner_device = scanner_device
+        self.scanner_address = scanner_device.address if scanner_device else None
         self.area_id = area_id
         self.area_name = area_name
         self.rssi_distance = rssi_distance
@@ -63,6 +64,7 @@ class FakeDevice:
 
     def __init__(self, name: str, incumbent: FakeAdvert, adverts: dict[str, FakeAdvert]) -> None:
         self.name = name
+        self.address = f"AA:BB:CC:{hash(name) % 256:02X}:{hash(name + 'x') % 256:02X}:{hash(name + 'y') % 256:02X}"
         self.area_advert: FakeAdvert | None = incumbent
         self.adverts = adverts
         self.diag_area_switch: str | None = None
@@ -131,6 +133,8 @@ def _pcnt_diff(a: float, b: float) -> float:
 def _build_coord() -> BermudaDataUpdateCoordinator:
     coord = BermudaDataUpdateCoordinator.__new__(BermudaDataUpdateCoordinator)
     coord.options = {CONF_MAX_RADIUS: 10.0}
+    coord.correlations = {}  # Scanner correlation data for area confidence
+    coord._correlations_loaded = True  # Prevent async loading in tests
     coord.AreaTests = BermudaDataUpdateCoordinator.AreaTests
     return coord
 

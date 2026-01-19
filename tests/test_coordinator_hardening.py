@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from homeassistant.core import HomeAssistant
@@ -42,6 +43,10 @@ def _make_coordinator(hass: HomeAssistant) -> BermudaDataUpdateCoordinator:
     }
     coordinator.devices = {}
     coordinator.metadevices = {}
+    coordinator.correlations = {}  # Scanner correlation data for area confidence
+    coordinator._correlations_loaded = True  # Prevent async loading in tests
+    coordinator._last_correlation_save = 0.0  # Last time correlations were saved
+    coordinator.correlation_store = MagicMock(async_save=AsyncMock())  # Mock store
     coordinator._seed_configured_devices_done = False
     coordinator._scanner_init_pending = False
     coordinator._hascanners = set()
@@ -110,6 +115,7 @@ def test_refresh_area_by_min_distance_handles_empty_incumbent_history(
         rssi=-60.0,
         stamp=995.0,
         scanner_device=SimpleNamespace(last_seen=995.0, name="scanner-inc", address="00:00:00:00:00:01", floor_id=None),
+        scanner_address="00:00:00:00:00:01",
         hist_distance_by_interval=[],
     )
     incumbent.median_rssi = lambda: -60.0
@@ -121,6 +127,7 @@ def test_refresh_area_by_min_distance_handles_empty_incumbent_history(
         rssi=-55.0,
         stamp=999.0,
         scanner_device=SimpleNamespace(last_seen=999.0, name="scanner-new", address="00:00:00:00:00:02", floor_id=None),
+        scanner_address="00:00:00:00:00:02",
         hist_distance_by_interval=[2.1, 2.0, 1.9, 1.8],
     )
     challenger.median_rssi = lambda: -55.0
