@@ -274,7 +274,7 @@ class BermudaSensorScanner(BermudaSensor):
         # entry. Instead refer to the BermudaDevice, which takes trouble
         # to use user-given names etc.
         if self._device.area_advert is not None:
-            return self.coordinator.devices[self._device.area_advert.scanner_address].name  # type: ignore[no-any-return, attr-defined]
+            return self.coordinator.devices[self._device.area_advert.scanner_address].name
         return None
 
 

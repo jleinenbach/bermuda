@@ -693,7 +693,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             dev.create_number_done = True
         self._check_all_platforms_created(address)
 
-    def select_created(self, address):
+    def select_created(self, address: str) -> None:
         """Receives report from select platform that entities have been set up."""
         dev = self._get_device(address)
         if dev is not None:
@@ -769,7 +769,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         # Build "other readings" (all except primary)
         other_readings = {addr: rssi for addr, rssi in rssi_readings.items() if addr != primary_scanner_addr}
 
-        # Update the profile with current readings
+        # Update the profile with current readings (including primary for absolute profiles)
         self.correlations[device_address][target_area_id].update(
             primary_rssi=primary_rssi,
             other_readings=other_readings,
