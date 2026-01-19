@@ -45,7 +45,7 @@ class BermudaEntity(CoordinatorEntity):
         address: str,
     ) -> None:
         super().__init__(coordinator)
-        self.coordinator = coordinator
+        self.coordinator: BermudaDataUpdateCoordinator = coordinator
         self.config_entry = config_entry
         self.address = address
         self._device = coordinator.devices[address]

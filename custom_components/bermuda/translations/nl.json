@@ -97,6 +97,16 @@
       "area": {
         "name": "Ruimte"
       }
+    },
+    "select": {
+      "training_room": {
+        "name": "Trainingsruimte",
+        "state": {}
+      },
+      "training_floor": {
+        "name": "Trainingsetage",
+        "state": {}
+      }
     }
   },
   "services": {

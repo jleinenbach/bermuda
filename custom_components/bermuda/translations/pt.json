@@ -92,6 +92,16 @@
       "area": {
         "name": "Área"
       }
+    },
+    "select": {
+      "training_room": {
+        "name": "Sala de Treinamento",
+        "state": {}
+      },
+      "training_floor": {
+        "name": "Andar de Treinamento",
+        "state": {}
+      }
     }
   },
   "services": {

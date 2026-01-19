@@ -661,6 +661,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                     dev.create_sensor_done,
                     dev.create_tracker_done,
                     dev.create_number_done,
+                    dev.create_select_done,
                 ]
             ):
                 dev.create_all_done = True
@@ -691,6 +692,104 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         if dev is not None:
             dev.create_number_done = True
         self._check_all_platforms_created(address)
+
+    def select_created(self, address: str) -> None:
+        """Receives report from select platform that entities have been set up."""
+        dev = self._get_device(address)
+        if dev is not None:
+            dev.create_select_done = True
+        self._check_all_platforms_created(address)
+
+    async def async_train_fingerprint(
+        self,
+        device_address: str,
+        target_area_id: str,
+    ) -> bool:
+        """
+        Train fingerprint for a device in a specific area using current RSSI readings.
+
+        Called when user manually selects a room via the training Select entity.
+        Collects current RSSI readings from all visible scanners and feeds them
+        into the AreaProfile for that area.
+
+        Args:
+            device_address: Address of the device to train
+            target_area_id: Home Assistant area ID to train for
+
+        Returns:
+            True if training was successful, False otherwise
+
+        """
+        device = self._get_device(device_address)
+        if device is None:
+            _LOGGER.warning("Cannot train fingerprint: device %s not found", device_address)
+            return False
+
+        # Collect current RSSI readings from all visible scanners
+        nowstamp = monotonic_time_coarse()
+        rssi_readings: dict[str, float] = {}
+        primary_scanner_addr: str | None = None
+        primary_rssi: float | None = None
+
+        for advert in device.adverts.values():
+            if (
+                advert.rssi is not None
+                and advert.scanner_address is not None
+                and advert.stamp is not None
+                and nowstamp - advert.stamp < EVIDENCE_WINDOW_SECONDS
+            ):
+                rssi_readings[advert.scanner_address] = advert.rssi
+                # Track the strongest signal as "primary" for the delta correlations
+                if primary_rssi is None or advert.rssi > primary_rssi:
+                    primary_rssi = advert.rssi
+                    primary_scanner_addr = advert.scanner_address
+
+        if len(rssi_readings) < 1:
+            _LOGGER.warning(
+                "Cannot train fingerprint for %s: no recent RSSI readings",
+                device.name,
+            )
+            return False
+
+        if primary_rssi is None or primary_scanner_addr is None:
+            _LOGGER.warning(
+                "Cannot train fingerprint for %s: no primary scanner identified",
+                device.name,
+            )
+            return False
+
+        # Ensure device entry exists in correlations
+        if device_address not in self.correlations:
+            self.correlations[device_address] = {}
+
+        # Create or get the AreaProfile for this area
+        if target_area_id not in self.correlations[device_address]:
+            self.correlations[device_address][target_area_id] = AreaProfile(area_id=target_area_id)
+
+        # Build "other readings" (all except primary)
+        other_readings = {addr: rssi for addr, rssi in rssi_readings.items() if addr != primary_scanner_addr}
+
+        # Update the profile with current readings (including primary for absolute profiles)
+        self.correlations[device_address][target_area_id].update(
+            primary_rssi=primary_rssi,
+            other_readings=other_readings,
+            primary_scanner_addr=primary_scanner_addr,
+        )
+
+        _LOGGER.info(
+            "Trained fingerprint for %s in area %s with %d scanners (primary: %s at %.1f dBm)",
+            device.name,
+            target_area_id,
+            len(rssi_readings),
+            primary_scanner_addr,
+            primary_rssi,
+        )
+
+        # Save correlations immediately after manual training
+        await self.correlation_store.async_save(self.correlations)
+        self._last_correlation_save = nowstamp
+
+        return True
 
     # def button_created(self, address):
     #     """Receives report from number platform that sensors have been set up."""

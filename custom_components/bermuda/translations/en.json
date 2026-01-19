@@ -94,6 +94,16 @@
       "area": {
         "name": "Area"
       }
+    },
+    "select": {
+      "training_room": {
+        "name": "Training Room",
+        "state": {}
+      },
+      "training_floor": {
+        "name": "Training Floor",
+        "state": {}
+      }
     }
   },
   "services": {

@@ -1,0 +1,135 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Bermuda BLE Trilateration",
+        "description": "Wenn Sie Hilfe bei der Konfiguration benötigen, schauen Sie auf unserer [GitHub-Seite](https://github.com/agittins/bermuda)",
+        "data": {
+          "username": "Benutzername",
+          "password": "Passwort"
+        }
+      }
+    },
+    "error": {
+      "auth": "Benutzername/Passwort ist falsch."
+    },
+    "abort": {
+      "single_instance_allowed": "Es ist nur eine einzelne Instanz erlaubt."
+    }
+  },
+  "options": {
+    "error": {
+      "some_active": "Sie haben zumindest einige aktive Geräte, das ist gut.",
+      "no_scanners": "Sie müssen einige Bluetooth-Scanner konfigurieren, bevor Bermuda funktionieren kann. \nESPHome bluetooth_proxy, Shelly bluetooth proxy oder ein lokaler Bluetooth-Adapter können Ihnen den Einstieg erleichtern.",
+      "no_devices": "Es werden keine Bluetooth-Geräte aktiv von Ihren Scannern gemeldet. \nSie müssen dies lösen, bevor Bermuda von Nutzen sein kann."
+    },
+    "step": {
+      "init": {
+        "title": "Bermuda konfigurieren",
+        "description": "Bermuda kann derzeit sehen:\n- {device_counter_active} aktive von {device_counter_devices} Bluetooth-Geräten.\n- {scanner_counter_active} aktive von {scanner_counter_scanners} Bluetooth-Scanner-Geräten.\n\n{status}"
+      },
+      "globalopts": {
+        "title": "Globale Einstellungen",
+        "data": {
+          "max_area_radius": "Maximaler Radius in Metern für einfache BEREICHS-Erkennung",
+          "max_velocity": "Maximale Geschwindigkeit in Metern pro Sekunde - ignoriere Messwerte, die eine schnellere Entfernung als dieses Limit implizieren. 3m/s (10km/h) ist gut.",
+          "devtracker_nothome_timeout": "Devtracker-Timeout in Sekunden, um ein Gerät als `Nicht zu Hause` zu betrachten.",
+          "update_interval": "Aktualisierungsintervall - Wie oft (in Sekunden) die Sensorwerte aktualisiert werden sollen.",
+          "smoothing_samples": "Glättungs-Samples - wie viele Samples für die Glättung der Entfernungsmessungen verwendet werden sollen.",
+          "attenuation": "Dämpfung - Fernfeld-Pfadverlust-Exponent (gilt ab ~6m). Typisch: 3.0-4.5.",
+          "ref_power": "Referenzleistung - Standard-RSSI bei 1 Meter Entfernung, für Entfernungskalibrierung.",
+          "configured_devices": "Konfigurierte Geräte - Wählen Sie, welche Bluetooth-Geräte oder Beacons mit Sensoren verfolgt werden sollen.",
+          "use_ukf_area_selection": "UKF-Bereichsauswahl verwenden (Experimentell) - Multi-Scanner RSSI-Fusion für verbesserte Raumerkennung."
+        },
+        "data_description": {
+          "max_area_radius": "Bei der einfachen `BEREICH`-Funktion wird ein Gerät als im BEREICH des nächsten Empfängers markiert, wenn es sich innerhalb dieses Radius befindet. Wenn Sie ihn klein einstellen, werden Geräte zwischen Empfängern als `unbekannt` angezeigt, aber wenn er groß ist, erscheinen Geräte immer in ihrem nächsten Bereich.",
+          "max_velocity": "Wenn eine Messung impliziert, dass sich ein Gerät schneller als dies entfernt, ignorieren wir diese Messung. Menschen gehen normalerweise mit 1,4m/s, wenn sie eine Schere halten, bewegen sie sich mit 3m/s.",
+          "devtracker_nothome_timeout": "Wie schnell device_tracker-Entitäten als `nicht_zu_hause` markiert werden, nachdem wir keine Werbung mehr sehen. 30 bis 300 Sekunden ist wahrscheinlich gut.",
+          "update_interval": "Verkürzende Entfernungen werden weiterhin sofort ausgelöst, aber zunehmende Entfernungen werden hierdurch begrenzt, um das Wachstum Ihrer Datenbank zu reduzieren.",
+          "smoothing_samples": "Wie viele Samples für die Durchschnitts-Entfernungsglättung. Größere Zahlen bedeuten langsamere Entfernungszunahmen. Verkürzende Entfernungen werden nicht beeinflusst. 10 oder 20 scheint gut.",
+          "attenuation": "Zwei-Steigungen-Modell: Nahfeld (<6m) verwendet festen Exponenten 1.8. Passen Sie diesen Fernfeld-Exponenten für Entfernungen über 6m an.",
+          "ref_power": "Platzieren Sie Ihren häufigsten Beacon 1 Meter von Ihrem häufigsten Proxy/Scanner entfernt. Passen Sie ref_power an, bis der Entfernungssensor eine niedrigste (nicht durchschnittliche) Entfernung von 1 Meter anzeigt.",
+          "use_ukf_area_selection": "Aktivieren Sie den Unscented Kalman Filter für die Bereichsauswahl. Diese experimentelle Funktion fusioniert RSSI von mehreren Scannern mit gelernten Raum-Fingerabdrücken. Fällt auf standardmäßige entfernungsbasierte Auswahl zurück, wenn nicht genügend Daten verfügbar sind."
+        }
+      },
+      "selectdevices": {
+        "title": "Geräte auswählen",
+        "description": "Wählen Sie, welche Geräte Sie verfolgen möchten. Wenn unten keine Geräte erscheinen, sieht Bermuda keine Daten von Bluetooth-Scannern. Stellen Sie sicher, dass Sie ein ESPHome ble_proxy-Gerät, Shelly-Geräte mit konfiguriertem Bluetooth-Proxy oder einen lokalen Bluetooth-Adapter haben.\n\nGeräte, die mit **[Auto: ...]** gekennzeichnet sind, werden automatisch über ihre jeweiligen Integrationen verfolgt (Private BLE Device oder Google Find My). Diese können hier nicht abgewählt werden - verwalten Sie sie über ihre Quellintegration."
+      },
+      "calibration1_global": {
+        "title": "Kalibrierung 1: Global",
+        "description": "Dieser Schritt dient dazu, einige globale Standardwerte für Entfernungsberechnungen festzulegen.\n\n{details}\n{summary}\nFür Anweisungen erweitern!{summary_end}\n\nIn späteren Schritten können Sie gerätespezifische Überschreibungen festlegen, daher ist es sinnvoll, Ihre häufigste Hardware als 'Referenzpaar' für diesen Schritt zu wählen.\n\n- Wählen Sie unten ein Gerät und einen Scanner als Ihr 'Referenzpaar'\n- Platzieren Sie Ihr gewähltes Gerät physisch in 1m Entfernung vom gewählten Scanner\n- Klicken Sie auf 'ABSENDEN' und notieren Sie die RSSI-Werte in der Tabelle\n- Sobald Sie eine stabile Signalstärke haben, geben Sie diesen Wert in das Feld `reference_power` ein\n- Bewegen Sie das Gerät weiter weg und messen Sie diese Entfernung mit einem Maßband\n- Experimentieren Sie mit verschiedenen Werten für `attenuation` bis die Messungen übereinstimmen\n- Wenn Sie mit der Kalibrierung zufrieden sind, aktivieren Sie 'Speichern und Schließen' und klicken Sie auf 'ABSENDEN'\n{details_end}\n{suffix}",
+        "data": {
+          "configured_devices": "Gerät",
+          "configured_scanners": "Scanner",
+          "save_and_close": "Speichern und Schließen",
+          "attenuation": "Dämpfung",
+          "ref_power": "Referenzleistung"
+        },
+        "data_description": {
+          "save_and_close": "Nachdem Sie mit der Kalibrierung zufrieden sind, aktivieren Sie dieses Kontrollkästchen und klicken Sie auf Absenden. Ihre Änderungen werden gespeichert und Sie können mit dem nächsten Kalibrierungsschritt fortfahren.",
+          "attenuation": "Zwei-Steigungen-Modell aktiv: Nahfeld (<6m) verwendet wissenschaftlich abgeleiteten Exponenten 1.8. Bewegen Sie das Gerät über 6m und passen Sie diesen Fernfeld-Exponenten an, bis die Entfernungen übereinstimmen.",
+          "ref_power": "Um diese Einstellung zu kalibrieren, platzieren Sie das Gerät 1 Meter vom Scanner entfernt und passen Sie den Wert an, bis die Zahlen oben diese 1m Entfernung widerspiegeln."
+        }
+      },
+      "calibration2_scanners": {
+        "title": "Kalibrierung 2: RSSI-Offsets pro Scanner",
+        "description": "Dieser Schritt ist optional, aber nützlich, wenn Ihre Scanner unterschiedliche Empfindlichkeiten oder Antennenleistungen haben. Passen Sie den RSSI-Offset für jeden Scanner an, bis die berechnete Entfernung zum ausgewählten Gerät korrekt ist.\n\n{suffix}",
+        "data": {
+          "configured_devices": "Gerät",
+          "save_and_close": "Speichern und Schließen",
+          "scanner_info": "RSSI-Offsets pro Scanner"
+        },
+        "data_description": {
+          "scanner_info": "Lassen Sie es auf Null, um den globalen Standard zu akzeptieren, oder geben Sie eine Zahl ein, um den von diesem Scanner gemeldeten RSSI anzupassen. Negative Werte erhöhen die Entfernung, positive Werte verringern sie."
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "distance": {
+        "name": "Entfernung"
+      },
+      "area": {
+        "name": "Bereich"
+      }
+    },
+    "select": {
+      "training_room": {
+        "name": "Trainingsraum",
+        "state": {}
+      },
+      "training_floor": {
+        "name": "Trainingsetage",
+        "state": {}
+      }
+    }
+  },
+  "services": {
+    "dump_devices": {
+      "name": "Geräte exportieren",
+      "description": "Gibt die interne Datenstruktur zurück, optional begrenzt auf die angegebenen Adressen. Enthält die RSSI- und andere Informationen von jedem Scanner.",
+      "fields": {
+        "addresses": {
+          "name": "Adressen",
+          "description": "Eine optionale durch Leerzeichen getrennte Liste von MAC-Adressen, für die Informationen zurückgegeben werden sollen. Wenn leer, werden alle Adressen abgerufen."
+        },
+        "configured_devices": {
+          "name": "Konfigurierte Geräte",
+          "description": "Wählen Sie, um nur Scanner und konfigurierte Geräte in die Ausgabe aufzunehmen."
+        },
+        "redact": {
+          "name": "Schwärzen",
+          "description": "Auf TRUE setzen, um sicherzustellen, dass MAC-Adressen in der Ausgabe aus Datenschutzgründen geschwärzt werden."
+        }
+      }
+    }
+  },
+  "issues": {
+    "scanner_without_area": {
+      "title": "Einige Bluetooth-Proxys haben keinen BEREICH",
+      "description": "Bermuda erfordert, dass alle Bluetooth-Proxys einen gültigen Bereich zugewiesen haben, um korrekt zu funktionieren. Weisen Sie einen Bereich zu, indem Sie die Geräteseite jedes Proxys besuchen (über `Geräte und Dienste`) und auf das Stiftsymbol oben rechts klicken, um einen Bereich zuzuweisen. Die folgenden Proxys haben keine Bereichszuweisung:\n\n{scannerlist}"
+    }
+  }
+}

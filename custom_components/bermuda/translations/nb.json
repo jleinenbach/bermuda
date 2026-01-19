@@ -27,5 +27,25 @@
         }
       }
     }
+  },
+  "entity": {
+    "sensor": {
+      "distance": {
+        "name": "Avstand"
+      },
+      "area": {
+        "name": "Område"
+      }
+    },
+    "select": {
+      "training_room": {
+        "name": "Treningsrom",
+        "state": {}
+      },
+      "training_floor": {
+        "name": "Treningsetasje",
+        "state": {}
+      }
+    }
   }
 }
