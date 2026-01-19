@@ -77,12 +77,18 @@ def bermuda_advert(
         CONF_MAX_VELOCITY: 3.0,
         CONF_SMOOTHING_SAMPLES: 5,
     }
-    ba = BermudaAdvert(
-        parent_device=mock_parent_device,
-        advertisementdata=mock_advertisement_data,
-        options=options,
-        scanner_device=mock_scanner_device,
-    )
+    # Mock monotonic_time_coarse to return a time that makes the scanner's
+    # stamp (123.45) valid (not "in the future")
+    with patch(
+        "custom_components.bermuda.bermuda_advert.monotonic_time_coarse",
+        return_value=125.0,
+    ):
+        ba = BermudaAdvert(
+            parent_device=mock_parent_device,
+            advertisementdata=mock_advertisement_data,
+            options=options,
+            scanner_device=mock_scanner_device,
+        )
     ba.name = "foo name"
     return ba
 
@@ -566,12 +572,18 @@ class TestConfigOptionsDynamicReading:
             CONF_SMOOTHING_SAMPLES: 5,
         }
 
-        advert = BermudaAdvert(
-            parent_device=mock_parent_device,
-            advertisementdata=mock_advertisement_data,
-            options=options,
-            scanner_device=mock_scanner_device,
-        )
+        # Mock monotonic_time_coarse to return a time that makes the scanner's
+        # stamp (123.45) valid (not "in the future")
+        with patch(
+            "custom_components.bermuda.bermuda_advert.monotonic_time_coarse",
+            return_value=125.0,
+        ):
+            advert = BermudaAdvert(
+                parent_device=mock_parent_device,
+                advertisementdata=mock_advertisement_data,
+                options=options,
+                scanner_device=mock_scanner_device,
+            )
 
         # Get initial distance with 0 offset
         initial_distance = advert.rssi_distance_raw
