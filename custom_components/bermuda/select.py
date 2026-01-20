@@ -146,9 +146,9 @@ class BermudaTrainingRoomSelect(BermudaEntity, SelectEntity):
                 if advert.area_id == target_area.id and advert.scanner_address is not None:
                     self._device.area_locked_scanner_addr = advert.scanner_address
                     break
-        # Also set the actual area immediately
-        self._device.area_id = target_area.id
-        self._device.area_name = option
+        # NOTE: We do NOT change device.area_id/area_name here!
+        # The room selection only sets the lock to enable the "Learn Fingerprint" button.
+        # The actual area change happens when the button is pressed and training occurs.
 
         _LOGGER.info(
             "Device %s LOCKED to room %s (press 'Learn Fingerprint' to train)",
