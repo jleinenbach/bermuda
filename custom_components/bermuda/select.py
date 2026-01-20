@@ -164,12 +164,27 @@ class BermudaTrainingRoomSelect(BermudaEntity, SelectEntity):
 
     def on_floor_changed(self) -> None:
         """Called by floor select when floor is changed by user."""
-        # Only clear the UI-level room selection (for dropdown filtering).
-        # DON'T clear training_target_* or area_locked_* - these stay until button press.
-        # This allows the user to accidentally change floor without losing their selection.
-        self._room_override_name = None
-        self._room_override_id = None
+        # DON'T clear anything when floor changes!
+        # This allows the user to accidentally change floor and change back
+        # without losing their room selection.
+        # The room dropdown might show a room not on the current floor - that's OK.
+        # Everything is only cleared when the button is pressed.
         self.async_write_ha_state()
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Handle coordinator update - sync UI with device state."""
+        # If training_target_area_id was cleared (e.g., by button press), clear dropdown
+        if self._device.training_target_area_id is None:
+            if self._room_override_name is not None:
+                _LOGGER.debug(
+                    "Clearing room dropdown for %s (was: %s)",
+                    self._device.name,
+                    self._room_override_name,
+                )
+            self._room_override_name = None
+            self._room_override_id = None
+        super()._handle_coordinator_update()
 
     @property
     def unique_id(self) -> str:
@@ -256,6 +271,21 @@ class BermudaTrainingFloorSelect(BermudaEntity, SelectEntity):
 
         # Trigger coordinator refresh so the "Learn" button updates its availability
         await self.coordinator.async_request_refresh()
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Handle coordinator update - sync UI with device state."""
+        # If training_target_floor_id was cleared (e.g., by button press), clear dropdown
+        if self._device.training_target_floor_id is None:
+            if self._floor_override_name is not None:
+                _LOGGER.debug(
+                    "Clearing floor dropdown for %s (was: %s)",
+                    self._device.name,
+                    self._floor_override_name,
+                )
+            self.floor_override_id = None
+            self._floor_override_name = None
+        super()._handle_coordinator_update()
 
     @property
     def unique_id(self) -> str:

@@ -111,43 +111,53 @@ class BermudaTrainingButton(BermudaEntity, ButtonEntity):
             TRAINING_SAMPLE_COUNT,
         )
 
-        successful_samples = 0
-        for i in range(TRAINING_SAMPLE_COUNT):
-            success = await self.coordinator.async_train_fingerprint(
-                device_address=self.address,
-                target_area_id=target_area_id,
-            )
-            if success:
-                successful_samples += 1
-            else:
-                _LOGGER.debug(
-                    "Training sample %d/%d failed for %s",
-                    i + 1,
+        try:
+            successful_samples = 0
+            for i in range(TRAINING_SAMPLE_COUNT):
+                success = await self.coordinator.async_train_fingerprint(
+                    device_address=self.address,
+                    target_area_id=target_area_id,
+                )
+                if success:
+                    successful_samples += 1
+                else:
+                    _LOGGER.debug(
+                        "Training sample %d/%d failed for %s",
+                        i + 1,
+                        TRAINING_SAMPLE_COUNT,
+                        self._device.name,
+                    )
+
+            if successful_samples > 0:
+                _LOGGER.info(
+                    "Fingerprint training complete for %s in %s (%d/%d samples)",
+                    self._device.name,
+                    target_area_name,
+                    successful_samples,
                     TRAINING_SAMPLE_COUNT,
+                )
+            else:
+                _LOGGER.warning(
+                    "Fingerprint training failed for %s - no valid samples",
                     self._device.name,
                 )
-
-        if successful_samples > 0:
-            _LOGGER.info(
-                "Fingerprint training complete for %s in %s (%d/%d samples)",
+        finally:
+            # ALWAYS clear training fields, even if training fails or throws exception
+            _LOGGER.debug(
+                "Clearing training fields for %s (floor=%s, area=%s)",
                 self._device.name,
-                target_area_name,
-                successful_samples,
-                TRAINING_SAMPLE_COUNT,
+                self._device.training_target_floor_id,
+                self._device.training_target_area_id,
             )
-        else:
-            _LOGGER.warning(
-                "Fingerprint training failed for %s - no valid samples",
-                self._device.name,
-            )
+            self._device.training_target_floor_id = None
+            self._device.training_target_area_id = None
+            # Also clear the area lock
+            self._device.area_locked_id = None
+            self._device.area_locked_name = None
+            self._device.area_locked_scanner_addr = None
 
-        # Clear BOTH training fields after button press - user must re-select to train again
-        self._device.training_target_floor_id = None
-        self._device.training_target_area_id = None
-        # Also clear the area lock
-        self._device.area_locked_id = None
-        self._device.area_locked_name = None
-        self._device.area_locked_scanner_addr = None
+            # Trigger refresh so select entities clear their dropdowns
+            await self.coordinator.async_request_refresh()
 
     @property
     def unique_id(self) -> str:
