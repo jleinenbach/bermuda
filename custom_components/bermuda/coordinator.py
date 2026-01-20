@@ -1951,7 +1951,16 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
                 # Primary: UKF with RoomProfile (when profiles are mature)
                 # Fallback: Simple min-distance (bootstrap phase)
-                if has_mature_profiles and self._refresh_area_by_ukf(device):
+                # FIX: Fehler 4 - Allow UKF for "scannerless rooms" even without mature global profiles.
+                # A scannerless room can ONLY be detected via UKF+fingerprints (min-distance fails
+                # because there's no scanner in that room). Previously, UKF required global
+                # has_mature_profiles, blocking newly-trained scannerless rooms for days/weeks.
+                # Now we allow UKF if EITHER global profiles are mature OR this specific device
+                # has its own learned correlations (AreaProfiles from button training).
+                device_has_correlations = (
+                    device.address in self.correlations and len(self.correlations[device.address]) > 0
+                )
+                if (has_mature_profiles or device_has_correlations) and self._refresh_area_by_ukf(device):
                     continue
                 self._refresh_area_by_min_distance(device)
 
