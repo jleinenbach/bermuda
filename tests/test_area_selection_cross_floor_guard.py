@@ -142,6 +142,7 @@ def _build_coord() -> BermudaDataUpdateCoordinator:
     coord = BermudaDataUpdateCoordinator.__new__(BermudaDataUpdateCoordinator)
     coord.options = {CONF_MAX_RADIUS: 10.0}
     coord.correlations = {}  # Scanner correlation data for area confidence
+    coord.room_profiles = {}  # Room-level scanner pair delta profiles
     coord._correlations_loaded = True  # Prevent async loading in tests
     coord.AreaTests = BermudaDataUpdateCoordinator.AreaTests
     return coord

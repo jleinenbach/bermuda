@@ -16,6 +16,8 @@ from custom_components.bermuda.const import (
 )
 from custom_components.bermuda.coordinator import BermudaDataUpdateCoordinator
 from custom_components.bermuda.correlation import AreaProfile
+from custom_components.bermuda.correlation.room_profile import RoomProfile
+from custom_components.bermuda.correlation.scanner_pair import ScannerPairCorrelation
 from custom_components.bermuda.filters import UnscentedKalmanFilter
 
 
@@ -105,12 +107,28 @@ def create_coordinator_mock() -> BermudaDataUpdateCoordinator:
         CONF_USE_UKF_AREA_SELECTION: DEFAULT_USE_UKF_AREA_SELECTION,
     }
     coordinator.correlations = {}
+    coordinator.room_profiles = {}  # Room-level scanner pair delta profiles
     coordinator._correlations_loaded = True
     coordinator._last_correlation_save = 0.0
     coordinator.correlation_store = MagicMock(async_save=AsyncMock())
     coordinator.device_ukfs = {}
     coordinator.AreaTests = BermudaDataUpdateCoordinator.AreaTests
     return coordinator
+
+
+def create_mature_room_profile(area_id: str) -> RoomProfile:
+    """Create a mature RoomProfile with enough samples for automatic UKF activation."""
+    profile = RoomProfile(area_id=area_id)
+    # Need at least 2 scanner pairs with 30+ samples each (mature_pair_count >= 2)
+    pair1 = ScannerPairCorrelation(scanner_address="SC:AN:NE:R1|SC:AN:NE:R2")
+    pair2 = ScannerPairCorrelation(scanner_address="SC:AN:NE:R1|SC:AN:NE:R3")
+    # Simulate training with 35 samples each to exceed MIN_SAMPLES_FOR_MATURITY (30)
+    for _ in range(35):
+        pair1.update(5.0)  # delta of 5 dB
+        pair2.update(-3.0)  # delta of -3 dB
+    profile._scanner_pairs["SC:AN:NE:R1|SC:AN:NE:R2"] = pair1
+    profile._scanner_pairs["SC:AN:NE:R1|SC:AN:NE:R3"] = pair2
+    return profile
 
 
 class TestUKFIntegration:
@@ -250,10 +268,11 @@ class TestUKFIntegration:
         coordinator = create_coordinator_mock()
         assert coordinator.options[CONF_USE_UKF_AREA_SELECTION] is True
 
-    def test_refresh_areas_uses_ukf_when_enabled(self) -> None:
-        """Test that _refresh_areas_by_min_distance uses UKF when enabled."""
+    def test_refresh_areas_uses_ukf_when_profiles_mature(self) -> None:
+        """Test that _refresh_areas_by_min_distance uses UKF when room profiles are mature."""
         coordinator = create_coordinator_mock()
-        # UKF is already enabled by default
+        # Add a mature room profile (triggers automatic UKF activation)
+        coordinator.room_profiles["kitchen"] = create_mature_room_profile("kitchen")
         coordinator.devices = {}
 
         device = FakeDevice("AA:BB:CC:DD:EE:01", "Test Device")
@@ -261,7 +280,6 @@ class TestUKFIntegration:
 
         # Mock the UKF refresh method
         ukf_called = {"count": 0}
-        original_ukf_method = coordinator._refresh_area_by_ukf
 
         def mock_ukf_refresh(dev: FakeDevice) -> bool:
             ukf_called["count"] += 1
@@ -280,7 +298,7 @@ class TestUKFIntegration:
         # Call the refresh method
         coordinator._refresh_areas_by_min_distance()
 
-        # UKF should have been called
+        # UKF should have been called (because room profiles are mature)
         assert ukf_called["count"] == 1
         # Min-distance should also be called (as fallback since UKF returned False)
         assert min_dist_called["count"] == 1
@@ -288,7 +306,8 @@ class TestUKFIntegration:
     def test_refresh_areas_skips_min_distance_when_ukf_succeeds(self) -> None:
         """Test that min-distance is skipped when UKF makes a decision."""
         coordinator = create_coordinator_mock()
-        coordinator.options[CONF_USE_UKF_AREA_SELECTION] = True
+        # Add a mature room profile (triggers automatic UKF activation)
+        coordinator.room_profiles["kitchen"] = create_mature_room_profile("kitchen")
         coordinator.devices = {}
 
         device = FakeDevice("AA:BB:CC:DD:EE:01", "Test Device")
@@ -314,15 +333,16 @@ class TestUKFIntegration:
         # Call the refresh method
         coordinator._refresh_areas_by_min_distance()
 
-        # UKF should have been called
+        # UKF should have been called (because room profiles are mature)
         assert ukf_called["count"] == 1
-        # Min-distance should NOT be called
+        # Min-distance should NOT be called (UKF succeeded)
         assert min_dist_called["count"] == 0
 
-    def test_refresh_areas_skips_ukf_when_disabled(self) -> None:
-        """Test that UKF is skipped when disabled."""
+    def test_refresh_areas_skips_ukf_when_no_mature_profiles(self) -> None:
+        """Test that UKF is skipped when room profiles are not mature (bootstrap phase)."""
         coordinator = create_coordinator_mock()
-        coordinator.options[CONF_USE_UKF_AREA_SELECTION] = False
+        # No mature room profiles → falls back to min-distance automatically
+        coordinator.room_profiles = {}
         coordinator.devices = {}
 
         device = FakeDevice("AA:BB:CC:DD:EE:01", "Test Device")
@@ -348,9 +368,9 @@ class TestUKFIntegration:
         # Call the refresh method
         coordinator._refresh_areas_by_min_distance()
 
-        # UKF should NOT have been called
+        # UKF should NOT have been called (no mature profiles)
         assert ukf_called["count"] == 0
-        # Min-distance should be called
+        # Min-distance should be called (fallback)
         assert min_dist_called["count"] == 1
 
 

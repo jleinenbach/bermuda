@@ -44,6 +44,7 @@ def _make_coordinator(hass: HomeAssistant) -> BermudaDataUpdateCoordinator:
     coordinator.devices = {}
     coordinator.metadevices = {}
     coordinator.correlations = {}  # Scanner correlation data for area confidence
+    coordinator.room_profiles = {}  # Room-level scanner pair delta profiles
     coordinator._correlations_loaded = True  # Prevent async loading in tests
     coordinator._last_correlation_save = 0.0  # Last time correlations were saved
     coordinator.correlation_store = MagicMock(async_save=AsyncMock())  # Mock store

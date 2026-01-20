@@ -118,7 +118,7 @@ from .const import (
     UKF_MIN_SCANNERS,
     UPDATE_INTERVAL,
 )
-from .correlation import AreaProfile, CorrelationStore, z_scores_to_confidence
+from .correlation import AreaProfile, CorrelationStore, RoomProfile, z_scores_to_confidence
 from .filters import UnscentedKalmanFilter
 from .fmdn import FmdnIntegration
 from .scanner_calibration import ScannerCalibrationManager, update_scanner_calibration
@@ -229,6 +229,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         # Scanner correlation learning for improved area localization
         self.correlation_store = CorrelationStore(hass)
         self.correlations: dict[str, dict[str, AreaProfile]] = {}
+        self.room_profiles: dict[str, RoomProfile] = {}  # Device-independent room fingerprints
         self._correlations_loaded = False
         self._last_correlation_save: float = 0
 
@@ -769,24 +770,29 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         # Build "other readings" (all except primary)
         other_readings = {addr: rssi for addr, rssi in rssi_readings.items() if addr != primary_scanner_addr}
 
-        # Update the profile with current readings (including primary for absolute profiles)
+        # Update the device-specific profile with current readings
         self.correlations[device_address][target_area_id].update(
             primary_rssi=primary_rssi,
             other_readings=other_readings,
             primary_scanner_addr=primary_scanner_addr,
         )
 
+        # Update the device-independent room profile with all scanner readings
+        # This creates scanner-pair deltas that are shared across all devices
+        if target_area_id not in self.room_profiles:
+            self.room_profiles[target_area_id] = RoomProfile(area_id=target_area_id)
+        self.room_profiles[target_area_id].update(rssi_readings)
+
         _LOGGER.info(
-            "Trained fingerprint for %s in area %s with %d scanners (primary: %s at %.1f dBm)",
+            "Trained fingerprint for %s in area %s with %d scanners "
+            "(device profile + room profile updated)",
             device.name,
             target_area_id,
             len(rssi_readings),
-            primary_scanner_addr,
-            primary_rssi,
         )
 
         # Save correlations immediately after manual training
-        await self.correlation_store.async_save(self.correlations)
+        await self.correlation_store.async_save(self.correlations, self.room_profiles)
         self._last_correlation_save = nowstamp
 
         return True
@@ -862,12 +868,15 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         """Implementation of DataUpdateCoordinator update_data function."""
         # Load correlations on first update
         if not self._correlations_loaded:
-            self.correlations = await self.correlation_store.async_load()
+            correlation_data = await self.correlation_store.async_load_all()
+            self.correlations = correlation_data.device_profiles
+            self.room_profiles = correlation_data.room_profiles
             self._correlations_loaded = True
             self._last_correlation_save = monotonic_time_coarse()
             _LOGGER.debug(
-                "Loaded scanner correlations for %d devices",
+                "Loaded scanner correlations: %d devices, %d room profiles",
                 len(self.correlations),
+                len(self.room_profiles),
             )
 
         result = self._async_update_data_internal()
@@ -875,7 +884,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         # Periodically save correlations
         nowstamp = monotonic_time_coarse()
         if nowstamp - self._last_correlation_save > CORRELATION_SAVE_INTERVAL:
-            await self.correlation_store.async_save(self.correlations)
+            await self.correlation_store.async_save(self.correlations, self.room_profiles)
             self._last_correlation_save = nowstamp
 
         return result
@@ -1655,14 +1664,15 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         ukf.predict(dt=UPDATE_INTERVAL)
         ukf.update_multi(rssi_readings)
 
-        # Check if we have learned fingerprints for this device
-        if device.address not in self.correlations:
+        # Get device-specific profiles (may be empty for new devices)
+        device_profiles = self.correlations.get(device.address, {})
+
+        # Need either device profiles or room profiles
+        if not device_profiles and not self.room_profiles:
             return False
 
-        device_profiles = self.correlations[device.address]
-
-        # Match against learned area profiles
-        matches = ukf.match_fingerprints(device_profiles)
+        # Match against both device-specific and room-level fingerprints
+        matches = ukf.match_fingerprints(device_profiles, self.room_profiles)
 
         if not matches:
             return False
@@ -1732,19 +1742,20 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         return True
 
     def _refresh_areas_by_min_distance(self):
-        """Set area for ALL devices based on closest beacon (or UKF if enabled)."""
-        use_ukf = self.options.get(CONF_USE_UKF_AREA_SELECTION, DEFAULT_USE_UKF_AREA_SELECTION)
+        """Set area for ALL devices based on UKF+RoomProfile or min-distance fallback."""
+        # Check if we have mature room profiles (at least 2 scanner-pairs with 30+ samples)
+        has_mature_profiles = any(
+            profile.mature_pair_count >= 2 for profile in self.room_profiles.values()
+        )
 
         for device in self.devices.values():
             if (
                 not device.is_scanner
-                and (device.create_sensor or device.create_tracker_done)  # include tracked or tracker devices
-                # or device.metadevice_type in METADEVICE_SOURCETYPES  # and any source devices for PBLE, ibeacon etc
+                and (device.create_sensor or device.create_tracker_done)
             ):
                 # Check if device is manually locked to an area
                 if device.area_locked_id is not None:
                     # Device is locked by user selection for training.
-                    # Be VERY conservative with auto-unlock - the user explicitly chose this room.
                     # Only unlock if the locked scanner truly disappears (no advert at all).
                     if device.area_locked_scanner_addr is not None:
                         locked_advert = None
@@ -1754,7 +1765,6 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                                 break
 
                         if locked_advert is None:
-                            # Locked scanner has no advert at all - it truly disappeared
                             _LOGGER.info(
                                 "Auto-unlocking %s: locked scanner %s no longer has any advert",
                                 device.name,
@@ -1765,16 +1775,13 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                             device.area_locked_scanner_addr = None
                         else:
                             # Locked scanner still has an advert - keep lock active.
-                            # Don't unlock just because stamp is stale - USB/BlueZ scanners
-                            # don't update stamps when RSSI is stable, which is normal for
-                            # a stationary device being trained.
                             continue
                     else:
-                        # No scanner address recorded - keep locked
                         continue
 
-                # Try UKF first if enabled; fall back to min-distance if UKF cannot decide
-                if use_ukf and self._refresh_area_by_ukf(device):
+                # Primary: UKF with RoomProfile (when profiles are mature)
+                # Fallback: Simple min-distance (bootstrap phase)
+                if has_mature_profiles and self._refresh_area_by_ukf(device):
                     continue
                 self._refresh_area_by_min_distance(device)
 
@@ -2584,12 +2591,21 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                             self.correlations[device.address][advert.area_id] = AreaProfile(
                                 area_id=advert.area_id,
                             )
-                        # Update the profile with current readings (including primary scanner for absolute tracking)
+                        # Update the device-specific profile
                         self.correlations[device.address][advert.area_id].update(
                             primary_rssi=advert.rssi,
                             other_readings=other_readings,
                             primary_scanner_addr=advert.scanner_address,
                         )
+
+                        # Also update the device-independent room profile
+                        # Collect all RSSI readings for this update
+                        all_readings = dict(other_readings)
+                        if advert.scanner_address is not None:
+                            all_readings[advert.scanner_address] = advert.rssi
+                        if advert.area_id not in self.room_profiles:
+                            self.room_profiles[advert.area_id] = RoomProfile(area_id=advert.area_id)
+                        self.room_profiles[advert.area_id].update(all_readings)
 
         if winner is None:
             candidates: list[tuple[float, BermudaAdvert]] = []

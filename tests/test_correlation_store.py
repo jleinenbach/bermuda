@@ -148,7 +148,8 @@ class TestCorrelationStoreConfiguration:
 
     def test_storage_version_constant(self) -> None:
         """Storage version is set."""
-        assert STORAGE_VERSION == 1, (
-            f"Storage version is {STORAGE_VERSION}, expected 1. "
+        assert STORAGE_VERSION == 2, (
+            f"Storage version is {STORAGE_VERSION}, expected 2. "
+            f"Version 2 includes room_profiles in addition to device_profiles. "
             f"Version is used for migration; unexpected value could cause issues."
         )
