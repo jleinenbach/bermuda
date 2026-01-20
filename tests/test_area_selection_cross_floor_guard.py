@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -12,6 +13,34 @@ from custom_components.bermuda.const import (
     MOVEMENT_STATE_STATIONARY,
 )
 from custom_components.bermuda.coordinator import BermudaDataUpdateCoordinator
+
+if TYPE_CHECKING:
+    pass
+
+
+@dataclass
+class FakeArea:
+    """Minimal area stub for mock area registry."""
+
+    id: str  # noqa: A003
+    name: str
+    floor_id: str | None = None
+
+
+class MockAreaRegistry:
+    """Mock area registry for testing floor resolution."""
+
+    def __init__(self, areas: dict[str, FakeArea] | None = None) -> None:
+        """Initialize with optional areas dictionary."""
+        self._areas: dict[str, FakeArea] = areas or {}
+
+    def async_get_area(self, area_id: str) -> FakeArea | None:
+        """Get area by ID."""
+        return self._areas.get(area_id)
+
+    def add_area(self, area: FakeArea) -> None:
+        """Add an area to the registry."""
+        self._areas[area.id] = area
 
 
 @dataclass
@@ -138,13 +167,23 @@ def _pcnt_diff(a: float, b: float) -> float:
     return abs(a - b) / ((a + b) / 2)
 
 
-def _build_coord() -> BermudaDataUpdateCoordinator:
+def _build_coord(
+    areas: list[FakeArea] | None = None,
+) -> BermudaDataUpdateCoordinator:
     coord = BermudaDataUpdateCoordinator.__new__(BermudaDataUpdateCoordinator)
     coord.options = {CONF_MAX_RADIUS: 10.0}
     coord.correlations = {}  # Scanner correlation data for area confidence
     coord.room_profiles = {}  # Room-level scanner pair delta profiles
     coord._correlations_loaded = True  # Prevent async loading in tests
     coord.AreaTests = BermudaDataUpdateCoordinator.AreaTests
+
+    # FIX: Add mock area registry for floor resolution in _refresh_area_by_min_distance
+    # The new floor guard logic uses device.area_id to resolve floor via area registry
+    area_registry = MockAreaRegistry()
+    if areas:
+        for area in areas:
+            area_registry.add_area(area)
+    coord.ar = area_registry
     return coord
 
 
@@ -153,7 +192,12 @@ def test_cross_floor_historical_minmax_requires_stronger_history(monkeypatch: py
     now = 1000.0
     monkeypatch.setattr("custom_components.bermuda.coordinator.monotonic_time_coarse", lambda: now)
 
-    coord = _build_coord()
+    # FIX: Create areas for mock area registry (needed for floor resolution)
+    areas = [
+        FakeArea(id="area_praxis", name="Praxis", floor_id="floor_basement"),
+        FakeArea(id="area_technik", name="Technikraum", floor_id="floor_ground"),
+    ]
+    coord = _build_coord(areas=areas)
 
     scanner_praxis = FakeScanner(
         name="BT Scanner 3 Praxis",
@@ -224,7 +268,11 @@ def test_cross_floor_switch_allowed_with_long_history(monkeypatch: pytest.Monkey
     now = 2000.0
     monkeypatch.setattr("custom_components.bermuda.coordinator.monotonic_time_coarse", lambda: now)
 
-    coord = _build_coord()
+    areas = [
+        FakeArea(id="area_a", name="Room A", floor_id="floor_a"),
+        FakeArea(id="area_b", name="Room B", floor_id="floor_b"),
+    ]
+    coord = _build_coord(areas=areas)
 
     scanner_floor_a = FakeScanner(
         name="Scanner A",
@@ -284,7 +332,12 @@ def test_transient_gap_still_allows_cross_floor_switch(monkeypatch: pytest.Monke
         return now[0]
 
     monkeypatch.setattr("custom_components.bermuda.coordinator.monotonic_time_coarse", _fake_time)
-    coord = _build_coord()
+
+    areas = [
+        FakeArea(id="area_a", name="Room A", floor_id="floor_a"),
+        FakeArea(id="area_b", name="Room B", floor_id="floor_b"),
+    ]
+    coord = _build_coord(areas=areas)
 
     scanner_floor_a = FakeScanner(
         name="Scanner A",
@@ -355,7 +408,12 @@ def test_missing_scanner_device_does_not_crash(monkeypatch: pytest.MonkeyPatch) 
     """Missing scanner metadata must not raise or switch."""
     now = 4000.0
     monkeypatch.setattr("custom_components.bermuda.coordinator.monotonic_time_coarse", lambda: now)
-    coord = _build_coord()
+
+    areas = [
+        FakeArea(id="area_ok", name="Room OK", floor_id="floor_ok"),
+        FakeArea(id="area_bad", name="Room Bad", floor_id=None),  # Unknown floor
+    ]
+    coord = _build_coord(areas=areas)
 
     scanner_ok = FakeScanner(
         name="Scanner OK",
@@ -403,7 +461,14 @@ def test_same_floor_confirmation_blocks_cross_floor_switch(monkeypatch: pytest.M
     cross-floor switches should require much stronger evidence."""
     now = 5000.0
     monkeypatch.setattr("custom_components.bermuda.coordinator.monotonic_time_coarse", lambda: now)
-    coord = _build_coord()
+
+    areas = [
+        FakeArea(id="area_a1", name="Room A1", floor_id="floor_a"),
+        FakeArea(id="area_a2", name="Room A2", floor_id="floor_a"),
+        FakeArea(id="area_a3", name="Room A3", floor_id="floor_a"),
+        FakeArea(id="area_b", name="Room B", floor_id="floor_b"),
+    ]
+    coord = _build_coord(areas=areas)
 
     # Create multiple scanners on the same floor (floor A)
     scanner_a1 = FakeScanner(
@@ -518,7 +583,13 @@ def test_same_floor_confirmation_allows_strong_switch(monkeypatch: pytest.Monkey
     even with same-floor witnesses."""
     now = 6000.0
     monkeypatch.setattr("custom_components.bermuda.coordinator.monotonic_time_coarse", lambda: now)
-    coord = _build_coord()
+
+    areas = [
+        FakeArea(id="area_a1", name="Room A1", floor_id="floor_a"),
+        FakeArea(id="area_a2", name="Room A2", floor_id="floor_a"),
+        FakeArea(id="area_b", name="Room B", floor_id="floor_b"),
+    ]
+    coord = _build_coord(areas=areas)
 
     # Multiple scanners on floor A
     scanner_a1 = FakeScanner(
@@ -600,7 +671,13 @@ def test_floor_sandwich_logic_blocks_switch(monkeypatch: pytest.MonkeyPatch) -> 
     the incumbent floor (middle) is most likely correct - block switches."""
     now = 7000.0
     monkeypatch.setattr("custom_components.bermuda.coordinator.monotonic_time_coarse", lambda: now)
-    coord = _build_coord()
+
+    areas = [
+        FakeArea(id="area_basement", name="Keller", floor_id="floor_basement"),
+        FakeArea(id="area_ground", name="Erdgeschoss", floor_id="floor_ground"),
+        FakeArea(id="area_upper", name="Obergeschoss", floor_id="floor_upper"),
+    ]
+    coord = _build_coord(areas=areas)
 
     # Three floors: Basement (-1), Ground (0), Upper (1)
     scanner_basement = FakeScanner(
@@ -693,7 +770,12 @@ def test_non_adjacent_floor_requires_stronger_evidence(monkeypatch: pytest.Monke
     much stronger evidence since BLE rarely skips floors cleanly."""
     now = 8000.0
     monkeypatch.setattr("custom_components.bermuda.coordinator.monotonic_time_coarse", lambda: now)
-    coord = _build_coord()
+
+    areas = [
+        FakeArea(id="area_basement", name="Keller", floor_id="floor_basement"),
+        FakeArea(id="area_upper", name="Obergeschoss", floor_id="floor_upper"),
+    ]
+    coord = _build_coord(areas=areas)
 
     # Three floors: Basement (-1), Ground (0), Upper (1)
     scanner_basement = FakeScanner(
@@ -768,7 +850,14 @@ def test_challenger_floor_witnesses_penalty(monkeypatch: pytest.MonkeyPatch) -> 
     """
     now = 9000.0
     monkeypatch.setattr("custom_components.bermuda.coordinator.monotonic_time_coarse", lambda: now)
-    coord = _build_coord()
+
+    areas = [
+        FakeArea(id="area_eg", name="Wohnzimmer", floor_id="floor_eg"),
+        FakeArea(id="area_og1", name="Schlafzimmer", floor_id="floor_og"),
+        FakeArea(id="area_og2", name="Bad OG", floor_id="floor_og"),
+        FakeArea(id="area_og3", name="Flur OG", floor_id="floor_og"),
+    ]
+    coord = _build_coord(areas=areas)
 
     # Single scanner on ground floor (EG) - very close to device
     scanner_eg = FakeScanner(
@@ -895,7 +984,12 @@ def test_near_field_distance_ratio_protection(monkeypatch: pytest.MonkeyPatch) -
     """
     now = 9500.0
     monkeypatch.setattr("custom_components.bermuda.coordinator.monotonic_time_coarse", lambda: now)
-    coord = _build_coord()
+
+    areas = [
+        FakeArea(id="area_eg", name="Wohnzimmer", floor_id="floor_eg"),
+        FakeArea(id="area_og", name="Schlafzimmer", floor_id="floor_og"),
+    ]
+    coord = _build_coord(areas=areas)
 
     # Scanner on EG - device is VERY close (2m)
     scanner_eg = FakeScanner(
@@ -1090,7 +1184,12 @@ def test_cross_floor_requires_streak_even_when_incumbent_out_of_range(
     """
     now = 5000.0
     monkeypatch.setattr("custom_components.bermuda.coordinator.monotonic_time_coarse", lambda: now)
-    coord = _build_coord()
+
+    areas = [
+        FakeArea(id="area_basement", name="Basement Room", floor_id="floor_basement"),
+        FakeArea(id="area_upper", name="Upper Room", floor_id="floor_upper"),
+    ]
+    coord = _build_coord(areas=areas)
     coord.options[CONF_MAX_RADIUS] = 8.0  # Set max_radius
 
     # Basement scanner (incumbent) - distance > max_radius but still has fresh advert
