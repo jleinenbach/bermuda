@@ -20,9 +20,6 @@ if TYPE_CHECKING:
     from . import BermudaConfigEntry
     from .coordinator import BermudaDataUpdateCoordinator
 
-# Number of training samples to apply for stronger fingerprint weight
-TRAINING_SAMPLE_COUNT = 10
-
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -113,7 +110,7 @@ class BermudaTrainingRoomSelect(BermudaEntity, SelectEntity):
         return self._room_override_name
 
     async def async_select_option(self, option: str) -> None:
-        """Handle user selecting a room - train fingerprint for that room."""
+        """Handle user selecting a room - lock device to this area."""
         # Find the area_id for this area name
         areas = self._area_registry.async_list_areas()
         target_area = next((a for a in areas if a.name == option), None)
@@ -126,7 +123,7 @@ class BermudaTrainingRoomSelect(BermudaEntity, SelectEntity):
         expected_floor_id = self._effective_floor_id
         if expected_floor_id is not None and target_area.floor_id != expected_floor_id:
             _LOGGER.warning(
-                "Room '%s' is not on the selected floor - skipping training",
+                "Room '%s' is not on the selected floor - skipping",
                 option,
             )
             return
@@ -153,36 +150,14 @@ class BermudaTrainingRoomSelect(BermudaEntity, SelectEntity):
         self._device.area_id = target_area.id
         self._device.area_name = option
 
-        # Update UI immediately before training starts
-        self.async_write_ha_state()
-
-        # Train the fingerprint with multiple samples for stronger weight
         _LOGGER.info(
-            "Training and LOCKING device %s to room %s (%d samples)...",
-            self._device.name,
-            option,
-            TRAINING_SAMPLE_COUNT,
-        )
-
-        for i in range(TRAINING_SAMPLE_COUNT):
-            success = await self.coordinator.async_train_fingerprint(
-                device_address=self.address,
-                target_area_id=target_area.id,
-            )
-            if not success:
-                _LOGGER.warning(
-                    "Training sample %d/%d failed for %s",
-                    i + 1,
-                    TRAINING_SAMPLE_COUNT,
-                    self._device.name,
-                )
-                break
-
-        _LOGGER.info(
-            "Fingerprint training complete for device %s in room %s",
+            "Device %s LOCKED to room %s (press 'Learn Fingerprint' to train)",
             self._device.name,
             option,
         )
+
+        # Trigger coordinator refresh so the "Learn" button updates its availability
+        await self.coordinator.async_request_refresh()
 
     def on_floor_changed(self) -> None:
         """Called by floor select when floor is changed by user."""
@@ -271,11 +246,12 @@ class BermudaTrainingFloorSelect(BermudaEntity, SelectEntity):
             option,
         )
 
-        # Notify room select that floor changed (clears room selection)
+        # Notify room select that floor changed (clears room selection and area lock)
         if self._room_select is not None:
             self._room_select.on_floor_changed()
 
-        self.async_write_ha_state()
+        # Trigger coordinator refresh so the "Learn" button updates its availability
+        await self.coordinator.async_request_refresh()
 
     @property
     def unique_id(self) -> str:
