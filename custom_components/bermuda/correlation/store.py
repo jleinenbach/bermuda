@@ -4,7 +4,7 @@ Persistence for scanner correlations.
 Handles loading and saving correlation data to survive HA restarts.
 Uses Home Assistant's Store API for reliable JSON persistence.
 
-Storage structure (version 2):
+Storage structure:
 - "devices": Device-specific profiles {device_addr: {area_id: AreaProfile}}
 - "rooms": Room-level profiles {area_id: RoomProfile}
 """
@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from homeassistant.helpers.storage import Store
 
 STORAGE_KEY = "bermuda.scanner_correlations"
-STORAGE_VERSION = 2
+STORAGE_VERSION = 1
 
 
 class CorrelationData(NamedTuple):
