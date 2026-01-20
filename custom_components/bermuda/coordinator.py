@@ -1628,7 +1628,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
         return z_scores_to_confidence(z_scores)
 
-    def _refresh_area_by_ukf(self, device: BermudaDevice) -> bool:  # noqa: PLR0911
+    def _refresh_area_by_ukf(self, device: BermudaDevice) -> bool:  # noqa: PLR0911, C901
         """
         Use UKF (Unscented Kalman Filter) for area selection via fingerprint matching.
 
@@ -1722,6 +1722,44 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                 return False
 
             scanner_less_room = True
+
+        # RSSI SANITY CHECK:
+        # Reject UKF decision if it picks a room with significantly weaker signal
+        # than the strongest visible scanner. This prevents fingerprint mismatches
+        # from overriding obvious physical proximity.
+        if not scanner_less_room and best_advert is not None:
+            best_advert_rssi = best_advert.rssi
+            strongest_visible_rssi = -999.0
+
+            for advert in device.adverts.values():
+                if (
+                    advert.rssi is not None
+                    and advert.stamp is not None
+                    and nowstamp - advert.stamp < EVIDENCE_WINDOW_SECONDS
+                    and advert.rssi > strongest_visible_rssi
+                ):
+                    strongest_visible_rssi = advert.rssi
+
+            # If UKF-selected advert has much weaker signal (>10 dB) than strongest,
+            # the fingerprint match is probably wrong - fall back to min-distance
+            rssi_sanity_margin = 10.0  # dB threshold
+            if (
+                best_advert_rssi is not None
+                and strongest_visible_rssi > -999.0
+                and strongest_visible_rssi - best_advert_rssi > rssi_sanity_margin
+            ):
+                # UKF picked a room with weak signal when strong signal exists elsewhere
+                # This is suspicious - reject and let min-distance handle it
+                if _LOGGER.isEnabledFor(logging.DEBUG):
+                    _LOGGER.debug(
+                        "UKF sanity check failed for %s: UKF picked %s (RSSI %.1f) but "
+                        "strongest signal is %.1f dB stronger - falling back to min-distance",
+                        device.name,
+                        best_area_id,
+                        best_advert_rssi,
+                        strongest_visible_rssi - best_advert_rssi,
+                    )
+                return False
 
         # CROSS-FLOOR STREAK PROTECTION:
         # Prevent rapid flickering between floors by requiring multiple consecutive
