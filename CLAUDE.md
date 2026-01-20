@@ -612,6 +612,105 @@ async def async_select_option(self, option: str) -> None:
 3. In setters: Set authoritative state FIRST
 4. In `_handle_coordinator_update()`: Check authoritative state to sync derived state
 
+**Test Coverage:** See `tests/test_training_ui_race_condition.py` for comprehensive race condition tests.
+
+### 9. Use try/finally for Robust Cleanup
+
+When a function must clean up state regardless of success/failure, use `try/finally`:
+
+```python
+# GOOD - cleanup always happens
+async def async_press(self) -> None:
+    try:
+        for i in range(TRAINING_SAMPLE_COUNT):
+            await self.coordinator.async_train_fingerprint(...)
+    finally:
+        # ALWAYS clear training fields, even if training fails
+        self._device.training_target_floor_id = None
+        self._device.training_target_area_id = None
+        await self.coordinator.async_request_refresh()
+```
+
+**Why this matters:** Without `try/finally`, exceptions could leave the UI in an inconsistent state (dropdowns filled, button enabled, but training incomplete).
+
+### 10. Feature Parity Between Code Paths
+
+When adding a new code path (e.g., UKF area selection), ensure it has feature parity with the existing path:
+
+**Bug:** UKF path was missing streak protection for cross-floor switches. Min-distance path had it, UKF didn't.
+
+```python
+# BOTH paths need streak protection!
+# Min-distance path: _refresh_area_by_min_distance() ✅
+# UKF path: _refresh_area_by_ukf() ❌ (was missing)
+
+# FIX: Added same streak logic to UKF path
+if floor_changed:
+    required_streak = CROSS_FLOOR_STREAK  # 6
+else:
+    required_streak = SAME_FLOOR_STREAK   # 4
+```
+
+**Checklist when adding alternative code paths:**
+1. List all features/protections in the original path
+2. Verify each exists in the new path
+3. Consider extracting shared logic to helper functions
+
+### 11. Backward Compatibility via data.get()
+
+When adding new keys to stored data, prefer `data.get()` over schema migration:
+
+```python
+# BAD - requires migration, version bump, complexity
+STORAGE_VERSION = 2  # Bump from 1
+async def _async_migrate(data):
+    if data["version"] == 1:
+        data["rooms"] = {}  # Add missing key
+        data["version"] = 2
+    return data
+
+# GOOD - graceful degradation, no migration needed
+STORAGE_VERSION = 1  # Keep as is
+rooms = data.get("rooms", {})  # Handle missing key
+```
+
+**When to use which:**
+- `data.get()`: New optional features, beta code, backward-compatible additions
+- Migration: Breaking changes, data format changes, production-critical data
+
+### 12. Debug Logging with Object IDs
+
+When debugging issues where multiple components share objects, log `id(object)` to verify they're using the same instance:
+
+```python
+_LOGGER.debug(
+    "Setting training_target_area_id for %s: %s (device id: %s)",
+    self._device.name,
+    target_area.id,
+    id(self._device),  # Unique object identifier
+)
+```
+
+**This helped identify:** Whether RoomSelect, FloorSelect, and TrainingButton were all using the same BermudaDevice instance (they were - the bug was elsewhere).
+
+### 13. Threshold Tuning for ML/Heuristic Features
+
+Initial threshold values are often wrong. Plan for iteration:
+
+**Example - RSSI sanity check for UKF:**
+```
+Iteration 1: 10 dB threshold → Too strict, blocked valid UKF decisions
+Iteration 2: 15 dB threshold + confidence check → Better balance
+```
+
+**Key insight:** Add confidence/score checks to allow exceptions:
+```python
+# Strict check only when UKF is uncertain
+if match_score < 0.6 and rssi_delta > 15:
+    fallback_to_min_distance()
+# High confidence UKF can override RSSI heuristics
+```
+
 ## UKF + Fingerprint Fusion (Implemented)
 
 ### Implementation Status: ✅ Complete (Experimental)
