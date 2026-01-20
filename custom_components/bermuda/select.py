@@ -82,6 +82,11 @@ class BermudaTrainingRoomSelect(BermudaEntity, SelectEntity):
         # Start empty - user must explicitly select
         self._room_override_name: str | None = None
         self._room_override_id: str | None = None
+        _LOGGER.debug(
+            "Room select created for %s (device id: %s)",
+            self._device.name,
+            id(self._device),
+        )
 
     @property
     def _effective_floor_id(self) -> str | None:
@@ -128,12 +133,21 @@ class BermudaTrainingRoomSelect(BermudaEntity, SelectEntity):
             )
             return
 
-        # Set the persistent override FIRST (so UI updates immediately)
+        # IMPORTANT: Set device attribute FIRST to prevent race condition!
+        # If a coordinator refresh happens between setting local vars and device attr,
+        # _handle_coordinator_update would see training_target_area_id=None and clear
+        # the local UI variables. By setting the device attr first, this race is avoided.
+        _LOGGER.debug(
+            "Setting training_target_area_id for %s: %s (device id: %s)",
+            self._device.name,
+            target_area.id,
+            id(self._device),
+        )
+        self._device.training_target_area_id = target_area.id
+
+        # Now set local UI state (safe because device attr is already set)
         self._room_override_name = option
         self._room_override_id = target_area.id
-
-        # Set training target - this enables the button and is NEVER cleared by coordinator
-        self._device.training_target_area_id = target_area.id
 
         # LOCK the device to this area - prevents automatic detection from overriding
         self._device.area_locked_id = target_area.id
@@ -221,6 +235,11 @@ class BermudaTrainingFloorSelect(BermudaEntity, SelectEntity):
         self._floor_override_name: str | None = None
         # Reference to room select (set after creation)
         self._room_select: BermudaTrainingRoomSelect | None = None
+        _LOGGER.debug(
+            "Floor select created for %s (device id: %s)",
+            self._device.name,
+            id(self._device),
+        )
 
     def set_room_select(self, room_select: BermudaTrainingRoomSelect) -> None:
         """Set reference to the room select entity."""
@@ -252,12 +271,21 @@ class BermudaTrainingFloorSelect(BermudaEntity, SelectEntity):
             _LOGGER.warning("Could not find floor '%s'", option)
             return
 
-        # Set the persistent override
+        # IMPORTANT: Set device attribute FIRST to prevent race condition!
+        # If a coordinator refresh happens between setting local vars and device attr,
+        # _handle_coordinator_update would see training_target_floor_id=None and clear
+        # the local UI variables. By setting the device attr first, this race is avoided.
+        _LOGGER.debug(
+            "Setting training_target_floor_id for %s: %s (device id: %s)",
+            self._device.name,
+            target_floor.floor_id,
+            id(self._device),
+        )
+        self._device.training_target_floor_id = target_floor.floor_id
+
+        # Now set local UI state (safe because device attr is already set)
         self.floor_override_id = target_floor.floor_id
         self._floor_override_name = option
-
-        # Set training target floor - enables button when combined with room selection
-        self._device.training_target_floor_id = target_floor.floor_id
 
         _LOGGER.debug(
             "Floor selected for training %s: %s",

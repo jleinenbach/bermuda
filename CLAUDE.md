@@ -395,6 +395,73 @@ if nowstamp - locked_advert.stamp > AREA_LOCK_TIMEOUT_SECONDS:
         # Not seen anywhere → keep locked
 ```
 
+### Training UI System Architecture
+
+The training UI uses a coordinated system of Select entities (dropdowns) and a Button entity:
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         Training UI Flow                                 │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  FloorSelect ──────────────────┐                                        │
+│  (dropdown)                    │                                        │
+│       │                        │                                        │
+│       │ on_floor_changed()     │                                        │
+│       ▼                        │                                        │
+│  RoomSelect ───────────────────┼──► BermudaDevice                       │
+│  (dropdown)                    │    • training_target_floor_id          │
+│                                │    • training_target_area_id           │
+│                                │    • area_locked_id/name/scanner_addr  │
+│                                │                                        │
+│  TrainingButton ◄──────────────┘                                        │
+│  (available when both set)                                              │
+│       │                                                                  │
+│       │ async_press()                                                   │
+│       ▼                                                                  │
+│  coordinator.async_train_fingerprint()                                  │
+│       │                                                                  │
+│       │ clears training_target_* fields                                 │
+│       ▼                                                                  │
+│  coordinator.async_request_refresh()                                    │
+│       │                                                                  │
+│       │ triggers _handle_coordinator_update() on all entities           │
+│       ▼                                                                  │
+│  Dropdowns clear (see training_target_* = None)                         │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+**State Ownership:**
+
+| Field | Owner | Purpose |
+|-------|-------|---------|
+| `_floor_override_name/id` | FloorSelect | Local UI state |
+| `_room_override_name/id` | RoomSelect | Local UI state |
+| `training_target_floor_id` | BermudaDevice | Shared state for button availability |
+| `training_target_area_id` | BermudaDevice | Shared state for button availability |
+| `area_locked_*` | BermudaDevice | Prevents auto-detection override |
+
+**Critical Invariant:** Device attributes (`training_target_*`) must be set BEFORE local UI variables to prevent race conditions with coordinator refreshes. See Lesson #8.
+
+**Synchronization via `_handle_coordinator_update()`:**
+
+```python
+# In RoomSelect/FloorSelect:
+@callback
+def _handle_coordinator_update(self) -> None:
+    # If device attr was cleared (by button), clear local UI
+    if self._device.training_target_area_id is None:
+        self._room_override_name = None
+        self._room_override_id = None
+    super()._handle_coordinator_update()
+```
+
+This pattern allows the button to clear the dropdowns indirectly by:
+1. Setting `training_target_*` to `None`
+2. Triggering a coordinator refresh
+3. Each dropdown's `_handle_coordinator_update()` sees `None` and clears itself
+
 ## Lessons Learned
 
 ### 1. State Transitions Need Careful Handling
@@ -487,6 +554,63 @@ advert.scanner_device = saved_scanner_device  # Restore
 2. Check attribute read order in those methods
 3. Verify your modification will actually be used
 4. Consider side effects of temporarily modifying other attributes
+
+### 8. Coordinator Refresh Race Conditions in Entity State
+
+When entities (Select, Button) maintain both local UI state AND shared device state, coordinator refreshes can cause race conditions.
+
+**The Problem:**
+
+```python
+# BAD - Race condition possible!
+async def async_select_option(self, option: str) -> None:
+    # Step 1: Set local UI variable
+    self._room_override_name = option          # Local state set
+
+    # ⚠️ DANGER ZONE: Coordinator refresh can happen here!
+    # _handle_coordinator_update() would see training_target_area_id=None
+    # and CLEAR _room_override_name!
+
+    # Step 2: Set device attribute (too late!)
+    self._device.training_target_area_id = target_area.id
+```
+
+**Timeline of the bug:**
+```
+T0: User selects "Kitchen" in dropdown
+T1: async_select_option() sets _room_override_name = "Kitchen"
+T2: Coordinator refresh starts (every ~0.9s)
+T3: _handle_coordinator_update() runs:
+    → Sees training_target_area_id is still None
+    → Clears _room_override_name back to None!
+T4: User sees empty dropdown (confused!)
+T5: async_select_option() finally sets training_target_area_id = "kitchen_id"
+    → Too late, UI is already cleared
+```
+
+**The Fix - Set shared state FIRST:**
+
+```python
+# GOOD - Device attribute first prevents race condition
+async def async_select_option(self, option: str) -> None:
+    # Step 1: Set device attribute FIRST
+    self._device.training_target_area_id = target_area.id
+
+    # Now coordinator refresh is safe - it will see the device attr is set
+    # and won't clear local variables
+
+    # Step 2: Set local UI variables
+    self._room_override_name = option
+    self._room_override_id = target_area.id
+```
+
+**General Rule:** When synchronizing state between entities via shared objects (like BermudaDevice), always set the shared/authoritative state BEFORE the local/derived state. The `_handle_coordinator_update()` callback checks the shared state to decide whether to clear local state.
+
+**Checklist for entity state synchronization:**
+1. Identify which state is "authoritative" (shared device attrs)
+2. Identify which state is "derived" (local UI variables)
+3. In setters: Set authoritative state FIRST
+4. In `_handle_coordinator_update()`: Check authoritative state to sync derived state
 
 ## UKF + Fingerprint Fusion (Implemented)
 
