@@ -76,12 +76,41 @@ class BermudaTrainingButton(BermudaEntity, ButtonEntity):
         """Return True if button should be enabled (floor AND room selected)."""
         # Check parent availability first
         if not super().available:
+            _LOGGER.debug(
+                "Training button unavailable for %s: coordinator not ready",
+                self._device.name,
+            )
             return False
 
         # Button available when BOTH training floor AND room have been selected.
         # Uses training_target_* fields which are ONLY set by select entities
         # and NEVER cleared by coordinator - ensuring button stays enabled.
-        return self._device.training_target_floor_id is not None and self._device.training_target_area_id is not None
+        floor_ok = self._device.training_target_floor_id is not None
+        area_ok = self._device.training_target_area_id is not None
+        result = floor_ok and area_ok
+
+        if not result:
+            _LOGGER.debug(
+                "Training button unavailable for %s: floor=%s, area=%s (device id: %s)",
+                self._device.name,
+                self._device.training_target_floor_id,
+                self._device.training_target_area_id,
+                id(self._device),
+            )
+
+        return result
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Handle coordinator update - log device state for debugging."""
+        _LOGGER.debug(
+            "Button coordinator update for %s: floor=%s, area=%s (device id: %s)",
+            self._device.name,
+            self._device.training_target_floor_id,
+            self._device.training_target_area_id,
+            id(self._device),
+        )
+        super()._handle_coordinator_update()
 
     async def async_press(self) -> None:
         """Handle the button press - trigger fingerprint training."""

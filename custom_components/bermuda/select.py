@@ -133,6 +133,12 @@ class BermudaTrainingRoomSelect(BermudaEntity, SelectEntity):
         self._room_override_id = target_area.id
 
         # Set training target - this enables the button and is NEVER cleared by coordinator
+        _LOGGER.debug(
+            "Setting training_target_area_id for %s: %s (device id: %s)",
+            self._device.name,
+            target_area.id,
+            id(self._device),
+        )
         self._device.training_target_area_id = target_area.id
 
         # LOCK the device to this area - prevents automatic detection from overriding
@@ -257,6 +263,12 @@ class BermudaTrainingFloorSelect(BermudaEntity, SelectEntity):
         self._floor_override_name = option
 
         # Set training target floor - enables button when combined with room selection
+        _LOGGER.debug(
+            "Setting training_target_floor_id for %s: %s (device id: %s)",
+            self._device.name,
+            target_floor.floor_id,
+            id(self._device),
+        )
         self._device.training_target_floor_id = target_floor.floor_id
 
         _LOGGER.debug(
