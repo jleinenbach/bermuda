@@ -2779,13 +2779,37 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         # 2. The incumbent is truly invalid (stale or not a distance contender)
         # Previously, significant_improvement_same_floor and significant_rssi_advantage
         # could trigger immediate switches even for cross-floor cases due to the OR logic.
+        #
+        # Bug Fix 2: Cross-floor switches should STILL require streak even if incumbent
+        # is "truly invalid" (just out of range). Only bypass streak if incumbent is
+        # COMPLETELY offline (no advert at all, or advert is completely stale).
+        # This prevents rapid flickering between floors when a device is in a room
+        # without its own scanner and all scanners report distances near max_radius.
         is_cross_floor_switch = _resolve_cross_floor(device.area_advert, winner)
         incumbent_truly_invalid = not _is_distance_contender(device.area_advert) or area_advert_stale
         same_floor_fast_track = not is_cross_floor_switch and (
             significant_improvement_same_floor or significant_rssi_advantage
         )
 
-        if winner is not None and (incumbent_truly_invalid or same_floor_fast_track):
+        # For cross-floor switches, require the incumbent to be COMPLETELY offline
+        # (not just out of range) before allowing an immediate switch.
+        incumbent_completely_offline = (
+            device.area_advert is None
+            or device.area_advert.stamp is None
+            or device.area_advert.stamp < nowstamp - AREA_MAX_AD_AGE_LIMIT
+        )
+
+        # Cross-floor: only bypass streak if incumbent is completely offline
+        # Same-floor: allow bypass if incumbent is just invalid OR significant improvement
+        allow_immediate_switch = (
+            winner is not None
+            and (
+                (is_cross_floor_switch and incumbent_completely_offline)
+                or (not is_cross_floor_switch and (incumbent_truly_invalid or same_floor_fast_track))
+            )
+        )
+
+        if allow_immediate_switch:
             device.pending_area_id = None
             device.pending_floor_id = None
             device.pending_streak = 0
