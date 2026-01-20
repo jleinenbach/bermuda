@@ -1692,6 +1692,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                         best_advert = advert
                         break
 
+        scanner_less_room = False
         if best_advert is None:
             # Scanner-less room: UKF matched an area with no scanner.
             # Use the best available advert (strongest RSSI) and override its area.
@@ -1709,12 +1710,26 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             if best_advert is None:
                 return False
 
-            # Override the advert's area with the UKF-matched area
+            scanner_less_room = True
+
+        if scanner_less_room:
+            # Override the advert's area with the UKF-matched area.
+            # IMPORTANT: Temporarily clear scanner_device so apply_scanner_selection
+            # uses our overridden area_id instead of scanner_device.area_id
+            # (see bermuda_device.py apply_scanner_selection priority logic)
+            saved_scanner_device = best_advert.scanner_device
+            best_advert.scanner_device = None  # type: ignore[assignment]  # Temp for area override
             best_advert.area_id = best_area_id
             best_advert.area_name = self.resolve_area_name(best_area_id)
 
-        # Apply the selection using the device's standard method
-        device.apply_scanner_selection(best_advert, nowstamp=nowstamp)
+            device.apply_scanner_selection(best_advert, nowstamp=nowstamp)
+
+            # Restore scanner_device for other uses
+            best_advert.scanner_device = saved_scanner_device
+        else:
+            # Apply the selection using the device's standard method
+            device.apply_scanner_selection(best_advert, nowstamp=nowstamp)
+
         return True
 
     def _refresh_areas_by_min_distance(self):

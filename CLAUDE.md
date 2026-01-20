@@ -386,6 +386,34 @@ type BermudaConfigEntry = "ConfigEntry[BermudaData]"  # Requires Python 3.12+
 
 Always use `python3.13 -m venv venv` for the virtual environment.
 
+### 6. Trace Full Call Chain for Attribute Precedence
+
+When modifying code that passes objects to other methods, trace the full call chain to understand:
+- Which attributes are used
+- In what order (precedence/fallback logic)
+- Whether your modifications will actually take effect
+
+**Example Bug**: Setting `advert.area_id` to override the area, but `apply_scanner_selection()` reads `advert.scanner_device.area_id` first and only falls back to `advert.area_id` if scanner_device has no area.
+
+**Fix Pattern**: Temporarily nullify the higher-precedence attribute:
+```python
+# Temporarily clear scanner_device so apply_scanner_selection
+# uses our overridden area_id instead of scanner_device.area_id
+saved_scanner_device = advert.scanner_device
+advert.scanner_device = None
+advert.area_id = target_area_id
+
+device.apply_scanner_selection(advert, nowstamp=nowstamp)
+
+advert.scanner_device = saved_scanner_device  # Restore
+```
+
+**Checklist before modifying object attributes**:
+1. Find all methods that consume the object
+2. Check attribute read order in those methods
+3. Verify your modification will actually be used
+4. Consider side effects of temporarily modifying other attributes
+
 ## UKF + Fingerprint Fusion (Implemented)
 
 ### Implementation Status: ✅ Complete (Experimental)
