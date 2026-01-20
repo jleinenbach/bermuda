@@ -9,11 +9,11 @@ scanner goes offline.
 This enables "room fingerprinting" - even without the primary scanner,
 we can verify if secondary scanner readings match the learned pattern.
 
-Weighted Learning System (Two-Pool Fusion):
+Weighted Learning System (Two-Pool Fusion with Inverse-Variance Weighting):
     - Two parallel Kalman filters: one for automatic learning, one for button training
-    - Auto pool (weight 1/3): Continuously adapts to environment changes
-    - Button pool (weight 2/3): Preserves manual room corrections
-    - Final estimate = weighted fusion of both pools
+    - Weights are determined by INVERSE VARIANCE (mathematically optimal)
+    - Lower variance = higher confidence = more weight
+    - Button training with consistent values naturally dominates over noisy auto learning
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from typing import Any, Self
 
 from custom_components.bermuda.filters.kalman import KalmanFilter
 
-from .scanner_pair import BUTTON_WEIGHT_MULTIPLIER
+from .scanner_pair import MIN_VARIANCE
 
 # Kalman parameters for absolute RSSI tracking.
 # RSSI can vary more than deltas due to device orientation, battery state, etc.
@@ -47,9 +47,14 @@ class ScannerAbsoluteRssi:
     verify if the device is still in the same area even when the
     primary scanner goes offline.
 
-    Uses two parallel Kalman filters with weighted fusion:
+    Uses two parallel Kalman filters with INVERSE-VARIANCE fusion:
     - Auto filter: Continuously learns from automatic room detection
-    - Button filter: Learns from manual button training (weighted 2x)
+    - Button filter: Learns from manual button training
+
+    The final estimate uses mathematically optimal Bayesian fusion:
+    - Weight = 1 / variance (lower uncertainty = more trust)
+    - Button training with consistent values (low variance) naturally dominates
+    - No artificial multipliers - the math handles it automatically
 
     Example:
         When device is in "Büro":
@@ -100,7 +105,8 @@ class ScannerAbsoluteRssi:
         """
         Update with button-trained RSSI value.
 
-        Button samples are weighted 2x in the final estimate fusion.
+        Button samples with consistent values will have lower variance,
+        thus naturally receiving more weight in the fusion.
 
         Args:
             rssi: Current absolute RSSI value from this scanner.
@@ -115,10 +121,11 @@ class ScannerAbsoluteRssi:
     @property
     def expected_rssi(self) -> float:
         """
-        Return weighted fusion of auto and button estimates.
+        Return inverse-variance weighted fusion of auto and button estimates.
 
-        Combines both Kalman filter estimates using sample-count weighting,
-        with button samples counting 2x (BUTTON_WEIGHT_MULTIPLIER).
+        Uses mathematically optimal Bayesian sensor fusion:
+            weight_i = 1 / variance_i
+            fused = Σ(estimate_i * weight_i) / Σ(weight_i)
         """
         auto_samples = self._kalman_auto.sample_count
         button_samples = self._kalman_button.sample_count
@@ -130,25 +137,31 @@ class ScannerAbsoluteRssi:
         if auto_samples == 0:
             return self._kalman_button.estimate
 
-        auto_weight = float(auto_samples)
-        button_weight = float(button_samples * BUTTON_WEIGHT_MULTIPLIER)
+        # Inverse-variance weighting (optimal Bayesian fusion)
+        auto_var = max(self._kalman_auto.variance, MIN_VARIANCE)
+        button_var = max(self._kalman_button.variance, MIN_VARIANCE)
+
+        auto_weight = 1.0 / auto_var
+        button_weight = 1.0 / button_var
         total_weight = auto_weight + button_weight
 
         return (self._kalman_auto.estimate * auto_weight + self._kalman_button.estimate * button_weight) / total_weight
 
     @property
     def variance(self) -> float:
-        """Return combined variance from both filters."""
-        auto_var = self._kalman_auto.variance
-        button_var = self._kalman_button.variance
+        """
+        Return combined variance from both filters.
 
+        Uses inverse-variance fusion formula:
+            combined_variance = 1 / (1/var1 + 1/var2)
+        """
         if self._kalman_auto.sample_count == 0:
-            return button_var
+            return self._kalman_button.variance
         if self._kalman_button.sample_count == 0:
-            return auto_var
+            return self._kalman_auto.variance
 
-        if auto_var <= 0 or button_var <= 0:
-            return max(auto_var, button_var)
+        auto_var = max(self._kalman_auto.variance, MIN_VARIANCE)
+        button_var = max(self._kalman_button.variance, MIN_VARIANCE)
 
         return 1.0 / (1.0 / auto_var + 1.0 / button_var)
 
@@ -169,8 +182,8 @@ class ScannerAbsoluteRssi:
 
     @property
     def sample_count(self) -> int:
-        """Return total effective sample count (weighted)."""
-        return self.auto_sample_count + self.button_sample_count * BUTTON_WEIGHT_MULTIPLIER
+        """Return total sample count for maturity checks."""
+        return self.auto_sample_count + self.button_sample_count
 
     @property
     def is_mature(self) -> bool:

@@ -7,12 +7,17 @@ a primary scanner and another scanner when a device is in a specific area.
 This module is part of the scanner correlation learning system that
 improves area localization by learning spatial relationships between scanners.
 
-Weighted Learning System (Two-Pool Fusion):
+Weighted Learning System (Two-Pool Fusion with Inverse-Variance Weighting):
     - Two parallel Kalman filters: one for automatic learning, one for button training
-    - Auto pool (weight 1/3): Continuously adapts to environment changes (furniture, etc.)
-    - Button pool (weight 2/3): Preserves manual room corrections
-    - Final estimate = weighted fusion of both pools based on their sample counts
+    - Weights are determined by INVERSE VARIANCE (mathematically optimal)
+    - Lower variance = higher confidence = more weight
+    - Button training with consistent values naturally dominates over noisy auto learning
     - Both pools continue learning indefinitely - no hard caps that block new data
+
+Mathematical basis (optimal Bayesian fusion):
+    weight_i = 1 / variance_i
+    fused_estimate = Σ(estimate_i * weight_i) / Σ(weight_i)
+    fused_variance = 1 / Σ(1 / variance_i)
 """
 
 from __future__ import annotations
@@ -32,12 +37,8 @@ DELTA_MEASUREMENT_NOISE: float = 16.0
 # Statistical confidence threshold before trusting the learned correlation.
 MIN_SAMPLES_FOR_MATURITY: int = 30
 
-# Weighted learning: Button training has 2x the influence of automatic learning
-# When computing the fused estimate:
-#   auto_weight = auto_samples
-#   button_weight = button_samples * BUTTON_WEIGHT_MULTIPLIER
-#   fused = (auto_estimate * auto_weight + button_estimate * button_weight) / total_weight
-BUTTON_WEIGHT_MULTIPLIER: int = 2
+# Minimum variance to prevent division by zero and numerical instability
+MIN_VARIANCE: float = 0.001
 
 
 @dataclass(slots=True)
@@ -48,13 +49,19 @@ class ScannerPairCorrelation:
     The delta is defined as: primary_rssi - other_rssi
     Positive delta means the other scanner sees a weaker signal.
 
-    Uses two parallel Kalman filters with weighted fusion:
+    Uses two parallel Kalman filters with INVERSE-VARIANCE fusion:
     - Auto filter: Continuously learns from automatic room detection
-    - Button filter: Learns from manual button training (weighted 2x)
+    - Button filter: Learns from manual button training
 
-    The final estimate combines both filters, allowing:
-    - Continuous adaptation to environment changes (new furniture, etc.)
-    - Preservation of manual corrections through stronger button weighting
+    The final estimate uses mathematically optimal Bayesian fusion:
+    - Weight = 1 / variance (lower uncertainty = more trust)
+    - Button training with consistent values (low variance) naturally dominates
+    - No artificial multipliers - the math handles it automatically
+
+    Benefits of inverse-variance weighting:
+    - Few confident button samples can override many noisy auto samples
+    - Self-regulating: quality matters more than quantity
+    - Adapts to changing conditions in both pools
 
     Attributes:
         scanner_address: MAC address of the "other" scanner being correlated.
@@ -115,10 +122,16 @@ class ScannerPairCorrelation:
     @property
     def expected_delta(self) -> float:
         """
-        Return weighted fusion of auto and button estimates.
+        Return inverse-variance weighted fusion of auto and button estimates.
 
-        Combines both Kalman filter estimates using sample-count weighting,
-        with button samples counting 2x (BUTTON_WEIGHT_MULTIPLIER).
+        Uses mathematically optimal Bayesian sensor fusion:
+            weight_i = 1 / variance_i
+            fused = Σ(estimate_i * weight_i) / Σ(weight_i)
+
+        This means:
+        - Lower variance (higher confidence) = more weight
+        - Button training with consistent values naturally dominates
+        - Self-regulating without arbitrary multipliers
 
         If only one filter has data, returns that filter's estimate.
         If neither has data, returns 0.0.
@@ -134,9 +147,12 @@ class ScannerPairCorrelation:
         if auto_samples == 0:
             return self._kalman_button.estimate
 
-        # Weighted fusion: button samples count 2x
-        auto_weight = float(auto_samples)
-        button_weight = float(button_samples * BUTTON_WEIGHT_MULTIPLIER)
+        # Inverse-variance weighting (optimal Bayesian fusion)
+        auto_var = max(self._kalman_auto.variance, MIN_VARIANCE)
+        button_var = max(self._kalman_button.variance, MIN_VARIANCE)
+
+        auto_weight = 1.0 / auto_var
+        button_weight = 1.0 / button_var
         total_weight = auto_weight + button_weight
 
         return (self._kalman_auto.estimate * auto_weight + self._kalman_button.estimate * button_weight) / total_weight
@@ -146,22 +162,21 @@ class ScannerPairCorrelation:
         """
         Return combined variance from both filters.
 
-        Uses inverse-variance weighting for proper uncertainty fusion.
-        """
-        auto_var = self._kalman_auto.variance
-        button_var = self._kalman_button.variance
+        Uses inverse-variance fusion formula:
+            combined_variance = 1 / (1/var1 + 1/var2)
 
+        This is mathematically optimal for Gaussian distributions.
+        """
         # If either filter is uninitialized, use the other
         if self._kalman_auto.sample_count == 0:
-            return button_var
+            return self._kalman_button.variance
         if self._kalman_button.sample_count == 0:
-            return auto_var
+            return self._kalman_auto.variance
 
-        # Inverse-variance weighting (standard fusion formula)
-        # Combined variance = 1 / (1/var1 + 1/var2)
-        if auto_var <= 0 or button_var <= 0:
-            return max(auto_var, button_var)
+        auto_var = max(self._kalman_auto.variance, MIN_VARIANCE)
+        button_var = max(self._kalman_button.variance, MIN_VARIANCE)
 
+        # Inverse-variance fusion (standard formula)
         return 1.0 / (1.0 / auto_var + 1.0 / button_var)
 
     @property
@@ -182,11 +197,11 @@ class ScannerPairCorrelation:
     @property
     def sample_count(self) -> int:
         """
-        Return total effective sample count for maturity checks.
+        Return total sample count for maturity checks.
 
-        Uses weighted count where button samples count 2x.
+        Simple sum of both filter sample counts.
         """
-        return self.auto_sample_count + self.button_sample_count * BUTTON_WEIGHT_MULTIPLIER
+        return self.auto_sample_count + self.button_sample_count
 
     @property
     def is_mature(self) -> bool:

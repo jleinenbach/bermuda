@@ -1,11 +1,12 @@
 """
-Tests for the weighted learning system (Two-Pool Kalman Fusion).
+Tests for the weighted learning system (Two-Pool Kalman Fusion with Inverse-Variance Weighting).
 
 These tests verify that:
 1. Auto and button learning use separate Kalman filters
-2. Button training has 2x weight in the fused estimate
+2. Inverse-variance weighting gives more weight to lower-variance estimates
 3. Both pools continue learning indefinitely (no hard caps)
 4. The system adapts to environment changes while preserving manual corrections
+5. Consistent button training naturally dominates over noisy auto learning
 """
 
 from __future__ import annotations
@@ -16,17 +17,9 @@ from custom_components.bermuda.correlation.area_profile import AreaProfile
 from custom_components.bermuda.correlation.room_profile import RoomProfile
 from custom_components.bermuda.correlation.scanner_absolute import ScannerAbsoluteRssi
 from custom_components.bermuda.correlation.scanner_pair import (
-    BUTTON_WEIGHT_MULTIPLIER,
+    MIN_VARIANCE,
     ScannerPairCorrelation,
 )
-
-
-class TestWeightedLearningConstants:
-    """Tests for weighted learning configuration constants."""
-
-    def test_button_weight_multiplier(self) -> None:
-        """Button samples should count as 2x for weighted fusion."""
-        assert BUTTON_WEIGHT_MULTIPLIER == 2
 
 
 class TestScannerPairCorrelationDualFilter:
@@ -56,28 +49,37 @@ class TestScannerPairCorrelationDualFilter:
         assert corr.auto_sample_count == 0
         assert corr.button_sample_count == 30
 
-    def test_weighted_fusion_button_dominates(self) -> None:
-        """Button samples should have 2x weight in the fused estimate.
+    def test_inverse_variance_weighting_converged_vs_unconverged(self) -> None:
+        """Converged filter (low variance) gets more weight than unconverged filter.
 
-        Example: 100 auto samples at 0.0, 100 button samples at 30.0
-        - auto_weight = 100
-        - button_weight = 100 * 2 = 200
-        - Expected fused estimate = (0 * 100 + 30 * 200) / 300 = 20.0
+        With inverse-variance weighting:
+        - weight = 1 / variance
+        - Kalman variance converges quickly (~20 samples to steady state ~2.6)
+        - Unconverged filter has much higher variance
+
+        This test uses extreme difference: converged (100 samples) vs just started (2 samples)
         """
         corr = ScannerPairCorrelation(scanner_address="test_scanner")
 
-        # Add auto samples at 0.0
+        # Add many auto samples at 0.0 (converged, variance ~2.6)
         for _ in range(100):
             corr.update(0.0)
 
-        # Add button samples at 30.0
-        for _ in range(100):
+        # Add just 2 button samples at 30.0 (unconverged, variance ~8.1)
+        for _ in range(2):
             corr.update_button(30.0)
 
-        # With 2x button weight: (0*100 + 30*200) / 300 = 20.0
-        # Note: Kalman filters converge asymptotically, so allow some tolerance
-        assert corr.expected_delta > 15.0, f"Button should dominate, got {corr.expected_delta}"
-        assert corr.expected_delta < 25.0, f"Auto should still have influence, got {corr.expected_delta}"
+        # Auto filter is converged → lower variance → more weight
+        auto_var = corr._kalman_auto.variance
+        button_var = corr._kalman_button.variance
+        assert auto_var < button_var, (
+            f"Auto should have lower variance (converged): auto={auto_var:.2f}, button={button_var:.2f}"
+        )
+
+        # With lower variance, auto should dominate the fused estimate
+        # Estimate should be closer to 0 (auto) than to 30 (button)
+        estimate = corr.expected_delta
+        assert estimate < 15.0, f"Converged auto should dominate, got {estimate}"
 
     def test_auto_continues_learning_indefinitely(self) -> None:
         """Auto learning should never stop - adapts to environment changes."""
@@ -124,8 +126,8 @@ class TestScannerPairCorrelationDualFilter:
             f"Button should pull estimate toward -10: before={estimate_before_button}, after={estimate_after_button}"
         )
 
-    def test_sample_count_weighted(self) -> None:
-        """Total sample count should use button weight multiplier."""
+    def test_sample_count_is_sum_of_both_filters(self) -> None:
+        """Total sample count should be simple sum (used for maturity checks)."""
         corr = ScannerPairCorrelation(scanner_address="test_scanner")
 
         for _ in range(30):
@@ -134,8 +136,10 @@ class TestScannerPairCorrelationDualFilter:
         for _ in range(10):
             corr.update_button(10.0)
 
-        # Total = 30 auto + 10 button * 2 = 50
-        assert corr.sample_count == 30 + 10 * BUTTON_WEIGHT_MULTIPLIER
+        # Total = 30 auto + 10 button = 40 (simple sum for maturity)
+        assert corr.sample_count == 40
+        assert corr.auto_sample_count == 30
+        assert corr.button_sample_count == 10
 
 
 class TestScannerAbsoluteRssiDualFilter:
@@ -283,46 +287,67 @@ class TestSerializationDualFilter:
         assert restored.button_sample_count == profile.button_sample_count
 
 
-class TestWeightedFusionMath:
-    """Tests for the mathematical correctness of weighted fusion."""
+class TestInverseVarianceFusionMath:
+    """Tests for the mathematical correctness of inverse-variance fusion."""
 
-    def test_equal_samples_button_has_two_thirds_influence(self) -> None:
-        """With equal sample counts, button should have 2/3 influence.
+    def test_equal_variance_equal_weight(self) -> None:
+        """With equal variance, both filters contribute equally.
 
-        100 auto at 0, 100 button at 30:
-        - auto_weight = 100
-        - button_weight = 100 * 2 = 200
-        - fused = (0*100 + 30*200) / 300 = 20
+        Inverse-variance weighting: weight = 1 / variance
+        If both have same variance → equal weights → midpoint estimate
         """
         corr = ScannerPairCorrelation(scanner_address="test_scanner")
 
-        # Use enough samples for filters to converge
-        for _ in range(200):
+        # Train both with consistent values (similar variance)
+        for _ in range(100):
             corr.update(0.0)
 
-        for _ in range(200):
+        for _ in range(100):
             corr.update_button(30.0)
 
-        # Button has 2/3 influence: estimate should be closer to 30 than to 0
-        # With perfect weighting: (0 * 200 + 30 * 400) / 600 = 20
+        # Both trained with consistent values → similar variance → ~equal weight
+        # Estimate should be roughly the midpoint (15.0)
         estimate = corr.expected_delta
-        assert estimate > 15.0, f"Expected > 15, got {estimate}"
-        assert estimate < 25.0, f"Expected < 25, got {estimate}"
+        assert 10.0 < estimate < 20.0, f"Expected ~15 (midpoint), got {estimate}"
 
-    def test_more_auto_samples_reduces_button_influence(self) -> None:
-        """More auto samples should reduce button's relative influence."""
+    def test_lower_variance_gets_more_weight(self) -> None:
+        """Converged filter (lower variance) gets more weight than unconverged."""
         corr = ScannerPairCorrelation(scanner_address="test_scanner")
 
-        # Heavy auto learning
-        for _ in range(1000):
+        # Train auto with few samples (high variance ~5.6)
+        for _ in range(3):
             corr.update(0.0)
 
-        # Light button training
-        for _ in range(50):
+        # Train button with many samples (converged, low variance ~2.6)
+        for _ in range(100):
             corr.update_button(30.0)
 
-        # 1000 auto + 50*2 button = 1000 + 100 = 1100 total weight
-        # Button influence: 100/1100 = 9%
-        # Expected: closer to 0 than to 30
+        # Button is converged → lower variance → more weight → estimate closer to 30
         estimate = corr.expected_delta
-        assert estimate < 10.0, f"Heavy auto should dominate, got {estimate}"
+        assert estimate > 20.0, f"Converged button should dominate, got {estimate}"
+
+    def test_variance_fusion_formula(self) -> None:
+        """Combined variance follows inverse-variance fusion: 1/(1/v1 + 1/v2)."""
+        corr = ScannerPairCorrelation(scanner_address="test_scanner")
+
+        # Train both filters
+        for _ in range(50):
+            corr.update(10.0)
+        for _ in range(50):
+            corr.update_button(20.0)
+
+        auto_var = max(corr._kalman_auto.variance, MIN_VARIANCE)
+        button_var = max(corr._kalman_button.variance, MIN_VARIANCE)
+
+        # Expected combined variance
+        expected_combined = 1.0 / (1.0 / auto_var + 1.0 / button_var)
+        actual_combined = corr.variance
+
+        assert abs(actual_combined - expected_combined) < 0.01, (
+            f"Combined variance {actual_combined} != expected {expected_combined}"
+        )
+
+    def test_min_variance_prevents_division_by_zero(self) -> None:
+        """MIN_VARIANCE constant prevents division by zero in edge cases."""
+        assert MIN_VARIANCE > 0, "MIN_VARIANCE must be positive"
+        assert MIN_VARIANCE < 1.0, "MIN_VARIANCE should be small"
