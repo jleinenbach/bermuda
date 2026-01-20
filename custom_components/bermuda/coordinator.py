@@ -1628,7 +1628,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
         return z_scores_to_confidence(z_scores)
 
-    def _refresh_area_by_ukf(self, device: BermudaDevice) -> bool:
+    def _refresh_area_by_ukf(self, device: BermudaDevice) -> bool:  # noqa: PLR0911, C901
         """
         Use UKF (Unscented Kalman Filter) for area selection via fingerprint matching.
 
@@ -1723,6 +1723,127 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
             scanner_less_room = True
 
+        # RSSI SANITY CHECK:
+        # Only reject UKF decision if BOTH conditions are met:
+        # 1. The selected room has significantly weaker signal (>15 dB)
+        # 2. The UKF match score is borderline (< 0.6)
+        #
+        # If UKF has high confidence, trust it even with weaker signal - this allows
+        # proper handling of scanner-less rooms and blocked/dampened scanners.
+        # The fingerprint pattern is more reliable than raw RSSI in these cases.
+        if not scanner_less_room and best_advert is not None:
+            best_advert_rssi = best_advert.rssi
+            strongest_visible_rssi = -999.0
+
+            for advert in device.adverts.values():
+                if (
+                    advert.rssi is not None
+                    and advert.stamp is not None
+                    and nowstamp - advert.stamp < EVIDENCE_WINDOW_SECONDS
+                    and advert.rssi > strongest_visible_rssi
+                ):
+                    strongest_visible_rssi = advert.rssi
+
+            # Only apply sanity check when UKF confidence is low AND signal is much weaker
+            rssi_sanity_margin = 15.0  # dB threshold (increased from 10)
+            ukf_confidence_threshold = 0.6  # Only check when match_score below this
+            if (
+                match_score < ukf_confidence_threshold
+                and best_advert_rssi is not None
+                and strongest_visible_rssi > -999.0
+                and strongest_visible_rssi - best_advert_rssi > rssi_sanity_margin
+            ):
+                # Low confidence UKF picked a room with weak signal - suspicious
+                if _LOGGER.isEnabledFor(logging.DEBUG):
+                    _LOGGER.debug(
+                        "UKF sanity check failed for %s: UKF picked %s (score=%.2f, RSSI %.1f) but "
+                        "strongest signal is %.1f dB stronger - falling back to min-distance",
+                        device.name,
+                        best_area_id,
+                        match_score,
+                        best_advert_rssi,
+                        strongest_visible_rssi - best_advert_rssi,
+                    )
+                return False
+
+        # CROSS-FLOOR STREAK PROTECTION:
+        # Prevent rapid flickering between floors by requiring multiple consecutive
+        # cycles picking the same target before allowing a cross-floor switch.
+        current_area_advert = device.area_advert
+        current_floor_id = None
+        if current_area_advert is not None and current_area_advert.scanner_device is not None:
+            current_floor_id = getattr(current_area_advert.scanner_device, "floor_id", None)
+
+        winner_floor_id = None
+        if best_advert is not None and best_advert.scanner_device is not None:
+            winner_floor_id = getattr(best_advert.scanner_device, "floor_id", None)
+
+        is_cross_floor = (
+            current_floor_id is not None and winner_floor_id is not None and current_floor_id != winner_floor_id
+        )
+
+        # If same area as current, just refresh the selection
+        if current_area_advert is not None and best_area_id == getattr(current_area_advert, "area_id", None):
+            device.pending_area_id = None
+            device.pending_floor_id = None
+            device.pending_streak = 0
+            self._apply_ukf_selection(
+                device, best_advert, best_area_id, scanner_less_room=scanner_less_room, nowstamp=nowstamp
+            )
+            return True
+
+        # If no current area, bootstrap immediately
+        if current_area_advert is None:
+            device.pending_area_id = None
+            device.pending_floor_id = None
+            device.pending_streak = 0
+            self._apply_ukf_selection(
+                device, best_advert, best_area_id, scanner_less_room=scanner_less_room, nowstamp=nowstamp
+            )
+            return True
+
+        # Determine streak target based on floor change
+        streak_target = CROSS_FLOOR_STREAK if is_cross_floor else SAME_FLOOR_STREAK
+
+        # Update streak counter
+        if device.pending_area_id == best_area_id and device.pending_floor_id == winner_floor_id:
+            # Same target as before - increment streak
+            device.pending_streak += 1
+        elif device.pending_area_id is not None and device.pending_area_id != best_area_id:
+            # Different target - reset streak to new candidate
+            device.pending_area_id = best_area_id
+            device.pending_floor_id = winner_floor_id
+            device.pending_streak = 1
+        else:
+            # First pending or same floor different area
+            device.pending_area_id = best_area_id
+            device.pending_floor_id = winner_floor_id
+            device.pending_streak = 1
+
+        # Check if streak meets threshold
+        if device.pending_streak >= streak_target:
+            device.pending_area_id = None
+            device.pending_floor_id = None
+            device.pending_streak = 0
+            self._apply_ukf_selection(
+                device, best_advert, best_area_id, scanner_less_room=scanner_less_room, nowstamp=nowstamp
+            )
+        else:
+            # Streak not reached - keep current area
+            device.apply_scanner_selection(current_area_advert, nowstamp=nowstamp)
+
+        return True
+
+    def _apply_ukf_selection(
+        self,
+        device: BermudaDevice,
+        best_advert: BermudaAdvert,
+        best_area_id: str,
+        *,
+        scanner_less_room: bool,
+        nowstamp: float,
+    ) -> None:
+        """Apply the UKF-selected area to the device and update correlations."""
         if scanner_less_room:
             # Override the advert's area with the UKF-matched area.
             # IMPORTANT: Temporarily clear scanner_device so apply_scanner_selection
@@ -1741,7 +1862,44 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             # Apply the selection using the device's standard method
             device.apply_scanner_selection(best_advert, nowstamp=nowstamp)
 
-        return True
+        # AUTO-LEARNING: Update correlations so fingerprints adapt to environment changes
+        # This mirrors the learning logic in _refresh_area_by_min_distance
+        if best_advert.rssi is not None and best_area_id is not None:
+            # Collect RSSI readings from other visible scanners
+            other_readings: dict[str, float] = {}
+            for other_adv in device.adverts.values():
+                if (
+                    other_adv is not best_advert
+                    and other_adv.stamp is not None
+                    and nowstamp - other_adv.stamp < EVIDENCE_WINDOW_SECONDS
+                    and other_adv.rssi is not None
+                    and other_adv.scanner_address is not None
+                ):
+                    other_readings[other_adv.scanner_address] = other_adv.rssi
+
+            if other_readings:
+                # Ensure device entry exists in correlations
+                if device.address not in self.correlations:
+                    self.correlations[device.address] = {}
+                # Ensure area entry exists for this device
+                if best_area_id not in self.correlations[device.address]:
+                    self.correlations[device.address][best_area_id] = AreaProfile(
+                        area_id=best_area_id,
+                    )
+                # Update the device-specific profile
+                self.correlations[device.address][best_area_id].update(
+                    primary_rssi=best_advert.rssi,
+                    other_readings=other_readings,
+                    primary_scanner_addr=best_advert.scanner_address,
+                )
+
+                # Also update the device-independent room profile
+                all_readings = dict(other_readings)
+                if best_advert.scanner_address is not None:
+                    all_readings[best_advert.scanner_address] = best_advert.rssi
+                if best_area_id not in self.room_profiles:
+                    self.room_profiles[best_area_id] = RoomProfile(area_id=best_area_id)
+                self.room_profiles[best_area_id].update(all_readings)
 
     def _refresh_areas_by_min_distance(self):
         """Set area for ALL devices based on UKF+RoomProfile or min-distance fallback."""
