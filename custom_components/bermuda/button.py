@@ -78,14 +78,15 @@ class BermudaTrainingButton(BermudaEntity, ButtonEntity):
         if not super().available:
             return False
 
-        # Button only available when a room has been selected for training
-        # The room selection is stored in device.area_locked_id
-        return self._device.area_locked_id is not None
+        # Button available when a training room has been selected.
+        # Uses training_target_area_id which is ONLY set by select entity
+        # and NEVER cleared by coordinator - ensuring button stays enabled.
+        return self._device.training_target_area_id is not None
 
     async def async_press(self) -> None:
         """Handle the button press - trigger fingerprint training."""
-        # Double-check that a room is selected
-        if self._device.area_locked_id is None:
+        # Double-check that a training room is selected
+        if self._device.training_target_area_id is None:
             _LOGGER.warning(
                 "Training button pressed but no room selected for %s",
                 self._device.name,
@@ -100,7 +101,7 @@ class BermudaTrainingButton(BermudaEntity, ButtonEntity):
             )
             return
 
-        target_area_id = self._device.area_locked_id
+        target_area_id = self._device.training_target_area_id
         target_area_name = self._device.area_locked_name or target_area_id
 
         _LOGGER.info(

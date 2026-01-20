@@ -132,6 +132,9 @@ class BermudaTrainingRoomSelect(BermudaEntity, SelectEntity):
         self._room_override_name = option
         self._room_override_id = target_area.id
 
+        # Set training target - this enables the button and is NEVER cleared by coordinator
+        self._device.training_target_area_id = target_area.id
+
         # LOCK the device to this area - prevents automatic detection from overriding
         self._device.area_locked_id = target_area.id
         self._device.area_locked_name = option
@@ -164,7 +167,8 @@ class BermudaTrainingRoomSelect(BermudaEntity, SelectEntity):
         # Clear room selection when floor changes
         self._room_override_name = None
         self._room_override_id = None
-        # Clear the area lock - device will return to auto-detection
+        # Clear training target and area lock - device will return to auto-detection
+        self._device.training_target_area_id = None
         self._device.area_locked_id = None
         self._device.area_locked_name = None
         self._device.area_locked_scanner_addr = None
