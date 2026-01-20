@@ -726,6 +726,13 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             _LOGGER.warning("Cannot train fingerprint: device %s not found", device_address)
             return False
 
+        # FIX: Velocity Reset - When user manually trains, reset velocity history
+        # This breaks the "Velocity Trap" where a device moving from Scanner A (12m)
+        # to Scanner B (1m) gets stuck because the calculated velocity exceeds MAX_VELOCITY.
+        # Manual training means "the device is HERE NOW" - any previous velocity
+        # calculations are irrelevant and should not block acceptance of new readings.
+        device.reset_velocity_history()
+
         # Collect current RSSI readings from all visible scanners
         nowstamp = monotonic_time_coarse()
         rssi_readings: dict[str, float] = {}

@@ -34,6 +34,7 @@ from .const import (
     DISTANCE_INFINITE,
     HIST_KEEP_COUNT,
     RSSI_HISTORY_SAMPLES,
+    VELOCITY_TELEPORT_THRESHOLD,
 )
 from .filters import KalmanFilter
 from .util import clean_charbuf, rssi_to_metres
@@ -156,6 +157,10 @@ class BermudaAdvert(dict[str, Any]):
         self.hist_rssi_by_interval: list[float] = []  # Raw RSSI history for physical proximity checks
         self.hist_interval: list[float] = []  # WARNING: This is actually "age of ad when we polled"
         self.hist_velocity: list[float] = []  # Effective velocity versus previous stamped reading
+        # FIX: Teleport Recovery - Counter for consecutive velocity-blocked measurements
+        # When this counter reaches VELOCITY_TELEPORT_THRESHOLD, we accept the new
+        # position anyway (self-healing to break the "velocity trap")
+        self.velocity_blocked_count: int = 0
         # Note: conf_rssi_offset, conf_ref_power, conf_attenuation, conf_max_velocity,
         # and conf_smoothing_samples are now properties that read from self.options
         # dynamically. This ensures settings changes (including RSSI offsets) take
@@ -567,18 +572,50 @@ class BermudaAdvert(dict[str, Any]):
             # impossible as jumping from 1m to 10m (+9 m/s).
             max_velocity = self.conf_max_velocity if self.conf_max_velocity is not None else DEFAULT_MAX_VELOCITY
             if abs(velocity) > max_velocity:
-                if self._device.create_sensor:
-                    _LOGGER.debug(
-                        "This sparrow %s flies too fast (%2fm/s), ignoring",
+                # FIX: Teleport Recovery - Track consecutive velocity blocks
+                self.velocity_blocked_count += 1
+
+                # Check if we've hit the teleport recovery threshold
+                if self.velocity_blocked_count >= VELOCITY_TELEPORT_THRESHOLD:
+                    # Device has been consistently measured at a "teleported" position.
+                    # Accept the new position and reset history to break the trap.
+                    _LOGGER.info(
+                        "Teleport recovery for %s: accepting new position after %d "
+                        "consecutive velocity blocks (velocity=%.1fm/s)",
                         self._device.name,
+                        self.velocity_blocked_count,
                         velocity,
                     )
-                if len(self.hist_distance_by_interval) > 0:
-                    self.hist_distance_by_interval.insert(0, self.hist_distance_by_interval[0])
-                else:
+                    # Accept the new measurement
+                    self.hist_distance_by_interval.clear()
                     self.hist_distance_by_interval.insert(0, self.rssi_distance_raw)
+                    # Clear the position history so the new position becomes baseline
+                    self.hist_distance.clear()
+                    self.hist_distance.insert(0, self.rssi_distance_raw)
+                    self.hist_stamp.clear()
+                    self.hist_stamp.insert(0, self.stamp)
+                    self.hist_velocity.clear()
+                    # Reset the counter
+                    self.velocity_blocked_count = 0
+                else:
+                    # Still blocking - use previous distance
+                    if self._device.create_sensor:
+                        _LOGGER.debug(
+                            "This sparrow %s flies too fast (%.1fm/s), ignoring (block %d/%d)",
+                            self._device.name,
+                            velocity,
+                            self.velocity_blocked_count,
+                            VELOCITY_TELEPORT_THRESHOLD,
+                        )
+                    if len(self.hist_distance_by_interval) > 0:
+                        self.hist_distance_by_interval.insert(0, self.hist_distance_by_interval[0])
+                    else:
+                        self.hist_distance_by_interval.insert(0, self.rssi_distance_raw)
             else:
+                # Velocity is acceptable - accept the measurement and reset counter
                 self.hist_distance_by_interval.insert(0, self.rssi_distance_raw)
+                # FIX: Teleport Recovery - Reset counter when velocity is normal
+                self.velocity_blocked_count = 0
 
             smoothing_samples = (
                 self.conf_smoothing_samples if self.conf_smoothing_samples is not None else DEFAULT_SMOOTHING_SAMPLES

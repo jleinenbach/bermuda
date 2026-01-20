@@ -254,6 +254,18 @@ DOCS[CONF_MAX_VELOCITY] = (
     "this limit. 3m/s (10km/h) is good.",
 )
 
+# FIX: Teleport Recovery - Number of consecutive velocity-blocked measurements
+# before accepting the new position anyway (self-healing mechanism)
+VELOCITY_TELEPORT_THRESHOLD: Final = 5
+"""
+Number of consecutive measurements blocked by MAX_VELOCITY before accepting anyway.
+
+When a device physically moves to a new location (e.g., from Scanner A at 12m to
+Scanner B at 1m), the calculated velocity may exceed MAX_VELOCITY, causing all
+new readings to be rejected. This threshold allows the system to self-heal:
+after N consecutive blocks from the SAME scanner, accept the new position.
+"""
+
 CONF_DEVTRACK_TIMEOUT, DEFAULT_DEVTRACK_TIMEOUT = "devtracker_nothome_timeout", 30
 DOCS[CONF_DEVTRACK_TIMEOUT] = "Timeout in seconds for setting devices as `Not Home` / `Away`."  # fmt: skip
 
