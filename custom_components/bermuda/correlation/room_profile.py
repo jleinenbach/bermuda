@@ -12,6 +12,11 @@ the same regardless of which device is measuring, this enables:
 The key insight is that while absolute RSSI varies by device (different
 transmit power, antenna characteristics), the RELATIVE difference between
 two scanners should be consistent for any device in the same location.
+
+Weighted Learning System:
+    - Automatic learning: update() is capped at AUTO_SAMPLE_CAP per scanner pair
+    - Button training: update_button() has stronger weight via BUTTON_WEIGHT
+    - Button samples prevent auto from overwhelming manual training
 """
 
 from __future__ import annotations
@@ -52,7 +57,10 @@ class RoomProfile:
 
     def update(self, readings: dict[str, float]) -> None:
         """
-        Update room profile with RSSI readings from multiple scanners.
+        Update room profile with RSSI readings from automatic learning.
+
+        Automatic samples are capped at AUTO_SAMPLE_CAP per scanner pair
+        to prevent overwhelming button-trained data.
 
         Args:
             readings: Map of scanner_address to RSSI value.
@@ -74,6 +82,37 @@ class RoomProfile:
                 # Delta: first alphabetically - second alphabetically
                 delta = readings[addr_a] - readings[addr_b]
                 self._scanner_pairs[pair_key].update(delta)
+
+        self._enforce_memory_limit()
+
+    def update_button(self, readings: dict[str, float]) -> None:
+        """
+        Update room profile with RSSI readings from button training (stronger weight).
+
+        Button samples have BUTTON_WEIGHT times the influence of automatic samples.
+        This ensures manual room corrections are preserved against continuous
+        automatic learning.
+
+        Args:
+            readings: Map of scanner_address to RSSI value.
+
+        """
+        scanner_list = list(readings.keys())
+
+        for i, first in enumerate(scanner_list):
+            for second in scanner_list[i + 1 :]:
+                # Consistent ordering (alphabetically)
+                addr_a, addr_b = (first, second) if first < second else (second, first)
+                pair_key = _make_pair_key(addr_a, addr_b)
+
+                if pair_key not in self._scanner_pairs:
+                    self._scanner_pairs[pair_key] = ScannerPairCorrelation(
+                        scanner_address=pair_key  # Store key as "address"
+                    )
+
+                # Delta: first alphabetically - second alphabetically
+                delta = readings[addr_a] - readings[addr_b]
+                self._scanner_pairs[pair_key].update_button(delta)
 
         self._enforce_memory_limit()
 

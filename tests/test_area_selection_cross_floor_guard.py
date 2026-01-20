@@ -1072,3 +1072,93 @@ class TestCoVisibilityLearning:
         confidence = device.get_co_visibility_confidence("area_test", {"scanner_a"})
         # Expected: (0.9) / (0.9 + 0.8) = 0.529, sqrt = 0.727
         assert 0.5 < confidence < 0.8  # Reduced but not zero
+
+
+def test_cross_floor_requires_streak_even_when_incumbent_out_of_range(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Cross-floor switches should require streak even if incumbent is 'out of range'.
+
+    Bug: When a device is in a room without its own scanner, all scanners are far away.
+    If the incumbent's distance exceeds max_radius (becomes 'out of range'), the code
+    was treating it as 'truly invalid' and allowing immediate cross-floor switches.
+    This caused rapid flickering between floors.
+
+    Fix: Cross-floor switches should only bypass streak if the incumbent is COMPLETELY
+    offline (no advert at all), not just 'out of range'.
+    """
+    now = 5000.0
+    monkeypatch.setattr("custom_components.bermuda.coordinator.monotonic_time_coarse", lambda: now)
+    coord = _build_coord()
+    coord.options[CONF_MAX_RADIUS] = 8.0  # Set max_radius
+
+    # Basement scanner (incumbent) - distance > max_radius but still has fresh advert
+    scanner_basement = FakeScanner(
+        name="Scanner Basement",
+        last_seen=now,
+        floor_id="floor_basement",
+        floor_name="Basement",
+        area_id="area_basement",
+        area_name="Basement Room",
+        floor_level=-1,
+    )
+
+    # Upper floor scanner (challenger) - closer but on different floor
+    scanner_upper = FakeScanner(
+        name="Scanner Upper",
+        last_seen=now,
+        floor_id="floor_upper",
+        floor_name="Upper Floor",
+        area_id="area_upper",
+        area_name="Upper Room",
+        floor_level=1,
+    )
+
+    # Incumbent: distance (9.0m) exceeds max_radius (8.0m) -> out of range
+    # But still has a fresh timestamp -> not completely offline
+    incumbent = FakeAdvert(
+        name=scanner_basement.name,
+        scanner_device=scanner_basement,
+        area_id=scanner_basement.area_id,
+        area_name=scanner_basement.area_name,
+        rssi_distance=9.0,  # > max_radius (8.0m) -> out of range
+        rssi=-75,
+        stamp=now - 1.0,  # Fresh advert (only 1 second old)
+        hist=[9.0] * 15,  # Has history
+    )
+
+    # Challenger: closer (7.5m) and within max_radius, different floor
+    challenger = FakeAdvert(
+        name=scanner_upper.name,
+        scanner_device=scanner_upper,
+        area_id=scanner_upper.area_id,
+        area_name=scanner_upper.area_name,
+        rssi_distance=7.5,  # < max_radius, closer than incumbent
+        rssi=-70,
+        stamp=now,
+        hist=[7.5] * 15,  # Has history
+    )
+
+    device = FakeDevice(
+        name="Backpack in Middle Room",
+        incumbent=incumbent,
+        adverts={"basement": incumbent, "upper": challenger},
+    )
+
+    # Run area selection once
+    BermudaDataUpdateCoordinator._refresh_area_by_min_distance(coord, device)  # type: ignore[arg-type]
+
+    # Key assertion: Device should NOT have switched floors immediately!
+    # Even though incumbent is 'out of range', it's not completely offline.
+    # Cross-floor switches should still require the streak confirmation.
+    assert device.area_id == incumbent.area_id, (
+        "Cross-floor switch should NOT happen immediately when incumbent is just "
+        "'out of range' but still has a fresh advert. Streak should be required."
+    )
+
+    # The pending state should be set (building streak toward the challenger)
+    assert device.pending_area_id == challenger.area_id, (
+        "Pending area should be set to challenger while building streak"
+    )
+    assert device.pending_streak >= 1, "Streak should have started building"

@@ -119,9 +119,7 @@ class CorrelationStore:
                 STORAGE_KEY,
             )
 
-        await self._store.async_save(
-            self._serialize(correlations, room_profiles or {})
-        )
+        await self._store.async_save(self._serialize(correlations, room_profiles or {}))
 
     def _serialize(
         self,
@@ -141,16 +139,10 @@ class CorrelationStore:
         """
         return {
             "devices": {
-                device_addr: {
-                    area_id: profile.to_dict()
-                    for area_id, profile in areas.items()
-                }
+                device_addr: {area_id: profile.to_dict() for area_id, profile in areas.items()}
                 for device_addr, areas in device_profiles.items()
             },
-            "rooms": {
-                area_id: profile.to_dict()
-                for area_id, profile in room_profiles.items()
-            },
+            "rooms": {area_id: profile.to_dict() for area_id, profile in room_profiles.items()},
         }
 
     def _deserialize_all(
@@ -175,9 +167,7 @@ class CorrelationStore:
         for device_addr, areas in data.get("devices", {}).items():
             device_profiles[device_addr] = {}
             for area_id, profile_data in areas.items():
-                device_profiles[device_addr][area_id] = AreaProfile.from_dict(
-                    profile_data
-                )
+                device_profiles[device_addr][area_id] = AreaProfile.from_dict(profile_data)
 
         # Deserialize room profiles (new in version 2)
         room_profiles: dict[str, RoomProfile] = {}

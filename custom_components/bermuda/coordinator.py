@@ -770,22 +770,24 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         # Build "other readings" (all except primary)
         other_readings = {addr: rssi for addr, rssi in rssi_readings.items() if addr != primary_scanner_addr}
 
-        # Update the device-specific profile with current readings
-        self.correlations[device_address][target_area_id].update(
+        # Update the device-specific profile with BUTTON WEIGHT (stronger than automatic)
+        # Button training uses update_button() which applies BUTTON_WEIGHT (2x) updates
+        # to ensure manual corrections aren't overwhelmed by continuous automatic learning
+        self.correlations[device_address][target_area_id].update_button(
             primary_rssi=primary_rssi,
             other_readings=other_readings,
             primary_scanner_addr=primary_scanner_addr,
         )
 
-        # Update the device-independent room profile with all scanner readings
+        # Update the device-independent room profile with BUTTON WEIGHT
         # This creates scanner-pair deltas that are shared across all devices
         if target_area_id not in self.room_profiles:
             self.room_profiles[target_area_id] = RoomProfile(area_id=target_area_id)
-        self.room_profiles[target_area_id].update(rssi_readings)
+        self.room_profiles[target_area_id].update_button(rssi_readings)
 
         _LOGGER.info(
-            "Trained fingerprint for %s in area %s with %d scanners "
-            "(device profile + room profile updated)",
+            "Trained fingerprint (button) for %s in area %s with %d scanners "
+            "(device profile + room profile updated with stronger weight)",
             device.name,
             target_area_id,
             len(rssi_readings),
@@ -1744,15 +1746,10 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
     def _refresh_areas_by_min_distance(self):
         """Set area for ALL devices based on UKF+RoomProfile or min-distance fallback."""
         # Check if we have mature room profiles (at least 2 scanner-pairs with 30+ samples)
-        has_mature_profiles = any(
-            profile.mature_pair_count >= 2 for profile in self.room_profiles.values()
-        )
+        has_mature_profiles = any(profile.mature_pair_count >= 2 for profile in self.room_profiles.values())
 
         for device in self.devices.values():
-            if (
-                not device.is_scanner
-                and (device.create_sensor or device.create_tracker_done)
-            ):
+            if not device.is_scanner and (device.create_sensor or device.create_tracker_done):
                 # Check if device is manually locked to an area
                 if device.area_locked_id is not None:
                     # Device is locked by user selection for training.
@@ -2779,13 +2776,34 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         # 2. The incumbent is truly invalid (stale or not a distance contender)
         # Previously, significant_improvement_same_floor and significant_rssi_advantage
         # could trigger immediate switches even for cross-floor cases due to the OR logic.
+        #
+        # Bug Fix 2: Cross-floor switches should STILL require streak even if incumbent
+        # is "truly invalid" (just out of range). Only bypass streak if incumbent is
+        # COMPLETELY offline (no advert at all, or advert is completely stale).
+        # This prevents rapid flickering between floors when a device is in a room
+        # without its own scanner and all scanners report distances near max_radius.
         is_cross_floor_switch = _resolve_cross_floor(device.area_advert, winner)
         incumbent_truly_invalid = not _is_distance_contender(device.area_advert) or area_advert_stale
         same_floor_fast_track = not is_cross_floor_switch and (
             significant_improvement_same_floor or significant_rssi_advantage
         )
 
-        if winner is not None and (incumbent_truly_invalid or same_floor_fast_track):
+        # For cross-floor switches, require the incumbent to be COMPLETELY offline
+        # (not just out of range) before allowing an immediate switch.
+        incumbent_completely_offline = (
+            device.area_advert is None
+            or device.area_advert.stamp is None
+            or device.area_advert.stamp < nowstamp - AREA_MAX_AD_AGE_LIMIT
+        )
+
+        # Cross-floor: only bypass streak if incumbent is completely offline
+        # Same-floor: allow bypass if incumbent is just invalid OR significant improvement
+        allow_immediate_switch = winner is not None and (
+            (is_cross_floor_switch and incumbent_completely_offline)
+            or (not is_cross_floor_switch and (incumbent_truly_invalid or same_floor_fast_track))
+        )
+
+        if allow_immediate_switch:
             device.pending_area_id = None
             device.pending_floor_id = None
             device.pending_streak = 0

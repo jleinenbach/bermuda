@@ -148,7 +148,9 @@ class TestScannerPairCorrelationZScore:
     def test_z_score_zero_variance_safe(self) -> None:
         """Z-score returns 0 when variance is zero (prevents division by zero)."""
         corr = ScannerPairCorrelation(scanner_address="AA:BB:CC:DD:EE:FF")
-        corr._kalman.variance = 0.0  # Force edge case
+        # Force edge case: both filters have zero variance
+        corr._kalman_auto.variance = 0.0
+        corr._kalman_button.variance = 0.0
 
         z = corr.z_score(100.0)
 

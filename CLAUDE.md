@@ -78,6 +78,69 @@ Learns typical RSSI patterns for each area to improve localization:
 
 **Key insight**: When primary scanner goes offline, absolute profiles let us verify if secondary scanner readings still match the learned room pattern.
 
+### Two-Pool Kalman Fusion (Weighted Learning)
+
+The correlation classes (`ScannerPairCorrelation`, `ScannerAbsoluteRssi`) use a dual-filter architecture to balance automatic learning with manual button training:
+
+```
+                    ┌─────────────────────────────────────┐
+Automatic Learning ─┼─→ _kalman_auto ──┐                  │
+                    │                  │ Inverse-Variance │
+                    │                  ├─→ Fused Estimate │
+Button Training ────┼─→ _kalman_button─┘     Weighting    │
+                    └─────────────────────────────────────┘
+```
+
+**Why Two Pools?**
+- Auto learning adapts to environment changes (furniture, obstacles)
+- Button training preserves deliberate user corrections
+- Neither overwrites the other - they're fused mathematically
+
+**Inverse-Variance Weighting (Optimal Bayesian Fusion):**
+```python
+# weight = 1 / variance (lower variance = higher confidence = more weight)
+auto_var = max(self._kalman_auto.variance, MIN_VARIANCE)
+button_var = max(self._kalman_button.variance, MIN_VARIANCE)
+
+auto_weight = 1.0 / auto_var
+button_weight = 1.0 / button_var
+total_weight = auto_weight + button_weight
+
+fused_estimate = (auto_estimate * auto_weight + button_estimate * button_weight) / total_weight
+fused_variance = 1.0 / total_weight  # Combined uncertainty
+```
+
+**Kalman Variance Behavior (per Correlation Object):**
+
+Each `ScannerPairCorrelation` and `ScannerAbsoluteRssi` has its own Kalman filters that converge independently:
+
+| Samples | Variance | Interpretation |
+|---------|----------|----------------|
+| 1 | 16.0 | High uncertainty (initial) |
+| 3 | 5.6 | Still uncertain |
+| 10 | 2.8 | Converging |
+| 20+ | ~2.6 | Steady state (converged) |
+
+Example structure showing independent sample counts:
+```
+Area "Wohnzimmer" → AreaProfile:
+  ├─ ScannerPairCorrelation (A↔B): auto=25 samples, button=0
+  ├─ ScannerPairCorrelation (A↔C): auto=18 samples, button=5
+  ├─ ScannerAbsoluteRssi (A): auto=30 samples, button=3
+  ├─ ScannerAbsoluteRssi (B): auto=22 samples, button=0
+  └─ ScannerAbsoluteRssi (C): auto=15 samples, button=0
+```
+
+**Key Constants:**
+| Constant | Value | Purpose |
+|----------|-------|---------|
+| `MIN_VARIANCE` | 0.001 | Prevents division by zero |
+
+**Practical Effect:**
+- Converged filter (many samples, low variance) dominates over new filter (few samples, high variance)
+- Consistent button training naturally dominates over noisy auto learning
+- System self-regulates: quality matters more than quantity
+
 ## Testing Standards
 
 ### Running Tests
@@ -386,7 +449,18 @@ type BermudaConfigEntry = "ConfigEntry[BermudaData]"  # Requires Python 3.12+
 
 Always use `python3.13 -m venv venv` for the virtual environment.
 
-### 6. Trace Full Call Chain for Attribute Precedence
+### 6. Kalman Variance Converges Quickly
+
+Kalman filter variance (uncertainty) converges to a steady state after ~20 samples **per correlation object**:
+- Initial variance: 16.0 (high uncertainty)
+- After 20 samples: ~2.6 (steady state)
+- More samples beyond 20 don't significantly reduce variance
+
+Each `ScannerPairCorrelation` and `ScannerAbsoluteRssi` instance has its own filters that converge independently.
+
+**Implication for inverse-variance weighting**: The weight difference between filters comes from their convergence state, not sample count. A filter with 100 samples has nearly the same variance as one with 1000 samples, but both have much lower variance than a filter with only 3 samples.
+
+### 7. Trace Full Call Chain for Attribute Precedence
 
 When modifying code that passes objects to other methods, trace the full call chain to understand:
 - Which attributes are used
