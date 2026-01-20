@@ -800,3 +800,232 @@ use_ukf_area_selection: false  # Default: disabled (experimental)
 3. **Diagnostics**: Add UKF state to dump_devices service output
 4. **Hybrid Mode**: Combine UKF confidence with min-distance for tiebreaking
 5. **Performance**: Profile UKF overhead on large scanner networks
+
+## Correlation Confidence Architecture
+
+### Problem: Delta-Only Matching Causes False Positives
+
+The original `_get_correlation_confidence()` only checked relative RSSI deltas between scanners (the "vector shape"). This caused false positives when a device far outside the house (-90dB) matched a room learned at close range (-50dB) because the relative scanner relationships happened to align.
+
+```
+Outside Device:     Scanner A: -90dB, Scanner B: -85dB  → Delta: 5dB
+Learned Kitchen:    Scanner A: -50dB, Scanner B: -45dB  → Delta: 5dB
+                    ↑ Same delta shape, but completely wrong magnitude!
+```
+
+### Solution: Dual-Check Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                  _get_correlation_confidence()                       │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  Current RSSI ──┬──→ get_z_scores() ──────────→ Delta Z-Scores      │
+│  Readings       │    (relative deltas)          (shape match)        │
+│                 │                                     │              │
+│                 └──→ get_absolute_z_scores() ──→ Absolute Z-Scores  │
+│                      (magnitude check)           (level match)       │
+│                                                       │              │
+│                                    ┌──────────────────┘              │
+│                                    ▼                                 │
+│                         ┌─────────────────────┐                      │
+│                         │ max_abs_z > 3.0?    │                      │
+│                         └─────────┬───────────┘                      │
+│                              Yes ↓      ↓ No                         │
+│                    ┌─────────────────────────────┐                   │
+│                    │ Apply exponential │ Normal  │                   │
+│                    │ penalty to delta  │ delta   │                   │
+│                    │ confidence        │ conf.   │                   │
+│                    └─────────────────────────────┘                   │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+**Penalty Formula:**
+```python
+# Z-score 3.0 = 3 standard deviations from learned mean
+# Exponential penalty: halves confidence for each std dev beyond 2
+absolute_penalty = 0.5 ** (max_abs_z - 2.0)
+
+# z=3 → 0.5x confidence
+# z=4 → 0.25x confidence
+# z=5 → 0.125x confidence
+```
+
+### Key Insight
+
+Both checks are necessary:
+- **Delta Z-Scores**: "Is the relationship between scanners correct?"
+- **Absolute Z-Scores**: "Is the overall signal level correct?"
+
+A device must pass BOTH checks to be confidently placed in a room.
+
+## Button Training vs Auto-Learning Architecture
+
+### Problem: Inverse-Variance Weighting Favors Quantity
+
+The dual-filter system uses inverse-variance weighting to fuse auto and button estimates:
+
+```python
+weight = 1 / variance  # Lower variance = higher weight
+```
+
+Kalman filter variance converges quickly (~20 samples to steady state ~2.6). After thousands of auto-samples, the auto-filter has extremely low variance and dominates any button training.
+
+```
+Auto:   1000 samples, variance=2.6, weight=0.385
+Button: 10 samples,   variance=5.6, weight=0.179
+→ Auto gets 68% weight, Button gets 32% weight
+→ Button training is nearly ineffective!
+```
+
+### Solution: Variance Inflation on Button Training
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                     update_button() Flow                             │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  Button Press ──→ Check auto variance                                │
+│                          │                                           │
+│              ┌───────────┴───────────┐                               │
+│              │ variance < 5.0?       │                               │
+│              │ (converged)           │                               │
+│              └───────────┬───────────┘                               │
+│                   Yes ↓      ↓ No                                    │
+│         ┌─────────────────────────────┐                              │
+│         │ Inflate to 15.0 │ Keep as-is│                              │
+│         │ (unconverged)   │           │                              │
+│         └─────────────────────────────┘                              │
+│                          │                                           │
+│                          ▼                                           │
+│              Update button Kalman filter                             │
+│                          │                                           │
+│                          ▼                                           │
+│              Fuse with inflated auto                                 │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+**After Inflation:**
+```
+Auto:   1000 samples, variance=15.0 (inflated), weight=0.067
+Button: 10 samples,   variance=5.6,              weight=0.179
+→ Button gets 73% weight, Auto gets 27% weight
+→ Button training now dominates!
+```
+
+### Key Design Decisions
+
+1. **Threshold 5.0**: Only inflate if auto is converged (variance < 5.0)
+2. **Target 15.0**: Reset to approximately initial/unconverged state
+3. **One-time inflation**: Once variance >= 5.0, don't inflate again
+4. **Auto can recover**: Continued auto-learning will reconverge naturally
+
+## Cross-Floor Hysteresis Protection
+
+### Problem: Signal Spikes Bypass Floor Protection
+
+BLE signals reflect off walls and furniture, causing momentary signal spikes. The original code allowed a 45% improvement (`cross_floor_escape`) to bypass all history requirements for cross-floor switches.
+
+```
+Time 0: Device in Kitchen (Floor 1), stable
+Time 1: Signal reflection causes Scanner on Floor 2 to report 50% closer
+Time 2: IMMEDIATE floor switch (no history check!)
+Time 3: Reflection ends, switch back
+→ Rapid flickering between floors
+```
+
+### Solution: Strict Cross-Floor Requirements
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│            Cross-Floor Switch Decision Tree                          │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  Challenger on different floor?                                      │
+│              │                                                       │
+│         Yes ↓                                                        │
+│  ┌──────────────────────────────────────────────────────────┐       │
+│  │ Path A: sustained_cross_floor                             │       │
+│  │ - Both have full history (CROSS_FLOOR_MIN_HISTORY)       │       │
+│  │ - Historical min/max confirms challenger consistently     │       │
+│  │ - Current pcnt_diff > cross_floor_margin                 │       │
+│  └──────────────────────────────────────────────────────────┘       │
+│              │                                                       │
+│         OR   ↓                                                       │
+│  ┌──────────────────────────────────────────────────────────┐       │
+│  │ Path B: escape_with_history (NEW - stricter)             │       │
+│  │ - pcnt_diff >= 100% (was 45%)                            │       │
+│  │ - AND minimum history exists (half of full requirement)  │       │
+│  └──────────────────────────────────────────────────────────┘       │
+│              │                                                       │
+│  Neither path satisfied? → REJECT cross-floor switch                │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+**Key Changes:**
+| Parameter | Before | After | Effect |
+|-----------|--------|-------|--------|
+| `cross_floor_escape` | 45% | 100% minimum | Signal must be DOUBLE to escape |
+| History requirement | None for escape | Half of full | At least some sustained evidence |
+
+### Lessons Learned
+
+### 14. Relative vs Absolute Signal Matching
+
+When matching signals against learned patterns, check BOTH:
+- **Relative/Delta**: Shape of signal across multiple sources
+- **Absolute/Magnitude**: Overall signal level
+
+**Bug Pattern**: Delta-only matching causes false positives when a far device happens to have the same relative scanner relationships as a close device in a learned room.
+
+**Fix Pattern**: Add absolute z-score check with exponential penalty for large deviations.
+
+```python
+# BAD - Only checks shape
+confidence = z_scores_to_confidence(delta_z_scores)
+
+# GOOD - Checks shape AND magnitude
+delta_confidence = z_scores_to_confidence(delta_z_scores)
+if max_absolute_z > 3.0:
+    confidence = delta_confidence * (0.5 ** (max_absolute_z - 2.0))
+```
+
+### 15. Inverse-Variance Weighting Needs Manual Override
+
+When fusing estimates from multiple sources using inverse-variance weighting, the source with lowest variance (highest confidence) dominates. This is mathematically optimal BUT:
+- Automatic learning accumulates indefinitely → extremely low variance
+- Manual corrections are limited samples → higher variance
+- Manual corrections become ineffective!
+
+**Fix Pattern**: When manual input occurs, inflate the automatic source's variance to "forget" some confidence:
+
+```python
+def update_manual(self, value):
+    # Reset auto confidence when user provides correction
+    if self._auto_filter.variance < CONVERGED_THRESHOLD:
+        self._auto_filter.variance = INITIAL_VARIANCE
+    self._manual_filter.update(value)
+```
+
+### 16. Hysteresis Escape Hatches Need Guarding
+
+Hysteresis protections (streak requirements, history checks) often have "escape hatches" for obvious cases. These escape hatches can become attack vectors for noise.
+
+**Bug Pattern**:
+```python
+# Escape hatch bypasses all protection!
+if improvement > 45%:
+    switch_immediately()  # No history check
+```
+
+**Fix Pattern**: Escape hatches should STILL require some evidence:
+```python
+# Escape requires BOTH high threshold AND some history
+if improvement > 100% and has_minimum_history:
+    switch_immediately()
+```
+
+**Rule of Thumb**: The more severe the action (cross-floor > same-floor > same-room), the stricter the escape hatch should be. Consider whether "impossible" thresholds (100%+) are actually desirable for critical transitions.
