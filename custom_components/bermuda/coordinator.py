@@ -1724,9 +1724,13 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             scanner_less_room = True
 
         # RSSI SANITY CHECK:
-        # Reject UKF decision if it picks a room with significantly weaker signal
-        # than the strongest visible scanner. This prevents fingerprint mismatches
-        # from overriding obvious physical proximity.
+        # Only reject UKF decision if BOTH conditions are met:
+        # 1. The selected room has significantly weaker signal (>15 dB)
+        # 2. The UKF match score is borderline (< 0.6)
+        #
+        # If UKF has high confidence, trust it even with weaker signal - this allows
+        # proper handling of scanner-less rooms and blocked/dampened scanners.
+        # The fingerprint pattern is more reliable than raw RSSI in these cases.
         if not scanner_less_room and best_advert is not None:
             best_advert_rssi = best_advert.rssi
             strongest_visible_rssi = -999.0
@@ -1740,22 +1744,23 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                 ):
                     strongest_visible_rssi = advert.rssi
 
-            # If UKF-selected advert has much weaker signal (>10 dB) than strongest,
-            # the fingerprint match is probably wrong - fall back to min-distance
-            rssi_sanity_margin = 10.0  # dB threshold
+            # Only apply sanity check when UKF confidence is low AND signal is much weaker
+            rssi_sanity_margin = 15.0  # dB threshold (increased from 10)
+            ukf_confidence_threshold = 0.6  # Only check when match_score below this
             if (
-                best_advert_rssi is not None
+                match_score < ukf_confidence_threshold
+                and best_advert_rssi is not None
                 and strongest_visible_rssi > -999.0
                 and strongest_visible_rssi - best_advert_rssi > rssi_sanity_margin
             ):
-                # UKF picked a room with weak signal when strong signal exists elsewhere
-                # This is suspicious - reject and let min-distance handle it
+                # Low confidence UKF picked a room with weak signal - suspicious
                 if _LOGGER.isEnabledFor(logging.DEBUG):
                     _LOGGER.debug(
-                        "UKF sanity check failed for %s: UKF picked %s (RSSI %.1f) but "
+                        "UKF sanity check failed for %s: UKF picked %s (score=%.2f, RSSI %.1f) but "
                         "strongest signal is %.1f dB stronger - falling back to min-distance",
                         device.name,
                         best_area_id,
+                        match_score,
                         best_advert_rssi,
                         strongest_visible_rssi - best_advert_rssi,
                     )
