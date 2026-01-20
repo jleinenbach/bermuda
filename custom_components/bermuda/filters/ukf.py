@@ -42,6 +42,7 @@ from .const import KALMAN_MEASUREMENT_NOISE
 
 if TYPE_CHECKING:
     from custom_components.bermuda.correlation.area_profile import AreaProfile
+    from custom_components.bermuda.correlation.room_profile import RoomProfile
 
 
 # =============================================================================
@@ -480,76 +481,107 @@ class UnscentedKalmanFilter(SignalFilter):
     def match_fingerprints(
         self,
         area_profiles: dict[str, AreaProfile],
+        room_profiles: dict[str, RoomProfile] | None = None,
     ) -> list[tuple[str, float, float]]:
         """
-        Compare current UKF state to learned area fingerprints.
+        Compare current UKF state to learned fingerprints.
 
-        Uses Mahalanobis distance which accounts for:
-        1. Current state uncertainty (from UKF covariance P)
-        2. Fingerprint variance (from learned profiles)
-
-        The combined distance properly weights confident estimates
-        more heavily than uncertain ones.
+        Uses both device-specific (AreaProfile) and device-independent (RoomProfile)
+        fingerprints for matching. Combines scores using weighted fusion.
 
         Args:
-            area_profiles: Dict of area_id -> AreaProfile with learned fingerprints
+            area_profiles: Dict of area_id -> AreaProfile with device-specific fingerprints
+            room_profiles: Optional dict of area_id -> RoomProfile (device-independent)
 
         Returns:
             List of (area_id, mahalanobis_distance, match_score) sorted by score.
-            - mahalanobis_distance: Statistical distance (lower = better match)
-            - match_score: Normalized score 0-1 (higher = better match)
 
         """
         results: list[tuple[str, float, float]] = []
 
-        for area_id, profile in area_profiles.items():
-            # Build fingerprint mean and variance for matching scanners
-            fp_mean: list[float] = []
-            fp_var: list[float] = []
-            state_indices: list[int] = []
+        # Get all area_ids from both profile types
+        all_area_ids = set(area_profiles.keys())
+        if room_profiles:
+            all_area_ids |= set(room_profiles.keys())
 
-            for i, addr in enumerate(self.scanner_addresses):
-                # Access internal dict (using profile's interface would be cleaner)
-                if hasattr(profile, "_absolute_profiles"):
-                    abs_profiles = profile._absolute_profiles  # noqa: SLF001
-                    if addr in abs_profiles:
-                        abs_profile = abs_profiles[addr]
-                        if hasattr(abs_profile, "is_mature") and abs_profile.is_mature:
-                            fp_mean.append(abs_profile.expected_rssi)
-                            fp_var.append(abs_profile.variance)
-                            state_indices.append(i)
+        # Build current readings dict from UKF state for RoomProfile matching
+        current_readings: dict[str, float] = {}
+        for i, addr in enumerate(self.scanner_addresses):
+            if i < len(self._x):
+                current_readings[addr] = self._x[i]
 
-            if len(state_indices) < 2:
-                continue  # Not enough overlap
+        for area_id in all_area_ids:
+            device_score: float | None = None
+            device_samples = 0
+            room_score: float | None = None
 
-            # Extract relevant state components
-            x_sub = [self._x[i] for i in state_indices]
-            n_sub = len(state_indices)
+            # Device-specific matching (Mahalanobis distance)
+            if area_id in area_profiles:
+                profile = area_profiles[area_id]
+                fp_mean: list[float] = []
+                fp_var: list[float] = []
+                state_indices: list[int] = []
 
-            # Build sub-covariance matrix for matched scanners
-            p_sub = [[self._p_cov[state_indices[i]][state_indices[j]] for j in range(n_sub)] for i in range(n_sub)]
+                for i, addr in enumerate(self.scanner_addresses):
+                    if hasattr(profile, "_absolute_profiles"):
+                        abs_profiles = profile._absolute_profiles  # noqa: SLF001
+                        if addr in abs_profiles:
+                            abs_profile = abs_profiles[addr]
+                            if hasattr(abs_profile, "is_mature") and abs_profile.is_mature:
+                                fp_mean.append(abs_profile.expected_rssi)
+                                fp_var.append(abs_profile.variance)
+                                state_indices.append(i)
+                                device_samples += abs_profile.sample_count
 
-            # Combined covariance: UKF uncertainty + fingerprint variance
-            combined_cov = [[p_sub[i][j] + (fp_var[i] if i == j else 0.0) for j in range(n_sub)] for i in range(n_sub)]
+                if len(state_indices) >= 2:
+                    x_sub = [self._x[i] for i in state_indices]
+                    n_sub = len(state_indices)
+                    p_sub = [
+                        [self._p_cov[state_indices[i]][state_indices[j]] for j in range(n_sub)]
+                        for i in range(n_sub)
+                    ]
+                    combined_cov = [
+                        [p_sub[i][j] + (fp_var[i] if i == j else 0.0) for j in range(n_sub)]
+                        for i in range(n_sub)
+                    ]
+                    diff = [x_sub[i] - fp_mean[i] for i in range(n_sub)]
 
-            # Mahalanobis distance: d² = (x - μ)ᵀ Σ⁻¹ (x - μ)
-            diff = [x_sub[i] - fp_mean[i] for i in range(n_sub)]
+                    try:
+                        cov_inv = _matrix_inverse(combined_cov)
+                        d_squared = sum(
+                            diff[i] * sum(cov_inv[i][j] * diff[j] for j in range(n_sub))
+                            for i in range(n_sub)
+                        )
+                        device_score = math.exp(-d_squared / (2 * n_sub))
+                    except (ValueError, ZeroDivisionError):
+                        pass
 
-            try:
-                cov_inv = _matrix_inverse(combined_cov)
-            except (ValueError, ZeroDivisionError):
-                continue
+            # Room-level matching (delta patterns)
+            if room_profiles and area_id in room_profiles and len(current_readings) >= 2:
+                room_profile = room_profiles[area_id]
+                room_score = room_profile.get_match_score(current_readings)
 
-            # d² = diff @ cov_inv @ diff
-            d_squared = sum(diff[i] * sum(cov_inv[i][j] * diff[j] for j in range(n_sub)) for i in range(n_sub))
+            # Combine scores with weighted fusion
+            if device_score is not None and room_score is not None:
+                # Both available: weight by sample maturity
+                device_weight = min(device_samples / 50.0, 1.0)
+                room_weight = 1.0 - device_weight * 0.5  # Room always contributes
+                total_weight = device_weight + room_weight
+                combined_score = (device_score * device_weight + room_score * room_weight) / total_weight
+                # Use device d² for sorting purposes
+                d_squared = -2 * math.log(max(device_score, 0.001))
+            elif device_score is not None:
+                combined_score = device_score
+                d_squared = -2 * math.log(max(device_score, 0.001))
+            elif room_score is not None:
+                # Room-only: use as fallback for new devices
+                combined_score = room_score
+                d_squared = -2 * math.log(max(room_score, 0.001))
+            else:
+                continue  # No data for this area
 
-            # Convert to match score (0-1, higher = better)
-            # Using exponential decay: score = exp(-d²/2) similar to Gaussian likelihood
-            match_score = math.exp(-d_squared / (2 * n_sub))
+            results.append((area_id, d_squared, combined_score))
 
-            results.append((area_id, d_squared, match_score))
-
-        # Sort by match score (descending)
         return sorted(results, key=lambda x: -x[2])
 
     def get_estimate(self) -> float:

@@ -1664,14 +1664,15 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         ukf.predict(dt=UPDATE_INTERVAL)
         ukf.update_multi(rssi_readings)
 
-        # Check if we have learned fingerprints for this device
-        if device.address not in self.correlations:
+        # Get device-specific profiles (may be empty for new devices)
+        device_profiles = self.correlations.get(device.address, {})
+
+        # Need either device profiles or room profiles
+        if not device_profiles and not self.room_profiles:
             return False
 
-        device_profiles = self.correlations[device.address]
-
-        # Match against learned area profiles
-        matches = ukf.match_fingerprints(device_profiles)
+        # Match against both device-specific and room-level fingerprints
+        matches = ukf.match_fingerprints(device_profiles, self.room_profiles)
 
         if not matches:
             return False
