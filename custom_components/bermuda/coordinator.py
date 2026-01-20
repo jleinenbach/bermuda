@@ -1626,99 +1626,6 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
         return z_scores_to_confidence(z_scores)
 
-    def _get_room_profile_confidence(
-        self,
-        area_id: str,
-        current_readings: dict[str, float],
-    ) -> float:
-        """
-        Calculate room profile confidence (device-independent).
-
-        Uses scanner-pair delta patterns that are shared across all devices.
-        This is especially useful for:
-        - New devices without learned patterns
-        - Rooms without their own scanner (using nearby scanner deltas)
-        - Additional validation alongside device-specific profiles
-
-        Args:
-            area_id: The area to check confidence for.
-            current_readings: Map of scanner_address to RSSI for all visible scanners.
-
-        Returns:
-            Confidence value 0.0-1.0. Returns 0.5 (neutral) if no data exists.
-
-        """
-        if area_id not in self.room_profiles:
-            return 0.5  # Neutral - no data
-        if len(current_readings) < 2:
-            return 0.5  # Need at least 2 scanners for delta comparison
-
-        return self.room_profiles[area_id].get_match_score(current_readings)
-
-    def _get_combined_area_confidence(
-        self,
-        device_address: str,
-        area_id: str,
-        current_readings: dict[str, float],
-    ) -> float:
-        """
-        Calculate combined confidence using device-specific and room-level profiles.
-
-        Implements intelligent weighting:
-        - New devices (few samples): rely more on room profile
-        - Mature devices (many samples): rely more on device-specific profile
-        - Room profile always contributes as validation/fallback
-
-        Args:
-            device_address: The device's address.
-            area_id: The area to check confidence for.
-            current_readings: Map of scanner_address to RSSI for all visible scanners.
-
-        Returns:
-            Combined confidence value 0.0-1.0.
-
-        """
-        # Get room profile confidence (device-independent)
-        room_confidence = self._get_room_profile_confidence(area_id, current_readings)
-
-        # Get device-specific confidence
-        device_confidence = 1.0  # Default: no penalty
-        device_samples = 0
-
-        if device_address in self.correlations:
-            if area_id in self.correlations[device_address]:
-                profile = self.correlations[device_address][area_id]
-                device_samples = profile.mature_correlation_count
-
-                # Get primary RSSI (strongest signal)
-                primary_rssi = max(current_readings.values()) if current_readings else None
-                if primary_rssi is not None:
-                    primary_addr = max(current_readings, key=current_readings.get)  # type: ignore[arg-type]
-                    other_readings = {k: v for k, v in current_readings.items() if k != primary_addr}
-                    z_scores = profile.get_z_scores(primary_rssi, other_readings)
-                    if z_scores:
-                        device_confidence = z_scores_to_confidence(z_scores)
-
-        # Weight device profile by maturity (0 to 1, maxing out at 50 samples)
-        device_weight = min(device_samples / 50.0, 1.0)
-
-        # Combined confidence:
-        # - Room profile contributes (1 - device_weight * 0.5) weight
-        #   (always at least 50% influence even for mature devices)
-        # - Device profile contributes device_weight weight
-        room_weight = 1.0 - device_weight * 0.5
-
-        # Normalize weights
-        total_weight = device_weight + room_weight
-        if total_weight > 0:
-            combined = (
-                device_confidence * device_weight + room_confidence * room_weight
-            ) / total_weight
-        else:
-            combined = 0.5  # Neutral if no data
-
-        return combined
-
     def _refresh_area_by_ukf(self, device: BermudaDevice) -> bool:
         """
         Use UKF (Unscented Kalman Filter) for area selection via fingerprint matching.
@@ -2005,42 +1912,33 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             if _within_evidence(adv) and adv.rssi is not None and adv.scanner_address is not None:
                 current_readings[adv.scanner_address] = adv.rssi
 
-        # Cache for room profile confidence to avoid recalculating
+        # Cache for room profile confidence
         room_confidence_cache: dict[str, float] = {}
 
         def _get_room_confidence(area_id: str | None) -> float:
             """Get room profile confidence for an area (cached)."""
-            if area_id is None:
+            if area_id is None or len(current_readings) < 2:
                 return 0.5  # Neutral
             if area_id not in room_confidence_cache:
-                room_confidence_cache[area_id] = self._get_combined_area_confidence(
-                    device.address, area_id, current_readings
-                )
+                if area_id in self.room_profiles:
+                    room_confidence_cache[area_id] = self.room_profiles[area_id].get_match_score(
+                        current_readings
+                    )
+                else:
+                    room_confidence_cache[area_id] = 0.5
             return room_confidence_cache[area_id]
 
         def _adjusted_distance(advert: BermudaAdvert | None) -> float | None:
-            """
-            Get effective distance adjusted by room profile confidence.
-
-            Low confidence in room profile → distance penalty (appears farther)
-            High confidence → no penalty or slight boost
-            """
+            """Get distance adjusted by room profile confidence."""
             base_distance = _effective_distance(advert)
             if base_distance is None or advert is None:
                 return None
 
             confidence = _get_room_confidence(advert.area_id)
-
-            # Apply penalty for low confidence (below 0.5)
-            # confidence=0.3 → penalty factor 1.4 (40% farther)
-            # confidence=0.5 → penalty factor 1.0 (no change)
-            # confidence=0.7 → penalty factor 0.86 (14% closer, slight boost)
-            # confidence=1.0 → penalty factor 0.7 (30% closer)
+            # confidence < 0.5 → penalty, > 0.5 → boost
             if confidence < 0.5:
-                # Low confidence: apply penalty (up to 2x at confidence=0)
                 penalty_factor = 1.0 + (0.5 - confidence) * 2.0
             else:
-                # High confidence: apply slight boost (down to 0.7x at confidence=1.0)
                 penalty_factor = 1.0 - (confidence - 0.5) * 0.6
 
             return base_distance * penalty_factor
