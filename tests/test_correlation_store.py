@@ -148,8 +148,59 @@ class TestCorrelationStoreConfiguration:
 
     def test_storage_version_constant(self) -> None:
         """Storage version is set."""
-        assert STORAGE_VERSION == 2, (
-            f"Storage version is {STORAGE_VERSION}, expected 2. "
-            f"Version 2 includes room_profiles in addition to device_profiles. "
-            f"Version is used for migration; unexpected value could cause issues."
+        assert STORAGE_VERSION == 1, (
+            f"Storage version is {STORAGE_VERSION}, expected 1. "
+            f"Version should stay at 1 during beta to avoid migration issues."
         )
+
+
+class TestCorrelationStoreSilentMigration:
+    """Tests for silent handling of data without rooms key."""
+
+    @pytest.mark.asyncio
+    async def test_load_data_without_rooms_key(self, hass: HomeAssistant) -> None:
+        """
+        Data without 'rooms' key is loaded silently with empty room_profiles.
+
+        Old stored data may not have the 'rooms' key. The deserializer should
+        handle this gracefully using data.get("rooms", {}) instead of requiring
+        a storage version migration.
+        """
+        # pylint: disable=import-outside-toplevel
+        from homeassistant.helpers.storage import Store  # noqa: PLC0415
+
+        # Data without "rooms" key (older format)
+        old_data: dict[str, Any] = {
+            "devices": {
+                "aa:bb:cc:dd:ee:ff": {
+                    "area.living_room": {
+                        "area_id": "area.living_room",
+                        "correlations": [
+                            {
+                                "scanner": "scanner_a",
+                                "estimate": -10.0,
+                                "variance": 4.0,
+                                "samples": 50,
+                            }
+                        ],
+                        "absolute_profiles": [],
+                    }
+                }
+            }
+            # Note: No "rooms" key
+        }
+
+        # Write data directly
+        direct_store: Store[dict[str, Any]] = Store(hass, STORAGE_VERSION, STORAGE_KEY)
+        await direct_store.async_save(old_data)
+
+        # Load via CorrelationStore - should NOT raise any errors
+        store = CorrelationStore(hass)
+        data = await store.async_load_all()
+
+        # Device data preserved
+        assert "aa:bb:cc:dd:ee:ff" in data.device_profiles
+        assert "area.living_room" in data.device_profiles["aa:bb:cc:dd:ee:ff"]
+
+        # Room profiles defaults to empty dict
+        assert data.room_profiles == {}
