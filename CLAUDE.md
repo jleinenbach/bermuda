@@ -1119,6 +1119,146 @@ if global_system_ready or entity_has_own_data:
 
 **Rule of Thumb**: If an entity can benefit from an advanced feature using only its OWN data, don't block it waiting for unrelated global data.
 
+## Velocity Reset and Teleport Recovery
+
+### Problem: The "Velocity Trap"
+
+When a device physically moves from one scanner area to another, the calculated velocity can exceed `MAX_VELOCITY` (3 m/s), causing all new readings to be rejected indefinitely. This makes devices unresponsive even with manual training.
+
+```
+Timeline of the Velocity Trap:
+T0: Device near Scanner A, measured at 12m distance
+T1: Device physically moves to Scanner B (1m distance)
+T2: New reading arrives: Scanner B reports 1m
+T3: Velocity calculated: (12m - 1m) / 0.5s = 22 m/s
+T4: 22 m/s > MAX_VELOCITY (3 m/s) → Reading REJECTED
+T5: Device stuck at "12m from Scanner A" forever
+T6: Even button press doesn't help (velocity history not reset)
+```
+
+### Solution: Two-Layer Recovery
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│              Velocity Trap Recovery Mechanisms                       │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  Layer 1: Manual Reset (Immediate)                                   │
+│  ┌──────────────────────────────────────────────────────────┐       │
+│  │ User presses "Train Room" button                          │       │
+│  │         ↓                                                 │       │
+│  │ async_train_fingerprint() calls:                         │       │
+│  │ device.reset_velocity_history()                          │       │
+│  │         ↓                                                 │       │
+│  │ All adverts cleared: hist_velocity, hist_distance, etc.  │       │
+│  │         ↓                                                 │       │
+│  │ Next reading accepted as new baseline                     │       │
+│  └──────────────────────────────────────────────────────────┘       │
+│                                                                      │
+│  Layer 2: Teleport Recovery (Automatic Self-Healing)                │
+│  ┌──────────────────────────────────────────────────────────┐       │
+│  │ Reading blocked by MAX_VELOCITY                           │       │
+│  │         ↓                                                 │       │
+│  │ velocity_blocked_count++                                  │       │
+│  │         ↓                                                 │       │
+│  │ Count >= VELOCITY_TELEPORT_THRESHOLD (5)?                │       │
+│  │         ↓ Yes                     ↓ No                    │       │
+│  │ Accept reading, reset      Keep blocking, log            │       │
+│  │ history (break trap)       (block N/5)                   │       │
+│  └──────────────────────────────────────────────────────────┘       │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Key Files and Methods
+
+| File | Method/Attribute | Purpose |
+|------|-----------------|---------|
+| `bermuda_device.py` | `reset_velocity_history()` | Clears velocity history on all adverts |
+| `coordinator.py` | `async_train_fingerprint()` | Calls reset on manual training |
+| `bermuda_advert.py` | `velocity_blocked_count` | Counter for consecutive blocks |
+| `bermuda_advert.py` | `calculate_data()` | Teleport recovery logic |
+| `const.py` | `VELOCITY_TELEPORT_THRESHOLD` | Blocks before auto-recovery (5) |
+
+### Key Code
+
+**Manual Reset (bermuda_device.py:746-776):**
+```python
+def reset_velocity_history(self) -> None:
+    """Reset velocity-related history on all adverts for this device."""
+    for advert in self.adverts.values():
+        advert.hist_velocity.clear()
+        advert.hist_distance.clear()
+        advert.hist_distance_by_interval.clear()
+        advert.hist_stamp.clear()
+        advert.rssi_kalman.reset()
+        advert.velocity_blocked_count = 0
+```
+
+**Teleport Recovery (bermuda_advert.py:569-613):**
+```python
+if abs(velocity) > max_velocity:
+    self.velocity_blocked_count += 1
+
+    if self.velocity_blocked_count >= VELOCITY_TELEPORT_THRESHOLD:
+        # Accept the new position and reset history
+        self.hist_distance_by_interval.clear()
+        self.hist_distance_by_interval.insert(0, self.rssi_distance_raw)
+        self.hist_distance.clear()
+        self.hist_stamp.clear()
+        self.hist_velocity.clear()
+        self.velocity_blocked_count = 0
+    else:
+        # Keep blocking, use previous distance
+        self.hist_distance_by_interval.insert(0, self.hist_distance_by_interval[0])
+else:
+    # Velocity acceptable, reset counter
+    self.hist_distance_by_interval.insert(0, self.rssi_distance_raw)
+    self.velocity_blocked_count = 0
+```
+
+### Design Decisions
+
+1. **Threshold of 5 blocks**: Balances quick recovery (teleport scenario) with protection against single bad readings. 5 consecutive blocks from the same scanner strongly suggests the device actually moved.
+
+2. **Reset Kalman filter too**: When velocity history is reset, the Kalman filter state is also reset to avoid stale smoothed values contaminating new readings.
+
+3. **Counter per advert, not per device**: Each scanner-device pair has its own counter. This allows teleport recovery to work independently for each scanner relationship.
+
+4. **Manual reset always works**: The button press calls `reset_velocity_history()` directly, bypassing any automatic checks. User intent overrides system heuristics.
+
+### Lesson Learned
+
+### 19. Velocity Guards Need Escape Mechanisms
+
+Velocity-based outlier rejection is essential for filtering noise, but can become a trap when devices legitimately relocate. Always provide both manual override and automatic self-healing.
+
+**Bug Pattern**:
+```python
+# BAD - No escape from velocity trap
+if abs(velocity) > MAX_VELOCITY:
+    reject_reading()  # Forever stuck if device teleported
+```
+
+**Fix Pattern**:
+```python
+# GOOD - Two-layer recovery
+if abs(velocity) > MAX_VELOCITY:
+    self.blocked_count += 1
+    if self.blocked_count >= THRESHOLD:
+        accept_reading_and_reset()  # Self-healing
+    else:
+        reject_reading()
+else:
+    self.blocked_count = 0  # Reset on normal readings
+
+# Plus: Manual reset on user training
+def on_manual_training():
+    device.reset_velocity_history()  # User intent overrides
+```
+
+**Rule of Thumb**: Any guard that can permanently block valid data needs an escape hatch. For velocity guards: count consecutive blocks and accept after N consistent readings, plus always allow manual override.
+
 ---
 
 ## Documentation Standards (Meta)

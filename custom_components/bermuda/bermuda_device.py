@@ -742,6 +742,39 @@ class BermudaDevice(dict):
         nowstamp = stamp_now if stamp_now is not None else monotonic_time_coarse()
         return max(0.0, nowstamp - self.area_changed_at)
 
+    # FIX: Velocity Reset
+    def reset_velocity_history(self) -> None:
+        """
+        Reset velocity-related history on all adverts for this device.
+
+        Called when manual fingerprint training occurs, or when the system
+        detects that the device has "teleported" to a new location.
+        This allows the next incoming measurement to be accepted as a new
+        anchor point, regardless of how far it is from previous readings.
+
+        Without this reset, a device moving from Scanner A (12m) to Scanner B (1m)
+        could get permanently stuck because the calculated velocity exceeds
+        MAX_VELOCITY, causing all new readings to be rejected indefinitely.
+        """
+        for advert in self.adverts.values():
+            # Clear the velocity and position history so the next reading
+            # becomes the new baseline instead of being rejected
+            advert.hist_velocity.clear()
+            advert.hist_distance.clear()
+            advert.hist_distance_by_interval.clear()
+            advert.hist_stamp.clear()
+            # Also reset the Kalman filter to avoid stale state
+            advert.rssi_kalman.reset()
+            advert.rssi_filtered = None
+            # Reset the teleport recovery counter if it exists
+            if hasattr(advert, "velocity_blocked_count"):
+                advert.velocity_blocked_count = 0
+        _LOGGER.debug(
+            "Reset velocity history for device %s across %d adverts",
+            self.name,
+            len(self.adverts),
+        )
+
     def _area_state_age(self, stamp_now: float) -> float | None:
         """Return the age of the last applied area selection."""
         if self.area_state_stamp is None:
