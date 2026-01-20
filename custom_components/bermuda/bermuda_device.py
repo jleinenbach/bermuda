@@ -192,6 +192,12 @@ class BermudaDevice(dict):
         self.area_locked_name: str | None = None
         self.area_locked_scanner_addr: str | None = None  # Scanner that was primary when locked
 
+        # Training target - set by Training select entities, NEVER cleared by coordinator
+        # This is separate from area_locked_* to ensure the button stays enabled
+        # when training floor AND room are selected, regardless of coordinator state.
+        self.training_target_floor_id: str | None = None
+        self.training_target_area_id: str | None = None
+
         self._async_process_address_type()
 
     def _async_process_address_type(self):

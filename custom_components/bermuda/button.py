@@ -73,19 +73,20 @@ class BermudaTrainingButton(BermudaEntity, ButtonEntity):
 
     @property
     def available(self) -> bool:
-        """Return True if button should be enabled (room is selected)."""
+        """Return True if button should be enabled (floor AND room selected)."""
         # Check parent availability first
         if not super().available:
             return False
 
-        # Button only available when a room has been selected for training
-        # The room selection is stored in device.area_locked_id
-        return self._device.area_locked_id is not None
+        # Button available when BOTH training floor AND room have been selected.
+        # Uses training_target_* fields which are ONLY set by select entities
+        # and NEVER cleared by coordinator - ensuring button stays enabled.
+        return self._device.training_target_floor_id is not None and self._device.training_target_area_id is not None
 
     async def async_press(self) -> None:
         """Handle the button press - trigger fingerprint training."""
-        # Double-check that a room is selected
-        if self._device.area_locked_id is None:
+        # Double-check that a training room is selected
+        if self._device.training_target_area_id is None:
             _LOGGER.warning(
                 "Training button pressed but no room selected for %s",
                 self._device.name,
@@ -100,7 +101,7 @@ class BermudaTrainingButton(BermudaEntity, ButtonEntity):
             )
             return
 
-        target_area_id = self._device.area_locked_id
+        target_area_id = self._device.training_target_area_id
         target_area_name = self._device.area_locked_name or target_area_id
 
         _LOGGER.info(
@@ -139,6 +140,14 @@ class BermudaTrainingButton(BermudaEntity, ButtonEntity):
                 "Fingerprint training failed for %s - no valid samples",
                 self._device.name,
             )
+
+        # Clear BOTH training fields after button press - user must re-select to train again
+        self._device.training_target_floor_id = None
+        self._device.training_target_area_id = None
+        # Also clear the area lock
+        self._device.area_locked_id = None
+        self._device.area_locked_name = None
+        self._device.area_locked_scanner_addr = None
 
     @property
     def unique_id(self) -> str:

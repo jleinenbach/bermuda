@@ -58,7 +58,6 @@ from .const import (
     _LOGGER,
     _LOGGER_SPAM_LESS,
     ADDR_TYPE_PRIVATE_BLE_DEVICE,
-    AREA_LOCK_TIMEOUT_SECONDS,
     AREA_MAX_AD_AGE_DEFAULT,
     AREA_MAX_AD_AGE_LIMIT,
     BDADDR_TYPE_NOT_MAC48,
@@ -1735,7 +1734,6 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
     def _refresh_areas_by_min_distance(self):
         """Set area for ALL devices based on closest beacon (or UKF if enabled)."""
         use_ukf = self.options.get(CONF_USE_UKF_AREA_SELECTION, DEFAULT_USE_UKF_AREA_SELECTION)
-        nowstamp = monotonic_time_coarse()
 
         for device in self.devices.values():
             if (
@@ -1745,8 +1743,9 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             ):
                 # Check if device is manually locked to an area
                 if device.area_locked_id is not None:
-                    # Check if the locked scanner still sees the device
-                    # If not seen for AREA_LOCK_TIMEOUT_SECONDS, auto-unlock
+                    # Device is locked by user selection for training.
+                    # Be VERY conservative with auto-unlock - the user explicitly chose this room.
+                    # Only unlock if the locked scanner truly disappears (no advert at all).
                     if device.area_locked_scanner_addr is not None:
                         locked_advert = None
                         for advert in device.adverts.values():
@@ -1754,56 +1753,24 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                                 locked_advert = advert
                                 break
 
-                        if locked_advert is None or locked_advert.stamp is None:
-                            # No advert from locked scanner - unlock immediately
+                        if locked_advert is None:
+                            # Locked scanner has no advert at all - it truly disappeared
                             _LOGGER.info(
-                                "Auto-unlocking %s: locked scanner %s has no advert",
+                                "Auto-unlocking %s: locked scanner %s no longer has any advert",
                                 device.name,
                                 device.area_locked_scanner_addr,
                             )
                             device.area_locked_id = None
                             device.area_locked_name = None
                             device.area_locked_scanner_addr = None
-                        elif nowstamp - locked_advert.stamp > AREA_LOCK_TIMEOUT_SECONDS:
-                            # Locked scanner hasn't seen device recently.
-                            # Only unlock if device is seen by a DIFFERENT scanner - prevents
-                            # false unlock for USB/BlueZ scanners that don't update stamp when
-                            # RSSI is stable. We must check OTHER scanners specifically, not
-                            # device.last_seen which could be from the same USB scanner.
-                            seen_by_other_scanner = False
-                            other_scanner_addr: str | None = None
-                            for other_advert in device.adverts.values():
-                                if other_advert.scanner_address == device.area_locked_scanner_addr:
-                                    continue  # Skip the locked scanner
-                                if (
-                                    other_advert.stamp is not None
-                                    and nowstamp - other_advert.stamp < AREA_LOCK_TIMEOUT_SECONDS
-                                ):
-                                    seen_by_other_scanner = True
-                                    other_scanner_addr = other_advert.scanner_address
-                                    break
-
-                            if seen_by_other_scanner:
-                                # Device seen by OTHER scanner but not by locked scanner - unlock
-                                _LOGGER.info(
-                                    "Auto-unlocking %s: locked scanner %s stale (%.0fs) but device seen by %s",
-                                    device.name,
-                                    device.area_locked_scanner_addr,
-                                    nowstamp - locked_advert.stamp,
-                                    other_scanner_addr,
-                                )
-                                device.area_locked_id = None
-                                device.area_locked_name = None
-                                device.area_locked_scanner_addr = None
-                            else:
-                                # Device not seen by any other scanner - keep locked
-                                # (locked scanner may just have stable RSSI or device offline)
-                                continue
                         else:
-                            # Device is still locked and scanner sees it - skip auto-detect
+                            # Locked scanner still has an advert - keep lock active.
+                            # Don't unlock just because stamp is stale - USB/BlueZ scanners
+                            # don't update stamps when RSSI is stable, which is normal for
+                            # a stationary device being trained.
                             continue
                     else:
-                        # No scanner address recorded - keep locked (legacy behavior)
+                        # No scanner address recorded - keep locked
                         continue
 
                 # Try UKF first if enabled; fall back to min-distance if UKF cannot decide

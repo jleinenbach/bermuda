@@ -132,6 +132,9 @@ class BermudaTrainingRoomSelect(BermudaEntity, SelectEntity):
         self._room_override_name = option
         self._room_override_id = target_area.id
 
+        # Set training target - this enables the button and is NEVER cleared by coordinator
+        self._device.training_target_area_id = target_area.id
+
         # LOCK the device to this area - prevents automatic detection from overriding
         self._device.area_locked_id = target_area.id
         self._device.area_locked_name = option
@@ -161,13 +164,11 @@ class BermudaTrainingRoomSelect(BermudaEntity, SelectEntity):
 
     def on_floor_changed(self) -> None:
         """Called by floor select when floor is changed by user."""
-        # Clear room selection when floor changes
+        # Only clear the UI-level room selection (for dropdown filtering).
+        # DON'T clear training_target_* or area_locked_* - these stay until button press.
+        # This allows the user to accidentally change floor without losing their selection.
         self._room_override_name = None
         self._room_override_id = None
-        # Clear the area lock - device will return to auto-detection
-        self._device.area_locked_id = None
-        self._device.area_locked_name = None
-        self._device.area_locked_scanner_addr = None
         self.async_write_ha_state()
 
     @property
@@ -239,6 +240,9 @@ class BermudaTrainingFloorSelect(BermudaEntity, SelectEntity):
         # Set the persistent override
         self.floor_override_id = target_floor.floor_id
         self._floor_override_name = option
+
+        # Set training target floor - enables button when combined with room selection
+        self._device.training_target_floor_id = target_floor.floor_id
 
         _LOGGER.debug(
             "Floor selected for training %s: %s",
