@@ -70,6 +70,22 @@ class BermudaTrainingButton(BermudaEntity, ButtonEntity):
     ) -> None:
         """Initialize the training button."""
         super().__init__(coordinator, entry, address)
+        _LOGGER.debug(
+            "Training button created for %s (device id: %s)",
+            self._device.name,
+            id(self._device),
+        )
+
+    async def async_added_to_hass(self) -> None:
+        """When entity is added to hass - verify listener registration."""
+        await super().async_added_to_hass()
+        _LOGGER.debug(
+            "Training button added to hass for %s: floor=%s, area=%s (device id: %s)",
+            self._device.name,
+            self._device.training_target_floor_id,
+            self._device.training_target_area_id,
+            id(self._device),
+        )
 
     @property
     def available(self) -> bool:

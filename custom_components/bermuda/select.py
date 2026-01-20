@@ -82,6 +82,11 @@ class BermudaTrainingRoomSelect(BermudaEntity, SelectEntity):
         # Start empty - user must explicitly select
         self._room_override_name: str | None = None
         self._room_override_id: str | None = None
+        _LOGGER.debug(
+            "Room select created for %s (device id: %s)",
+            self._device.name,
+            id(self._device),
+        )
 
     @property
     def _effective_floor_id(self) -> str | None:
@@ -227,6 +232,11 @@ class BermudaTrainingFloorSelect(BermudaEntity, SelectEntity):
         self._floor_override_name: str | None = None
         # Reference to room select (set after creation)
         self._room_select: BermudaTrainingRoomSelect | None = None
+        _LOGGER.debug(
+            "Floor select created for %s (device id: %s)",
+            self._device.name,
+            id(self._device),
+        )
 
     def set_room_select(self, room_select: BermudaTrainingRoomSelect) -> None:
         """Set reference to the room select entity."""
