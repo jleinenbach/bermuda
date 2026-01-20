@@ -118,12 +118,21 @@ class BermudaTrainingButton(BermudaEntity, ButtonEntity):
 
     @callback
     def _handle_coordinator_update(self) -> None:
-        """Handle coordinator update - log device state for debugging."""
+        """Handle coordinator update - explicitly update availability."""
+        # Compute availability directly here and log for debugging
+        parent_available = self.coordinator.last_update_success
+        floor_ok = self._device.training_target_floor_id is not None
+        area_ok = self._device.training_target_area_id is not None
+        should_be_available = parent_available and floor_ok and area_ok
+
         _LOGGER.debug(
-            "Button coordinator update for %s: floor=%s, area=%s (device id: %s)",
+            "Button coordinator update for %s: parent=%s, floor=%s, area=%s, "
+            "available=%s (device id: %s)",
             self._device.name,
+            parent_available,
             self._device.training_target_floor_id,
             self._device.training_target_area_id,
+            should_be_available,
             id(self._device),
         )
         super()._handle_coordinator_update()
