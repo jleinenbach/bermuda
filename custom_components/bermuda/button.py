@@ -73,15 +73,15 @@ class BermudaTrainingButton(BermudaEntity, ButtonEntity):
 
     @property
     def available(self) -> bool:
-        """Return True if button should be enabled (room is selected)."""
+        """Return True if button should be enabled (floor AND room selected)."""
         # Check parent availability first
         if not super().available:
             return False
 
-        # Button available when a training room has been selected.
-        # Uses training_target_area_id which is ONLY set by select entity
+        # Button available when BOTH training floor AND room have been selected.
+        # Uses training_target_* fields which are ONLY set by select entities
         # and NEVER cleared by coordinator - ensuring button stays enabled.
-        return self._device.training_target_area_id is not None
+        return self._device.training_target_floor_id is not None and self._device.training_target_area_id is not None
 
     async def async_press(self) -> None:
         """Handle the button press - trigger fingerprint training."""

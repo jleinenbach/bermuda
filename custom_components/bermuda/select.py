@@ -244,6 +244,9 @@ class BermudaTrainingFloorSelect(BermudaEntity, SelectEntity):
         self.floor_override_id = target_floor.floor_id
         self._floor_override_name = option
 
+        # Set training target floor - enables button when combined with room selection
+        self._device.training_target_floor_id = target_floor.floor_id
+
         _LOGGER.debug(
             "Floor selected for training %s: %s",
             self._device.name,
