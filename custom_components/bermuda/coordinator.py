@@ -1838,7 +1838,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         scanner_less_room: bool,
         nowstamp: float,
     ) -> None:
-        """Apply the UKF-selected area to the device."""
+        """Apply the UKF-selected area to the device and update correlations."""
         if scanner_less_room:
             # Override the advert's area with the UKF-matched area.
             # IMPORTANT: Temporarily clear scanner_device so apply_scanner_selection
@@ -1856,6 +1856,45 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         else:
             # Apply the selection using the device's standard method
             device.apply_scanner_selection(best_advert, nowstamp=nowstamp)
+
+        # AUTO-LEARNING: Update correlations so fingerprints adapt to environment changes
+        # This mirrors the learning logic in _refresh_area_by_min_distance
+        if best_advert.rssi is not None and best_area_id is not None:
+            # Collect RSSI readings from other visible scanners
+            other_readings: dict[str, float] = {}
+            for other_adv in device.adverts.values():
+                if (
+                    other_adv is not best_advert
+                    and other_adv.stamp is not None
+                    and nowstamp - other_adv.stamp < EVIDENCE_WINDOW_SECONDS
+                    and other_adv.rssi is not None
+                    and other_adv.scanner_address is not None
+                ):
+                    other_readings[other_adv.scanner_address] = other_adv.rssi
+
+            if other_readings:
+                # Ensure device entry exists in correlations
+                if device.address not in self.correlations:
+                    self.correlations[device.address] = {}
+                # Ensure area entry exists for this device
+                if best_area_id not in self.correlations[device.address]:
+                    self.correlations[device.address][best_area_id] = AreaProfile(
+                        area_id=best_area_id,
+                    )
+                # Update the device-specific profile
+                self.correlations[device.address][best_area_id].update(
+                    primary_rssi=best_advert.rssi,
+                    other_readings=other_readings,
+                    primary_scanner_addr=best_advert.scanner_address,
+                )
+
+                # Also update the device-independent room profile
+                all_readings = dict(other_readings)
+                if best_advert.scanner_address is not None:
+                    all_readings[best_advert.scanner_address] = best_advert.rssi
+                if best_area_id not in self.room_profiles:
+                    self.room_profiles[best_area_id] = RoomProfile(area_id=best_area_id)
+                self.room_profiles[best_area_id].update(all_readings)
 
     def _refresh_areas_by_min_distance(self):
         """Set area for ALL devices based on UKF+RoomProfile or min-distance fallback."""
