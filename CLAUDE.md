@@ -1400,3 +1400,29 @@ if variance < 5.0:  # Converged threshold
 ```
 
 **Rule of Thumb**: If you had to think about WHY, write it down. If you didn't have to think, it's probably obvious enough to skip.
+
+### 20. Borrowed Attributes Need Context-Aware Resolution
+
+When a "virtual" or "scannerless" entity borrows attributes from another entity (e.g., a scanner from a different room), lookups on those attributes return values from the WRONG context.
+
+**Bug Pattern**:
+```python
+# BAD - For scannerless rooms, scanner_device is borrowed from a different room/floor!
+# This returns the floor of the SCANNER, not the floor of the AREA we're actually in.
+current_floor_id = advert.scanner_device.floor_id
+
+# Only fallback to area registry if scanner has no floor - but it DOES have a floor!
+if current_floor_id is None:
+    current_floor_id = area_registry.get_floor(area_id)  # Never reached
+```
+
+**Fix Pattern**:
+```python
+# GOOD - For scannerless rooms, ALWAYS resolve from the authoritative source (area registry)
+if is_scannerless_area or protect_scannerless_area:
+    current_floor_id = area_registry.get_floor(area_id)  # Our actual area
+else:
+    current_floor_id = advert.scanner_device.floor_id  # Scanner's area
+```
+
+**Rule of Thumb**: When an entity borrows components from another context, any attribute lookup on those components returns values from the WRONG context. Always resolve such attributes from the authoritative source (e.g., registry) rather than the borrowed component.

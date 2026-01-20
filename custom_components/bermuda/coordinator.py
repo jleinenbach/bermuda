@@ -116,6 +116,8 @@ from .const import (
     SIGNAL_SCANNERS_CHANGED,
     UKF_MIN_MATCH_SCORE,
     UKF_MIN_SCANNERS,
+    UKF_STICKINESS_BONUS,
+    UKF_WEAK_SCANNER_MIN_DISTANCE,
     UPDATE_INTERVAL,
 )
 from .correlation import AreaProfile, CorrelationStore, RoomProfile, z_scores_to_confidence
@@ -1650,6 +1652,20 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
         return z_scores_to_confidence(z_scores)
 
+    def _resolve_floor_id_for_area(self, area_id: str | None) -> str | None:
+        """
+        Resolve floor_id for an area_id using the Home Assistant area registry.
+
+        This is essential for scannerless rooms where we can't get floor_id from
+        a scanner_device - we must look up the area directly.
+        """
+        if area_id is None:
+            return None
+        area = self.ar.async_get_area(area_id)
+        if area is not None:
+            return getattr(area, "floor_id", None)
+        return None
+
     def _refresh_area_by_ukf(self, device: BermudaDevice) -> bool:  # noqa: PLR0911, C901
         """
         Use UKF (Unscented Kalman Filter) for area selection via fingerprint matching.
@@ -1704,8 +1720,43 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         # Get best match
         best_area_id, _d_squared, match_score = matches[0]
 
-        # Check if match score meets minimum threshold
-        if match_score < UKF_MIN_MATCH_SCORE:
+        # FIX: Sticky Virtual Rooms - Apply stickiness bonus for current area
+        # When the device is already in an area (especially a scannerless one),
+        # give that area a bonus to prevent marginal flickering.
+        current_area_id = getattr(device.area_advert, "area_id", None) if device.area_advert else None
+
+        # Check if current area is in the matches and apply stickiness
+        effective_match_score = match_score
+        current_area_match_score: float | None = None
+
+        if current_area_id is not None:
+            for area_id, _d_sq, score in matches:
+                if area_id == current_area_id:
+                    current_area_match_score = score
+                    break
+
+            # FIX: Sticky Virtual Rooms - If current area has a reasonable score,
+            # it needs to be beaten by a significant margin
+            if current_area_match_score is not None and best_area_id != current_area_id:
+                # Apply stickiness: challenger must beat current by UKF_STICKINESS_BONUS
+                stickiness_adjusted_current = current_area_match_score + UKF_STICKINESS_BONUS
+
+                if match_score <= stickiness_adjusted_current:
+                    # Current area wins with stickiness bonus
+                    best_area_id = current_area_id
+                    effective_match_score = current_area_match_score
+                    if _LOGGER.isEnabledFor(logging.DEBUG):
+                        _LOGGER.debug(
+                            "UKF stickiness for %s: keeping %s (score=%.2f+%.2f bonus) over challenger (score=%.2f)",
+                            device.name,
+                            current_area_id,
+                            current_area_match_score,
+                            UKF_STICKINESS_BONUS,
+                            match_score,
+                        )
+
+        # Check if match score meets minimum threshold (after stickiness adjustment)
+        if effective_match_score < UKF_MIN_MATCH_SCORE:
             return False
 
         # Find the advert corresponding to the best area
@@ -1745,6 +1796,9 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
             scanner_less_room = True
 
+        # Track whether current area is scannerless (for stickiness in future cycles)
+        device._ukf_scannerless_area = scanner_less_room  # type: ignore[attr-defined]  # noqa: SLF001
+
         # RSSI SANITY CHECK:
         # Only reject UKF decision if BOTH conditions are met:
         # 1. The selected room has significantly weaker signal (>15 dB)
@@ -1770,7 +1824,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             rssi_sanity_margin = 15.0  # dB threshold (increased from 10)
             ukf_confidence_threshold = 0.6  # Only check when match_score below this
             if (
-                match_score < ukf_confidence_threshold
+                effective_match_score < ukf_confidence_threshold
                 and best_advert_rssi is not None
                 and strongest_visible_rssi > -999.0
                 and strongest_visible_rssi - best_advert_rssi > rssi_sanity_margin
@@ -1782,7 +1836,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                         "strongest signal is %.1f dB stronger - falling back to min-distance",
                         device.name,
                         best_area_id,
-                        match_score,
+                        effective_match_score,
                         best_advert_rssi,
                         strongest_visible_rssi - best_advert_rssi,
                     )
@@ -1792,12 +1846,29 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         # Prevent rapid flickering between floors by requiring multiple consecutive
         # cycles picking the same target before allowing a cross-floor switch.
         current_area_advert = device.area_advert
-        current_floor_id = None
-        if current_area_advert is not None and current_area_advert.scanner_device is not None:
-            current_floor_id = getattr(current_area_advert.scanner_device, "floor_id", None)
 
+        # FIX: Unified Floor Guard - ALWAYS resolve floor_id from AREA, not from scanner_device
+        # For scannerless rooms, the scanner_device belongs to a different area (and floor!)
+        # entirely. We must ALWAYS look up the floor_id from the area registry directly to
+        # ensure cross-floor protection works correctly for scannerless rooms.
+        #
+        # Bug fixed: Previously we tried scanner_device.floor_id first, which was WRONG for
+        # scannerless rooms (e.g., device in "Office" Floor 1 but using scanner from
+        # "Bedroom" Floor 2 would incorrectly think current floor was Floor 2).
+        current_floor_id = None
+        if current_area_advert is not None:
+            current_area_advert_area_id = getattr(current_area_advert, "area_id", None)
+            if current_area_advert_area_id is not None:
+                current_floor_id = self._resolve_floor_id_for_area(current_area_advert_area_id)
+
+        # FIX: Unified Floor Guard - Resolve winner floor_id from TARGET AREA, not scanner
+        # For scannerless rooms, best_advert.scanner_device is from a different room!
         winner_floor_id = None
-        if best_advert is not None and best_advert.scanner_device is not None:
+        if scanner_less_room:
+            # Scannerless room: get floor_id from the TARGET area (best_area_id)
+            winner_floor_id = self._resolve_floor_id_for_area(best_area_id)
+        elif best_advert is not None and best_advert.scanner_device is not None:
+            # Scanner-based room: can use scanner_device's floor_id
             winner_floor_id = getattr(best_advert.scanner_device, "floor_id", None)
 
         is_cross_floor = (
@@ -2092,6 +2163,13 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
         has_distance_contender = any(_is_distance_contender(advert) for advert in device.adverts.values())
 
+        # FIX: Weak Scanner Override Protection
+        # If the device was previously in a scannerless UKF-detected area, protect it
+        # from being overridden by distant scanners. Only allow switch if a scanner
+        # is very close (< UKF_WEAK_SCANNER_MIN_DISTANCE) or UKF score has dropped.
+        _protect_scannerless_area = getattr(device, "_ukf_scannerless_area", False)
+        _scannerless_min_dist_override = UKF_WEAK_SCANNER_MIN_DISTANCE
+
         if not _is_distance_contender(incumbent):
             if _area_candidate(incumbent) and _within_evidence(incumbent):
                 soft_incumbent = incumbent
@@ -2148,13 +2226,53 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                 continue
 
             incumbent_scanner = current_incumbent.scanner_device if current_incumbent else None
-            inc_floor_id = getattr(incumbent_scanner, "floor_id", None) if incumbent_scanner else None
             inc_floor_level = getattr(incumbent_scanner, "floor_level", None) if incumbent_scanner else None
+
+            # FIX: Unified Floor Guard - For scannerless rooms, ALWAYS resolve floor from area registry
+            # The scanner_device belongs to a different room (and potentially different floor!),
+            # so its floor_id is WRONG for determining cross-floor protection.
+            #
+            # Bug fixed: Previously only used area registry if inc_floor_id was None, but for
+            # scannerless rooms the scanner HAS a floor_id - just the wrong one! (e.g., device
+            # in "Office" Floor 1 using scanner from "Bedroom" Floor 2 would see inc_floor_id=Floor2)
+            if _protect_scannerless_area and current_incumbent is not None:
+                current_inc_area_id = getattr(current_incumbent, "area_id", None)
+                if current_inc_area_id is not None:
+                    inc_floor_id = self._resolve_floor_id_for_area(current_inc_area_id)
+                else:
+                    inc_floor_id = getattr(incumbent_scanner, "floor_id", None) if incumbent_scanner else None
+            else:
+                inc_floor_id = getattr(incumbent_scanner, "floor_id", None) if incumbent_scanner else None
+
             chal_floor_id = getattr(challenger_scanner, "floor_id", None)
             chal_floor_level = getattr(challenger_scanner, "floor_level", None)
             tests.floors = (inc_floor_id, chal_floor_id)
             tests.floor_levels = (inc_floor_level, chal_floor_level)
             cross_floor = inc_floor_id is not None and chal_floor_id is not None and inc_floor_id != chal_floor_id
+
+            # FIX: Weak Scanner Override Protection for Scannerless Rooms
+            # If device is in a scannerless UKF-detected area, don't let distant scanners override.
+            # Only allow switch if challenger is very close OR we're on the same floor.
+            if _protect_scannerless_area and current_incumbent is not None:
+                challenger_dist = _effective_distance(challenger)
+                if challenger_dist is not None and challenger_dist >= _scannerless_min_dist_override:
+                    # Challenger is too far to override a scannerless area
+                    if cross_floor:
+                        # Cross-floor: definitely block distant scanners
+                        tests.reason = (
+                            f"LOSS - scannerless area protection (challenger at {challenger_dist:.1f}m "
+                            f">= {_scannerless_min_dist_override:.1f}m, cross-floor)"
+                        )
+                        if _LOGGER.isEnabledFor(logging.DEBUG):
+                            _LOGGER.debug(
+                                "Weak scanner override blocked for %s: scannerless area protected, "
+                                "challenger %s at %.1fm (min=%.1fm), cross-floor",
+                                device.name,
+                                challenger.name,
+                                challenger_dist,
+                                _scannerless_min_dist_override,
+                            )
+                        continue
 
             # If closest scanner lacks critical data, we win.
             if current_incumbent is None:
