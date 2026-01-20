@@ -106,8 +106,10 @@ class ScannerPairCorrelation:
         """
         Update correlation with button-trained delta.
 
-        Button samples are weighted 2x in the final estimate fusion,
-        giving manual corrections stronger influence than automatic learning.
+        FIX: Fehler 2 - Inflate auto-filter variance when button training occurs,
+        but only if auto-filter is already converged (low variance). This ensures
+        button training can override accumulated auto-learning bias without
+        destroying the auto-learning capability entirely.
 
         Args:
             observed_delta: Current (primary_rssi - other_rssi) value.
@@ -116,6 +118,17 @@ class ScannerPairCorrelation:
             Updated fused estimate of the expected delta.
 
         """
+        # FIX: Inflate auto-filter variance only if it's converged (variance < 5.0).
+        # A converged auto-filter has thousands of samples and would otherwise
+        # dominate the button training due to inverse-variance weighting.
+        # By inflating variance when converged, we "forget" some auto-confidence
+        # and allow button training to take precedence.
+        # We don't inflate if variance is already high (unconverged or already inflated).
+        converged_threshold = 5.0
+        if self._kalman_auto.sample_count > 0 and self._kalman_auto.variance < converged_threshold:
+            # Inflate to ~15.0 which is roughly the initial/unconverged state
+            self._kalman_auto.variance = 15.0
+
         self._kalman_button.update(observed_delta)
         return self.expected_delta
 

@@ -49,15 +49,15 @@ class TestScannerPairCorrelationDualFilter:
         assert corr.auto_sample_count == 0
         assert corr.button_sample_count == 30
 
-    def test_inverse_variance_weighting_converged_vs_unconverged(self) -> None:
-        """Converged filter (low variance) gets more weight than unconverged filter.
+    def test_button_training_overrides_converged_auto(self) -> None:
+        """Button training inflates auto variance to allow user corrections to take effect.
 
-        With inverse-variance weighting:
-        - weight = 1 / variance
-        - Kalman variance converges quickly (~20 samples to steady state ~2.6)
-        - Unconverged filter has much higher variance
+        FIX for Fehler 2: When auto-filter is converged (low variance from thousands of
+        samples), button training would previously be ineffective because inverse-variance
+        weighting would favor the highly-confident auto estimate.
 
-        This test uses extreme difference: converged (100 samples) vs just started (2 samples)
+        Now, button training inflates the auto variance, giving button samples more weight.
+        This ensures manual user corrections can override automatic learning.
         """
         corr = ScannerPairCorrelation(scanner_address="test_scanner")
 
@@ -65,21 +65,22 @@ class TestScannerPairCorrelationDualFilter:
         for _ in range(100):
             corr.update(0.0)
 
-        # Add just 2 button samples at 30.0 (unconverged, variance ~8.1)
+        # Add just 2 button samples at 30.0
+        # FIX: The first button call inflates auto variance from ~2.6 to 15.0
         for _ in range(2):
             corr.update_button(30.0)
 
-        # Auto filter is converged → lower variance → more weight
+        # After button training, auto variance should be inflated (higher than before)
         auto_var = corr._kalman_auto.variance
         button_var = corr._kalman_button.variance
-        assert auto_var < button_var, (
-            f"Auto should have lower variance (converged): auto={auto_var:.2f}, button={button_var:.2f}"
+        assert auto_var > button_var, (
+            f"Auto variance should be inflated after button training: auto={auto_var:.2f}, button={button_var:.2f}"
         )
 
-        # With lower variance, auto should dominate the fused estimate
-        # Estimate should be closer to 0 (auto) than to 30 (button)
+        # With inflated auto variance, button training should have more influence
+        # Estimate should be closer to 30 (button) than to 0 (auto)
         estimate = corr.expected_delta
-        assert estimate < 15.0, f"Converged auto should dominate, got {estimate}"
+        assert estimate > 15.0, f"Button training should have influence, got {estimate}"
 
     def test_auto_continues_learning_indefinitely(self) -> None:
         """Auto learning should never stop - adapts to environment changes."""
@@ -290,25 +291,30 @@ class TestSerializationDualFilter:
 class TestInverseVarianceFusionMath:
     """Tests for the mathematical correctness of inverse-variance fusion."""
 
-    def test_equal_variance_equal_weight(self) -> None:
-        """With equal variance, both filters contribute equally.
+    def test_button_training_dominates_after_convergence(self) -> None:
+        """Button training dominates when auto was previously converged.
 
-        Inverse-variance weighting: weight = 1 / variance
-        If both have same variance → equal weights → midpoint estimate
+        FIX for Fehler 2: Even with many button samples, button training should
+        dominate over auto-learning because auto variance is inflated when
+        button training starts.
+
+        The estimate should be closer to the button value (30.0) than the auto value (0.0).
         """
         corr = ScannerPairCorrelation(scanner_address="test_scanner")
 
-        # Train both with consistent values (similar variance)
+        # Train auto with many samples (converged, low variance)
         for _ in range(100):
             corr.update(0.0)
 
+        # Train button - auto variance gets inflated on first call
         for _ in range(100):
             corr.update_button(30.0)
 
-        # Both trained with consistent values → similar variance → ~equal weight
-        # Estimate should be roughly the midpoint (15.0)
+        # After button training, button filter is converged with low variance,
+        # while auto filter has inflated variance. Button should dominate.
         estimate = corr.expected_delta
-        assert 10.0 < estimate < 20.0, f"Expected ~15 (midpoint), got {estimate}"
+        # Button (30.0) should dominate over auto (0.0)
+        assert estimate > 20.0, f"Button should dominate with estimate > 20, got {estimate}"
 
     def test_lower_variance_gets_more_weight(self) -> None:
         """Converged filter (lower variance) gets more weight than unconverged."""
