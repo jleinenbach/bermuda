@@ -29,6 +29,7 @@ Architecture:
 
 from .area_profile import AreaProfile
 from .confidence import weighted_z_scores_to_confidence, z_scores_to_confidence
+from .room_profile import RoomProfile
 from .scanner_absolute import ScannerAbsoluteRssi
 from .scanner_pair import ScannerPairCorrelation
 from .store import CorrelationStore
@@ -36,6 +37,7 @@ from .store import CorrelationStore
 __all__ = [
     "AreaProfile",
     "CorrelationStore",
+    "RoomProfile",
     "ScannerAbsoluteRssi",
     "ScannerPairCorrelation",
     "weighted_z_scores_to_confidence",

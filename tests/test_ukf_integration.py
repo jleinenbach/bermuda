@@ -105,6 +105,7 @@ def create_coordinator_mock() -> BermudaDataUpdateCoordinator:
         CONF_USE_UKF_AREA_SELECTION: DEFAULT_USE_UKF_AREA_SELECTION,
     }
     coordinator.correlations = {}
+    coordinator.room_profiles = {}  # Room-level scanner pair delta profiles
     coordinator._correlations_loaded = True
     coordinator._last_correlation_save = 0.0
     coordinator.correlation_store = MagicMock(async_save=AsyncMock())

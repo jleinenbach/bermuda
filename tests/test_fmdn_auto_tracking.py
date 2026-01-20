@@ -38,6 +38,7 @@ def coordinator(hass: HomeAssistant) -> BermudaDataUpdateCoordinator:
     coordinator.devices = {}
     coordinator.metadevices = {}
     coordinator.correlations = {}  # Scanner correlation data for area confidence
+    coordinator.room_profiles = {}  # Room-level scanner pair delta profiles
     coordinator._seed_configured_devices_done = False
     coordinator._scanner_init_pending = False
     coordinator._do_private_device_init = False

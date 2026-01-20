@@ -118,7 +118,7 @@ from .const import (
     UKF_MIN_SCANNERS,
     UPDATE_INTERVAL,
 )
-from .correlation import AreaProfile, CorrelationStore, z_scores_to_confidence
+from .correlation import AreaProfile, CorrelationStore, RoomProfile, z_scores_to_confidence
 from .filters import UnscentedKalmanFilter
 from .fmdn import FmdnIntegration
 from .scanner_calibration import ScannerCalibrationManager, update_scanner_calibration
@@ -229,6 +229,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         # Scanner correlation learning for improved area localization
         self.correlation_store = CorrelationStore(hass)
         self.correlations: dict[str, dict[str, AreaProfile]] = {}
+        self.room_profiles: dict[str, RoomProfile] = {}  # Device-independent room fingerprints
         self._correlations_loaded = False
         self._last_correlation_save: float = 0
 
@@ -769,24 +770,29 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         # Build "other readings" (all except primary)
         other_readings = {addr: rssi for addr, rssi in rssi_readings.items() if addr != primary_scanner_addr}
 
-        # Update the profile with current readings (including primary for absolute profiles)
+        # Update the device-specific profile with current readings
         self.correlations[device_address][target_area_id].update(
             primary_rssi=primary_rssi,
             other_readings=other_readings,
             primary_scanner_addr=primary_scanner_addr,
         )
 
+        # Update the device-independent room profile with all scanner readings
+        # This creates scanner-pair deltas that are shared across all devices
+        if target_area_id not in self.room_profiles:
+            self.room_profiles[target_area_id] = RoomProfile(area_id=target_area_id)
+        self.room_profiles[target_area_id].update(rssi_readings)
+
         _LOGGER.info(
-            "Trained fingerprint for %s in area %s with %d scanners (primary: %s at %.1f dBm)",
+            "Trained fingerprint for %s in area %s with %d scanners "
+            "(device profile + room profile updated)",
             device.name,
             target_area_id,
             len(rssi_readings),
-            primary_scanner_addr,
-            primary_rssi,
         )
 
         # Save correlations immediately after manual training
-        await self.correlation_store.async_save(self.correlations)
+        await self.correlation_store.async_save(self.correlations, self.room_profiles)
         self._last_correlation_save = nowstamp
 
         return True
@@ -862,12 +868,15 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         """Implementation of DataUpdateCoordinator update_data function."""
         # Load correlations on first update
         if not self._correlations_loaded:
-            self.correlations = await self.correlation_store.async_load()
+            correlation_data = await self.correlation_store.async_load_all()
+            self.correlations = correlation_data.device_profiles
+            self.room_profiles = correlation_data.room_profiles
             self._correlations_loaded = True
             self._last_correlation_save = monotonic_time_coarse()
             _LOGGER.debug(
-                "Loaded scanner correlations for %d devices",
+                "Loaded scanner correlations: %d devices, %d room profiles",
                 len(self.correlations),
+                len(self.room_profiles),
             )
 
         result = self._async_update_data_internal()
@@ -875,7 +884,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         # Periodically save correlations
         nowstamp = monotonic_time_coarse()
         if nowstamp - self._last_correlation_save > CORRELATION_SAVE_INTERVAL:
-            await self.correlation_store.async_save(self.correlations)
+            await self.correlation_store.async_save(self.correlations, self.room_profiles)
             self._last_correlation_save = nowstamp
 
         return result
@@ -1617,6 +1626,99 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
         return z_scores_to_confidence(z_scores)
 
+    def _get_room_profile_confidence(
+        self,
+        area_id: str,
+        current_readings: dict[str, float],
+    ) -> float:
+        """
+        Calculate room profile confidence (device-independent).
+
+        Uses scanner-pair delta patterns that are shared across all devices.
+        This is especially useful for:
+        - New devices without learned patterns
+        - Rooms without their own scanner (using nearby scanner deltas)
+        - Additional validation alongside device-specific profiles
+
+        Args:
+            area_id: The area to check confidence for.
+            current_readings: Map of scanner_address to RSSI for all visible scanners.
+
+        Returns:
+            Confidence value 0.0-1.0. Returns 0.5 (neutral) if no data exists.
+
+        """
+        if area_id not in self.room_profiles:
+            return 0.5  # Neutral - no data
+        if len(current_readings) < 2:
+            return 0.5  # Need at least 2 scanners for delta comparison
+
+        return self.room_profiles[area_id].get_match_score(current_readings)
+
+    def _get_combined_area_confidence(
+        self,
+        device_address: str,
+        area_id: str,
+        current_readings: dict[str, float],
+    ) -> float:
+        """
+        Calculate combined confidence using device-specific and room-level profiles.
+
+        Implements intelligent weighting:
+        - New devices (few samples): rely more on room profile
+        - Mature devices (many samples): rely more on device-specific profile
+        - Room profile always contributes as validation/fallback
+
+        Args:
+            device_address: The device's address.
+            area_id: The area to check confidence for.
+            current_readings: Map of scanner_address to RSSI for all visible scanners.
+
+        Returns:
+            Combined confidence value 0.0-1.0.
+
+        """
+        # Get room profile confidence (device-independent)
+        room_confidence = self._get_room_profile_confidence(area_id, current_readings)
+
+        # Get device-specific confidence
+        device_confidence = 1.0  # Default: no penalty
+        device_samples = 0
+
+        if device_address in self.correlations:
+            if area_id in self.correlations[device_address]:
+                profile = self.correlations[device_address][area_id]
+                device_samples = profile.mature_correlation_count
+
+                # Get primary RSSI (strongest signal)
+                primary_rssi = max(current_readings.values()) if current_readings else None
+                if primary_rssi is not None:
+                    primary_addr = max(current_readings, key=current_readings.get)  # type: ignore[arg-type]
+                    other_readings = {k: v for k, v in current_readings.items() if k != primary_addr}
+                    z_scores = profile.get_z_scores(primary_rssi, other_readings)
+                    if z_scores:
+                        device_confidence = z_scores_to_confidence(z_scores)
+
+        # Weight device profile by maturity (0 to 1, maxing out at 50 samples)
+        device_weight = min(device_samples / 50.0, 1.0)
+
+        # Combined confidence:
+        # - Room profile contributes (1 - device_weight * 0.5) weight
+        #   (always at least 50% influence even for mature devices)
+        # - Device profile contributes device_weight weight
+        room_weight = 1.0 - device_weight * 0.5
+
+        # Normalize weights
+        total_weight = device_weight + room_weight
+        if total_weight > 0:
+            combined = (
+                device_confidence * device_weight + room_confidence * room_weight
+            ) / total_weight
+        else:
+            combined = 0.5  # Neutral if no data
+
+        return combined
+
     def _refresh_area_by_ukf(self, device: BermudaDevice) -> bool:
         """
         Use UKF (Unscented Kalman Filter) for area selection via fingerprint matching.
@@ -1897,6 +1999,52 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                 and effective_distance <= _max_radius
             )
 
+        # Collect current RSSI readings for room profile matching
+        current_readings: dict[str, float] = {}
+        for adv in device.adverts.values():
+            if _within_evidence(adv) and adv.rssi is not None and adv.scanner_address is not None:
+                current_readings[adv.scanner_address] = adv.rssi
+
+        # Cache for room profile confidence to avoid recalculating
+        room_confidence_cache: dict[str, float] = {}
+
+        def _get_room_confidence(area_id: str | None) -> float:
+            """Get room profile confidence for an area (cached)."""
+            if area_id is None:
+                return 0.5  # Neutral
+            if area_id not in room_confidence_cache:
+                room_confidence_cache[area_id] = self._get_combined_area_confidence(
+                    device.address, area_id, current_readings
+                )
+            return room_confidence_cache[area_id]
+
+        def _adjusted_distance(advert: BermudaAdvert | None) -> float | None:
+            """
+            Get effective distance adjusted by room profile confidence.
+
+            Low confidence in room profile → distance penalty (appears farther)
+            High confidence → no penalty or slight boost
+            """
+            base_distance = _effective_distance(advert)
+            if base_distance is None or advert is None:
+                return None
+
+            confidence = _get_room_confidence(advert.area_id)
+
+            # Apply penalty for low confidence (below 0.5)
+            # confidence=0.3 → penalty factor 1.4 (40% farther)
+            # confidence=0.5 → penalty factor 1.0 (no change)
+            # confidence=0.7 → penalty factor 0.86 (14% closer, slight boost)
+            # confidence=1.0 → penalty factor 0.7 (30% closer)
+            if confidence < 0.5:
+                # Low confidence: apply penalty (up to 2x at confidence=0)
+                penalty_factor = 1.0 + (0.5 - confidence) * 2.0
+            else:
+                # High confidence: apply slight boost (down to 0.7x at confidence=1.0)
+                penalty_factor = 1.0 - (confidence - 0.5) * 0.6
+
+            return base_distance * penalty_factor
+
         has_distance_contender = any(_is_distance_contender(advert) for advert in device.adverts.values())
 
         if not _is_distance_contender(incumbent):
@@ -2076,9 +2224,16 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             # end.
 
             # If we ARE NOT ACTUALLY CLOSER(!) we can not win.
-            challenger_distance = _effective_distance(challenger)
+            # Use adjusted distance which factors in room profile confidence
+            # (areas with better profile match get a distance boost)
+            challenger_distance = _adjusted_distance(challenger)
             if challenger_distance is None:
                 continue
+
+            # Also get adjusted incumbent distance for fair comparison
+            adjusted_incumbent_distance = _adjusted_distance(current_incumbent)
+            if adjusted_incumbent_distance is not None:
+                incumbent_distance = adjusted_incumbent_distance
 
             # Physical RSSI Priority: Calculate RSSI advantage early for use in multiple checks
             challenger_rssi_advantage = 0.0
@@ -2584,12 +2739,21 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                             self.correlations[device.address][advert.area_id] = AreaProfile(
                                 area_id=advert.area_id,
                             )
-                        # Update the profile with current readings (including primary scanner for absolute tracking)
+                        # Update the device-specific profile
                         self.correlations[device.address][advert.area_id].update(
                             primary_rssi=advert.rssi,
                             other_readings=other_readings,
                             primary_scanner_addr=advert.scanner_address,
                         )
+
+                        # Also update the device-independent room profile
+                        # Collect all RSSI readings for this update
+                        all_readings = dict(other_readings)
+                        if advert.scanner_address is not None:
+                            all_readings[advert.scanner_address] = advert.rssi
+                        if advert.area_id not in self.room_profiles:
+                            self.room_profiles[advert.area_id] = RoomProfile(area_id=advert.area_id)
+                        self.room_profiles[advert.area_id].update(all_readings)
 
         if winner is None:
             candidates: list[tuple[float, BermudaAdvert]] = []
