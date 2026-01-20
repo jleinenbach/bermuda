@@ -1029,3 +1029,234 @@ if improvement > 100% and has_minimum_history:
 ```
 
 **Rule of Thumb**: The more severe the action (cross-floor > same-floor > same-room), the stricter the escape hatch should be. Consider whether "impossible" thresholds (100%+) are actually desirable for critical transitions.
+
+## Scannerless Room Detection
+
+### Problem: UKF Blocked by Global Maturity Check
+
+Rooms without their own scanner ("scannerless rooms") can ONLY be detected via UKF fingerprint matching - the min-distance algorithm fails because there's no scanner to report the closest distance.
+
+The original code required `has_mature_profiles` (global RoomProfiles with 30+ samples in 2+ scanner pairs) before allowing UKF:
+
+```python
+# OLD - UKF blocked until entire house has mature profiles
+if has_mature_profiles and self._refresh_area_by_ukf(device):
+    continue
+```
+
+**Problem Timeline:**
+```
+Day 1: User trains scannerless room with button → AreaProfile created
+Day 1-14: UKF blocked because global RoomProfiles not mature
+Day 14+: Finally works when enough global data accumulated
+```
+
+### Solution: Per-Device Profile Check
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│            UKF Enablement Decision                                   │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  ┌─────────────────────┐     ┌─────────────────────────────┐        │
+│  │ has_mature_profiles │ OR  │ device_has_correlations     │        │
+│  │ (global RoomProfiles│     │ (device-specific AreaProfiles│       │
+│  │  with 30+ samples)  │     │  from button training)      │        │
+│  └──────────┬──────────┘     └──────────────┬──────────────┘        │
+│             │                               │                        │
+│             └───────────┬───────────────────┘                        │
+│                         │                                            │
+│                    Either True?                                      │
+│                         │                                            │
+│                    Yes ↓      ↓ No                                   │
+│             ┌─────────────────────────────┐                          │
+│             │ Try UKF  │ Skip to          │                          │
+│             │ first    │ min-distance     │                          │
+│             └─────────────────────────────┘                          │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+**New Timeline:**
+```
+Day 1: User trains scannerless room with button → AreaProfile created
+Day 1: UKF enabled for THIS device (has own correlations)
+Day 1: Scannerless room works immediately!
+```
+
+**Key Code Change:**
+```python
+# NEW - Allow UKF if device has its own trained profiles
+device_has_correlations = (
+    device.address in self.correlations
+    and len(self.correlations[device.address]) > 0
+)
+if (has_mature_profiles or device_has_correlations) and self._refresh_area_by_ukf(device):
+    continue
+```
+
+### Lesson Learned
+
+### 17. Global vs Per-Entity Feature Gates
+
+When gating advanced features (UKF, ML models, etc.) behind maturity checks, consider:
+- **Global gates** block ALL entities until system-wide threshold met
+- **Per-entity gates** allow early adopters to benefit immediately
+
+**Bug Pattern**:
+```python
+# Global gate blocks trained entities
+if global_system_ready:
+    use_advanced_feature(entity)
+```
+
+**Fix Pattern**:
+```python
+# Per-entity gate allows immediate benefit
+if global_system_ready or entity_has_own_data:
+    use_advanced_feature(entity)
+```
+
+**Rule of Thumb**: If an entity can benefit from an advanced feature using only its OWN data, don't block it waiting for unrelated global data.
+
+---
+
+## Documentation Standards (Meta)
+
+This section documents HOW to document - enabling continuous improvement of the codebase knowledge.
+
+### Lessons Learned Format
+
+Each lesson should follow this structure:
+
+```markdown
+### N. [Concise Title in Imperative Form]
+
+[1-2 sentence problem description]
+
+**Bug Pattern**:
+```python
+# BAD - brief comment explaining why
+problematic_code_example()
+```
+
+**Fix Pattern**:
+```python
+# GOOD - brief comment explaining the fix
+corrected_code_example()
+```
+
+**Rule of Thumb**: [One memorable sentence that developers can recall when facing similar situations]
+```
+
+**Why this format works:**
+- **Numbered**: Easy to reference ("See Lesson #14")
+- **Imperative title**: Actionable guidance ("Check Both X and Y" not "X and Y Should Be Checked")
+- **Bug/Fix patterns**: Concrete code, not abstract advice
+- **Rule of Thumb**: Memorable heuristic for quick decisions
+
+### Architecture Documentation Format
+
+For significant subsystems, document:
+
+```markdown
+## [System Name] Architecture
+
+### Problem: [What triggered this design]
+
+[Concrete example showing the failure mode]
+
+### Solution: [High-level approach]
+
+```
+┌─────────────────────────────────────┐
+│  ASCII diagram showing data flow    │
+│  or decision tree                   │
+└─────────────────────────────────────┘
+```
+
+**Key Code:**
+```python
+# The essential implementation
+core_logic_snippet()
+```
+
+### Key Design Decisions
+
+1. **[Decision]**: [Rationale]
+2. **[Decision]**: [Rationale]
+```
+
+**Why this format works:**
+- **Problem-first**: Context before solution
+- **ASCII diagrams**: Visible in any editor, no external tools needed
+- **Code snippets**: Ground truth, not paraphrases
+- **Design decisions**: Explain non-obvious choices
+
+### When to Document
+
+| Trigger | Action |
+|---------|--------|
+| Bug fix with non-obvious cause | Add Lesson Learned |
+| New subsystem or algorithm | Add Architecture section |
+| Changed behavior that breaks tests | Update relevant sections |
+| Repeated question/confusion | Add to FAQ or clarify existing docs |
+
+### Continuous Improvement Process
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                  Documentation Lifecycle                             │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  Bug/Feature ──→ Implement ──→ Document ──→ Review ──→ Refine       │
+│       │              │             │           │           │         │
+│       │              │             │           │           │         │
+│       │              ▼             ▼           ▼           ▼         │
+│       │         Code +        CLAUDE.md    Tests pass?   Merge      │
+│       │         Tests         updated      Docs clear?              │
+│       │                                                              │
+│       └──────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  IMPORTANT: Documentation is part of the PR, not an afterthought!   │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+**Anti-patterns to avoid:**
+- ❌ "I'll document this later" → You won't
+- ❌ Documenting WHAT without WHY → Useless for future readers
+- ❌ Outdated docs → Worse than no docs (misleading)
+- ❌ Prose-only without code examples → Hard to apply
+
+**Patterns to follow:**
+- ✅ Document immediately after fixing → Context fresh in mind
+- ✅ Include failing scenario → Shows WHEN the lesson applies
+- ✅ Update tests AND docs together → Both reflect current behavior
+- ✅ Link to commits → Traceable history
+
+### Lesson Learned
+
+### 18. Document the "Why" Immediately, Not Later
+
+Documentation written during implementation captures context that's lost within hours. The "why" behind a decision is obvious to you NOW but will be a mystery in 6 months.
+
+**Bug Pattern**:
+```python
+# Fix applied (what)
+if variance < 5.0:
+    variance = 15.0
+# No documentation of WHY 5.0 and 15.0 were chosen
+```
+
+**Fix Pattern**:
+```python
+# FIX: Inflate auto-filter variance when converged to allow button training
+# to take precedence. Threshold 5.0 = converged state (~20 samples).
+# Target 15.0 = initial/unconverged state, giving button ~73% weight.
+if variance < 5.0:  # Converged threshold
+    variance = 15.0  # Reset to unconverged
+# Documented in CLAUDE.md: "Button Training vs Auto-Learning Architecture"
+```
+
+**Rule of Thumb**: If you had to think about WHY, write it down. If you didn't have to think, it's probably obvious enough to skip.
