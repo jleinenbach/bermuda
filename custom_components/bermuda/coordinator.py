@@ -1742,19 +1742,20 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         return True
 
     def _refresh_areas_by_min_distance(self):
-        """Set area for ALL devices based on closest beacon (or UKF if enabled)."""
-        use_ukf = self.options.get(CONF_USE_UKF_AREA_SELECTION, DEFAULT_USE_UKF_AREA_SELECTION)
+        """Set area for ALL devices based on UKF+RoomProfile or min-distance fallback."""
+        # Check if we have mature room profiles (at least 2 scanner-pairs with 30+ samples)
+        has_mature_profiles = any(
+            profile.mature_pair_count >= 2 for profile in self.room_profiles.values()
+        )
 
         for device in self.devices.values():
             if (
                 not device.is_scanner
-                and (device.create_sensor or device.create_tracker_done)  # include tracked or tracker devices
-                # or device.metadevice_type in METADEVICE_SOURCETYPES  # and any source devices for PBLE, ibeacon etc
+                and (device.create_sensor or device.create_tracker_done)
             ):
                 # Check if device is manually locked to an area
                 if device.area_locked_id is not None:
                     # Device is locked by user selection for training.
-                    # Be VERY conservative with auto-unlock - the user explicitly chose this room.
                     # Only unlock if the locked scanner truly disappears (no advert at all).
                     if device.area_locked_scanner_addr is not None:
                         locked_advert = None
@@ -1764,7 +1765,6 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                                 break
 
                         if locked_advert is None:
-                            # Locked scanner has no advert at all - it truly disappeared
                             _LOGGER.info(
                                 "Auto-unlocking %s: locked scanner %s no longer has any advert",
                                 device.name,
@@ -1775,16 +1775,13 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                             device.area_locked_scanner_addr = None
                         else:
                             # Locked scanner still has an advert - keep lock active.
-                            # Don't unlock just because stamp is stale - USB/BlueZ scanners
-                            # don't update stamps when RSSI is stable, which is normal for
-                            # a stationary device being trained.
                             continue
                     else:
-                        # No scanner address recorded - keep locked
                         continue
 
-                # Try UKF first if enabled; fall back to min-distance if UKF cannot decide
-                if use_ukf and self._refresh_area_by_ukf(device):
+                # Primary: UKF with RoomProfile (when profiles are mature)
+                # Fallback: Simple min-distance (bootstrap phase)
+                if has_mature_profiles and self._refresh_area_by_ukf(device):
                     continue
                 self._refresh_area_by_min_distance(device)
 
@@ -1906,43 +1903,6 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                 and effective_distance is not None
                 and effective_distance <= _max_radius
             )
-
-        # Collect current RSSI readings for room profile matching
-        current_readings: dict[str, float] = {}
-        for adv in device.adverts.values():
-            if _within_evidence(adv) and adv.rssi is not None and adv.scanner_address is not None:
-                current_readings[adv.scanner_address] = adv.rssi
-
-        # Cache for room profile confidence
-        room_confidence_cache: dict[str, float] = {}
-
-        def _get_room_confidence(area_id: str | None) -> float:
-            """Get room profile confidence for an area (cached)."""
-            if area_id is None or len(current_readings) < 2:
-                return 0.5  # Neutral
-            if area_id not in room_confidence_cache:
-                if area_id in self.room_profiles:
-                    room_confidence_cache[area_id] = self.room_profiles[area_id].get_match_score(
-                        current_readings
-                    )
-                else:
-                    room_confidence_cache[area_id] = 0.5
-            return room_confidence_cache[area_id]
-
-        def _adjusted_distance(advert: BermudaAdvert | None) -> float | None:
-            """Get distance adjusted by room profile confidence."""
-            base_distance = _effective_distance(advert)
-            if base_distance is None or advert is None:
-                return None
-
-            confidence = _get_room_confidence(advert.area_id)
-            # confidence < 0.5 → penalty, > 0.5 → boost
-            if confidence < 0.5:
-                penalty_factor = 1.0 + (0.5 - confidence) * 2.0
-            else:
-                penalty_factor = 1.0 - (confidence - 0.5) * 0.6
-
-            return base_distance * penalty_factor
 
         has_distance_contender = any(_is_distance_contender(advert) for advert in device.adverts.values())
 
@@ -2123,16 +2083,9 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             # end.
 
             # If we ARE NOT ACTUALLY CLOSER(!) we can not win.
-            # Use adjusted distance which factors in room profile confidence
-            # (areas with better profile match get a distance boost)
-            challenger_distance = _adjusted_distance(challenger)
+            challenger_distance = _effective_distance(challenger)
             if challenger_distance is None:
                 continue
-
-            # Also get adjusted incumbent distance for fair comparison
-            adjusted_incumbent_distance = _adjusted_distance(current_incumbent)
-            if adjusted_incumbent_distance is not None:
-                incumbent_distance = adjusted_incumbent_distance
 
             # Physical RSSI Priority: Calculate RSSI advantage early for use in multiple checks
             challenger_rssi_advantage = 0.0
