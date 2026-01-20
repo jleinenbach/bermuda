@@ -1766,23 +1766,38 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                             device.area_locked_scanner_addr = None
                         elif nowstamp - locked_advert.stamp > AREA_LOCK_TIMEOUT_SECONDS:
                             # Locked scanner hasn't seen device recently.
-                            # Only unlock if device is seen elsewhere - prevents false unlock
-                            # for USB/BlueZ scanners that don't update stamp when RSSI stable.
-                            if nowstamp - device.last_seen < AREA_LOCK_TIMEOUT_SECONDS:
-                                # Device seen elsewhere but not by locked scanner - unlock
+                            # Only unlock if device is seen by a DIFFERENT scanner - prevents
+                            # false unlock for USB/BlueZ scanners that don't update stamp when
+                            # RSSI is stable. We must check OTHER scanners specifically, not
+                            # device.last_seen which could be from the same USB scanner.
+                            seen_by_other_scanner = False
+                            other_scanner_addr: str | None = None
+                            for other_advert in device.adverts.values():
+                                if other_advert.scanner_address == device.area_locked_scanner_addr:
+                                    continue  # Skip the locked scanner
+                                if (
+                                    other_advert.stamp is not None
+                                    and nowstamp - other_advert.stamp < AREA_LOCK_TIMEOUT_SECONDS
+                                ):
+                                    seen_by_other_scanner = True
+                                    other_scanner_addr = other_advert.scanner_address
+                                    break
+
+                            if seen_by_other_scanner:
+                                # Device seen by OTHER scanner but not by locked scanner - unlock
                                 _LOGGER.info(
-                                    "Auto-unlocking %s: locked scanner %s stale (%.0fs) "
-                                    "but device seen elsewhere (%.0fs ago)",
+                                    "Auto-unlocking %s: locked scanner %s stale (%.0fs) but device seen by %s",
                                     device.name,
                                     device.area_locked_scanner_addr,
                                     nowstamp - locked_advert.stamp,
-                                    nowstamp - device.last_seen,
+                                    other_scanner_addr,
                                 )
                                 device.area_locked_id = None
                                 device.area_locked_name = None
                                 device.area_locked_scanner_addr = None
                             else:
-                                # Device not seen anywhere - keep locked (may be offline)
+                                # Device not seen by any other scanner - keep locked
+                                # (locked scanner may just have stable RSSI or device offline)
                                 continue
                         else:
                             # Device is still locked and scanner sees it - skip auto-detect
