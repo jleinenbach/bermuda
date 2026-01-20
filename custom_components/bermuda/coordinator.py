@@ -1693,7 +1693,25 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                         break
 
         if best_advert is None:
-            return False
+            # Scanner-less room: UKF matched an area with no scanner.
+            # Use the best available advert (strongest RSSI) and override its area.
+            strongest_rssi = -999.0
+            for advert in device.adverts.values():
+                if (
+                    advert.rssi is not None
+                    and advert.stamp is not None
+                    and nowstamp - advert.stamp < EVIDENCE_WINDOW_SECONDS
+                    and advert.rssi > strongest_rssi
+                ):
+                    strongest_rssi = advert.rssi
+                    best_advert = advert
+
+            if best_advert is None:
+                return False
+
+            # Override the advert's area with the UKF-matched area
+            best_advert.area_id = best_area_id
+            best_advert.area_name = self.resolve_area_name(best_area_id)
 
         # Apply the selection using the device's standard method
         device.apply_scanner_selection(best_advert, nowstamp=nowstamp)

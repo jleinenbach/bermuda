@@ -11,6 +11,7 @@ from custom_components.bermuda.const import (
     CONF_MAX_RADIUS,
     CONF_USE_UKF_AREA_SELECTION,
     DEFAULT_MAX_RADIUS,
+    DEFAULT_USE_UKF_AREA_SELECTION,
     UKF_MIN_SCANNERS,
 )
 from custom_components.bermuda.coordinator import BermudaDataUpdateCoordinator
@@ -101,7 +102,7 @@ def create_coordinator_mock() -> BermudaDataUpdateCoordinator:
     coordinator = BermudaDataUpdateCoordinator.__new__(BermudaDataUpdateCoordinator)
     coordinator.options = {
         CONF_MAX_RADIUS: DEFAULT_MAX_RADIUS,
-        CONF_USE_UKF_AREA_SELECTION: False,
+        CONF_USE_UKF_AREA_SELECTION: DEFAULT_USE_UKF_AREA_SELECTION,
     }
     coordinator.correlations = {}
     coordinator._correlations_loaded = True
@@ -244,15 +245,15 @@ class TestUKFIntegration:
         if result:
             assert device.address in coordinator.device_ukfs
 
-    def test_ukf_option_default_disabled(self) -> None:
-        """Test that UKF is disabled by default."""
+    def test_ukf_option_default_enabled(self) -> None:
+        """Test that UKF is enabled by default."""
         coordinator = create_coordinator_mock()
-        assert coordinator.options[CONF_USE_UKF_AREA_SELECTION] is False
+        assert coordinator.options[CONF_USE_UKF_AREA_SELECTION] is True
 
     def test_refresh_areas_uses_ukf_when_enabled(self) -> None:
         """Test that _refresh_areas_by_min_distance uses UKF when enabled."""
         coordinator = create_coordinator_mock()
-        coordinator.options[CONF_USE_UKF_AREA_SELECTION] = True
+        # UKF is already enabled by default
         coordinator.devices = {}
 
         device = FakeDevice("AA:BB:CC:DD:EE:01", "Test Device")

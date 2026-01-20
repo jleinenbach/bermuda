@@ -104,6 +104,11 @@
         "name": "Training Floor",
         "state": {}
       }
+    },
+    "button": {
+      "training_learn": {
+        "name": "Learn Fingerprint"
+      }
     }
   },
   "services": {

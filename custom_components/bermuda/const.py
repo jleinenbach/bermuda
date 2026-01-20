@@ -43,7 +43,7 @@ PLATFORMS = [
     Platform.DEVICE_TRACKER,
     Platform.NUMBER,
     Platform.SELECT,
-    # Platform.BUTTON,
+    Platform.BUTTON,
     # Platform.SWITCH,
     # Platform.BINARY_SENSOR
 ]
@@ -129,7 +129,7 @@ RSSI_CONSECUTIVE_WINS: Final = 2  # Consecutive cycles required before switching
 
 # UKF (Unscented Kalman Filter) Area Selection - experimental multi-scanner fusion
 CONF_USE_UKF_AREA_SELECTION = "use_ukf_area_selection"
-DEFAULT_USE_UKF_AREA_SELECTION: Final = False  # Disabled by default; experimental feature
+DEFAULT_USE_UKF_AREA_SELECTION: Final = True  # Enabled by default; uses fingerprints when available
 UKF_MIN_MATCH_SCORE: Final = 0.3  # Minimum match score (0-1) to consider a fingerprint match
 UKF_MIN_SCANNERS: Final = 2  # Minimum scanners needed for UKF to make a decision
 

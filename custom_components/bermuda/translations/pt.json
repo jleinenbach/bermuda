@@ -102,6 +102,11 @@
         "name": "Andar de Treinamento",
         "state": {}
       }
+    },
+    "button": {
+      "training_learn": {
+        "name": "Aprender Impressão Digital"
+      }
     }
   },
   "services": {
