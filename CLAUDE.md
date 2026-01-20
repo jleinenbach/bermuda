@@ -110,13 +110,26 @@ fused_estimate = (auto_estimate * auto_weight + button_estimate * button_weight)
 fused_variance = 1.0 / total_weight  # Combined uncertainty
 ```
 
-**Kalman Variance Behavior:**
+**Kalman Variance Behavior (per Correlation Object):**
+
+Each `ScannerPairCorrelation` and `ScannerAbsoluteRssi` has its own Kalman filters that converge independently:
+
 | Samples | Variance | Interpretation |
 |---------|----------|----------------|
 | 1 | 16.0 | High uncertainty (initial) |
 | 3 | 5.6 | Still uncertain |
 | 10 | 2.8 | Converging |
 | 20+ | ~2.6 | Steady state (converged) |
+
+Example structure showing independent sample counts:
+```
+Area "Wohnzimmer" → AreaProfile:
+  ├─ ScannerPairCorrelation (A↔B): auto=25 samples, button=0
+  ├─ ScannerPairCorrelation (A↔C): auto=18 samples, button=5
+  ├─ ScannerAbsoluteRssi (A): auto=30 samples, button=3
+  ├─ ScannerAbsoluteRssi (B): auto=22 samples, button=0
+  └─ ScannerAbsoluteRssi (C): auto=15 samples, button=0
+```
 
 **Key Constants:**
 | Constant | Value | Purpose |
@@ -438,10 +451,12 @@ Always use `python3.13 -m venv venv` for the virtual environment.
 
 ### 6. Kalman Variance Converges Quickly
 
-Kalman filter variance (uncertainty) converges to a steady state after ~20 samples:
+Kalman filter variance (uncertainty) converges to a steady state after ~20 samples **per correlation object**:
 - Initial variance: 16.0 (high uncertainty)
 - After 20 samples: ~2.6 (steady state)
 - More samples beyond 20 don't significantly reduce variance
+
+Each `ScannerPairCorrelation` and `ScannerAbsoluteRssi` instance has its own filters that converge independently.
 
 **Implication for inverse-variance weighting**: The weight difference between filters comes from their convergence state, not sample count. A filter with 100 samples has nearly the same variance as one with 1000 samples, but both have much lower variance than a filter with only 3 samples.
 
