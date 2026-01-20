@@ -1589,7 +1589,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             return getattr(areas, "name", "invalid_area")
         return None
 
-    def _get_correlation_confidence(
+    def _get_correlation_confidence(  # noqa: PLR0911
         self,
         device_address: str,
         area_id: str,
@@ -1625,6 +1625,21 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         z_scores = profile.get_z_scores(primary_rssi, current_readings)
         if not z_scores:
             return 1.0
+
+        # FIX: Fehler 1 - Integrate absolute RSSI z-scores to detect far-field false positives.
+        # A device at -90dB should NOT match a room learned at -50dB, even if relative
+        # deltas between scanners happen to match (vector shape matches but magnitude differs).
+        absolute_z_scores = profile.get_absolute_z_scores(current_readings)
+        if absolute_z_scores:
+            # Calculate max absolute z-score - high values indicate wrong magnitude
+            max_abs_z = max(z for _, z in absolute_z_scores)
+            # If absolute RSSI is >3 standard deviations from learned value,
+            # heavily penalize confidence regardless of how well deltas match
+            if max_abs_z > 3.0:
+                # Exponential penalty: z=3 -> 0.5x, z=4 -> 0.25x, z=5 -> 0.125x
+                absolute_penalty: float = 0.5 ** (max_abs_z - 2.0)
+                delta_confidence: float = z_scores_to_confidence(z_scores)
+                return float(delta_confidence * absolute_penalty)
 
         return z_scores_to_confidence(z_scores)
 
@@ -2527,7 +2542,23 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                     and tests.hist_min_max[1] < tests.hist_min_max[0]
                     and tests.pcnt_diff > cross_floor_margin
                 )
-                if not (sustained_cross_floor or tests.pcnt_diff >= cross_floor_escape):
+                # FIX: Fehler 3 - Cross-floor switches MUST have sustained evidence.
+                # Previously, a high percentage improvement (cross_floor_escape ~45-95%)
+                # could bypass the history requirement entirely, causing rapid floor
+                # flickering with BLE signal reflections. Now we require BOTH:
+                # 1. Either sustained_cross_floor (proper history evidence), OR
+                # 2. A very high escape threshold (>100%) AND minimum history
+                # This prevents "instant jumps" based on momentary signal spikes.
+                min_cross_floor_history = max(history_window, cross_floor_min_history // 2)
+                has_minimum_history = (
+                    len(challenger_history) >= min_cross_floor_history
+                    and len(incumbent_history) >= min_cross_floor_history
+                )
+                # FIX: Raise escape threshold to 100% (double the distance difference)
+                # and require at least some history even for escape
+                cross_floor_escape_strict = max(cross_floor_escape, 1.0)
+                escape_with_history = tests.pcnt_diff >= cross_floor_escape_strict and has_minimum_history
+                if not (sustained_cross_floor or escape_with_history):
                     tests.reason = "LOSS - cross-floor evidence insufficient"
                     continue
             # Same-floor: require minimum history before allowing a win.

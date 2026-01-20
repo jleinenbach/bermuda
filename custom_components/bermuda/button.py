@@ -126,8 +126,7 @@ class BermudaTrainingButton(BermudaEntity, ButtonEntity):
         should_be_available = parent_available and floor_ok and area_ok
 
         _LOGGER.debug(
-            "Button coordinator update for %s: parent=%s, floor=%s, area=%s, "
-            "available=%s (device id: %s)",
+            "Button coordinator update for %s: parent=%s, floor=%s, area=%s, available=%s (device id: %s)",
             self._device.name,
             parent_available,
             self._device.training_target_floor_id,
