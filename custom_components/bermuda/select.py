@@ -171,6 +171,15 @@ class BermudaTrainingRoomSelect(BermudaEntity, SelectEntity):
         self._room_override_id = None
         self.async_write_ha_state()
 
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Handle coordinator update - sync UI with device state."""
+        # If training_target_area_id was cleared (e.g., by button press), clear dropdown
+        if self._device.training_target_area_id is None:
+            self._room_override_name = None
+            self._room_override_id = None
+        super()._handle_coordinator_update()
+
     @property
     def unique_id(self) -> str:
         """Return a unique ID for this entity."""
@@ -256,6 +265,15 @@ class BermudaTrainingFloorSelect(BermudaEntity, SelectEntity):
 
         # Trigger coordinator refresh so the "Learn" button updates its availability
         await self.coordinator.async_request_refresh()
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Handle coordinator update - sync UI with device state."""
+        # If training_target_floor_id was cleared (e.g., by button press), clear dropdown
+        if self._device.training_target_floor_id is None:
+            self.floor_override_id = None
+            self._floor_override_name = None
+        super()._handle_coordinator_update()
 
     @property
     def unique_id(self) -> str:

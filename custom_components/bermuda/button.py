@@ -149,6 +149,9 @@ class BermudaTrainingButton(BermudaEntity, ButtonEntity):
         self._device.area_locked_name = None
         self._device.area_locked_scanner_addr = None
 
+        # Trigger refresh so select entities clear their dropdowns
+        await self.coordinator.async_request_refresh()
+
     @property
     def unique_id(self) -> str:
         """Return a unique ID for this entity."""
