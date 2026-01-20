@@ -1847,17 +1847,18 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         # cycles picking the same target before allowing a cross-floor switch.
         current_area_advert = device.area_advert
 
-        # FIX: Unified Floor Guard - Resolve floor_id from AREA, not from scanner_device
-        # For scannerless rooms, the scanner_device belongs to a different area entirely,
-        # so we must look up the floor_id from the area registry directly.
+        # FIX: Unified Floor Guard - ALWAYS resolve floor_id from AREA, not from scanner_device
+        # For scannerless rooms, the scanner_device belongs to a different area (and floor!)
+        # entirely. We must ALWAYS look up the floor_id from the area registry directly to
+        # ensure cross-floor protection works correctly for scannerless rooms.
+        #
+        # Bug fixed: Previously we tried scanner_device.floor_id first, which was WRONG for
+        # scannerless rooms (e.g., device in "Office" Floor 1 but using scanner from
+        # "Bedroom" Floor 2 would incorrectly think current floor was Floor 2).
         current_floor_id = None
         if current_area_advert is not None:
             current_area_advert_area_id = getattr(current_area_advert, "area_id", None)
-            # First try scanner_device (for scanner-based rooms)
-            if current_area_advert.scanner_device is not None:
-                current_floor_id = getattr(current_area_advert.scanner_device, "floor_id", None)
-            # FIX: Unified Floor Guard - Fallback to area registry for scannerless rooms
-            if current_floor_id is None and current_area_advert_area_id is not None:
+            if current_area_advert_area_id is not None:
                 current_floor_id = self._resolve_floor_id_for_area(current_area_advert_area_id)
 
         # FIX: Unified Floor Guard - Resolve winner floor_id from TARGET AREA, not scanner
@@ -2225,15 +2226,23 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                 continue
 
             incumbent_scanner = current_incumbent.scanner_device if current_incumbent else None
-            inc_floor_id = getattr(incumbent_scanner, "floor_id", None) if incumbent_scanner else None
             inc_floor_level = getattr(incumbent_scanner, "floor_level", None) if incumbent_scanner else None
 
-            # FIX: Unified Floor Guard - For scannerless rooms, resolve floor from area registry
-            # The scanner_device belongs to a different area, so its floor_id is wrong!
-            if _protect_scannerless_area and inc_floor_id is None and current_incumbent is not None:
+            # FIX: Unified Floor Guard - For scannerless rooms, ALWAYS resolve floor from area registry
+            # The scanner_device belongs to a different room (and potentially different floor!),
+            # so its floor_id is WRONG for determining cross-floor protection.
+            #
+            # Bug fixed: Previously only used area registry if inc_floor_id was None, but for
+            # scannerless rooms the scanner HAS a floor_id - just the wrong one! (e.g., device
+            # in "Office" Floor 1 using scanner from "Bedroom" Floor 2 would see inc_floor_id=Floor2)
+            if _protect_scannerless_area and current_incumbent is not None:
                 current_inc_area_id = getattr(current_incumbent, "area_id", None)
                 if current_inc_area_id is not None:
                     inc_floor_id = self._resolve_floor_id_for_area(current_inc_area_id)
+                else:
+                    inc_floor_id = getattr(incumbent_scanner, "floor_id", None) if incumbent_scanner else None
+            else:
+                inc_floor_id = getattr(incumbent_scanner, "floor_id", None) if incumbent_scanner else None
 
             chal_floor_id = getattr(challenger_scanner, "floor_id", None)
             chal_floor_level = getattr(challenger_scanner, "floor_level", None)
