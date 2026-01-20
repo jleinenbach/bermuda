@@ -158,6 +158,76 @@ except Exception:
 - Store tokens/state via `helpers.storage.Store` with throttled writes
 - Provide repairs/diagnostics with redaction
 
+### ButtonEntity Implementation
+
+**Source:** [HA Developer Docs - Button Entity](https://developers.home-assistant.io/docs/core/entity/button/), [HA Core button/__init__.py](https://github.com/home-assistant/core/blob/dev/homeassistant/components/button/__init__.py)
+
+Buttons are stateless entities that trigger actions. Key implementation:
+
+```python
+from homeassistant.components.button import ButtonEntity
+
+class MyButton(ButtonEntity):
+    _attr_entity_category = EntityCategory.CONFIG  # For config buttons
+
+    async def async_press(self) -> None:
+        """Handle the button press."""
+        await self._do_something()
+```
+
+**Dynamic Availability (Disabling Buttons):**
+
+Use the `available` property to dynamically enable/disable buttons. Example from [Shelly integration](https://github.com/home-assistant/core/blob/dev/homeassistant/components/shelly/button.py):
+
+```python
+@property
+def available(self) -> bool:
+    """Return True if button should be enabled."""
+    available = super().available
+
+    # Custom condition - button only available when room is selected
+    if self._room_selection is None:
+        return False
+
+    return available
+```
+
+**Key Points:**
+- `available = False` → Button grayed out in UI, press action blocked
+- Call `self.async_write_ha_state()` after changing availability conditions
+- Inherits from `RestoreEntity` - can restore last pressed timestamp
+- Device classes: `IDENTIFY`, `RESTART`, `UPDATE` (prefer update entity for updates)
+
+### SelectEntity Implementation
+
+**Source:** [HA Developer Docs - Select Entity](https://developers.home-assistant.io/docs/core/entity/select/)
+
+```python
+from homeassistant.components.select import SelectEntity
+
+class MySelect(SelectEntity):
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_options: list[str] = ["Option A", "Option B"]
+
+    @property
+    def current_option(self) -> str | None:
+        """Return current selected option."""
+        return self._current_value
+
+    async def async_select_option(self, option: str) -> None:
+        """Handle option selection."""
+        self._current_value = option
+        self.async_write_ha_state()
+```
+
+**Dynamic Options:**
+```python
+@property
+def options(self) -> list[str]:
+    """Return dynamic list of options."""
+    return [area.name for area in self.hass.areas]
+```
+
 ## Key Constants (`const.py`)
 
 | Constant | Value | Purpose |
@@ -227,6 +297,40 @@ filtered_rssi = filter.update_adaptive(raw_rssi, ref_power=-55)
 - Added `correlations`, `_correlations_loaded`, `_last_correlation_save`, `correlation_store` to coordinator mocks
 - Added `scanner_address` to FakeAdvert, `address` to FakeDevice
 - Added `get_movement_state()` and `area_changed_at` to FakeDevice
+- Added `area_locked_id`, `area_locked_name`, `area_locked_scanner_addr` to FakeDevice
+
+### Manual Fingerprint Training Feature
+- **Problem**: Auto-detection constantly overwrites manual room corrections
+- **Solution**: Select entities for Room/Floor training + Area Lock mechanism
+- **Files**: `select.py`, `coordinator.py`, `bermuda_device.py`, `const.py`
+
+**Components:**
+1. `BermudaTrainingRoomSelect` - Room dropdown (EntityCategory.CONFIG)
+2. `BermudaTrainingFloorSelect` - Floor dropdown (filters rooms by floor)
+3. Area Lock - Prevents auto-detection from overriding trained room
+
+**Area Lock Logic:**
+```python
+# In BermudaDevice:
+self.area_locked_id: str | None = None        # Locked area ID
+self.area_locked_name: str | None = None      # Locked area name
+self.area_locked_scanner_addr: str | None = None  # Scanner that trained it
+```
+
+**Auto-Unlock Conditions:**
+- Locked scanner no longer sees device (stamp stale > 60s)
+- AND device is seen by other scanners (last_seen fresh)
+- If device offline everywhere → keep locked
+
+**USB/BlueZ Scanner Fix:**
+USB/BlueZ scanners don't update stamp when RSSI is stable. Fixed by requiring device to be seen elsewhere before unlocking:
+```python
+if nowstamp - locked_advert.stamp > AREA_LOCK_TIMEOUT_SECONDS:
+    if nowstamp - device.last_seen < AREA_LOCK_TIMEOUT_SECONDS:
+        # Seen elsewhere but not by locked scanner → unlock
+    else:
+        # Not seen anywhere → keep locked
+```
 
 ## Lessons Learned
 
@@ -281,6 +385,34 @@ type BermudaConfigEntry = "ConfigEntry[BermudaData]"  # Requires Python 3.12+
 ```
 
 Always use `python3.13 -m venv venv` for the virtual environment.
+
+### 6. Trace Full Call Chain for Attribute Precedence
+
+When modifying code that passes objects to other methods, trace the full call chain to understand:
+- Which attributes are used
+- In what order (precedence/fallback logic)
+- Whether your modifications will actually take effect
+
+**Example Bug**: Setting `advert.area_id` to override the area, but `apply_scanner_selection()` reads `advert.scanner_device.area_id` first and only falls back to `advert.area_id` if scanner_device has no area.
+
+**Fix Pattern**: Temporarily nullify the higher-precedence attribute:
+```python
+# Temporarily clear scanner_device so apply_scanner_selection
+# uses our overridden area_id instead of scanner_device.area_id
+saved_scanner_device = advert.scanner_device
+advert.scanner_device = None
+advert.area_id = target_area_id
+
+device.apply_scanner_selection(advert, nowstamp=nowstamp)
+
+advert.scanner_device = saved_scanner_device  # Restore
+```
+
+**Checklist before modifying object attributes**:
+1. Find all methods that consume the object
+2. Check attribute read order in those methods
+3. Verify your modification will actually be used
+4. Consider side effects of temporarily modifying other attributes
 
 ## UKF + Fingerprint Fusion (Implemented)
 

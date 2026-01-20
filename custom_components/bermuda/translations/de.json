@@ -104,6 +104,11 @@
         "name": "Trainingsetage",
         "state": {}
       }
+    },
+    "button": {
+      "training_learn": {
+        "name": "Fingerabdruck lernen"
+      }
     }
   },
   "services": {

@@ -46,6 +46,11 @@
         "name": "Treningsetasje",
         "state": {}
       }
+    },
+    "button": {
+      "training_learn": {
+        "name": "Lær fingeravtrykk"
+      }
     }
   }
 }

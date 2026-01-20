@@ -102,6 +102,11 @@
                 "name": "훈련 층",
                 "state": {}
             }
+        },
+        "button": {
+            "training_learn": {
+                "name": "지문 학습"
+            }
         }
     },
     "services": {

@@ -107,6 +107,11 @@
         "name": "Trainingsetage",
         "state": {}
       }
+    },
+    "button": {
+      "training_learn": {
+        "name": "Vingerafdruk leren"
+      }
     }
   },
   "services": {

@@ -46,6 +46,11 @@
         "name": "Étage d'entraînement",
         "state": {}
       }
+    },
+    "button": {
+      "training_learn": {
+        "name": "Apprendre l'empreinte"
+      }
     }
   }
 }
