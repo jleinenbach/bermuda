@@ -7,6 +7,11 @@ the typical RSSI relationships when a device is confirmed in that area.
 Supports two types of learning:
 1. Delta correlations: RSSI difference between primary and secondary scanners
 2. Absolute profiles: Expected RSSI from each scanner (for fallback when primary offline)
+
+Weighted Learning System:
+    - Automatic learning: update() is capped at AUTO_SAMPLE_CAP per correlation
+    - Button training: update_button() has stronger weight via BUTTON_WEIGHT
+    - Button samples prevent auto from overwhelming manual training
 """
 
 from __future__ import annotations
@@ -63,11 +68,13 @@ class AreaProfile:
         primary_scanner_addr: str | None = None,
     ) -> None:
         """
-        Update correlations with new scanner readings.
+        Update correlations with new scanner readings (automatic learning).
 
         Called when a device is confirmed in this area. Updates:
         1. Delta correlations for each visible "other" scanner
         2. Absolute RSSI profiles for ALL visible scanners (including primary)
+
+        Automatic samples are capped to prevent overwhelming button-trained data.
 
         Args:
             primary_rssi: RSSI from the winning (primary) scanner.
@@ -95,6 +102,47 @@ class AreaProfile:
             if scanner_addr not in self._absolute_profiles:
                 self._absolute_profiles[scanner_addr] = ScannerAbsoluteRssi(scanner_address=scanner_addr)
             self._absolute_profiles[scanner_addr].update(rssi)
+
+        self._enforce_memory_limit()
+
+    def update_button(
+        self,
+        primary_rssi: float,
+        other_readings: dict[str, float],
+        primary_scanner_addr: str | None = None,
+    ) -> None:
+        """
+        Update correlations with button-trained readings (stronger weight).
+
+        Button samples have BUTTON_WEIGHT times the influence of automatic samples.
+        This ensures manual room corrections are preserved against continuous
+        automatic learning.
+
+        Args:
+            primary_rssi: RSSI from the winning (primary) scanner.
+            other_readings: Map of scanner_address to RSSI for other scanners.
+                           Must NOT include the primary scanner.
+            primary_scanner_addr: Address of the primary scanner (for absolute tracking).
+
+        """
+        # Update delta correlations with button weight
+        for scanner_addr, rssi in other_readings.items():
+            delta = primary_rssi - rssi
+
+            if scanner_addr not in self._correlations:
+                self._correlations[scanner_addr] = ScannerPairCorrelation(scanner_address=scanner_addr)
+
+            self._correlations[scanner_addr].update_button(delta)
+
+        # Update absolute RSSI profiles with button weight
+        all_readings: dict[str, float] = dict(other_readings)
+        if primary_scanner_addr is not None:
+            all_readings[primary_scanner_addr] = primary_rssi
+
+        for scanner_addr, rssi in all_readings.items():
+            if scanner_addr not in self._absolute_profiles:
+                self._absolute_profiles[scanner_addr] = ScannerAbsoluteRssi(scanner_address=scanner_addr)
+            self._absolute_profiles[scanner_addr].update_button(rssi)
 
         self._enforce_memory_limit()
 

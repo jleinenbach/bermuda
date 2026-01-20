@@ -1,11 +1,18 @@
 """
 Single scanner-pair correlation tracking.
 
-Wraps a Kalman filter to track the typical RSSI delta between
+Wraps Kalman filters to track the typical RSSI delta between
 a primary scanner and another scanner when a device is in a specific area.
 
 This module is part of the scanner correlation learning system that
 improves area localization by learning spatial relationships between scanners.
+
+Weighted Learning System (Two-Pool Fusion):
+    - Two parallel Kalman filters: one for automatic learning, one for button training
+    - Auto pool (weight 1/3): Continuously adapts to environment changes (furniture, etc.)
+    - Button pool (weight 2/3): Preserves manual room corrections
+    - Final estimate = weighted fusion of both pools based on their sample counts
+    - Both pools continue learning indefinitely - no hard caps that block new data
 """
 
 from __future__ import annotations
@@ -25,6 +32,13 @@ DELTA_MEASUREMENT_NOISE: float = 16.0
 # Statistical confidence threshold before trusting the learned correlation.
 MIN_SAMPLES_FOR_MATURITY: int = 30
 
+# Weighted learning: Button training has 2x the influence of automatic learning
+# When computing the fused estimate:
+#   auto_weight = auto_samples
+#   button_weight = button_samples * BUTTON_WEIGHT_MULTIPLIER
+#   fused = (auto_estimate * auto_weight + button_estimate * button_weight) / total_weight
+BUTTON_WEIGHT_MULTIPLIER: int = 2
+
 
 @dataclass(slots=True)
 class ScannerPairCorrelation:
@@ -34,10 +48,13 @@ class ScannerPairCorrelation:
     The delta is defined as: primary_rssi - other_rssi
     Positive delta means the other scanner sees a weaker signal.
 
-    Uses Kalman filtering to maintain a running estimate that:
-    - Smooths out noise from multipath/interference
-    - Adapts to gradual environmental changes
-    - Provides uncertainty quantification via variance
+    Uses two parallel Kalman filters with weighted fusion:
+    - Auto filter: Continuously learns from automatic room detection
+    - Button filter: Learns from manual button training (weighted 2x)
+
+    The final estimate combines both filters, allowing:
+    - Continuous adaptation to environment changes (new furniture, etc.)
+    - Preservation of manual corrections through stronger button weighting
 
     Attributes:
         scanner_address: MAC address of the "other" scanner being correlated.
@@ -45,7 +62,15 @@ class ScannerPairCorrelation:
     """
 
     scanner_address: str
-    _kalman: KalmanFilter = field(
+    # Two parallel Kalman filters for weighted fusion
+    _kalman_auto: KalmanFilter = field(
+        default_factory=lambda: KalmanFilter(
+            process_noise=DELTA_PROCESS_NOISE,
+            measurement_noise=DELTA_MEASUREMENT_NOISE,
+        ),
+        repr=False,
+    )
+    _kalman_button: KalmanFilter = field(
         default_factory=lambda: KalmanFilter(
             process_noise=DELTA_PROCESS_NOISE,
             measurement_noise=DELTA_MEASUREMENT_NOISE,
@@ -55,26 +80,89 @@ class ScannerPairCorrelation:
 
     def update(self, observed_delta: float) -> float:
         """
-        Update correlation with new observed delta.
+        Update correlation with new observed delta from automatic learning.
+
+        The auto filter continuously learns and adapts to environment changes.
+        Its influence on the final estimate is weighted against button training.
 
         Args:
             observed_delta: Current (primary_rssi - other_rssi) value.
 
         Returns:
-            Updated Kalman estimate of the expected delta.
+            Updated fused estimate of the expected delta.
 
         """
-        return self._kalman.update(observed_delta)
+        self._kalman_auto.update(observed_delta)
+        return self.expected_delta
+
+    def update_button(self, observed_delta: float) -> float:
+        """
+        Update correlation with button-trained delta.
+
+        Button samples are weighted 2x in the final estimate fusion,
+        giving manual corrections stronger influence than automatic learning.
+
+        Args:
+            observed_delta: Current (primary_rssi - other_rssi) value.
+
+        Returns:
+            Updated fused estimate of the expected delta.
+
+        """
+        self._kalman_button.update(observed_delta)
+        return self.expected_delta
 
     @property
     def expected_delta(self) -> float:
-        """Return learned expected delta (primary_rssi - other_rssi)."""
-        return self._kalman.estimate
+        """
+        Return weighted fusion of auto and button estimates.
+
+        Combines both Kalman filter estimates using sample-count weighting,
+        with button samples counting 2x (BUTTON_WEIGHT_MULTIPLIER).
+
+        If only one filter has data, returns that filter's estimate.
+        If neither has data, returns 0.0.
+        """
+        auto_samples = self._kalman_auto.sample_count
+        button_samples = self._kalman_button.sample_count
+
+        # Handle cases where one or both filters have no data
+        if auto_samples == 0 and button_samples == 0:
+            return 0.0
+        if button_samples == 0:
+            return self._kalman_auto.estimate
+        if auto_samples == 0:
+            return self._kalman_button.estimate
+
+        # Weighted fusion: button samples count 2x
+        auto_weight = float(auto_samples)
+        button_weight = float(button_samples * BUTTON_WEIGHT_MULTIPLIER)
+        total_weight = auto_weight + button_weight
+
+        return (self._kalman_auto.estimate * auto_weight + self._kalman_button.estimate * button_weight) / total_weight
 
     @property
     def variance(self) -> float:
-        """Return current uncertainty (variance) in the estimate."""
-        return self._kalman.variance
+        """
+        Return combined variance from both filters.
+
+        Uses inverse-variance weighting for proper uncertainty fusion.
+        """
+        auto_var = self._kalman_auto.variance
+        button_var = self._kalman_button.variance
+
+        # If either filter is uninitialized, use the other
+        if self._kalman_auto.sample_count == 0:
+            return button_var
+        if self._kalman_button.sample_count == 0:
+            return auto_var
+
+        # Inverse-variance weighting (standard fusion formula)
+        # Combined variance = 1 / (1/var1 + 1/var2)
+        if auto_var <= 0 or button_var <= 0:
+            return max(auto_var, button_var)
+
+        return 1.0 / (1.0 / auto_var + 1.0 / button_var)
 
     @property
     def std_dev(self) -> float:
@@ -82,9 +170,23 @@ class ScannerPairCorrelation:
         return float(self.variance**0.5)
 
     @property
+    def auto_sample_count(self) -> int:
+        """Return number of automatic learning samples."""
+        return self._kalman_auto.sample_count
+
+    @property
+    def button_sample_count(self) -> int:
+        """Return number of button training samples."""
+        return self._kalman_button.sample_count
+
+    @property
     def sample_count(self) -> int:
-        """Return number of samples processed by the Kalman filter."""
-        return self._kalman.sample_count
+        """
+        Return total effective sample count for maturity checks.
+
+        Uses weighted count where button samples count 2x.
+        """
+        return self.auto_sample_count + self.button_sample_count * BUTTON_WEIGHT_MULTIPLIER
 
     @property
     def is_mature(self) -> bool:
@@ -120,21 +222,31 @@ class ScannerPairCorrelation:
         """
         Serialize to dictionary for persistent storage.
 
-        Returns:
-            Dictionary with scanner address and Kalman state.
-
+        Stores both Kalman filter states for proper restoration.
         """
         return {
             "scanner": self.scanner_address,
-            "estimate": self._kalman.estimate,
-            "variance": self._kalman.variance,
-            "samples": self._kalman.sample_count,
+            # Auto filter state
+            "auto_estimate": self._kalman_auto.estimate,
+            "auto_variance": self._kalman_auto.variance,
+            "auto_samples": self._kalman_auto.sample_count,
+            # Button filter state
+            "button_estimate": self._kalman_button.estimate,
+            "button_variance": self._kalman_button.variance,
+            "button_samples": self._kalman_button.sample_count,
+            # Legacy fields for backward compatibility
+            "estimate": self.expected_delta,
+            "variance": self.variance,
+            "samples": self.sample_count,
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Self:
         """
         Deserialize from dictionary.
+
+        Handles both old format (single Kalman) and new format (dual Kalman).
+        Old data is migrated to auto filter only.
 
         Args:
             data: Dictionary from to_dict().
@@ -144,8 +256,25 @@ class ScannerPairCorrelation:
 
         """
         corr = cls(scanner_address=data["scanner"])
-        corr._kalman.estimate = data["estimate"]
-        corr._kalman.variance = data["variance"]
-        corr._kalman.sample_count = data["samples"]
-        corr._kalman._initialized = data["samples"] > 0  # noqa: SLF001  # pylint: disable=protected-access
+
+        # Check for new dual-filter format
+        if "auto_estimate" in data:
+            # New format: restore both filters
+            corr._kalman_auto.estimate = data["auto_estimate"]
+            corr._kalman_auto.variance = data["auto_variance"]
+            corr._kalman_auto.sample_count = data["auto_samples"]
+            corr._kalman_auto._initialized = data["auto_samples"] > 0  # noqa: SLF001
+
+            corr._kalman_button.estimate = data["button_estimate"]
+            corr._kalman_button.variance = data["button_variance"]
+            corr._kalman_button.sample_count = data["button_samples"]
+            corr._kalman_button._initialized = data["button_samples"] > 0  # noqa: SLF001
+        else:
+            # Old format: migrate to auto filter only
+            corr._kalman_auto.estimate = data["estimate"]
+            corr._kalman_auto.variance = data["variance"]
+            corr._kalman_auto.sample_count = data["samples"]
+            corr._kalman_auto._initialized = data["samples"] > 0  # noqa: SLF001
+            # Button filter stays uninitialized
+
         return corr

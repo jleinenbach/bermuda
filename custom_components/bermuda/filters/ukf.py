@@ -537,20 +537,17 @@ class UnscentedKalmanFilter(SignalFilter):
                     x_sub = [self._x[i] for i in state_indices]
                     n_sub = len(state_indices)
                     p_sub = [
-                        [self._p_cov[state_indices[i]][state_indices[j]] for j in range(n_sub)]
-                        for i in range(n_sub)
+                        [self._p_cov[state_indices[i]][state_indices[j]] for j in range(n_sub)] for i in range(n_sub)
                     ]
                     combined_cov = [
-                        [p_sub[i][j] + (fp_var[i] if i == j else 0.0) for j in range(n_sub)]
-                        for i in range(n_sub)
+                        [p_sub[i][j] + (fp_var[i] if i == j else 0.0) for j in range(n_sub)] for i in range(n_sub)
                     ]
                     diff = [x_sub[i] - fp_mean[i] for i in range(n_sub)]
 
                     try:
                         cov_inv = _matrix_inverse(combined_cov)
                         d_squared = sum(
-                            diff[i] * sum(cov_inv[i][j] * diff[j] for j in range(n_sub))
-                            for i in range(n_sub)
+                            diff[i] * sum(cov_inv[i][j] * diff[j] for j in range(n_sub)) for i in range(n_sub)
                         )
                         device_score = math.exp(-d_squared / (2 * n_sub))
                     except (ValueError, ZeroDivisionError):
