@@ -133,6 +133,12 @@ DEFAULT_USE_UKF_AREA_SELECTION: Final = True  # Enabled by default; uses fingerp
 UKF_MIN_MATCH_SCORE: Final = 0.3  # Minimum match score (0-1) to consider a fingerprint match
 UKF_MIN_SCANNERS: Final = 2  # Minimum scanners needed for UKF to make a decision
 
+# FIX: Sticky Virtual Rooms - Prevent flickering for scannerless rooms
+# When device is already in a UKF-detected area, add bonus to prevent marginal switches
+UKF_STICKINESS_BONUS: Final = 0.15  # 15% bonus added to current area's match score
+# Minimum distance (meters) required for scanner-based room to override UKF-detected area
+UKF_WEAK_SCANNER_MIN_DISTANCE: Final = 3.0
+
 # Beacon-handling constants. Source devices are tracked by MAC-address and are the
 # originators of beacon-like data. We then create a "meta-device" for the beacon's
 # uuid. Other non-static-mac protocols should use this method as well, by adding their
