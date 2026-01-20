@@ -164,14 +164,11 @@ class BermudaTrainingRoomSelect(BermudaEntity, SelectEntity):
 
     def on_floor_changed(self) -> None:
         """Called by floor select when floor is changed by user."""
-        # Clear room selection when floor changes
+        # Only clear the UI-level room selection (for dropdown filtering).
+        # DON'T clear training_target_* or area_locked_* - these stay until button press.
+        # This allows the user to accidentally change floor without losing their selection.
         self._room_override_name = None
         self._room_override_id = None
-        # Clear training target and area lock - device will return to auto-detection
-        self._device.training_target_area_id = None
-        self._device.area_locked_id = None
-        self._device.area_locked_name = None
-        self._device.area_locked_scanner_addr = None
         self.async_write_ha_state()
 
     @property

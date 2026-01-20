@@ -141,6 +141,14 @@ class BermudaTrainingButton(BermudaEntity, ButtonEntity):
                 self._device.name,
             )
 
+        # Clear BOTH training fields after button press - user must re-select to train again
+        self._device.training_target_floor_id = None
+        self._device.training_target_area_id = None
+        # Also clear the area lock
+        self._device.area_locked_id = None
+        self._device.area_locked_name = None
+        self._device.area_locked_scanner_addr = None
+
     @property
     def unique_id(self) -> str:
         """Return a unique ID for this entity."""
