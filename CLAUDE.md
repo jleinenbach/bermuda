@@ -1029,3 +1029,92 @@ if improvement > 100% and has_minimum_history:
 ```
 
 **Rule of Thumb**: The more severe the action (cross-floor > same-floor > same-room), the stricter the escape hatch should be. Consider whether "impossible" thresholds (100%+) are actually desirable for critical transitions.
+
+## Scannerless Room Detection
+
+### Problem: UKF Blocked by Global Maturity Check
+
+Rooms without their own scanner ("scannerless rooms") can ONLY be detected via UKF fingerprint matching - the min-distance algorithm fails because there's no scanner to report the closest distance.
+
+The original code required `has_mature_profiles` (global RoomProfiles with 30+ samples in 2+ scanner pairs) before allowing UKF:
+
+```python
+# OLD - UKF blocked until entire house has mature profiles
+if has_mature_profiles and self._refresh_area_by_ukf(device):
+    continue
+```
+
+**Problem Timeline:**
+```
+Day 1: User trains scannerless room with button → AreaProfile created
+Day 1-14: UKF blocked because global RoomProfiles not mature
+Day 14+: Finally works when enough global data accumulated
+```
+
+### Solution: Per-Device Profile Check
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│            UKF Enablement Decision                                   │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  ┌─────────────────────┐     ┌─────────────────────────────┐        │
+│  │ has_mature_profiles │ OR  │ device_has_correlations     │        │
+│  │ (global RoomProfiles│     │ (device-specific AreaProfiles│       │
+│  │  with 30+ samples)  │     │  from button training)      │        │
+│  └──────────┬──────────┘     └──────────────┬──────────────┘        │
+│             │                               │                        │
+│             └───────────┬───────────────────┘                        │
+│                         │                                            │
+│                    Either True?                                      │
+│                         │                                            │
+│                    Yes ↓      ↓ No                                   │
+│             ┌─────────────────────────────┐                          │
+│             │ Try UKF  │ Skip to          │                          │
+│             │ first    │ min-distance     │                          │
+│             └─────────────────────────────┘                          │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+**New Timeline:**
+```
+Day 1: User trains scannerless room with button → AreaProfile created
+Day 1: UKF enabled for THIS device (has own correlations)
+Day 1: Scannerless room works immediately!
+```
+
+**Key Code Change:**
+```python
+# NEW - Allow UKF if device has its own trained profiles
+device_has_correlations = (
+    device.address in self.correlations
+    and len(self.correlations[device.address]) > 0
+)
+if (has_mature_profiles or device_has_correlations) and self._refresh_area_by_ukf(device):
+    continue
+```
+
+### Lesson Learned
+
+### 17. Global vs Per-Entity Feature Gates
+
+When gating advanced features (UKF, ML models, etc.) behind maturity checks, consider:
+- **Global gates** block ALL entities until system-wide threshold met
+- **Per-entity gates** allow early adopters to benefit immediately
+
+**Bug Pattern**:
+```python
+# Global gate blocks trained entities
+if global_system_ready:
+    use_advanced_feature(entity)
+```
+
+**Fix Pattern**:
+```python
+# Per-entity gate allows immediate benefit
+if global_system_ready or entity_has_own_data:
+    use_advanced_feature(entity)
+```
+
+**Rule of Thumb**: If an entity can benefit from an advanced feature using only its OWN data, don't block it waiting for unrelated global data.
