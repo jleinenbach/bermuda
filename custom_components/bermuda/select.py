@@ -150,14 +150,14 @@ class BermudaTrainingRoomSelect(BermudaEntity, SelectEntity):
         self._device.area_id = target_area.id
         self._device.area_name = option
 
-        # Update UI - training happens via the "Learn" button
-        self.async_write_ha_state()
-
         _LOGGER.info(
             "Device %s LOCKED to room %s (press 'Learn Fingerprint' to train)",
             self._device.name,
             option,
         )
+
+        # Trigger coordinator refresh so the "Learn" button updates its availability
+        await self.coordinator.async_request_refresh()
 
     def on_floor_changed(self) -> None:
         """Called by floor select when floor is changed by user."""
@@ -246,11 +246,12 @@ class BermudaTrainingFloorSelect(BermudaEntity, SelectEntity):
             option,
         )
 
-        # Notify room select that floor changed (clears room selection)
+        # Notify room select that floor changed (clears room selection and area lock)
         if self._room_select is not None:
             self._room_select.on_floor_changed()
 
-        self.async_write_ha_state()
+        # Trigger coordinator refresh so the "Learn" button updates its availability
+        await self.coordinator.async_request_refresh()
 
     @property
     def unique_id(self) -> str:
