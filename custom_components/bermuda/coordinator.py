@@ -1628,7 +1628,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
         return z_scores_to_confidence(z_scores)
 
-    def _refresh_area_by_ukf(self, device: BermudaDevice) -> bool:
+    def _refresh_area_by_ukf(self, device: BermudaDevice) -> bool:  # noqa: PLR0911
         """
         Use UKF (Unscented Kalman Filter) for area selection via fingerprint matching.
 
@@ -1723,6 +1723,84 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
             scanner_less_room = True
 
+        # CROSS-FLOOR STREAK PROTECTION:
+        # Prevent rapid flickering between floors by requiring multiple consecutive
+        # cycles picking the same target before allowing a cross-floor switch.
+        current_area_advert = device.area_advert
+        current_floor_id = None
+        if current_area_advert is not None and current_area_advert.scanner_device is not None:
+            current_floor_id = getattr(current_area_advert.scanner_device, "floor_id", None)
+
+        winner_floor_id = None
+        if best_advert is not None and best_advert.scanner_device is not None:
+            winner_floor_id = getattr(best_advert.scanner_device, "floor_id", None)
+
+        is_cross_floor = (
+            current_floor_id is not None and winner_floor_id is not None and current_floor_id != winner_floor_id
+        )
+
+        # If same area as current, just refresh the selection
+        if current_area_advert is not None and best_area_id == getattr(current_area_advert, "area_id", None):
+            device.pending_area_id = None
+            device.pending_floor_id = None
+            device.pending_streak = 0
+            self._apply_ukf_selection(
+                device, best_advert, best_area_id, scanner_less_room=scanner_less_room, nowstamp=nowstamp
+            )
+            return True
+
+        # If no current area, bootstrap immediately
+        if current_area_advert is None:
+            device.pending_area_id = None
+            device.pending_floor_id = None
+            device.pending_streak = 0
+            self._apply_ukf_selection(
+                device, best_advert, best_area_id, scanner_less_room=scanner_less_room, nowstamp=nowstamp
+            )
+            return True
+
+        # Determine streak target based on floor change
+        streak_target = CROSS_FLOOR_STREAK if is_cross_floor else SAME_FLOOR_STREAK
+
+        # Update streak counter
+        if device.pending_area_id == best_area_id and device.pending_floor_id == winner_floor_id:
+            # Same target as before - increment streak
+            device.pending_streak += 1
+        elif device.pending_area_id is not None and device.pending_area_id != best_area_id:
+            # Different target - reset streak to new candidate
+            device.pending_area_id = best_area_id
+            device.pending_floor_id = winner_floor_id
+            device.pending_streak = 1
+        else:
+            # First pending or same floor different area
+            device.pending_area_id = best_area_id
+            device.pending_floor_id = winner_floor_id
+            device.pending_streak = 1
+
+        # Check if streak meets threshold
+        if device.pending_streak >= streak_target:
+            device.pending_area_id = None
+            device.pending_floor_id = None
+            device.pending_streak = 0
+            self._apply_ukf_selection(
+                device, best_advert, best_area_id, scanner_less_room=scanner_less_room, nowstamp=nowstamp
+            )
+        else:
+            # Streak not reached - keep current area
+            device.apply_scanner_selection(current_area_advert, nowstamp=nowstamp)
+
+        return True
+
+    def _apply_ukf_selection(
+        self,
+        device: BermudaDevice,
+        best_advert: BermudaAdvert,
+        best_area_id: str,
+        *,
+        scanner_less_room: bool,
+        nowstamp: float,
+    ) -> None:
+        """Apply the UKF-selected area to the device."""
         if scanner_less_room:
             # Override the advert's area with the UKF-matched area.
             # IMPORTANT: Temporarily clear scanner_device so apply_scanner_selection
@@ -1740,8 +1818,6 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         else:
             # Apply the selection using the device's standard method
             device.apply_scanner_selection(best_advert, nowstamp=nowstamp)
-
-        return True
 
     def _refresh_areas_by_min_distance(self):
         """Set area for ALL devices based on UKF+RoomProfile or min-distance fallback."""
