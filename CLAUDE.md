@@ -436,6 +436,31 @@ filtered_rssi = filter.update_adaptive(raw_rssi, ref_power=-55)
   - **Solution**: Save all modified attributes before mutation, use try/finally to guarantee restoration
   - **File**: `coordinator.py`
 
+### Area Lock Active Override Fix (BUG 9)
+- **Problem**: Button training didn't immediately change the displayed area
+  - User selects room "Keller" → Device still shows "Schlafzimmer" (2 floors away!)
+  - `area_locked_id` only PREVENTED automatic detection, but didn't ACTIVELY SET the area
+  - During training: Device stayed in the old room (lock was a guard, not an override)
+  - After training: Normal competition resumed - trained room had to "win" against incumbents
+- **Root cause**: Design gap in the area lock mechanism - it blocked changes but didn't apply them
+- **Solution**: When `area_locked_id` is set, ACTIVELY call `device._update_area_and_floor(area_locked_id)` to force the area immediately
+- **Code change** (`coordinator.py:2231-2242`):
+  ```python
+  # BEFORE: Just returned without setting the area
+  else:
+      # Locked scanner still has an advert - keep lock active.
+      return
+
+  # AFTER: Actively set the area before returning
+  else:
+      # Locked scanner still has an advert - keep lock active.
+      # FIX: ACTIVE OVERRIDE - Set the device area to the locked area immediately.
+      device._update_area_and_floor(device.area_locked_id)
+      return
+  ```
+- **Effect**: When user selects a room for training, the device immediately shows that room in the UI, not the old/wrong room
+- **File**: `coordinator.py`
+
 ## Manual Fingerprint Training System
 
 ### Problem Statement
@@ -2128,6 +2153,31 @@ for address in prune_list:
 3. Use `.pop(key, None)` to safely handle missing keys
 
 **Rule of Thumb**: Search your codebase for all uses of the entity key. Each dict/list that stores per-entity data needs cleanup in the prune operation.
+
+### 30. Guards Prevent Changes, Overrides Apply Them
+
+When implementing a "lock" mechanism (user wants to pin a device to a specific state), distinguish between:
+- **Guard**: Prevents automatic changes (blocks other logic)
+- **Override**: Actively applies the desired state
+
+A guard-only approach leaves the system in an inconsistent state where the user's intent is "locked" but not "applied".
+
+**Bug Pattern:**
+```python
+# BAD - Guard only: prevents changes but doesn't apply them
+if device.locked_area_id is not None:
+    return  # Blocks automatic detection, but area_id is still wrong!
+```
+
+**Fix Pattern:**
+```python
+# GOOD - Guard + Override: prevents changes AND applies desired state
+if device.locked_area_id is not None:
+    device._update_area_and_floor(device.locked_area_id)  # ACTIVE OVERRIDE
+    return  # Then block automatic detection
+```
+
+**Rule of Thumb**: When a user explicitly sets a desired state (via UI selection, button press, API call), APPLY that state immediately before blocking automatic changes. The lock should enforce the user's intent, not just freeze the old state.
 
 ---
 
