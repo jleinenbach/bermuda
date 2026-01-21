@@ -1,12 +1,12 @@
 """
-Tests for the Hierarchical Priority System (Frozen Layers & Shadow Learning).
+Tests for the Clamped Bayesian Fusion System (Controlled Evolution).
 
 These tests verify that:
 1. Auto and button learning use separate Kalman filters
-2. Button training ALWAYS overrides auto-learning (hierarchical priority, not fusion)
-3. Auto learning continues in "shadow mode" but doesn't affect output when button data exists
-4. The system preserves user calibration indefinitely against environment drift
-5. User training creates a "frozen" state that cannot be corrupted by auto-learning
+2. Button training sets the "anchor" (user truth)
+3. Auto-learning can "polish" the anchor but its influence is CLAMPED to max 30%
+4. User always retains at least 70% authority over the final estimate
+5. The system allows intelligent refinement while preventing anchor drift
 """
 
 from __future__ import annotations
@@ -15,15 +15,19 @@ import pytest
 
 from custom_components.bermuda.correlation.area_profile import AreaProfile
 from custom_components.bermuda.correlation.room_profile import RoomProfile
-from custom_components.bermuda.correlation.scanner_absolute import ScannerAbsoluteRssi
+from custom_components.bermuda.correlation.scanner_absolute import (
+    MAX_AUTO_RATIO,
+    ScannerAbsoluteRssi,
+)
 from custom_components.bermuda.correlation.scanner_pair import (
+    MAX_AUTO_RATIO as PAIR_MAX_AUTO_RATIO,
     MIN_VARIANCE,
     ScannerPairCorrelation,
 )
 
 
 class TestScannerPairCorrelationDualFilter:
-    """Tests for dual-filter weighted learning in ScannerPairCorrelation."""
+    """Tests for dual-filter Clamped Fusion in ScannerPairCorrelation."""
 
     def test_auto_only_returns_auto_estimate(self) -> None:
         """With only auto samples, estimate equals auto filter estimate."""
@@ -38,46 +42,41 @@ class TestScannerPairCorrelationDualFilter:
         assert corr.button_sample_count == 0
 
     def test_button_only_returns_button_estimate(self) -> None:
-        """With only button samples, estimate equals button filter estimate (frozen state)."""
+        """With only button samples (no auto), estimate equals button value."""
         corr = ScannerPairCorrelation(scanner_address="test_scanner")
 
-        # Button training uses reset_to_value() which sets sample_count=500 for frozen state
+        # Button training without any auto data
         corr.update_button(-15.0)
 
-        # Estimate should be exactly -15.0 (frozen value)
+        # Without auto data, estimate should be exactly the button value
         assert abs(corr.expected_delta - (-15.0)) < 0.01
         assert corr.auto_sample_count == 0
-        # Sample count is 500 due to reset_to_value() creating frozen state
         assert corr.button_sample_count == 500
 
-    def test_button_training_overrides_converged_auto(self) -> None:
-        """Button training completely overrides auto-learning (hierarchical priority).
+    def test_button_dominates_with_clamped_auto_influence(self) -> None:
+        """Button training dominates, but auto can have up to 30% influence.
 
-        With the Frozen Layers architecture, button training creates a frozen state
-        that takes absolute priority over auto-learning. The auto-filter continues
-        learning in "shadow mode" but has NO influence on the output.
-
-        This ensures user calibration persists indefinitely against environment drift.
+        With Clamped Bayesian Fusion:
+        - Button sets the anchor (at least 70% weight)
+        - Auto can refine with max 30% influence
+        - Result is between button and auto, but closer to button
         """
         corr = ScannerPairCorrelation(scanner_address="test_scanner")
 
-        # Add many auto samples at 0.0 (converged, variance ~2.6)
+        # Add many auto samples at 0.0 (converged, low variance)
         for _ in range(100):
             corr.update(0.0)
 
-        # Button training creates frozen state that overrides auto completely
+        # Button training at 30.0
         corr.update_button(30.0)
 
-        # With hierarchical priority, button filter is initialized and takes priority
-        assert corr._kalman_button.is_initialized, "Button filter should be initialized"
-
-        # Button creates frozen state with very low variance (0.01)
-        button_var = corr._kalman_button.variance
-        assert button_var < 0.1, f"Button should have frozen variance ~0.01, got {button_var}"
-
-        # Estimate should be EXACTLY the button value (no fusion with auto)
+        # With clamped fusion, estimate should be:
+        # - At least 70% button (30.0) = 21.0
+        # - At most 30% auto (0.0) = 0.0
+        # - Worst case: 0.7 * 30 + 0.3 * 0 = 21.0
         estimate = corr.expected_delta
-        assert abs(estimate - 30.0) < 0.01, f"Button should completely override auto, expected 30.0, got {estimate}"
+        assert estimate >= 21.0, f"Button should have at least 70% weight, got estimate {estimate}"
+        assert estimate <= 30.0, f"Estimate should not exceed button value, got {estimate}"
 
     def test_auto_continues_learning_indefinitely(self) -> None:
         """Auto learning should never stop - adapts to environment changes."""
@@ -100,50 +99,50 @@ class TestScannerPairCorrelationDualFilter:
             f"Auto should adapt to changes: before={estimate_before}, after={estimate_after}"
         )
 
-    def test_button_training_influences_estimate(self) -> None:
-        """Button training should shift the fused estimate toward button value."""
+    def test_button_sets_anchor_auto_refines(self) -> None:
+        """Button sets the anchor, auto can refine within limits."""
         corr = ScannerPairCorrelation(scanner_address="test_scanner")
 
-        # Auto learns wrong value
+        # Auto learns one value
         for _ in range(100):
             corr.update(5.0)
 
         estimate_before_button = corr.expected_delta
 
-        # User corrects with button
-        for _ in range(50):
-            corr.update_button(-10.0)
+        # User sets button anchor
+        corr.update_button(-10.0)
 
         estimate_after_button = corr.expected_delta
 
-        # Estimate should move toward button value
+        # Estimate should be much closer to button value (-10.0) than before
         distance_to_button_before = abs(estimate_before_button - (-10.0))
         distance_to_button_after = abs(estimate_after_button - (-10.0))
 
-        assert distance_to_button_after < distance_to_button_before, (
-            f"Button should pull estimate toward -10: before={estimate_before_button}, after={estimate_after_button}"
+        assert distance_to_button_after < distance_to_button_before * 0.5, (
+            f"Button should pull estimate strongly toward -10: "
+            f"before={estimate_before_button}, after={estimate_after_button}"
         )
 
-    def test_sample_count_reflects_frozen_state(self) -> None:
-        """Button training creates frozen state with high sample count for stability."""
+    def test_sample_count_reflects_button_anchor(self) -> None:
+        """Button training creates anchor state with high sample count."""
         corr = ScannerPairCorrelation(scanner_address="test_scanner")
 
         for _ in range(30):
             corr.update(10.0)
 
-        # Single button training creates frozen state
+        # Button training creates anchor state
         corr.update_button(20.0)
 
         # Auto samples are counted normally
         assert corr.auto_sample_count == 30
-        # Button uses reset_to_value() with sample_count=500 for frozen state
+        # Button uses reset_to_value() with sample_count=500
         assert corr.button_sample_count == 500
-        # Total reflects frozen state
+        # Total reflects anchor state
         assert corr.sample_count == 530
 
 
 class TestScannerAbsoluteRssiDualFilter:
-    """Tests for dual-filter weighted learning in ScannerAbsoluteRssi."""
+    """Tests for dual-filter Clamped Fusion in ScannerAbsoluteRssi."""
 
     def test_auto_only_returns_auto_estimate(self) -> None:
         """With only auto samples, estimate equals auto filter estimate."""
@@ -157,15 +156,14 @@ class TestScannerAbsoluteRssiDualFilter:
         assert profile.button_sample_count == 0
 
     def test_button_only_returns_button_estimate(self) -> None:
-        """With only button samples, estimate equals button filter estimate (frozen state)."""
+        """With only button samples (no auto), estimate equals button value."""
         profile = ScannerAbsoluteRssi(scanner_address="test_scanner")
 
-        # Single button training creates frozen state
+        # Button training without any auto data
         profile.update_button(-75.0)
 
-        # Estimate should be exactly -75.0 (frozen value)
+        # Without auto data, estimate should be exactly the button value
         assert abs(profile.expected_rssi - (-75.0)) < 0.01
-        # Sample count is 500 due to reset_to_value() creating frozen state
         assert profile.button_sample_count == 500
 
 
@@ -184,7 +182,7 @@ class TestRoomProfileWeightedLearning:
             assert pair.button_sample_count == 0
 
     def test_update_button_uses_button_filter(self) -> None:
-        """update_button() creates frozen state in button Kalman filter."""
+        """update_button() creates anchor state in button Kalman filter."""
         profile = RoomProfile(area_id="test_area")
 
         readings = {"scanner_a": -50.0, "scanner_b": -60.0}
@@ -192,7 +190,7 @@ class TestRoomProfileWeightedLearning:
 
         for pair in profile._scanner_pairs.values():
             assert pair.auto_sample_count == 0
-            # Button training creates frozen state with sample_count=500
+            # Button training creates anchor state with sample_count=500
             assert pair.button_sample_count == 500
 
 
@@ -218,7 +216,7 @@ class TestAreaProfileWeightedLearning:
             assert abs_profile.button_sample_count == 0
 
     def test_update_button_uses_button_filter(self) -> None:
-        """update_button() creates frozen state in button Kalman filters."""
+        """update_button() creates anchor state in button Kalman filters."""
         profile = AreaProfile(area_id="test_area")
 
         profile.update_button(
@@ -229,12 +227,12 @@ class TestAreaProfileWeightedLearning:
 
         for corr in profile._correlations.values():
             assert corr.auto_sample_count == 0
-            # Button training creates frozen state with sample_count=500
+            # Button training creates anchor state with sample_count=500
             assert corr.button_sample_count == 500
 
         for abs_profile in profile._absolute_profiles.values():
             assert abs_profile.auto_sample_count == 0
-            # Button training creates frozen state with sample_count=500
+            # Button training creates anchor state with sample_count=500
             assert abs_profile.button_sample_count == 500
 
 
@@ -248,8 +246,7 @@ class TestSerializationDualFilter:
         # Add samples to both filters
         for _ in range(30):
             corr.update(5.0)
-        for _ in range(20):
-            corr.update_button(-10.0)
+        corr.update_button(-10.0)
 
         # Serialize and deserialize
         data = corr.to_dict()
@@ -282,8 +279,7 @@ class TestSerializationDualFilter:
 
         for _ in range(25):
             profile.update(-60.0)
-        for _ in range(15):
-            profile.update_button(-70.0)
+        profile.update_button(-70.0)
 
         data = profile.to_dict()
         restored = ScannerAbsoluteRssi.from_dict(data)
@@ -292,69 +288,135 @@ class TestSerializationDualFilter:
         assert restored.button_sample_count == profile.button_sample_count
 
 
-class TestHierarchicalPriority:
-    """Tests for the hierarchical priority system (button > auto)."""
+class TestClampedBayesianFusion:
+    """Tests for the Clamped Bayesian Fusion algorithm."""
 
-    def test_button_completely_overrides_auto(self) -> None:
-        """Button training completely overrides auto-learning.
+    def test_max_auto_ratio_constant_is_thirty_percent(self) -> None:
+        """MAX_AUTO_RATIO should be 0.30 (30%)."""
+        assert MAX_AUTO_RATIO == 0.30
+        assert PAIR_MAX_AUTO_RATIO == 0.30
 
-        With hierarchical priority, button filter takes absolute precedence
-        when initialized. Auto-learning continues in shadow mode but has
-        NO influence on the output.
+    def test_button_dominates_even_with_massive_auto_data(self) -> None:
+        """Button anchor should dominate even with millions of auto samples.
+
+        This tests the core guarantee: auto influence is CLAMPED to 30%.
         """
         corr = ScannerPairCorrelation(scanner_address="test_scanner")
 
-        # Train auto with many samples (converged, low variance)
+        # Simulate massive auto learning (would have extremely low variance)
+        for _ in range(1000):
+            corr.update(0.0)
+
+        auto_estimate_before = corr.expected_delta
+        assert abs(auto_estimate_before - 0.0) < 0.1, "Auto should converge to 0.0"
+
+        # Button training at different value
+        corr.update_button(100.0)
+
+        estimate = corr.expected_delta
+
+        # With clamping, auto gets max 30%:
+        # Worst case: 0.7 * 100 + 0.3 * 0 = 70.0
+        # Button anchor (100.0) should dominate
+        assert estimate >= 70.0, (
+            f"Button should have at least 70% weight even with massive auto data. Expected >= 70.0, got {estimate}"
+        )
+
+    def test_auto_influence_is_clamped_not_zero(self) -> None:
+        """Auto should have SOME influence (up to 30%), not be completely ignored.
+
+        This distinguishes Clamped Fusion from pure Hierarchical Priority.
+        """
+        corr = ScannerPairCorrelation(scanner_address="test_scanner")
+
+        # Auto learns 0.0 with many samples (low variance)
         for _ in range(100):
             corr.update(0.0)
 
-        # Button training creates frozen state - overrides auto completely
+        # Button at 30.0
         corr.update_button(30.0)
 
-        # With hierarchical priority, estimate is EXACTLY the button value
         estimate = corr.expected_delta
-        assert abs(estimate - 30.0) < 0.01, f"Button should completely override auto, expected 30.0, got {estimate}"
 
-    def test_button_overrides_regardless_of_auto_state(self) -> None:
-        """Button overrides auto regardless of how many auto samples exist."""
+        # If auto were completely ignored, estimate would be exactly 30.0
+        # With clamped fusion, auto should pull it slightly toward 0.0
+        # Expected: somewhere between 21.0 (70% button) and 30.0 (100% button)
+        assert estimate < 30.0, f"Auto should have some influence (estimate should be < 30.0). Got {estimate}"
+        assert estimate >= 21.0, f"Button should still dominate (estimate should be >= 21.0). Got {estimate}"
+
+    def test_fused_variance_is_reduced(self) -> None:
+        """Fused variance should be lower than either individual variance.
+
+        This is the Bayesian benefit: combining information reduces uncertainty.
+        """
         corr = ScannerPairCorrelation(scanner_address="test_scanner")
 
-        # Train auto with few samples (high variance ~5.6)
-        for _ in range(3):
-            corr.update(0.0)
-
-        # Single button training creates frozen state that overrides auto
-        corr.update_button(30.0)
-
-        # With hierarchical priority, button wins regardless of sample counts
-        estimate = corr.expected_delta
-        assert abs(estimate - 30.0) < 0.01, f"Button should override auto completely, expected 30.0, got {estimate}"
-
-    def test_variance_uses_hierarchical_priority(self) -> None:
-        """Variance uses hierarchical priority: button variance when button exists."""
-        corr = ScannerPairCorrelation(scanner_address="test_scanner")
-
-        # Train auto first
+        # Get auto variance
         for _ in range(50):
             corr.update(10.0)
+        auto_only_variance = corr.variance
 
-        auto_var_before = corr.variance
-        assert auto_var_before > 2.0, "Auto should have converged variance"
+        # Add button - fused variance should be lower
+        corr.update_button(10.0)
+        fused_variance = corr.variance
 
-        # Train button - this should take priority
-        corr.update_button(20.0)
-
-        # After button training, variance should be button's frozen variance (0.01)
-        actual_variance = corr.variance
-        button_variance = corr._kalman_button.variance
-
-        assert actual_variance == button_variance, (
-            f"Variance should be button variance when button exists: actual={actual_variance}, button={button_variance}"
+        assert fused_variance < auto_only_variance, (
+            f"Fused variance ({fused_variance}) should be < auto-only variance ({auto_only_variance})"
         )
-        # Frozen state has very low variance
-        assert actual_variance < 0.1, f"Button variance should be ~0.01, got {actual_variance}"
 
     def test_min_variance_prevents_division_by_zero(self) -> None:
         """MIN_VARIANCE constant prevents division by zero in edge cases."""
         assert MIN_VARIANCE > 0, "MIN_VARIANCE must be positive"
         assert MIN_VARIANCE < 1.0, "MIN_VARIANCE should be small"
+
+
+class TestControlledEvolution:
+    """Tests for the 'polishing' behavior of Clamped Fusion."""
+
+    def test_auto_can_polish_button_anchor_slightly(self) -> None:
+        """Auto-learning can refine ('polish') the button anchor within limits.
+
+        The user sets the anchor, auto can adjust it slightly based on
+        environmental observations, but cannot move it dramatically.
+        """
+        corr = ScannerPairCorrelation(scanner_address="test_scanner")
+
+        # Button sets anchor at 50.0
+        corr.update_button(50.0)
+        initial_estimate = corr.expected_delta
+
+        # Auto suggests the value should be 45.0 (slight refinement)
+        for _ in range(100):
+            corr.update(45.0)
+
+        polished_estimate = corr.expected_delta
+
+        # The estimate should move slightly toward auto (45.0) but stay close to button (50.0)
+        assert polished_estimate < initial_estimate, (
+            f"Auto should polish anchor downward. Initial: {initial_estimate}, Polished: {polished_estimate}"
+        )
+        assert polished_estimate > 45.0, (
+            f"Anchor should not move all the way to auto value. Polished: {polished_estimate}"
+        )
+
+    def test_reset_training_removes_button_anchor(self) -> None:
+        """reset_training() should remove button anchor, falling back to auto."""
+        corr = ScannerPairCorrelation(scanner_address="test_scanner")
+
+        # Auto learns 10.0
+        for _ in range(50):
+            corr.update(10.0)
+
+        # Button sets anchor at 50.0
+        corr.update_button(50.0)
+
+        # Estimate is dominated by button
+        assert corr.expected_delta > 30.0
+
+        # Reset training
+        corr.reset_training()
+
+        # Now should fall back to auto (10.0)
+        assert abs(corr.expected_delta - 10.0) < 2.0, (
+            f"After reset, should fall back to auto estimate (~10.0). Got {corr.expected_delta}"
+        )

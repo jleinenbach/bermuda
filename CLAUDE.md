@@ -78,71 +78,80 @@ Learns typical RSSI patterns for each area to improve localization:
 
 **Key insight**: When primary scanner goes offline, absolute profiles let us verify if secondary scanner readings still match the learned room pattern.
 
-### Hierarchical Priority System (Frozen Layers & Shadow Learning)
+### Clamped Bayesian Fusion (Controlled Evolution)
 
-The correlation classes (`ScannerPairCorrelation`, `ScannerAbsoluteRssi`) use a dual-filter architecture with **strict hierarchical priority** (not fusion):
+The correlation classes (`ScannerPairCorrelation`, `ScannerAbsoluteRssi`) use a dual-filter architecture with **clamped fusion**:
 
 ```
                     ┌─────────────────────────────────────┐
 Automatic Learning ─┼─→ _kalman_auto ──┐                  │
-                    │  (Shadow Mode)   │                  │
-                    │                  │ Priority Check   │
-                    │                  ├─→ Final Output   │
+                    │  (Continuous)    │ Inverse-Variance │
+                    │                  │ Weighting        │
+                    │                  ├─→ Clamped Fusion │
 Button Training ────┼─→ _kalman_button─┘                  │
-                    │  (Frozen Layer)  │ Button > Auto    │
+                    │  (The Anchor)    │ Auto ≤ 30%       │
                     └─────────────────────────────────────┘
 ```
 
-**Why Hierarchical Priority (Not Fusion)?**
-- **Problem with fusion**: Auto-learning accumulates indefinitely, eventually overwhelming manual corrections
-- **Solution**: Button training ALWAYS overrides auto-learning (no mixing)
-- User calibration persists indefinitely against environment drift
+**Why Clamped Fusion (Not Pure Override)?**
+- **Problem with pure override**: Auto-learning is completely ignored, no adaptation to small environmental changes
+- **Problem with pure fusion**: Auto-learning eventually overwhelms user corrections
+- **Solution**: Button sets the "anchor", auto can "polish" it with max 30% influence
+- User retains at least 70% authority while system adapts intelligently
 
-**Priority Logic:**
+**Clamped Fusion Logic:**
 ```python
 @property
 def expected_rssi(self) -> float:
-    # PRIORITY 1: User training is absolute truth
-    if self._kalman_button.is_initialized:
-        return self._kalman_button.estimate  # Auto is ignored!
-
-    # PRIORITY 2: Fallback to auto-learning if no user training
-    if self._kalman_auto.is_initialized:
+    # Case 1: Only auto data available
+    if not self._kalman_button.is_initialized:
         return self._kalman_auto.estimate
 
-    return 0.0
+    # Case 2: Clamped Fusion - auto influence limited to 30%
+    w_btn = 1.0 / self._kalman_button.variance
+    w_auto = 1.0 / self._kalman_auto.variance
+
+    # Clamp auto influence to max 30%
+    MAX_AUTO_RATIO = 0.30
+    if w_auto / (w_btn + w_auto) > MAX_AUTO_RATIO:
+        w_auto = w_btn * (MAX_AUTO_RATIO / (1.0 - MAX_AUTO_RATIO))
+
+    total = w_btn + w_auto
+    return (est_btn * w_btn + est_auto * w_auto) / total
 ```
 
-**Frozen Layer via `reset_to_value()`:**
+**Button Anchor via `reset_to_value()`:**
 ```python
 def update_button(self, rssi: float) -> float:
-    # Create frozen state with extremely high confidence
+    # Create high-confidence anchor state
     self._kalman_button.reset_to_value(
         value=rssi,
-        variance=0.01,      # Very low = high confidence
-        sample_count=500,   # Massive inertia against drift
+        variance=0.1,       # High confidence anchor
+        sample_count=500,   # Massive inertia as base
     )
-    return self.expected_rssi
+    return self.expected_rssi  # Returns fused value
 ```
 
-**Example: The "Keller-Lager" Problem Solved**
+**Example: Controlled Evolution**
 ```
-Day 1: User trains device in "Keller" (cellar)
-       → Button filter: Scanner Wohnzimmer = -85dB (frozen)
-       → Auto filter: Empty
+Day 1: User trains device in "Keller" at -85dB
+       → Button (anchor): -85dB, 70-100% weight
+       → Auto: Empty
 
-Weeks later: Auto-learning drifts due to environment changes
-       → Auto filter: Scanner Wohnzimmer = -78dB (drifted!)
-       → Button filter: Still -85dB (frozen, unchanged)
-       → expected_rssi returns -85dB (button wins!)
-       → Room detection stays stable!
+Weeks later: Environment changes slightly
+       → Auto drifts to -80dB (environment change detected)
+       → Button: Still -85dB (anchor)
+       → Auto influence clamped to 30%
+       → expected_rssi ≈ 0.7 * (-85) + 0.3 * (-80) = -83.5dB
+       → Room detection stays stable, but adapts slightly!
 ```
 
 **Key Constants:**
 | Constant | Value | Purpose |
 |----------|-------|---------|
-| Frozen variance | 0.01 | Extremely high confidence for button |
-| Frozen sample_count | 500 | Massive inertia against drift |
+| `MAX_AUTO_RATIO` | 0.30 | Auto influence capped at 30% |
+| Anchor variance | 0.1 | High confidence for button anchor |
+| Anchor sample_count | 500 | Massive inertia as base |
 | `MIN_VARIANCE` | 0.001 | Prevents division by zero |
 
 ## Testing Standards
@@ -1066,62 +1075,62 @@ A device must pass BOTH checks to be confidently placed in a room.
 
 ## Button Training vs Auto-Learning Architecture
 
-### Problem: Fusion Allows Drift Over Time
+### Problem: Pure Fusion Allows Drift Over Time
 
-The original dual-filter system used inverse-variance weighted fusion to combine auto and button estimates. Even with variance inflation, auto-learning could eventually overwhelm manual corrections over weeks/months of continuous operation.
+The original dual-filter system used unclamped inverse-variance weighted fusion. Even with variance inflation, auto-learning could eventually overwhelm manual corrections over weeks/months.
 
 ```
-The "Keller-Lager Problem":
+The "Keller-Lager Problem" (with Pure Fusion):
 Day 1: User trains "Keller" → Button: -85dB
 Week 2: Auto has 10,000 samples at -78dB → Auto starts to dominate
 Month 3: Auto has 100,000 samples → User calibration completely lost
 → Room detection drifts despite initial manual training!
 ```
 
-### Solution: Hierarchical Priority (Frozen Layers)
+### Solution: Clamped Bayesian Fusion (Controlled Evolution)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                     update_button() Flow                             │
+│                     Clamped Fusion Flow                              │
 ├─────────────────────────────────────────────────────────────────────┤
 │                                                                      │
 │  Button Press ──→ reset_to_value()                                  │
 │                          │                                           │
 │                          ▼                                           │
 │  ┌──────────────────────────────────────────────────────────────┐   │
-│  │ Create FROZEN state:                                          │   │
+│  │ Create ANCHOR state:                                          │   │
 │  │   - estimate = user's value                                   │   │
-│  │   - variance = 0.01 (extremely confident)                     │   │
+│  │   - variance = 0.1 (high confidence)                          │   │
 │  │   - sample_count = 500 (massive inertia)                      │   │
-│  │   - _initialized = True                                       │   │
 │  └──────────────────────────────────────────────────────────────┘   │
 │                          │                                           │
 │                          ▼                                           │
-│  expected_rssi uses PRIORITY logic:                                  │
-│    if button.is_initialized → return button.estimate (auto ignored!)│
-│    else → return auto.estimate (fallback only)                      │
+│  expected_rssi uses CLAMPED FUSION:                                  │
+│    1. Calculate inverse-variance weights                             │
+│    2. If auto_weight > 30% → clamp to 30%                           │
+│    3. Return weighted average (user ≥70%, auto ≤30%)                │
 │                                                                      │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
 **Result:**
 ```
-Before: Fusion allowed auto to overwhelm button over time
-After:  Button completely overrides auto (no mixing!)
+Before: Pure fusion allowed auto to overwhelm button over time
+After:  Clamped fusion limits auto to 30% influence
 
-Auto:   100,000 samples, estimate=-78dB (running in shadow)
-Button: 500 samples (frozen), estimate=-85dB
-→ expected_rssi returns -85dB FOREVER (until user re-trains)
-→ Room detection stays stable indefinitely!
+Auto:   100,000 samples, estimate=-78dB (clamped to 30% weight)
+Button: 500 samples (anchor), estimate=-85dB (at least 70% weight)
+→ expected_rssi ≈ 0.7*(-85) + 0.3*(-78) = -82.9dB
+→ Room detection stays stable, but adapts slightly to real changes!
 ```
 
 ### Key Design Decisions
 
-1. **No fusion**: Button > Auto is strict priority, not weighted mixing
-2. **Frozen state**: `reset_to_value()` creates immutable calibration point
-3. **Shadow learning**: Auto continues learning for diagnostics but doesn't affect output
-4. **Permanent override**: User calibration persists until explicitly re-trained
-5. **Both correlation classes**: `ScannerPairCorrelation` AND `ScannerAbsoluteRssi` use identical hierarchical priority logic
+1. **Clamped fusion**: Auto influence limited to max 30% (user keeps ≥70%)
+2. **Anchor state**: `reset_to_value()` creates high-confidence calibration point
+3. **Controlled evolution**: Auto can "polish" the anchor, but never overpower it
+4. **Intelligent adaptation**: System responds to real environmental changes within limits
+5. **Both correlation classes**: `ScannerPairCorrelation` AND `ScannerAbsoluteRssi` use identical clamped fusion logic
 
 ## Cross-Floor Hysteresis Protection
 
@@ -1194,31 +1203,36 @@ if max_absolute_z > 3.0:
     confidence = delta_confidence * (0.5 ** (max_absolute_z - 2.0))
 ```
 
-### 15. Fusion Cannot Preserve Manual Calibration Long-Term
+### 15. Unclamped Fusion Cannot Preserve Manual Calibration Long-Term
 
-When fusing estimates from multiple sources (even with variance inflation), the source with more samples eventually dominates. This is unavoidable with any fusion approach:
+When fusing estimates from multiple sources WITHOUT clamping, the source with more samples eventually dominates:
 - Automatic learning accumulates indefinitely → eventually overwhelms manual
 - Variance inflation only delays the problem, doesn't solve it
 - Manual corrections become ineffective over weeks/months
 
-**Fix Pattern**: Use hierarchical priority instead of fusion - manual completely overrides automatic:
+**Fix Pattern**: Use CLAMPED fusion - limit auto influence to a maximum percentage:
 
 ```python
-def update_manual(self, value):
-    # Create frozen state - auto is now ignored entirely
-    self._manual_filter.reset_to_value(
-        value=value,
-        variance=0.01,      # Extremely confident
-        sample_count=500,   # Massive inertia
-    )
+MAX_AUTO_RATIO = 0.30  # Auto can never exceed 30% influence
 
 @property
 def estimate(self):
-    # PRIORITY: Manual > Auto (no fusion!)
-    if self._manual_filter.is_initialized:
-        return self._manual_filter.estimate  # Auto ignored
-    return self._auto_filter.estimate  # Fallback only
+    if not self._manual_filter.is_initialized:
+        return self._auto_filter.estimate  # 100% auto fallback
+
+    # Clamped Bayesian Fusion
+    w_btn = 1.0 / self._manual_filter.variance
+    w_auto = 1.0 / self._auto_filter.variance
+
+    # CLAMP: Auto influence limited to 30%
+    if w_auto / (w_btn + w_auto) > MAX_AUTO_RATIO:
+        w_auto = w_btn * (MAX_AUTO_RATIO / (1.0 - MAX_AUTO_RATIO))
+
+    total = w_btn + w_auto
+    return (manual * w_btn + auto * w_auto) / total
 ```
+
+**Result**: User retains at least 70% authority, auto can "polish" within limits.
 
 ### 16. Hysteresis Escape Hatches Need Guarding
 
@@ -1834,3 +1848,31 @@ def reset_training(self):
 - Device-level reset is the "nuclear option" that catches all cases
 
 **Rule of Thumb**: When switching from self-healing to user-controlled behavior, always ask: "What happens if the user makes a mistake?" If the answer is "it stays broken forever", you need an undo mechanism.
+
+### 26. Clamped Fusion Balances User Authority with Intelligent Adaptation
+
+When combining user input with automatic learning, the extremes are:
+- **Pure override**: User always wins, auto is ignored → No adaptation to real changes
+- **Pure fusion**: Weights based on confidence → Auto eventually overwhelms user
+
+**The Middle Path - Clamped Fusion:**
+```python
+MAX_AUTO_RATIO = 0.30  # Auto influence capped at 30%
+
+# Calculate weights, then clamp
+if auto_weight / total_weight > MAX_AUTO_RATIO:
+    auto_weight = btn_weight * (0.30 / 0.70)
+```
+
+**Benefits:**
+1. User retains majority control (≥70%)
+2. Auto can "polish" the anchor (adapt to small changes)
+3. Long-term drift is mathematically impossible
+4. Seasonal/environmental changes are partially accommodated
+
+**When to use Clamped Fusion:**
+- User sets a baseline that should be respected
+- System should adapt intelligently within limits
+- Changes should be gradual, not abrupt
+
+**Rule of Thumb**: When user and auto-learning conflict, ask: "Should auto be able to completely override the user over time?" If no, clamp the auto influence to a maximum percentage (30% is a good default).
