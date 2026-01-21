@@ -61,7 +61,7 @@ def test_tracker_device_gets_area_and_floor(
     area_entry = coordinator.ar.async_create("Test Area", floor_id=floor_entry.floor_id)
 
     scanner = coordinator._get_or_create_device("11:22:33:44:55:66")
-    scanner._update_area_and_floor(area_entry.id)
+    scanner.update_area_and_floor(area_entry.id)
 
     tracked = coordinator._get_or_create_device("AA:BB:CC:DD:EE:FF")
     tracked.create_sensor = False

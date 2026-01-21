@@ -43,6 +43,7 @@ def _make_coordinator(hass: HomeAssistant) -> BermudaDataUpdateCoordinator:
     }
     coordinator.devices = {}
     coordinator.metadevices = {}
+    coordinator.device_ukfs = {}  # UKF states per device (BUG 7 fix cleanup target)
     coordinator.correlations = {}  # Scanner correlation data for area confidence
     coordinator.room_profiles = {}  # Room-level scanner pair delta profiles
     coordinator._correlations_loaded = True  # Prevent async loading in tests

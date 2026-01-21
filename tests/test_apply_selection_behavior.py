@@ -68,7 +68,7 @@ async def test_apply_sets_area_from_advert(hass: HomeAssistant, create_sensor: b
     base_stamp = 1000.0
 
     scanner = coordinator._get_or_create_device("11:22:33:44:55:66")
-    scanner._update_area_and_floor(advert_area_id)
+    scanner.update_area_and_floor(advert_area_id)
 
     advert = SimpleNamespace(
         area_id=advert_area_id,
@@ -290,7 +290,7 @@ def test_process_advertisement_sets_distance_stamp_from_advert(
     device = coordinator._get_or_create_device("AA:BB:CC:DD:EE:0D")
     scanner = coordinator._get_or_create_device("11:22:33:44:55:79")
     area_entry = ar.async_get(hass).async_create("Stamped Area")
-    scanner._update_area_and_floor(area_entry.id)
+    scanner.update_area_and_floor(area_entry.id)
     base_time = 300.0
 
     monkeypatch.setattr("custom_components.bermuda.bermuda_advert.monotonic_time_coarse", lambda: base_time)
@@ -348,7 +348,7 @@ def test_local_scanner_distance_uses_synthetic_stamp(monkeypatch: pytest.MonkeyP
     device = coordinator._get_or_create_device("AA:BB:CC:DD:EE:0F")
     scanner = coordinator._get_or_create_device("11:22:33:44:55:80")
     area_entry = ar.async_get(hass).async_create("Local Area")
-    scanner._update_area_and_floor(area_entry.id)
+    scanner.update_area_and_floor(area_entry.id)
     base_time = 400.0
 
     monkeypatch.setattr("custom_components.bermuda.bermuda_advert.monotonic_time_coarse", lambda: base_time)
