@@ -126,28 +126,40 @@ class KalmanFilter(SignalFilter):
         # Innovation (pre-update): how much does measurement differ from estimate?
         innovation = measurement - self.estimate
 
-        # Expected innovation variance (S): combines state uncertainty and measurement noise
+        # Expected innovation variance (S): S = H*P_pred*H' + R
+        # For 1D static model with H=1: S = P_pred + R = (P + Q) + R
         # This is what we'd expect the innovation variance to be if the model is correct
-        innovation_variance = self.variance + self.measurement_noise
+        # Using base process noise (q_min) for consistency check, not adaptive value
+        s_covariance = self.variance + self.q_min + self.measurement_noise
 
         # Normalized Innovation Squared (NIS): innovation² / S
         # NIS ~ χ²(1) under ideal conditions, so E[NIS] = 1
         # NIS >> 1 indicates model mismatch (device is maneuvering/moving)
         # NIS << 1 indicates over-smoothing or very accurate predictions
-        self.last_nis = (innovation * innovation) / innovation_variance if innovation_variance > 0 else 0.0
+        self.last_nis = (innovation * innovation) / s_covariance if s_covariance > 1e-6 else 0.0
 
-        # Adapt process noise based on NIS
+        # Adapt process noise based on NIS using Peak-Hold-Decay (Fast Attack / Slow Release)
         if self.last_nis > IAE_NIS_THRESHOLD:
-            # Device appears to be moving - increase Q for faster response
-            # Formula: Q = Q_min * (1 + scale * (NIS - threshold))
-            q_multiplier = 1.0 + self.q_scale * (self.last_nis - IAE_NIS_THRESHOLD)
-            # Cap to prevent instability during extreme spikes
-            q_multiplier = min(q_multiplier, IAE_Q_MAX_MULTIPLIER)
-            self.process_noise = self.q_min * q_multiplier
+            # Device appears to be moving - calculate target Q multiplier
+            target_mult = 1.0 + self.q_scale * (self.last_nis - IAE_NIS_THRESHOLD)
+            target_mult = min(target_mult, IAE_Q_MAX_MULTIPLIER)
+
+            # Get current multiplier
+            current_mult = self.process_noise / self.q_min if self.q_min > 0 else 1.0
+
+            # Fast Attack: Jump immediately to higher Q if target exceeds current
+            if target_mult > current_mult:
+                self.process_noise = self.q_min * target_mult
+            else:
+                # Slow Release: Even when NIS > threshold, decay slowly if target is lower
+                # This prevents jitter when movement is slowing down
+                new_mult = max(1.0, current_mult * IAE_Q_DECAY)
+                self.process_noise = self.q_min * new_mult
         else:
-            # Device appears stationary - decay Q toward baseline
-            # Smooth decay provides natural settling behavior
-            self.process_noise = self.q_min + (self.process_noise - self.q_min) * IAE_Q_DECAY
+            # Device appears stationary - Slow Release back to baseline
+            current_mult = self.process_noise / self.q_min if self.q_min > 0 else 1.0
+            new_mult = max(1.0, current_mult * IAE_Q_DECAY)
+            self.process_noise = self.q_min * new_mult
 
         # =================================================================
         # Predict step
