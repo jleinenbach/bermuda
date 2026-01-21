@@ -276,6 +276,26 @@ new readings to be rejected. This threshold allows the system to self-heal:
 after N consecutive blocks from the SAME scanner, accept the new position.
 """
 
+VELOCITY_MIN_DELTA_T: Final = 0.5
+"""
+Minimum time delta (seconds) between readings for velocity calculation.
+
+BLE advertisements can arrive in rapid bursts (multiple per second). When readings
+arrive faster than this threshold, RSSI noise gets amplified into impossibly high
+velocities (velocity = distance_change / tiny_time_delta). By requiring a minimum
+time gap, we ensure velocity calculations are meaningful and not just noise.
+"""
+
+VELOCITY_TELEPORT_MIN_TIME: Final = 3.0
+"""
+Minimum time span (seconds) of sustained velocity blocks before accepting teleport.
+
+In addition to the count-based VELOCITY_TELEPORT_THRESHOLD, we require that the
+velocity blocks span at least this many seconds. This prevents rapid bursts of
+advertisements from immediately triggering teleport recovery - the device must
+consistently show impossible velocity over a meaningful time period.
+"""
+
 CONF_DEVTRACK_TIMEOUT, DEFAULT_DEVTRACK_TIMEOUT = "devtracker_nothome_timeout", 30
 DOCS[CONF_DEVTRACK_TIMEOUT] = "Timeout in seconds for setting devices as `Not Home` / `Away`."  # fmt: skip
 

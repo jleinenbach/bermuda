@@ -766,9 +766,11 @@ class BermudaDevice(dict):
             # Also reset the Kalman filter to avoid stale state
             advert.rssi_kalman.reset()
             advert.rssi_filtered = None
-            # Reset the teleport recovery counter if it exists
+            # Reset the teleport recovery counter and timestamp if they exist
             if hasattr(advert, "velocity_blocked_count"):
                 advert.velocity_blocked_count = 0
+            if hasattr(advert, "velocity_blocked_first_stamp"):
+                advert.velocity_blocked_first_stamp = None
         _LOGGER.debug(
             "Reset velocity history for device %s across %d adverts",
             self.name,

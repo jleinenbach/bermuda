@@ -34,6 +34,8 @@ from .const import (
     DISTANCE_INFINITE,
     HIST_KEEP_COUNT,
     RSSI_HISTORY_SAMPLES,
+    VELOCITY_MIN_DELTA_T,
+    VELOCITY_TELEPORT_MIN_TIME,
     VELOCITY_TELEPORT_THRESHOLD,
 )
 from .filters import KalmanFilter
@@ -161,6 +163,10 @@ class BermudaAdvert(dict[str, Any]):
         # When this counter reaches VELOCITY_TELEPORT_THRESHOLD, we accept the new
         # position anyway (self-healing to break the "velocity trap")
         self.velocity_blocked_count: int = 0
+        # Timestamp when velocity blocking started - used to ensure teleport recovery
+        # requires a minimum time span, not just a count (prevents rapid bursts from
+        # immediately triggering recovery)
+        self.velocity_blocked_first_stamp: float | None = None
         # Note: conf_rssi_offset, conf_ref_power, conf_attenuation, conf_max_velocity,
         # and conf_smoothing_samples are now properties that read from self.options
         # dynamically. This ensures settings changes (including RSSI offsets) take
@@ -544,7 +550,10 @@ class BermudaAdvert(dict[str, Any]):
                 peak_velocity = 0.0
                 delta_t = velo_newstamp - self.hist_stamp[1]
                 delta_d = velo_newdistance - self.hist_distance[1]
-                if delta_t > 0:
+                # FIX: Require minimum time gap for meaningful velocity calculation.
+                # Very rapid readings (< VELOCITY_MIN_DELTA_T) amplify RSSI noise into
+                # impossibly high velocities (velocity = small_distance_noise / tiny_time).
+                if delta_t >= VELOCITY_MIN_DELTA_T:
                     peak_velocity = delta_d / delta_t
                 # Check ALL historical readings to find the peak absolute velocity.
                 # This catches both rapid approaches (negative velocity) and rapid departures
@@ -554,7 +563,8 @@ class BermudaAdvert(dict[str, Any]):
                     if old_stamp is None:
                         continue
                     delta_t = velo_newstamp - old_stamp
-                    if delta_t <= 0:
+                    # FIX: Require minimum time gap for historical comparisons too
+                    if delta_t < VELOCITY_MIN_DELTA_T:
                         continue
                     delta_d = velo_newdistance - old_distance
                     velocity = delta_d / delta_t
@@ -572,18 +582,29 @@ class BermudaAdvert(dict[str, Any]):
             # impossible as jumping from 1m to 10m (+9 m/s).
             max_velocity = self.conf_max_velocity if self.conf_max_velocity is not None else DEFAULT_MAX_VELOCITY
             if abs(velocity) > max_velocity:
-                # FIX: Teleport Recovery - Track consecutive velocity blocks
+                # FIX: Track when velocity blocking started
+                if self.velocity_blocked_count == 0:
+                    self.velocity_blocked_first_stamp = monotonic_time_coarse()
                 self.velocity_blocked_count += 1
 
-                # Check if we've hit the teleport recovery threshold
-                if self.velocity_blocked_count >= VELOCITY_TELEPORT_THRESHOLD:
-                    # Device has been consistently measured at a "teleported" position.
-                    # Accept the new position and reset history to break the trap.
+                # Calculate how long we've been blocking
+                time_blocked = monotonic_time_coarse() - (self.velocity_blocked_first_stamp or 0)
+
+                # FIX: Require BOTH count AND time span for teleport recovery.
+                # This prevents rapid bursts of advertisements from immediately
+                # triggering recovery - we need sustained impossible velocity.
+                if (
+                    self.velocity_blocked_count >= VELOCITY_TELEPORT_THRESHOLD
+                    and time_blocked >= VELOCITY_TELEPORT_MIN_TIME
+                ):
+                    # Device has been consistently measured at a "teleported" position
+                    # for a meaningful duration. Accept the new position.
                     _LOGGER.info(
                         "Teleport recovery for %s: accepting new position after %d "
-                        "consecutive velocity blocks (velocity=%.1fm/s)",
+                        "blocks over %.1fs (velocity=%.1fm/s)",
                         self._device.name,
                         self.velocity_blocked_count,
+                        time_blocked,
                         velocity,
                     )
                     # Accept the new measurement
@@ -595,17 +616,20 @@ class BermudaAdvert(dict[str, Any]):
                     self.hist_stamp.clear()
                     self.hist_stamp.insert(0, self.stamp)
                     self.hist_velocity.clear()
-                    # Reset the counter
+                    # Reset the counter and timestamp
                     self.velocity_blocked_count = 0
+                    self.velocity_blocked_first_stamp = None
                 else:
                     # Still blocking - use previous distance
                     if self._device.create_sensor:
                         _LOGGER.debug(
-                            "This sparrow %s flies too fast (%.1fm/s), ignoring (block %d/%d)",
+                            "This sparrow %s flies too fast (%.1fm/s), ignoring (block %d/%d, %.1fs/%.1fs)",
                             self._device.name,
                             velocity,
                             self.velocity_blocked_count,
                             VELOCITY_TELEPORT_THRESHOLD,
+                            time_blocked,
+                            VELOCITY_TELEPORT_MIN_TIME,
                         )
                     if len(self.hist_distance_by_interval) > 0:
                         self.hist_distance_by_interval.insert(0, self.hist_distance_by_interval[0])
@@ -614,8 +638,9 @@ class BermudaAdvert(dict[str, Any]):
             else:
                 # Velocity is acceptable - accept the measurement and reset counter
                 self.hist_distance_by_interval.insert(0, self.rssi_distance_raw)
-                # FIX: Teleport Recovery - Reset counter when velocity is normal
+                # FIX: Teleport Recovery - Reset counter and timestamp when velocity is normal
                 self.velocity_blocked_count = 0
+                self.velocity_blocked_first_stamp = None
 
             smoothing_samples = (
                 self.conf_smoothing_samples if self.conf_smoothing_samples is not None else DEFAULT_SMOOTHING_SAMPLES
