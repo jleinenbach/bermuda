@@ -690,6 +690,8 @@ This pattern allows the button to clear the dropdowns indirectly by:
 
 ## Lessons Learned
 
+> **See also:** [Architecture Decisions & FAQ](#architecture-decisions--faq) for common "Why?" questions about design choices (30% clamping, variance=2.0, device-level reset, etc.)
+
 ### 1. State Transitions Need Careful Handling
 
 When tracking state (like `area_changed_at`), consider ALL transition paths:
@@ -1154,6 +1156,96 @@ Button: 500 samples (anchor), estimate=-85dB (at least 70% weight)
 4. **Intelligent adaptation**: System responds to real environmental changes within limits
 5. **Both correlation classes**: `ScannerPairCorrelation` AND `ScannerAbsoluteRssi` use identical clamped fusion logic
 6. **Realistic variance (2.0)**: Avoids "Hyper-Precision Paradox" - variance serves both fusion AND z-score matching, so must be physically realistic (σ≈1.4dB for BLE signals)
+
+## Architecture Decisions & FAQ
+
+This section answers common questions about design choices. Reference this before asking "Why is X done this way?"
+
+### Q1: Why 30% for MAX_AUTO_RATIO in Clamped Fusion?
+
+**Answer:** Heuristic safety value ensuring user retains mathematical majority (70%).
+
+- At 50/50, long-term auto-drift could "uproot" user's anchor
+- 30% allows "polishing" (seasonal changes, furniture moves) without room reversal
+- Mathematically: user can NEVER be overwhelmed, but system stays adaptive
+
+### Q2: How are Scannerless Rooms Created?
+
+**Answer:** They are NOT auto-detected. They exist only after explicit user training.
+
+```
+User selects "Keller" in UI → Presses "Train" button
+→ AreaProfile created for area_id with NO corresponding ScannerDevice
+→ Now available for UKF fingerprint matching
+```
+
+Without training, a scannerless room is invisible to the system.
+
+### Q3: Why Two UKF Thresholds (0.3 Switch vs 0.15 Retention)?
+
+**Answer:** Intentional hysteresis to prevent flickering.
+
+| Action | Threshold | Rationale |
+|--------|-----------|-----------|
+| **Enter** room (switch) | 0.3 | Strong evidence required |
+| **Stay** in room (retention) | 0.15 | Weaker evidence acceptable |
+
+**Not pendling, but "sticking"**: Score drops to 0.2 → stays in room (retention). Only below 0.15 → fallback to min-distance.
+
+### Q4: Why is VELOCITY_TELEPORT_THRESHOLD = 30 (not dynamic)?
+
+**Answer:** Dynamic adjustment is unreliable because update rate depends on advertisement interval (varies per device, e.g., deep sleep).
+
+- A high static value (30) + packet debounce (100ms) is robust "one-size-fits-all"
+- Initially 5, then 10, finally 30 after real-world testing
+- Lower values caused false teleport detections → broke cross-floor protection
+
+### Q5: What About Devices with >60s Advertisement Intervals vs Area Lock?
+
+**Answer:** Lock expires, but this is acceptable.
+
+- Lock serves ONLY to stabilize during active training (button press)
+- Device sleeping >60s sends no data to interfere with learning
+- If it wakes at 61s, normal detection logic resumes
+- Edge case, not worth complexity of dynamic timeouts
+
+### Q6: Why Not Adaptive Variance in Button Filter?
+
+**Answer:** Adaptive variance in button filter is dangerous.
+
+```
+"Quiet environment" → Lower variance to 0.1
+Door opens → Environment changes
+→ Hyper-Precision Paradox kicks in → Room REJECTED!
+```
+
+**variance=2.0 is NOT a measurement, it's a TOLERANCE DEFINITION.**
+
+Even in a shielded cellar with perfect signal, allowing 2.0 tolerance is fine (z-score ≈ 0.01). The problem was only the OTHER direction (too tight tolerance with normal noise).
+
+### Q7: What Test Coverage is Required?
+
+**Answer:** No hard percentage gate, but critical paths MUST be unit-tested.
+
+| Must Test | Example |
+|-----------|---------|
+| Kalman filter logic | `test_kalman.py` |
+| UKF state transitions | `test_ukf.py` |
+| Correlation updates | `test_correlation_*.py` |
+| Room selection logic | `test_area_selection*.py` |
+
+**Rule:** Any change to room-finding logic requires a test reproducing the scenario.
+
+### Q8: Why Device-Level Reset (not Per-Room)?
+
+**Answer:** "Ghost Scanner" problem often involves INVISIBLE rooms.
+
+- User doesn't know WHICH room has incorrect training
+- Problematic scanner may not be visible anymore
+- Device-level reset is the "nuclear option" that catches ALL cases
+- Granular per-room deletion is future work (requires complex UI)
+
+---
 
 ## Cross-Floor Hysteresis Protection
 
