@@ -283,25 +283,27 @@ the Kalman filter more time to stabilize while still allowing recovery within
 reasonable time (~10 seconds with 1 update/second).
 """
 
-# FIX: BLE Noise Spike Filter - Velocity threshold beyond which readings are
-# completely ignored as measurement errors (not counted toward teleport recovery)
-VELOCITY_NOISE_THRESHOLD: Final = 10.0
+# FIX: BLE Noise Spike Filter - Multiplier for calculating dynamic noise threshold
+# The actual threshold is: max_velocity * VELOCITY_NOISE_MULTIPLIER
+VELOCITY_NOISE_MULTIPLIER: Final = 3.0
 """
-Velocity in m/s beyond which a reading is treated as pure BLE noise.
+Multiplier to calculate the noise velocity threshold from user's max_velocity config.
 
-Values between MAX_VELOCITY (3 m/s) and this threshold (10 m/s) are considered
-"plausible fast movement" and count toward teleport recovery. Values above this
-are physically impossible (would require device to teleport) and are treated as
-measurement errors caused by BLE signal noise.
+The noise threshold = max_velocity * VELOCITY_NOISE_MULTIPLIER
 
-This prevents noise spikes (which can cause calculated velocities of 100+ m/s)
-from rapidly incrementing the teleport counter and resetting distance history,
-which breaks cross-floor protection.
+This makes the noise filter adapt to user configuration:
+- Default (max_velocity=3 m/s): noise threshold = 9 m/s
+- Vehicle tracking (max_velocity=20 m/s): noise threshold = 60 m/s
+- Conservative (max_velocity=1 m/s): noise threshold = 3 m/s
 
-Tier classification:
-- <= MAX_VELOCITY (3 m/s): Normal movement, accept reading
-- > MAX_VELOCITY, <= VELOCITY_NOISE_THRESHOLD (10 m/s): Plausible fast, count toward teleport
-- > VELOCITY_NOISE_THRESHOLD (10 m/s): Impossible spike, ignore completely
+Values between max_velocity and the noise threshold are considered
+"plausible fast movement" and count toward teleport recovery. Values above
+the noise threshold are physically impossible and treated as measurement errors.
+
+Tier classification (with default max_velocity=3 m/s):
+- <= max_velocity (3 m/s): Normal movement, accept reading
+- > max_velocity, <= noise_threshold (9 m/s): Plausible fast, count toward teleport
+- > noise_threshold (9 m/s): Impossible spike, ignore completely
 """
 
 CONF_DEVTRACK_TIMEOUT, DEFAULT_DEVTRACK_TIMEOUT = "devtracker_nothome_timeout", 30

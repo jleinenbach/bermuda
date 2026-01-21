@@ -2123,9 +2123,16 @@ See FAQ Q3 for the complete rationale.
 
 | Constant | Value | Location | Purpose |
 |----------|-------|----------|---------|
-| `VELOCITY_NOISE_THRESHOLD` | 10.0 | `const.py` | Velocities above this are pure BLE noise, ignored |
+| `VELOCITY_NOISE_MULTIPLIER` | 3.0 | `const.py` | Multiplier for dynamic noise threshold (`max_velocity * 3`) |
 | `VELOCITY_TELEPORT_THRESHOLD` | 10 | `const.py` | Consecutive blocks before accepting teleport |
 | `MAX_AUTO_RATIO` | 0.30 | `scanner_*.py` | Max auto-learning influence in Clamped Fusion |
+
+**Dynamic Noise Threshold Calculation:**
+```python
+noise_velocity_threshold = max_velocity * VELOCITY_NOISE_MULTIPLIER
+# Default (3 m/s): noise > 9 m/s
+# Vehicle (20 m/s): noise > 60 m/s
+```
 
 ---
 
@@ -2133,7 +2140,7 @@ See FAQ Q3 for the complete rationale.
 
 Changes made based on peer review (2026-01-21):
 
-1. **`VELOCITY_NOISE_THRESHOLD`**: Moved from inline constant in `bermuda_advert.py` to `const.py` for centralized tuning.
+1. **`VELOCITY_NOISE_MULTIPLIER`**: Replaced static `VELOCITY_NOISE_THRESHOLD=10.0` with dynamic calculation. Now adapts to user's `max_velocity` config (e.g., vehicle tracking with higher speeds).
 
 2. **`async_reset_device_training()` Error Handling**: Added try/except around `correlation_store.async_save()`. On failure, logs warning but still returns True (in-memory reset succeeded).
 

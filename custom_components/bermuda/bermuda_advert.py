@@ -34,7 +34,7 @@ from .const import (
     DISTANCE_INFINITE,
     HIST_KEEP_COUNT,
     RSSI_HISTORY_SAMPLES,
-    VELOCITY_NOISE_THRESHOLD,
+    VELOCITY_NOISE_MULTIPLIER,
     VELOCITY_TELEPORT_THRESHOLD,
 )
 from .filters import KalmanFilter
@@ -573,12 +573,15 @@ class BermudaAdvert(dict[str, Any]):
             # impossible as jumping from 1m to 10m (+9 m/s).
             max_velocity = self.conf_max_velocity if self.conf_max_velocity is not None else DEFAULT_MAX_VELOCITY
 
-            # FIX: Distinguish between "plausible fast movement" (3-10 m/s) and
-            # "physically impossible spikes" (>10 m/s) caused by BLE noise.
-            # See VELOCITY_NOISE_THRESHOLD in const.py for detailed documentation.
+            # FIX: Dynamic noise threshold based on user's max_velocity config.
+            # This adapts to different use cases:
+            # - Default walking (3 m/s): noise > 9 m/s
+            # - Vehicle tracking (20 m/s): noise > 60 m/s
+            # See VELOCITY_NOISE_MULTIPLIER in const.py for detailed documentation.
+            noise_velocity_threshold = max_velocity * VELOCITY_NOISE_MULTIPLIER
             abs_velocity = abs(velocity)
 
-            if abs_velocity > VELOCITY_NOISE_THRESHOLD:
+            if abs_velocity > noise_velocity_threshold:
                 # IMPOSSIBLE SPIKE: BLE noise caused a measurement error.
                 # Completely ignore this reading - don't count it as a block.
                 # This prevents noise from triggering false teleport recovery.
@@ -587,7 +590,7 @@ class BermudaAdvert(dict[str, Any]):
                         "BLE noise spike for %s (%.1fm/s > %.1fm/s threshold), ignoring as measurement error",
                         self._device.name,
                         abs_velocity,
-                        VELOCITY_NOISE_THRESHOLD,
+                        noise_velocity_threshold,
                     )
                 # Use previous distance value instead
                 if len(self.hist_distance_by_interval) > 0:
