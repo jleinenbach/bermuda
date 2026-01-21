@@ -8,6 +8,27 @@
 
 ## Quick Setup
 
+### Finding Python Versions
+
+**IMPORTANT**: `python3` often symlinks to an older version. Always check and use explicit version:
+
+```bash
+# Find all available Python versions
+which python3.13 python3.12 python3.11 python3.10 2>/dev/null
+# Or: compgen -c | grep -E '^python[0-9.]*$' | sort -u
+# Or: ls /usr/bin/python*
+
+# Check what python3 points to (often NOT 3.13!)
+ls -la /usr/local/bin/python3  # May be symlink to 3.11
+
+# ALWAYS use explicit version for this project:
+python3.13 --version  # Should show 3.13.x
+```
+
+**Common locations:**
+- `/usr/bin/python3.13` - System-installed Python 3.13
+- `/usr/local/bin/python3` - Often symlinks to older version (e.g., 3.11)
+
 ```bash
 # Create virtual environment with Python 3.13
 python3.13 -m venv venv
