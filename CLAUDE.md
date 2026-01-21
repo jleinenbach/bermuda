@@ -530,6 +530,28 @@ filtered_rssi = filter.update_adaptive(raw_rssi, ref_power=-55)
   - Variance decreases naturally based on actual data quality
 - **Files**: `correlation/scanner_absolute.py`, `correlation/scanner_pair.py`
 
+### Scannerless Room Detection Fix (BUG 12)
+- **Problem**: Training for scannerless rooms (rooms without their own scanner) didn't work
+  - User trains device for "Lagerraum" (basement, no scanner)
+  - Device still shows "Schlafzimmer" (2 floors up, has scanner)
+  - Training appeared to complete successfully but had no effect
+- **Root cause**: Button training creates "immature" profiles that UKF skips
+  - `TRAINING_SAMPLE_COUNT = 10` (button training collects 10 samples)
+  - `MIN_SAMPLES_FOR_MATURITY = 20` (profile needs 20+ samples)
+  - After button training: `sample_count = 10 < 20` → `is_mature = False`
+  - `match_fingerprints()` only includes profiles where `is_mature == True`
+  - Scannerless room profile is NEVER considered → UKF finds no match → falls back to min-distance
+  - Min-distance can't detect scannerless rooms → picks nearest scanner's room
+- **Why only scannerless rooms are affected**:
+  - Rooms WITH scanners get continuous auto-learning (quickly reaches 20+ samples)
+  - Scannerless rooms have NO scanner → NO auto-learning → ONLY button training
+  - 10 button samples < 20 maturity threshold → profile never mature
+- **Solution**: Button training represents USER INTENT - trust it regardless of sample count
+  - Added `has_button_training` property: checks if button filter is initialized
+  - Modified `is_mature` to return `True` if `has_button_training` OR `sample_count >= threshold`
+  - User-trained profiles are now always considered "mature enough" for UKF matching
+- **Files**: `correlation/scanner_absolute.py`, `correlation/scanner_pair.py`
+
 ## Manual Fingerprint Training System
 
 ### Problem Statement
@@ -2247,6 +2269,41 @@ if device.locked_area_id is not None:
 ```
 
 **Rule of Thumb**: When a user explicitly sets a desired state (via UI selection, button press, API call), APPLY that state immediately before blocking automatic changes. The lock should enforce the user's intent, not just freeze the old state.
+
+### 31. Maturity Thresholds Must Respect User Intent
+
+When using sample-count-based thresholds to determine data "maturity" or "trustworthiness", ensure that USER-PROVIDED data bypasses or satisfies these thresholds, even if it has fewer samples than auto-collected data.
+
+**Bug Pattern:**
+```python
+# BAD - User training blocked by sample count threshold
+MIN_SAMPLES_FOR_MATURITY = 20
+
+def is_mature(self):
+    return self.sample_count >= MIN_SAMPLES_FOR_MATURITY  # Button training has 10 samples → never mature!
+
+def match_profiles(self):
+    if profile.is_mature:  # User-trained profile skipped!
+        use_profile()
+```
+
+**Fix Pattern:**
+```python
+# GOOD - User intent trumps sample count
+@property
+def has_button_training(self):
+    return self._kalman_button.is_initialized
+
+@property
+def is_mature(self):
+    # User training = explicit intent, trust it regardless of sample count
+    if self.has_button_training:
+        return True
+    # Standard threshold for auto-learning
+    return self.sample_count >= MIN_SAMPLES_FOR_MATURITY
+```
+
+**Rule of Thumb**: Auto-learning noise needs statistical validation (sample thresholds). User actions represent deliberate intent and should be trusted immediately, even with minimal samples.
 
 ---
 
