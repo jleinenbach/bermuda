@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import re
 from collections.abc import Callable, Hashable, Mapping
 from dataclasses import dataclass
@@ -1692,7 +1693,69 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                 rssi_readings[advert.scanner_address] = advert.rssi
 
         # Need minimum scanners for UKF to be useful
-        if len(rssi_readings) < UKF_MIN_SCANNERS:
+        # FIX: Bug 3 - Allow single-scanner RETENTION for scannerless rooms
+        # In basements/isolated areas, often only 1 distant scanner sees the device.
+        # If UKF requires 2 scanners, it bails out and min-distance takes over.
+        # min_distance can't detect scannerless rooms → device jumps to scanner's room.
+        #
+        # Solution: For RETENTION (keeping current area), allow 1 scanner when:
+        # 1. Device already has a confirmed area (device.area_id is not None)
+        # 2. Device has trained profiles that include that area
+        # 3. The single scanner's RSSI is consistent with the trained profile
+        device_profiles = self.correlations.get(device.address, {})
+        current_area_id = device.area_id
+
+        # Check if this is a retention candidate with trained profiles
+        can_retain_with_single_scanner = (
+            len(rssi_readings) == 1 and current_area_id is not None and current_area_id in device_profiles
+        )
+
+        if len(rssi_readings) < UKF_MIN_SCANNERS and not can_retain_with_single_scanner:
+            return False
+
+        # Single-scanner retention: verify RSSI against trained profile
+        if can_retain_with_single_scanner:
+            scanner_addr = next(iter(rssi_readings))
+            current_rssi = rssi_readings[scanner_addr]
+            area_profile = device_profiles.get(current_area_id)
+
+            if area_profile is not None:
+                # Check if the scanner has an absolute RSSI profile for this area
+                abs_profile = area_profile.get_absolute_rssi(scanner_addr)
+                if abs_profile is not None:
+                    expected_rssi = abs_profile.get_estimate()
+                    rssi_variance = abs_profile.get_variance()
+                    rssi_delta = abs(current_rssi - expected_rssi)
+
+                    # Allow up to 3 standard deviations from expected
+                    rssi_threshold = 3.0 * math.sqrt(max(rssi_variance, 4.0))
+
+                    if rssi_delta <= rssi_threshold:
+                        # RSSI matches profile - retain current area
+                        if _LOGGER.isEnabledFor(logging.DEBUG):
+                            _LOGGER.debug(
+                                "UKF single-scanner retention for %s: "
+                                "RSSI %.1f matches profile %.1f ± %.1f for area %s",
+                                device.name,
+                                current_rssi,
+                                expected_rssi,
+                                rssi_threshold,
+                                current_area_id,
+                            )
+                        # Apply retention by updating the advert timestamp
+                        if device.area_advert is not None:
+                            device.apply_scanner_selection(device.area_advert, nowstamp=nowstamp)
+                        return True
+                    # RSSI doesn't match profile - fall back to min_distance
+                    if _LOGGER.isEnabledFor(logging.DEBUG):
+                        _LOGGER.debug(
+                            "UKF single-scanner retention rejected for %s: RSSI %.1f too far from profile %.1f ± %.1f",
+                            device.name,
+                            current_rssi,
+                            expected_rssi,
+                            rssi_threshold,
+                        )
+            # No usable profile - fall back to min_distance
             return False
 
         # Get or create UKF for this device
@@ -1705,8 +1768,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         ukf.predict(dt=UPDATE_INTERVAL)
         ukf.update_multi(rssi_readings)
 
-        # Get device-specific profiles (may be empty for new devices)
-        device_profiles = self.correlations.get(device.address, {})
+        # Device profiles already fetched above for single-scanner check
 
         # Need either device profiles or room profiles
         if not device_profiles and not self.room_profiles:
@@ -1730,7 +1792,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         # For scannerless rooms: device is in "Virtual Room" but scanner in "Hallway" sends packet.
         # device.area_advert would point to "Hallway", giving stickiness bonus to WRONG room!
         # device.area_id is the CONFIRMED current location - the authoritative source of truth.
-        current_area_id = device.area_id
+        # (current_area_id already fetched above for single-scanner check)
 
         # Check if current area is in the matches and apply stickiness
         effective_match_score = match_score
