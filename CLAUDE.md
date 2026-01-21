@@ -304,6 +304,8 @@ def options(self) -> list[str]:
 | `DWELL_TIME_SETTLING_SECONDS` | 600 | 2-10 min: settling in state |
 | `MARGIN_MOVING_PERCENT` | 0.05 | 5% margin when moving |
 | `MARGIN_STATIONARY_PERCENT` | 0.15 | 15% margin when stationary |
+| `MIN_ADVERT_INTERVAL` | 0.1 | 100ms debounce for packet bursts |
+| `VELOCITY_TELEPORT_THRESHOLD` | 30 | Blocks before teleport recovery |
 
 ## Signal Processing Architecture (`filters/`)
 
@@ -378,6 +380,24 @@ filtered_rssi = filter.update_adaptive(raw_rssi, ref_power=-55)
   2. **BLE Noise Filter** (`bermuda_advert.py`): Velocities >10 m/s are ignored as measurement errors (don't count toward teleport recovery)
 - **Refactoring**: Extracted device loop into `_determine_area_for_device()` method for better maintainability
 - **Files**: `coordinator.py`, `bermuda_advert.py`
+
+### Packet Burst Debounce (Delta-T Singularity Fix)
+- **Problem**: BLE trackers send packets in "bursts" (3 identical packets on different frequency channels within milliseconds). Fast scanners (ESPHome) receive and forward ALL packets, creating timestamps with microscopic Δt (e.g., 5ms).
+- **Root cause**: The "Delta-T Singularity Problem" - velocity calculation `v = Δd/Δt` explodes when Δt approaches zero:
+  ```
+  Packet 1: T=0.000s, distance=2.00m
+  Packet 2: T=0.005s, distance=2.10m (1dB RSSI noise)
+  Velocity = (2.10 - 2.00) / 0.005 = 20 m/s ← IMPOSSIBLE!
+  ```
+  This triggered false teleport recovery and "over-trained" the Kalman filter with redundant values.
+- **Fixes**:
+  1. **Packet Burst Debounce** (`bermuda_advert.py`): Discard packets arriving within 100ms of the last processed one (`MIN_ADVERT_INTERVAL = 0.1`). Burst packets carry identical physical information - we only need one.
+  2. **Increased Teleport Threshold** (`const.py`): `VELOCITY_TELEPORT_THRESHOLD` increased from 10 to 30. With debounce in place, legitimate teleports need more consistent evidence before accepting.
+- **Why discarding packets INCREASES precision**:
+  - Burst packets represent the SAME physical state (identical transmission)
+  - Processing all 3 gives the Kalman filter false confidence ("over-fitting to noise")
+  - Velocity calculations become stable with physically meaningful time intervals (100ms+ instead of 5ms)
+- **Files**: `const.py`, `bermuda_advert.py`
 
 ### Test Fixture Updates
 - Added `correlations`, `_correlations_loaded`, `_last_correlation_save`, `correlation_store` to coordinator mocks
@@ -1185,7 +1205,7 @@ T6: Even button press doesn't help (velocity history not reset)
 │  │         ↓                                                 │       │
 │  │ velocity_blocked_count++                                  │       │
 │  │         ↓                                                 │       │
-│  │ Count >= VELOCITY_TELEPORT_THRESHOLD (10)?               │       │
+│  │ Count >= VELOCITY_TELEPORT_THRESHOLD (30)?               │       │
 │  │         ↓ Yes                     ↓ No                    │       │
 │  │ Accept reading, reset      Keep blocking, log            │       │
 │  │ history (break trap)       (block N/10)                  │       │
@@ -1202,7 +1222,7 @@ T6: Even button press doesn't help (velocity history not reset)
 | `coordinator.py` | `async_train_fingerprint()` | Calls reset on manual training |
 | `bermuda_advert.py` | `velocity_blocked_count` | Counter for consecutive blocks |
 | `bermuda_advert.py` | `calculate_data()` | Teleport recovery logic |
-| `const.py` | `VELOCITY_TELEPORT_THRESHOLD` | Blocks before auto-recovery (10) |
+| `const.py` | `VELOCITY_TELEPORT_THRESHOLD` | Blocks before auto-recovery (30) |
 
 ### Key Code
 
@@ -1607,3 +1627,35 @@ else:
 ```
 
 **Rule of Thumb**: Classify outliers into tiers. Pure noise (physically impossible) should be ignored entirely. Unlikely-but-possible values can count toward state changes after sustained repetition.
+
+### 25. Beware of Division by Near-Zero (Delta-T Singularities)
+
+When calculating rates or velocities from timestamped data, extremely small time intervals can cause mathematical singularities that produce absurd values.
+
+**Bug Pattern**:
+```python
+# BAD - No protection against burst packets with microscopic Δt
+def process_packet(self, new_stamp, new_distance):
+    delta_t = new_stamp - self.last_stamp  # Could be 0.005s (burst packet!)
+    delta_d = new_distance - self.last_distance  # Could be 0.1m (noise)
+    velocity = delta_d / delta_t  # 0.1 / 0.005 = 20 m/s ← EXPLOSION!
+    if velocity > MAX_VELOCITY:
+        self.blocked_count += 1  # False positive!
+```
+
+**Fix Pattern**:
+```python
+# GOOD - Debounce prevents near-zero Δt
+MIN_INTERVAL = 0.1  # 100ms - reject burst duplicates
+
+def process_packet(self, new_stamp, new_distance):
+    delta_t = new_stamp - self.last_stamp
+    if delta_t < MIN_INTERVAL:
+        return  # Burst packet - discard (same physical information)
+
+    delta_d = new_distance - self.last_distance
+    velocity = delta_d / delta_t  # Now delta_t >= 0.1s, safe division
+    # ... rest of logic
+```
+
+**Rule of Thumb**: Any rate calculation (`value / time`) needs protection against near-zero denominators. For sensor data arriving in bursts, debounce at the source rather than trying to handle impossible values downstream.
