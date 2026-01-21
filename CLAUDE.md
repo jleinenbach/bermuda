@@ -426,6 +426,16 @@ filtered_rssi = filter.update_adaptive(raw_rssi, ref_power=-55)
   - `translations/*.json`: Added translations for 8 languages
 - **UI**: New button per device with `mdi:eraser` icon, EntityCategory.CONFIG
 
+### Memory Leak Fix & Dirty Object State Fix (PR Review Round 2)
+- **BUG 7: Memory Leak in UKF Storage**
+  - **Problem**: When devices were pruned from `self.devices`, their UKF states in `self.device_ukfs` were not cleaned up, causing unbounded memory growth
+  - **Solution**: Added `self.device_ukfs.pop(device_address, None)` in `prune_devices()`
+  - **File**: `coordinator.py`
+- **BUG 8: Tainted Advert State**
+  - **Problem**: In `_apply_ukf_selection()`, `area_id` and `area_name` were temporarily modified but not restored, leaving the advert object in a "dirty" state
+  - **Solution**: Save all modified attributes before mutation, use try/finally to guarantee restoration
+  - **File**: `coordinator.py`
+
 ## Manual Fingerprint Training System
 
 ### Problem Statement
@@ -2050,6 +2060,74 @@ variance = 2.0  # Realistic for BLE, still << auto variance
 ```
 
 **Rule of Thumb**: When a parameter serves multiple purposes, verify it works for ALL of them. If optimizing for one breaks another, either separate the concerns or find a balanced middle value that works for both.
+
+### 28. Temporary Object Mutation Requires Full Restoration
+
+When temporarily modifying an object's attributes for a specific operation, ALL modified attributes must be restored afterward. Partial restoration leaves the object in a "dirty" state that can corrupt subsequent operations.
+
+**Bug Pattern:**
+```python
+# BAD - Partial restoration leaves object tainted
+saved_scanner = advert.scanner_device
+advert.scanner_device = None
+advert.area_id = new_area_id       # Modified but not saved!
+advert.area_name = new_area_name   # Modified but not saved!
+
+do_operation(advert)
+
+advert.scanner_device = saved_scanner  # Only partial restore!
+# area_id and area_name still have wrong values!
+```
+
+**Fix Pattern:**
+```python
+# GOOD - Save ALL modified attributes, use try/finally
+saved_scanner = advert.scanner_device
+saved_area_id = advert.area_id
+saved_area_name = advert.area_name
+
+try:
+    advert.scanner_device = None
+    advert.area_id = new_area_id
+    advert.area_name = new_area_name
+    do_operation(advert)
+finally:
+    # Restore ALL modified attributes
+    advert.scanner_device = saved_scanner
+    advert.area_id = saved_area_id
+    advert.area_name = saved_area_name
+```
+
+**Rule of Thumb**: For every attribute you modify temporarily, you must save and restore it. Use try/finally to guarantee restoration even if the operation raises an exception.
+
+### 29. Prune Operations Must Clean ALL Related Data Structures
+
+When removing an entity from a primary data structure, all secondary data structures that reference that entity must also be cleaned. Otherwise, orphaned entries accumulate as memory leaks.
+
+**Bug Pattern:**
+```python
+# BAD - Only cleans primary structure
+for address in prune_list:
+    del self.devices[address]
+    # self.device_ukfs[address] is now orphaned!
+    # self.correlations[address] may also be orphaned!
+```
+
+**Fix Pattern:**
+```python
+# GOOD - Clean ALL related structures
+for address in prune_list:
+    del self.devices[address]
+    self.device_ukfs.pop(address, None)    # Clean secondary structure
+    self.correlations.pop(address, None)   # Clean tertiary structure if applicable
+```
+
+**Checklist for prune/delete operations:**
+1. List all data structures that store per-entity data
+2. Ensure ALL are cleaned when an entity is removed
+3. Use `.pop(key, None)` to safely handle missing keys
+
+**Rule of Thumb**: Search your codebase for all uses of the entity key. Each dict/list that stores per-entity data needs cleanup in the prune operation.
 
 ---
 
