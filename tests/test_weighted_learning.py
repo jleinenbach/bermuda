@@ -420,3 +420,81 @@ class TestControlledEvolution:
         assert abs(corr.expected_delta - 10.0) < 2.0, (
             f"After reset, should fall back to auto estimate (~10.0). Got {corr.expected_delta}"
         )
+
+
+class TestHyperPrecisionParadoxFix:
+    """Tests for the Hyper-Precision Paradox fix.
+
+    The Bug: Using variance=0.1 (σ≈0.3dB) for button training caused normal
+    BLE fluctuations (2-3dB) to be rejected as "20 sigma events" by Z-score
+    matching, even though the room was correct.
+
+    The Fix: Button training now uses variance=2.0 (σ≈1.4dB), which:
+    - Still dominates in fusion (2.0 << auto variance ~16-25)
+    - But allows realistic BLE fluctuations in Z-score matching
+    """
+
+    def test_button_variance_allows_realistic_ble_fluctuations(self) -> None:
+        """Z-score for normal BLE fluctuation should be reasonable, not absurd.
+
+        Typical BLE fluctuation: 2-5 dB
+        With variance=0.1 (OLD): 2dB deviation = 2/0.316 ≈ 6.3 sigma (REJECT!)
+        With variance=2.0 (NEW): 2dB deviation = 2/1.41 ≈ 1.4 sigma (OK!)
+        """
+        corr = ScannerPairCorrelation(scanner_address="test_scanner")
+
+        # User trains room with button at -80dB delta
+        corr.update_button(-80.0)
+
+        # Verify the fused variance is realistic (variance=2.0 from button)
+        # Note: Without auto data, fused variance equals button variance
+        assert corr.variance >= 1.0, (
+            f"Button variance should be >= 1.0 for realistic matching. Got {corr.variance}"
+        )
+
+        # Normal BLE fluctuation: signal drifts to -82dB (2dB change)
+        observed = -82.0
+        z_score = corr.z_score(observed)
+
+        # Z-score should be reasonable (< 3 sigma), not absurd (> 6 sigma)
+        assert z_score < 3.0, (
+            f"Normal 2dB BLE fluctuation should have z-score < 3.0. Got {z_score}"
+        )
+
+    def test_button_variance_still_provides_high_confidence(self) -> None:
+        """Button variance should still be much lower than typical auto variance.
+
+        This ensures button still dominates in the fusion weighting.
+        """
+        corr = ScannerPairCorrelation(scanner_address="test_scanner")
+
+        # Let auto learn with typical noise
+        for _ in range(100):
+            corr.update(10.0)
+
+        auto_variance = corr._kalman_auto.variance
+
+        # Button training
+        corr.update_button(10.0)
+        button_variance = corr._kalman_button.variance
+
+        # Button variance should be significantly lower than converged auto variance
+        assert button_variance < auto_variance, (
+            f"Button variance ({button_variance}) should be < auto variance ({auto_variance})"
+        )
+
+    def test_absolute_rssi_z_score_accepts_normal_fluctuations(self) -> None:
+        """ScannerAbsoluteRssi should also accept normal BLE fluctuations."""
+        profile = ScannerAbsoluteRssi(scanner_address="test_scanner")
+
+        # User trains at -70dB
+        profile.update_button(-70.0)
+
+        # Normal fluctuation: -73dB (3dB change)
+        observed = -73.0
+        z_score = profile.z_score(observed)
+
+        # Z-score should be reasonable (< 3 sigma)
+        assert z_score < 3.0, (
+            f"Normal 3dB BLE fluctuation should have z-score < 3.0. Got {z_score}"
+        )

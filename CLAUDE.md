@@ -124,9 +124,11 @@ def expected_rssi(self) -> float:
 ```python
 def update_button(self, rssi: float) -> float:
     # Create high-confidence anchor state
+    # IMPORTANT: variance=2.0 (σ≈1.4dB) is physically realistic for BLE
+    # Do NOT use variance < 1.0! See "Hyper-Precision Paradox" in Lessons Learned
     self._kalman_button.reset_to_value(
         value=rssi,
-        variance=0.1,       # High confidence anchor
+        variance=2.0,       # High confidence but realistic (σ≈1.4dB)
         sample_count=500,   # Massive inertia as base
     )
     return self.expected_rssi  # Returns fused value
@@ -150,9 +152,17 @@ Weeks later: Environment changes slightly
 | Constant | Value | Purpose |
 |----------|-------|---------|
 | `MAX_AUTO_RATIO` | 0.30 | Auto influence capped at 30% |
-| Anchor variance | 0.1 | High confidence for button anchor |
+| Anchor variance | 2.0 | High confidence (σ≈1.4dB) but realistic for BLE |
 | Anchor sample_count | 500 | Massive inertia as base |
 | `MIN_VARIANCE` | 0.001 | Prevents division by zero |
+
+**⚠️ IMPORTANT: Hyper-Precision Paradox**
+
+Do NOT set anchor variance < 1.0! Variance serves TWO purposes:
+1. **Fusion weighting**: Lower variance = higher weight (OK to be low)
+2. **Z-Score matching**: Variance defines acceptable deviation (must be realistic!)
+
+With variance=0.1 (σ≈0.3dB), a normal 2dB BLE fluctuation becomes a "6 sigma event" → room is REJECTED as impossible, even though it's correct!
 
 ## Testing Standards
 
@@ -564,25 +574,27 @@ self.correlations[device_address][target_area_id].update_button(
 self.room_profiles[target_area_id].update_button(rssi_readings)
 ```
 
-### Frozen Layer Mechanism (replaces Variance Inflation)
+### Anchor Creation Mechanism (Clamped Fusion)
 
 **Problem**: The old approach used inverse-variance weighted fusion, but auto-learning eventually overwhelmed manual corrections regardless of variance inflation.
 
-**Solution**: Complete hierarchical priority with frozen layers (`scanner_pair.py:104-130`, `scanner_absolute.py:106-132`):
+**Solution**: Clamped Bayesian Fusion with explicit auto-influence limit (`scanner_pair.py:109-134`, `scanner_absolute.py:108-134`):
 ```python
 def update_button(self, rssi: float) -> float:
-    # Create frozen state - this completely overrides auto-learning
+    # Create anchor state - high confidence but PHYSICALLY REALISTIC
+    # IMPORTANT: variance=2.0 (σ≈1.4dB) allows normal BLE fluctuations
+    # Do NOT use variance < 1.0! (See Hyper-Precision Paradox)
     self._kalman_button.reset_to_value(
         value=rssi,
-        variance=0.01,      # Extremely high confidence
+        variance=2.0,       # High confidence, realistic for BLE
         sample_count=500,   # Massive inertia
     )
-    return self.expected_rssi  # Returns button value, ignoring auto!
+    return self.expected_rssi  # Returns clamped fusion result
 ```
 
 **How `reset_to_value()` Works** (`filters/kalman.py:202-229`):
 ```python
-def reset_to_value(self, value: float, variance: float = 0.01, sample_count: int = 500) -> None:
+def reset_to_value(self, value: float, variance: float = 2.0, sample_count: int = 500) -> None:
     """Force filter to a specific state (Teacher Forcing)."""
     self.estimate = value
     self.variance = variance
@@ -590,7 +602,7 @@ def reset_to_value(self, value: float, variance: float = 0.01, sample_count: int
     self._initialized = True
 ```
 
-**Effect on Output**:
+**Effect on Output (with Clamped Fusion)**:
 ```
 Before button training:
   Auto:   1000 samples, estimate=-78dB
@@ -599,8 +611,9 @@ Before button training:
 
 After button training:
   Auto:   1000 samples, estimate=-78dB (still learning in shadow)
-  Button: 500 samples, estimate=-85dB (frozen)
-  → expected_rssi returns -85dB (button wins, auto ignored!)
+  Button: 500 samples, estimate=-85dB (anchor)
+  → Clamped Fusion: auto influence capped at 30%
+  → expected_rssi ≈ 0.7*(-85) + 0.3*(-78) = -82.9dB (anchor + polish)
 ```
 
 ### Area Lock Mechanism
@@ -738,7 +751,11 @@ Kalman filter variance (uncertainty) converges to a steady state after ~20 sampl
 
 Each `ScannerPairCorrelation` and `ScannerAbsoluteRssi` instance has its own filters that converge independently.
 
-**Implication for hierarchical priority**: The button filter variance determines its confidence level, but since we use strict priority (not fusion), the button ALWAYS overrides auto when initialized. The frozen state (variance=0.01, samples=500) ensures maximum confidence for user-trained values.
+**Implication for Clamped Fusion**: The button filter variance determines its confidence level for BOTH fusion weighting AND z-score matching. We use variance=2.0 (σ≈1.4dB) to balance:
+- Fusion: Still much lower than auto variance (~3-16), so button dominates
+- Matching: Realistic for BLE signals, accepts normal 2-3dB fluctuations
+
+See Lesson #27 for why artificially low variance breaks matching.
 
 ### 7. Trace Full Call Chain for Attribute Precedence
 
@@ -1100,8 +1117,9 @@ Month 3: Auto has 100,000 samples → User calibration completely lost
 │  ┌──────────────────────────────────────────────────────────────┐   │
 │  │ Create ANCHOR state:                                          │   │
 │  │   - estimate = user's value                                   │   │
-│  │   - variance = 0.1 (high confidence)                          │   │
+│  │   - variance = 2.0 (σ≈1.4dB, realistic for BLE)              │   │
 │  │   - sample_count = 500 (massive inertia)                      │   │
+│  │   ⚠️ Do NOT use variance < 1.0! (Hyper-Precision Paradox)     │   │
 │  └──────────────────────────────────────────────────────────────┘   │
 │                          │                                           │
 │                          ▼                                           │
@@ -1109,6 +1127,10 @@ Month 3: Auto has 100,000 samples → User calibration completely lost
 │    1. Calculate inverse-variance weights                             │
 │    2. If auto_weight > 30% → clamp to 30%                           │
 │    3. Return weighted average (user ≥70%, auto ≤30%)                │
+│                                                                      │
+│  z_score() uses SAME variance for matching:                          │
+│    - With variance=2.0: 2dB deviation = 1.4 sigma (OK!)             │
+│    - With variance=0.1: 2dB deviation = 6.3 sigma (REJECTED!)       │
 │                                                                      │
 └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -1131,6 +1153,7 @@ Button: 500 samples (anchor), estimate=-85dB (at least 70% weight)
 3. **Controlled evolution**: Auto can "polish" the anchor, but never overpower it
 4. **Intelligent adaptation**: System responds to real environmental changes within limits
 5. **Both correlation classes**: `ScannerPairCorrelation` AND `ScannerAbsoluteRssi` use identical clamped fusion logic
+6. **Realistic variance (2.0)**: Avoids "Hyper-Precision Paradox" - variance serves both fusion AND z-score matching, so must be physically realistic (σ≈1.4dB for BLE signals)
 
 ## Cross-Floor Hysteresis Protection
 
@@ -1876,3 +1899,62 @@ if auto_weight / total_weight > MAX_AUTO_RATIO:
 - Changes should be gradual, not abrupt
 
 **Rule of Thumb**: When user and auto-learning conflict, ask: "Should auto be able to completely override the user over time?" If no, clamp the auto influence to a maximum percentage (30% is a good default).
+
+### 27. Hyper-Precision Paradox: Variance Dual-Use Trap
+
+When a single variance value serves TWO purposes (weighting AND matching), optimizing for one can destroy the other.
+
+**The Bug (Scannerless Room Detection):**
+```
+User trains "Keller" (cellar) at -80dB with variance=0.1 (σ≈0.3dB)
+Reality: Signal fluctuates to -82dB (normal BLE noise)
+Deviation: 2dB / 0.3dB = 6.7 sigma
+Result: Z-score matching says "impossible!" → Room REJECTED as measurement error
+```
+
+**Why It Happens:**
+
+| Purpose | Ideal Variance | Why |
+|---------|---------------|-----|
+| Fusion weighting | LOW (0.1) | Maximizes button's weight vs auto |
+| Z-score matching | HIGH (2.0+) | Accepts realistic BLE fluctuations |
+
+When both use the SAME variance, you can't optimize for both.
+
+**The Solution:**
+
+With Clamped Fusion, we don't need artificially low variance to "win" the weighting battle - the explicit 30% cap handles that. So we can use a physically realistic variance:
+
+```python
+# BEFORE (broken): variance=0.1 → 2dB = 6.7 sigma → REJECTED
+# AFTER (fixed):   variance=2.0 → 2dB = 1.4 sigma → ACCEPTED
+
+def update_button(self, rssi: float) -> float:
+    self._kalman_button.reset_to_value(
+        value=rssi,
+        variance=2.0,       # σ≈1.4dB - realistic for BLE
+        sample_count=500,
+    )
+```
+
+**Why variance=2.0 (σ≈1.4dB)?**
+- BLE signals typically fluctuate 2-5dB
+- 2dB deviation / 1.4dB σ ≈ 1.4 sigma (acceptable)
+- 5dB deviation / 1.4dB σ ≈ 3.5 sigma (borderline but reasonable)
+- Still MUCH lower than auto variance (~16), so button dominates fusion
+
+**Bug Pattern:**
+```python
+# BAD - Optimizing for weighting destroys matching
+variance = 0.01  # "Maximum confidence!"
+# But z_score(observed) becomes absurdly high for normal data
+```
+
+**Fix Pattern:**
+```python
+# GOOD - Separate concerns or use realistic shared value
+variance = 2.0  # Realistic for BLE, still << auto variance
+# Clamped Fusion handles weighting dominance explicitly
+```
+
+**Rule of Thumb**: When a parameter serves multiple purposes, verify it works for ALL of them. If optimizing for one breaks another, either separate the concerns or find a balanced middle value that works for both.

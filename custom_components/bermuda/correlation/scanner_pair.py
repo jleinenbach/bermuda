@@ -111,7 +111,16 @@ class ScannerPairCorrelation:
         Update correlation with button-trained delta (The Anchor).
 
         This creates a high-confidence anchor state. The button filter is set
-        to high confidence (variance=0.1) and high sample count (500).
+        to high confidence (variance=2.0, σ≈1.4dB) and high sample count (500).
+
+        IMPORTANT: Variance serves TWO purposes:
+        1. Fusion weighting: Lower variance = higher weight in Clamped Fusion
+        2. Z-Score matching: Variance defines what counts as "acceptable" deviation
+
+        We use variance=2.0 (σ≈1.4dB) because:
+        - It's MUCH lower than typical auto variance (16-25), ensuring fusion dominance
+        - It's PHYSICALLY REALISTIC: BLE signals fluctuate 2-5dB normally
+        - A variance of 0.1 would make 2dB deviation = 6 sigma = "impossible" → room rejected!
 
         With Clamped Fusion, auto-learning can still refine the result, but
         its influence is clamped to max 30% - the user anchor dominates.
@@ -124,11 +133,12 @@ class ScannerPairCorrelation:
 
         """
         # Use reset_to_value to create a high-confidence anchor state
-        # - variance=0.1: High confidence but allows some fusion dynamics
+        # - variance=2.0: High confidence (σ≈1.4dB) but physically realistic for BLE
         # - sample_count=500: Massive inertia as base
+        # NOTE: Do NOT use variance < 1.0! See "Hyper-Precision Paradox" in CLAUDE.md
         self._kalman_button.reset_to_value(
             value=observed_delta,
-            variance=0.1,
+            variance=2.0,
             sample_count=500,
         )
         return self.expected_delta
