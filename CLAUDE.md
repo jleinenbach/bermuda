@@ -78,68 +78,72 @@ Learns typical RSSI patterns for each area to improve localization:
 
 **Key insight**: When primary scanner goes offline, absolute profiles let us verify if secondary scanner readings still match the learned room pattern.
 
-### Two-Pool Kalman Fusion (Weighted Learning)
+### Hierarchical Priority System (Frozen Layers & Shadow Learning)
 
-The correlation classes (`ScannerPairCorrelation`, `ScannerAbsoluteRssi`) use a dual-filter architecture to balance automatic learning with manual button training:
+The correlation classes (`ScannerPairCorrelation`, `ScannerAbsoluteRssi`) use a dual-filter architecture with **strict hierarchical priority** (not fusion):
 
 ```
                     ┌─────────────────────────────────────┐
 Automatic Learning ─┼─→ _kalman_auto ──┐                  │
-                    │                  │ Inverse-Variance │
-                    │                  ├─→ Fused Estimate │
-Button Training ────┼─→ _kalman_button─┘     Weighting    │
+                    │  (Shadow Mode)   │                  │
+                    │                  │ Priority Check   │
+                    │                  ├─→ Final Output   │
+Button Training ────┼─→ _kalman_button─┘                  │
+                    │  (Frozen Layer)  │ Button > Auto    │
                     └─────────────────────────────────────┘
 ```
 
-**Why Two Pools?**
-- Auto learning adapts to environment changes (furniture, obstacles)
-- Button training preserves deliberate user corrections
-- Neither overwrites the other - they're fused mathematically
+**Why Hierarchical Priority (Not Fusion)?**
+- **Problem with fusion**: Auto-learning accumulates indefinitely, eventually overwhelming manual corrections
+- **Solution**: Button training ALWAYS overrides auto-learning (no mixing)
+- User calibration persists indefinitely against environment drift
 
-**Inverse-Variance Weighting (Optimal Bayesian Fusion):**
+**Priority Logic:**
 ```python
-# weight = 1 / variance (lower variance = higher confidence = more weight)
-auto_var = max(self._kalman_auto.variance, MIN_VARIANCE)
-button_var = max(self._kalman_button.variance, MIN_VARIANCE)
+@property
+def expected_rssi(self) -> float:
+    # PRIORITY 1: User training is absolute truth
+    if self._kalman_button.is_initialized:
+        return self._kalman_button.estimate  # Auto is ignored!
 
-auto_weight = 1.0 / auto_var
-button_weight = 1.0 / button_var
-total_weight = auto_weight + button_weight
+    # PRIORITY 2: Fallback to auto-learning if no user training
+    if self._kalman_auto.is_initialized:
+        return self._kalman_auto.estimate
 
-fused_estimate = (auto_estimate * auto_weight + button_estimate * button_weight) / total_weight
-fused_variance = 1.0 / total_weight  # Combined uncertainty
+    return 0.0
 ```
 
-**Kalman Variance Behavior (per Correlation Object):**
-
-Each `ScannerPairCorrelation` and `ScannerAbsoluteRssi` has its own Kalman filters that converge independently:
-
-| Samples | Variance | Interpretation |
-|---------|----------|----------------|
-| 1 | 16.0 | High uncertainty (initial) |
-| 3 | 5.6 | Still uncertain |
-| 10 | 2.8 | Converging |
-| 20+ | ~2.6 | Steady state (converged) |
-
-Example structure showing independent sample counts:
+**Frozen Layer via `reset_to_value()`:**
+```python
+def update_button(self, rssi: float) -> float:
+    # Create frozen state with extremely high confidence
+    self._kalman_button.reset_to_value(
+        value=rssi,
+        variance=0.01,      # Very low = high confidence
+        sample_count=500,   # Massive inertia against drift
+    )
+    return self.expected_rssi
 ```
-Area "Wohnzimmer" → AreaProfile:
-  ├─ ScannerPairCorrelation (A↔B): auto=25 samples, button=0
-  ├─ ScannerPairCorrelation (A↔C): auto=18 samples, button=5
-  ├─ ScannerAbsoluteRssi (A): auto=30 samples, button=3
-  ├─ ScannerAbsoluteRssi (B): auto=22 samples, button=0
-  └─ ScannerAbsoluteRssi (C): auto=15 samples, button=0
+
+**Example: The "Keller-Lager" Problem Solved**
+```
+Day 1: User trains device in "Keller" (cellar)
+       → Button filter: Scanner Wohnzimmer = -85dB (frozen)
+       → Auto filter: Empty
+
+Weeks later: Auto-learning drifts due to environment changes
+       → Auto filter: Scanner Wohnzimmer = -78dB (drifted!)
+       → Button filter: Still -85dB (frozen, unchanged)
+       → expected_rssi returns -85dB (button wins!)
+       → Room detection stays stable!
 ```
 
 **Key Constants:**
 | Constant | Value | Purpose |
 |----------|-------|---------|
+| Frozen variance | 0.01 | Extremely high confidence for button |
+| Frozen sample_count | 500 | Massive inertia against drift |
 | `MIN_VARIANCE` | 0.001 | Prevents division by zero |
-
-**Practical Effect:**
-- Converged filter (many samples, low variance) dominates over new filter (few samples, high variance)
-- Consistent button training naturally dominates over noisy auto learning
-- System self-regulates: quality matters more than quantity
 
 ## Testing Standards
 
@@ -431,7 +435,7 @@ Auto-detection constantly overwrites manual room corrections. Users need a way t
 │                                     │                                    │
 │                                     ▼                                    │
 │  ┌─────────────────────────────────────────────────────────────────────┐│
-│  │ Two-Pool Kalman Fusion (in AreaProfile)                             ││
+│  │ Hierarchical Priority (in AreaProfile)                              ││
 │  │                                                                      ││
 │  │ ┌─────────────────┐    ┌─────────────────┐                          ││
 │  │ │ ScannerPair     │    │ ScannerAbsolute │                          ││
@@ -440,12 +444,12 @@ Auto-detection constantly overwrites manual room corrections. Users need a way t
 │  │ └────────┬────────┘    └────────┬────────┘                          ││
 │  │          │                      │                                    ││
 │  │          ▼                      ▼                                    ││
-│  │   _kalman_auto ◄──────► _kalman_button                              ││
+│  │   _kalman_auto          _kalman_button                              ││
+│  │   (Shadow Mode)         (Frozen Layer)                              ││
 │  │        │                      │                                      ││
-│  │        └──────┬───────────────┘                                      ││
-│  │               ▼                                                      ││
-│  │   Inverse-Variance Weighted Fusion                                  ││
-│  │   weight = 1/variance → lower variance = more trust                 ││
+│  │        │              button.is_initialized?                        ││
+│  │        │                   Yes → return button.estimate             ││
+│  │        └──────────────────► No → return auto.estimate               ││
 │  └─────────────────────────────────────────────────────────────────────┘│
 │                                                                          │
 │  finally: Clear training_target_* + area_locked_* → Dropdowns reset     │
@@ -533,34 +537,43 @@ self.correlations[device_address][target_area_id].update_button(
 self.room_profiles[target_area_id].update_button(rssi_readings)
 ```
 
-### Variance Inflation Mechanism
+### Frozen Layer Mechanism (replaces Variance Inflation)
 
-**Problem**: After thousands of auto-learning samples, the auto-filter has extremely low variance and dominates button training via inverse-variance weighting.
+**Problem**: The old approach used inverse-variance weighted fusion, but auto-learning eventually overwhelmed manual corrections regardless of variance inflation.
 
-**Solution** (`scanner_pair.py:105-133`, `scanner_absolute.py:104-135`):
+**Solution**: Complete hierarchical priority with frozen layers (`scanner_pair.py:104-130`, `scanner_absolute.py:106-132`):
 ```python
-def update_button(self, observed_delta: float) -> float:
-    # Only inflate if auto-filter is converged (has learned a lot)
-    converged_threshold = 5.0
-    if self._kalman_auto.sample_count > 0 and self._kalman_auto.variance < converged_threshold:
-        # Reset to unconverged state (~15.0 variance)
-        self._kalman_auto.variance = 15.0
-
-    self._kalman_button.update(observed_delta)
-    return self.expected_delta
+def update_button(self, rssi: float) -> float:
+    # Create frozen state - this completely overrides auto-learning
+    self._kalman_button.reset_to_value(
+        value=rssi,
+        variance=0.01,      # Extremely high confidence
+        sample_count=500,   # Massive inertia
+    )
+    return self.expected_rssi  # Returns button value, ignoring auto!
 ```
 
-**Effect on Weighting**:
+**How `reset_to_value()` Works** (`filters/kalman.py:202-229`):
+```python
+def reset_to_value(self, value: float, variance: float = 0.01, sample_count: int = 500) -> None:
+    """Force filter to a specific state (Teacher Forcing)."""
+    self.estimate = value
+    self.variance = variance
+    self.sample_count = sample_count
+    self._initialized = True
 ```
-Before inflation:
-  Auto:   1000 samples, variance=2.6, weight=0.385
-  Button: 10 samples,   variance=5.6, weight=0.179
-  → Auto dominates (68%)
 
-After inflation:
-  Auto:   1000 samples, variance=15.0, weight=0.067
-  Button: 10 samples,   variance=5.6,  weight=0.179
-  → Button dominates (73%)
+**Effect on Output**:
+```
+Before button training:
+  Auto:   1000 samples, estimate=-78dB
+  Button: Not initialized
+  → expected_rssi returns -78dB (auto fallback)
+
+After button training:
+  Auto:   1000 samples, estimate=-78dB (still learning in shadow)
+  Button: 500 samples, estimate=-85dB (frozen)
+  → expected_rssi returns -85dB (button wins, auto ignored!)
 ```
 
 ### Area Lock Mechanism
@@ -698,7 +711,7 @@ Kalman filter variance (uncertainty) converges to a steady state after ~20 sampl
 
 Each `ScannerPairCorrelation` and `ScannerAbsoluteRssi` instance has its own filters that converge independently.
 
-**Implication for inverse-variance weighting**: The weight difference between filters comes from their convergence state, not sample count. A filter with 100 samples has nearly the same variance as one with 1000 samples, but both have much lower variance than a filter with only 3 samples.
+**Implication for hierarchical priority**: The button filter variance determines its confidence level, but since we use strict priority (not fusion), the button ALWAYS overrides auto when initialized. The frozen state (variance=0.01, samples=500) ensures maximum confidence for user-trained values.
 
 ### 7. Trace Full Call Chain for Attribute Precedence
 
@@ -1035,66 +1048,62 @@ A device must pass BOTH checks to be confidently placed in a room.
 
 ## Button Training vs Auto-Learning Architecture
 
-### Problem: Inverse-Variance Weighting Favors Quantity
+### Problem: Fusion Allows Drift Over Time
 
-The dual-filter system uses inverse-variance weighting to fuse auto and button estimates:
-
-```python
-weight = 1 / variance  # Lower variance = higher weight
-```
-
-Kalman filter variance converges quickly (~20 samples to steady state ~2.6). After thousands of auto-samples, the auto-filter has extremely low variance and dominates any button training.
+The original dual-filter system used inverse-variance weighted fusion to combine auto and button estimates. Even with variance inflation, auto-learning could eventually overwhelm manual corrections over weeks/months of continuous operation.
 
 ```
-Auto:   1000 samples, variance=2.6, weight=0.385
-Button: 10 samples,   variance=5.6, weight=0.179
-→ Auto gets 68% weight, Button gets 32% weight
-→ Button training is nearly ineffective!
+The "Keller-Lager Problem":
+Day 1: User trains "Keller" → Button: -85dB
+Week 2: Auto has 10,000 samples at -78dB → Auto starts to dominate
+Month 3: Auto has 100,000 samples → User calibration completely lost
+→ Room detection drifts despite initial manual training!
 ```
 
-### Solution: Variance Inflation on Button Training
+### Solution: Hierarchical Priority (Frozen Layers)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                     update_button() Flow                             │
 ├─────────────────────────────────────────────────────────────────────┤
 │                                                                      │
-│  Button Press ──→ Check auto variance                                │
-│                          │                                           │
-│              ┌───────────┴───────────┐                               │
-│              │ variance < 5.0?       │                               │
-│              │ (converged)           │                               │
-│              └───────────┬───────────┘                               │
-│                   Yes ↓      ↓ No                                    │
-│         ┌─────────────────────────────┐                              │
-│         │ Inflate to 15.0 │ Keep as-is│                              │
-│         │ (unconverged)   │           │                              │
-│         └─────────────────────────────┘                              │
+│  Button Press ──→ reset_to_value()                                  │
 │                          │                                           │
 │                          ▼                                           │
-│              Update button Kalman filter                             │
+│  ┌──────────────────────────────────────────────────────────────┐   │
+│  │ Create FROZEN state:                                          │   │
+│  │   - estimate = user's value                                   │   │
+│  │   - variance = 0.01 (extremely confident)                     │   │
+│  │   - sample_count = 500 (massive inertia)                      │   │
+│  │   - _initialized = True                                       │   │
+│  └──────────────────────────────────────────────────────────────┘   │
 │                          │                                           │
 │                          ▼                                           │
-│              Fuse with inflated auto                                 │
+│  expected_rssi uses PRIORITY logic:                                  │
+│    if button.is_initialized → return button.estimate (auto ignored!)│
+│    else → return auto.estimate (fallback only)                      │
 │                                                                      │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-**After Inflation:**
+**Result:**
 ```
-Auto:   1000 samples, variance=15.0 (inflated), weight=0.067
-Button: 10 samples,   variance=5.6,              weight=0.179
-→ Button gets 73% weight, Auto gets 27% weight
-→ Button training now dominates!
+Before: Fusion allowed auto to overwhelm button over time
+After:  Button completely overrides auto (no mixing!)
+
+Auto:   100,000 samples, estimate=-78dB (running in shadow)
+Button: 500 samples (frozen), estimate=-85dB
+→ expected_rssi returns -85dB FOREVER (until user re-trains)
+→ Room detection stays stable indefinitely!
 ```
 
 ### Key Design Decisions
 
-1. **Threshold 5.0**: Only inflate if auto is converged (variance < 5.0)
-2. **Target 15.0**: Reset to approximately initial/unconverged state
-3. **One-time inflation**: Once variance >= 5.0, don't inflate again
-4. **Auto can recover**: Continued auto-learning will reconverge naturally
-5. **Both correlation classes**: `ScannerPairCorrelation.update_button()` AND `ScannerAbsoluteRssi.update_button()` both implement variance inflation - they must stay in sync
+1. **No fusion**: Button > Auto is strict priority, not weighted mixing
+2. **Frozen state**: `reset_to_value()` creates immutable calibration point
+3. **Shadow learning**: Auto continues learning for diagnostics but doesn't affect output
+4. **Permanent override**: User calibration persists until explicitly re-trained
+5. **Both correlation classes**: `ScannerPairCorrelation` AND `ScannerAbsoluteRssi` use identical hierarchical priority logic
 
 ## Cross-Floor Hysteresis Protection
 
@@ -1167,21 +1176,30 @@ if max_absolute_z > 3.0:
     confidence = delta_confidence * (0.5 ** (max_absolute_z - 2.0))
 ```
 
-### 15. Inverse-Variance Weighting Needs Manual Override
+### 15. Fusion Cannot Preserve Manual Calibration Long-Term
 
-When fusing estimates from multiple sources using inverse-variance weighting, the source with lowest variance (highest confidence) dominates. This is mathematically optimal BUT:
-- Automatic learning accumulates indefinitely → extremely low variance
-- Manual corrections are limited samples → higher variance
-- Manual corrections become ineffective!
+When fusing estimates from multiple sources (even with variance inflation), the source with more samples eventually dominates. This is unavoidable with any fusion approach:
+- Automatic learning accumulates indefinitely → eventually overwhelms manual
+- Variance inflation only delays the problem, doesn't solve it
+- Manual corrections become ineffective over weeks/months
 
-**Fix Pattern**: When manual input occurs, inflate the automatic source's variance to "forget" some confidence:
+**Fix Pattern**: Use hierarchical priority instead of fusion - manual completely overrides automatic:
 
 ```python
 def update_manual(self, value):
-    # Reset auto confidence when user provides correction
-    if self._auto_filter.variance < CONVERGED_THRESHOLD:
-        self._auto_filter.variance = INITIAL_VARIANCE
-    self._manual_filter.update(value)
+    # Create frozen state - auto is now ignored entirely
+    self._manual_filter.reset_to_value(
+        value=value,
+        variance=0.01,      # Extremely confident
+        sample_count=500,   # Massive inertia
+    )
+
+@property
+def estimate(self):
+    # PRIORITY: Manual > Auto (no fusion!)
+    if self._manual_filter.is_initialized:
+        return self._manual_filter.estimate  # Auto ignored
+    return self._auto_filter.estimate  # Fallback only
 ```
 
 ### 16. Hysteresis Escape Hatches Need Guarding

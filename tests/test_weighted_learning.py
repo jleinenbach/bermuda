@@ -1,12 +1,12 @@
 """
-Tests for the weighted learning system (Two-Pool Kalman Fusion with Inverse-Variance Weighting).
+Tests for the Hierarchical Priority System (Frozen Layers & Shadow Learning).
 
 These tests verify that:
 1. Auto and button learning use separate Kalman filters
-2. Inverse-variance weighting gives more weight to lower-variance estimates
-3. Both pools continue learning indefinitely (no hard caps)
-4. The system adapts to environment changes while preserving manual corrections
-5. Consistent button training naturally dominates over noisy auto learning
+2. Button training ALWAYS overrides auto-learning (hierarchical priority, not fusion)
+3. Auto learning continues in "shadow mode" but doesn't affect output when button data exists
+4. The system preserves user calibration indefinitely against environment drift
+5. User training creates a "frozen" state that cannot be corrupted by auto-learning
 """
 
 from __future__ import annotations
@@ -38,16 +38,17 @@ class TestScannerPairCorrelationDualFilter:
         assert corr.button_sample_count == 0
 
     def test_button_only_returns_button_estimate(self) -> None:
-        """With only button samples, estimate equals button filter estimate."""
+        """With only button samples, estimate equals button filter estimate (frozen state)."""
         corr = ScannerPairCorrelation(scanner_address="test_scanner")
 
-        for _ in range(30):
-            corr.update_button(-15.0)
+        # Button training uses reset_to_value() which sets sample_count=500 for frozen state
+        corr.update_button(-15.0)
 
-        # Estimate should be close to -15.0
-        assert abs(corr.expected_delta - (-15.0)) < 1.0
+        # Estimate should be exactly -15.0 (frozen value)
+        assert abs(corr.expected_delta - (-15.0)) < 0.01
         assert corr.auto_sample_count == 0
-        assert corr.button_sample_count == 30
+        # Sample count is 500 due to reset_to_value() creating frozen state
+        assert corr.button_sample_count == 500
 
     def test_button_training_overrides_converged_auto(self) -> None:
         """Button training inflates auto variance to allow user corrections to take effect.
@@ -127,20 +128,22 @@ class TestScannerPairCorrelationDualFilter:
             f"Button should pull estimate toward -10: before={estimate_before_button}, after={estimate_after_button}"
         )
 
-    def test_sample_count_is_sum_of_both_filters(self) -> None:
-        """Total sample count should be simple sum (used for maturity checks)."""
+    def test_sample_count_reflects_frozen_state(self) -> None:
+        """Button training creates frozen state with high sample count for stability."""
         corr = ScannerPairCorrelation(scanner_address="test_scanner")
 
         for _ in range(30):
             corr.update(10.0)
 
-        for _ in range(10):
-            corr.update_button(10.0)
+        # Single button training creates frozen state
+        corr.update_button(20.0)
 
-        # Total = 30 auto + 10 button = 40 (simple sum for maturity)
-        assert corr.sample_count == 40
+        # Auto samples are counted normally
         assert corr.auto_sample_count == 30
-        assert corr.button_sample_count == 10
+        # Button uses reset_to_value() with sample_count=500 for frozen state
+        assert corr.button_sample_count == 500
+        # Total reflects frozen state
+        assert corr.sample_count == 530
 
 
 class TestScannerAbsoluteRssiDualFilter:
@@ -158,14 +161,16 @@ class TestScannerAbsoluteRssiDualFilter:
         assert profile.button_sample_count == 0
 
     def test_button_only_returns_button_estimate(self) -> None:
-        """With only button samples, estimate equals button filter estimate."""
+        """With only button samples, estimate equals button filter estimate (frozen state)."""
         profile = ScannerAbsoluteRssi(scanner_address="test_scanner")
 
-        for _ in range(30):
-            profile.update_button(-75.0)
+        # Single button training creates frozen state
+        profile.update_button(-75.0)
 
-        assert abs(profile.expected_rssi - (-75.0)) < 2.0
-        assert profile.button_sample_count == 30
+        # Estimate should be exactly -75.0 (frozen value)
+        assert abs(profile.expected_rssi - (-75.0)) < 0.01
+        # Sample count is 500 due to reset_to_value() creating frozen state
+        assert profile.button_sample_count == 500
 
 
 class TestRoomProfileWeightedLearning:
@@ -183,7 +188,7 @@ class TestRoomProfileWeightedLearning:
             assert pair.button_sample_count == 0
 
     def test_update_button_uses_button_filter(self) -> None:
-        """update_button() should use the button Kalman filter."""
+        """update_button() creates frozen state in button Kalman filter."""
         profile = RoomProfile(area_id="test_area")
 
         readings = {"scanner_a": -50.0, "scanner_b": -60.0}
@@ -191,7 +196,8 @@ class TestRoomProfileWeightedLearning:
 
         for pair in profile._scanner_pairs.values():
             assert pair.auto_sample_count == 0
-            assert pair.button_sample_count == 1
+            # Button training creates frozen state with sample_count=500
+            assert pair.button_sample_count == 500
 
 
 class TestAreaProfileWeightedLearning:
@@ -216,7 +222,7 @@ class TestAreaProfileWeightedLearning:
             assert abs_profile.button_sample_count == 0
 
     def test_update_button_uses_button_filter(self) -> None:
-        """update_button() should use the button Kalman filter."""
+        """update_button() creates frozen state in button Kalman filters."""
         profile = AreaProfile(area_id="test_area")
 
         profile.update_button(
@@ -227,11 +233,13 @@ class TestAreaProfileWeightedLearning:
 
         for corr in profile._correlations.values():
             assert corr.auto_sample_count == 0
-            assert corr.button_sample_count == 1
+            # Button training creates frozen state with sample_count=500
+            assert corr.button_sample_count == 500
 
         for abs_profile in profile._absolute_profiles.values():
             assert abs_profile.auto_sample_count == 0
-            assert abs_profile.button_sample_count == 1
+            # Button training creates frozen state with sample_count=500
+            assert abs_profile.button_sample_count == 500
 
 
 class TestSerializationDualFilter:
@@ -332,26 +340,29 @@ class TestInverseVarianceFusionMath:
         estimate = corr.expected_delta
         assert estimate > 20.0, f"Converged button should dominate, got {estimate}"
 
-    def test_variance_fusion_formula(self) -> None:
-        """Combined variance follows inverse-variance fusion: 1/(1/v1 + 1/v2)."""
+    def test_variance_uses_hierarchical_priority(self) -> None:
+        """Variance uses hierarchical priority: button variance when button exists."""
         corr = ScannerPairCorrelation(scanner_address="test_scanner")
 
-        # Train both filters
+        # Train auto first
         for _ in range(50):
             corr.update(10.0)
-        for _ in range(50):
-            corr.update_button(20.0)
 
-        auto_var = max(corr._kalman_auto.variance, MIN_VARIANCE)
-        button_var = max(corr._kalman_button.variance, MIN_VARIANCE)
+        auto_var_before = corr.variance
+        assert auto_var_before > 2.0, "Auto should have converged variance"
 
-        # Expected combined variance
-        expected_combined = 1.0 / (1.0 / auto_var + 1.0 / button_var)
-        actual_combined = corr.variance
+        # Train button - this should take priority
+        corr.update_button(20.0)
 
-        assert abs(actual_combined - expected_combined) < 0.01, (
-            f"Combined variance {actual_combined} != expected {expected_combined}"
+        # After button training, variance should be button's frozen variance (0.01)
+        actual_variance = corr.variance
+        button_variance = corr._kalman_button.variance
+
+        assert actual_variance == button_variance, (
+            f"Variance should be button variance when button exists: actual={actual_variance}, button={button_variance}"
         )
+        # Frozen state has very low variance
+        assert actual_variance < 0.1, f"Button variance should be ~0.01, got {actual_variance}"
 
     def test_min_variance_prevents_division_by_zero(self) -> None:
         """MIN_VARIANCE constant prevents division by zero in edge cases."""
