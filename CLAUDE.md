@@ -160,7 +160,8 @@ Training sample 10: RSSI = -79dB
 |----------|-------|---------|
 | `MAX_AUTO_RATIO` | 0.30 | Auto influence capped at 30% |
 | `MIN_VARIANCE` | 0.001 | Prevents division by zero |
-| `TRAINING_SAMPLE_COUNT` | 10 | Samples per training session |
+| `TRAINING_SAMPLE_COUNT` | 20 | Samples per training session (meets maturity threshold) |
+| `TRAINING_SAMPLE_DELAY` | 0.5s | Delay between samples for diverse RSSI readings |
 
 ### Calibration vs Fingerprints (Independence)
 
@@ -546,11 +547,16 @@ filtered_rssi = filter.update_adaptive(raw_rssi, ref_power=-55)
   - Rooms WITH scanners get continuous auto-learning (quickly reaches 20+ samples)
   - Scannerless rooms have NO scanner → NO auto-learning → ONLY button training
   - 10 button samples < 20 maturity threshold → profile never mature
-- **Solution**: Button training represents USER INTENT - trust it regardless of sample count
-  - Added `has_button_training` property: checks if button filter is initialized
-  - Modified `is_mature` to return `True` if `has_button_training` OR `sample_count >= threshold`
-  - User-trained profiles are now always considered "mature enough" for UKF matching
-- **Files**: `correlation/scanner_absolute.py`, `correlation/scanner_pair.py`
+- **Solution (two-part)**:
+  1. **Semantic fix**: Added `has_button_training` property - user intent is ALWAYS trusted
+     - Modified `is_mature` to return `True` if `has_button_training` OR `sample_count >= threshold`
+     - User-trained profiles are now always considered "mature enough" for UKF matching
+  2. **Practical fix**: Increased `TRAINING_SAMPLE_COUNT` from 10 to 20
+     - Now naturally meets `MIN_SAMPLES_FOR_MATURITY` threshold
+     - Added `TRAINING_SAMPLE_DELAY = 0.5s` between samples for diverse RSSI readings
+     - Total training time: ~10 seconds (20 samples × 0.5s)
+- **Visual feedback**: Icon changes from `mdi:brain` to `mdi:timer-sand` during training
+- **Files**: `correlation/scanner_absolute.py`, `correlation/scanner_pair.py`, `button.py`
 
 ## Manual Fingerprint Training System
 
@@ -648,14 +654,23 @@ def available(self) -> bool:
 **Press Handler** (`button.py:139-213`):
 ```python
 async def async_press(self) -> None:
+    # Show loading indicator
+    self._is_training = True
+    self._attr_icon = self.ICON_TRAINING  # mdi:timer-sand
+    self.async_write_ha_state()
+
     try:
-        for i in range(TRAINING_SAMPLE_COUNT):  # 10 samples
+        for i in range(TRAINING_SAMPLE_COUNT):  # 20 samples
             await self.coordinator.async_train_fingerprint(
                 device_address=self.address,
                 target_area_id=target_area_id,
             )
+            if i < TRAINING_SAMPLE_COUNT - 1:
+                await asyncio.sleep(TRAINING_SAMPLE_DELAY)  # 0.5s between samples
     finally:
         # ALWAYS cleanup, even on exception
+        self._is_training = False
+        self._attr_icon = self.ICON_IDLE  # mdi:brain
         self._device.training_target_floor_id = None
         self._device.training_target_area_id = None
         self._device.area_locked_id = None
@@ -807,7 +822,8 @@ This pattern allows the button to clear the dropdowns indirectly by:
 
 | Constant | Value | Location | Purpose |
 |----------|-------|----------|---------|
-| `TRAINING_SAMPLE_COUNT` | 10 | `button.py:22` | Samples per button press |
+| `TRAINING_SAMPLE_COUNT` | 20 | `button.py:22` | Samples per button press (meets maturity) |
+| `TRAINING_SAMPLE_DELAY` | 0.5s | `button.py:26` | Delay between samples for diverse data |
 | `EVIDENCE_WINDOW_SECONDS` | - | `const.py` | Max age for RSSI readings |
 | `AREA_LOCK_TIMEOUT_SECONDS` | 60 | `const.py` | Stale threshold for auto-unlock |
 | `MIN_SAMPLES_FOR_MATURITY` | 30/20 | `scanner_pair.py`/`scanner_absolute.py` | Samples before trusting profile |

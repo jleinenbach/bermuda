@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING
 
 from homeassistant.components.button import ButtonEntity
@@ -19,7 +20,12 @@ if TYPE_CHECKING:
     from .coordinator import BermudaDataUpdateCoordinator
 
 # Number of training samples to apply for stronger fingerprint weight
-TRAINING_SAMPLE_COUNT = 10
+# 20 samples meets MIN_SAMPLES_FOR_MATURITY threshold for both correlation classes
+TRAINING_SAMPLE_COUNT = 20
+
+# Delay between training samples in seconds
+# Allows RSSI values to vary slightly for more diverse/robust training data
+TRAINING_SAMPLE_DELAY = 0.5
 
 
 async def async_setup_entry(
@@ -55,13 +61,18 @@ class BermudaTrainingButton(BermudaEntity, ButtonEntity):
 
     Pressing the button trains the fingerprint with the current RSSI readings
     for the selected room, applying multiple samples for stronger weight.
+
+    During training, the icon changes to a timer/hourglass to indicate progress.
     """
 
     _attr_should_poll = False
     _attr_has_entity_name = True
     _attr_translation_key = "training_learn"
     _attr_entity_category = EntityCategory.CONFIG
-    _attr_icon = "mdi:brain"
+
+    # Icons for different states
+    ICON_IDLE = "mdi:brain"
+    ICON_TRAINING = "mdi:timer-sand"
 
     def __init__(
         self,
@@ -71,6 +82,8 @@ class BermudaTrainingButton(BermudaEntity, ButtonEntity):
     ) -> None:
         """Initialize the training button."""
         super().__init__(coordinator, entry, address)
+        self._is_training = False
+        self._attr_icon = self.ICON_IDLE
         _LOGGER.debug(
             "Training button created for %s (device id: %s)",
             self._device.name,
@@ -158,11 +171,17 @@ class BermudaTrainingButton(BermudaEntity, ButtonEntity):
         target_area_id = self._device.training_target_area_id
         target_area_name = self._device.area_locked_name or target_area_id
 
+        # Show loading indicator
+        self._is_training = True
+        self._attr_icon = self.ICON_TRAINING
+        self.async_write_ha_state()
+
         _LOGGER.info(
-            "Training fingerprint for %s in room %s (%d samples)...",
+            "Training fingerprint for %s in room %s (%d samples, ~%.0fs)...",
             self._device.name,
             target_area_name,
             TRAINING_SAMPLE_COUNT,
+            TRAINING_SAMPLE_COUNT * TRAINING_SAMPLE_DELAY,
         )
 
         try:
@@ -181,6 +200,11 @@ class BermudaTrainingButton(BermudaEntity, ButtonEntity):
                         TRAINING_SAMPLE_COUNT,
                         self._device.name,
                     )
+
+                # Delay between samples to get diverse RSSI readings
+                # Skip delay after last sample
+                if i < TRAINING_SAMPLE_COUNT - 1:
+                    await asyncio.sleep(TRAINING_SAMPLE_DELAY)
 
             if successful_samples > 0:
                 _LOGGER.info(
@@ -202,7 +226,10 @@ class BermudaTrainingButton(BermudaEntity, ButtonEntity):
                     self._device.name,
                 )
         finally:
-            # ALWAYS clear training fields, even if training fails or throws exception
+            # ALWAYS clear training state and fields, even if training fails or throws exception
+            self._is_training = False
+            self._attr_icon = self.ICON_IDLE
+
             _LOGGER.debug(
                 "Clearing training fields for %s (floor=%s, area=%s)",
                 self._device.name,
@@ -217,6 +244,7 @@ class BermudaTrainingButton(BermudaEntity, ButtonEntity):
             self._device.area_locked_scanner_addr = None
 
             # Trigger refresh so select entities clear their dropdowns
+            # This also updates the button's icon back to idle state
             await self.coordinator.async_request_refresh()
 
     @property
