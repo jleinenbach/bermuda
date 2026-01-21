@@ -356,6 +356,16 @@ filtered_rssi = filter.update_adaptive(raw_rssi, ref_power=-55)
 - **Files**: `const.py`, `bermuda_device.py`, `coordinator.py`
 - **Key methods**: `get_movement_state()`, `get_dwell_time()`, `area_changed_at`
 
+### BLE Tracking Stability Fix (PR #94)
+- **Problem**: Room flickering and button training ineffective
+- **Root causes**:
+  1. `VELOCITY_TELEPORT_THRESHOLD` too low (5) - BLE noise caused 100+ m/s calculated velocities, triggering false teleport resets that cleared distance history needed for cross-floor protection
+  2. `ScannerAbsoluteRssi.update_button()` was missing variance inflation - only `ScannerPairCorrelation` had it, so button training couldn't override absolute RSSI profiles
+- **Fixes**:
+  1. Increased `VELOCITY_TELEPORT_THRESHOLD` from 5 to 10 - gives Kalman filter time to stabilize
+  2. Added variance inflation to `ScannerAbsoluteRssi.update_button()` - now both correlation classes support button training override
+- **Files**: `const.py`, `correlation/scanner_absolute.py`, `coordinator.py`
+
 ### Test Fixture Updates
 - Added `correlations`, `_correlations_loaded`, `_last_correlation_save`, `correlation_store` to coordinator mocks
 - Added `scanner_address` to FakeAdvert, `address` to FakeDevice
@@ -921,6 +931,7 @@ Button: 10 samples,   variance=5.6,              weight=0.179
 2. **Target 15.0**: Reset to approximately initial/unconverged state
 3. **One-time inflation**: Once variance >= 5.0, don't inflate again
 4. **Auto can recover**: Continued auto-learning will reconverge naturally
+5. **Both correlation classes**: `ScannerPairCorrelation.update_button()` AND `ScannerAbsoluteRssi.update_button()` both implement variance inflation - they must stay in sync
 
 ## Cross-Floor Hysteresis Protection
 
@@ -1161,10 +1172,10 @@ T6: Even button press doesn't help (velocity history not reset)
 │  │         ↓                                                 │       │
 │  │ velocity_blocked_count++                                  │       │
 │  │         ↓                                                 │       │
-│  │ Count >= VELOCITY_TELEPORT_THRESHOLD (5)?                │       │
+│  │ Count >= VELOCITY_TELEPORT_THRESHOLD (10)?               │       │
 │  │         ↓ Yes                     ↓ No                    │       │
 │  │ Accept reading, reset      Keep blocking, log            │       │
-│  │ history (break trap)       (block N/5)                   │       │
+│  │ history (break trap)       (block N/10)                  │       │
 │  └──────────────────────────────────────────────────────────┘       │
 │                                                                      │
 └─────────────────────────────────────────────────────────────────────┘
@@ -1178,7 +1189,7 @@ T6: Even button press doesn't help (velocity history not reset)
 | `coordinator.py` | `async_train_fingerprint()` | Calls reset on manual training |
 | `bermuda_advert.py` | `velocity_blocked_count` | Counter for consecutive blocks |
 | `bermuda_advert.py` | `calculate_data()` | Teleport recovery logic |
-| `const.py` | `VELOCITY_TELEPORT_THRESHOLD` | Blocks before auto-recovery (5) |
+| `const.py` | `VELOCITY_TELEPORT_THRESHOLD` | Blocks before auto-recovery (10) |
 
 ### Key Code
 
@@ -1219,7 +1230,7 @@ else:
 
 ### Design Decisions
 
-1. **Threshold of 5 blocks**: Balances quick recovery (teleport scenario) with protection against single bad readings. 5 consecutive blocks from the same scanner strongly suggests the device actually moved.
+1. **Threshold of 10 blocks**: Balances quick recovery (teleport scenario) with protection against BLE noise. Initially set to 5, but increased to 10 because noisy RSSI values caused calculated velocities of 100+ m/s, triggering false teleport detections too frequently. This reset distance history, which broke cross-floor protection (requires history). A higher threshold gives the Kalman filter more time to stabilize while still allowing recovery within ~10 seconds (at 1 update/second).
 
 2. **Reset Kalman filter too**: When velocity history is reset, the Kalman filter state is also reset to avoid stale smoothed values contaminating new readings.
 
@@ -1258,6 +1269,8 @@ def on_manual_training():
 ```
 
 **Rule of Thumb**: Any guard that can permanently block valid data needs an escape hatch. For velocity guards: count consecutive blocks and accept after N consistent readings, plus always allow manual override.
+
+**Tuning Note**: The threshold N requires tuning. Initially set to 5, it was increased to 10 because BLE noise caused false teleport detections that broke cross-floor protection (see PR #94).
 
 ---
 
@@ -1486,3 +1499,34 @@ if effective_match_score < effective_threshold:
 | `UKF_RETENTION_THRESHOLD` | 0.15 | Lower threshold when keeping current area (vs 0.3 for switching) |
 
 **Rule of Thumb**: For any logic that determines "where is the device NOW", always use `device.area_id` (confirmed state), never `device.area_advert.area_id` (ephemeral state from last packet). The difference is crucial for scannerless rooms where packets arrive from scanners in OTHER rooms.
+
+### 22. Parallel Implementations Must Stay in Sync
+
+When two classes serve similar purposes with the same interface pattern, bug fixes in one must be applied to the other. Missing this creates subtle behavioral differences.
+
+**Bug Pattern**:
+```python
+# ScannerPairCorrelation.update_button() has variance inflation ✅
+# ScannerAbsoluteRssi.update_button() is missing it ❌
+# Result: Button training works for pair correlations but not absolute RSSI!
+```
+
+**Fix Pattern**:
+```python
+# BOTH classes need the same fix:
+# ScannerPairCorrelation.update_button():
+if self._kalman_auto.variance < 5.0:
+    self._kalman_auto.variance = 15.0
+
+# ScannerAbsoluteRssi.update_button():  # MUST MATCH!
+if self._kalman_auto.variance < 5.0:
+    self._kalman_auto.variance = 15.0
+```
+
+**Checklist for parallel implementations:**
+1. Identify all classes with similar interface/purpose (e.g., `Scanner*` correlation classes)
+2. When fixing a bug, grep for similar patterns in sibling classes
+3. Consider extracting shared logic to a base class or mixin
+4. Add tests that cover BOTH implementations
+
+**Rule of Thumb**: When you fix a bug in ClassA.method(), ask: "Does ClassB have the same method? Does it need this fix too?"
