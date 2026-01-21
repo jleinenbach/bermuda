@@ -869,7 +869,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         try:
             await self.correlation_store.async_save(self.correlations, self.room_profiles)
             self._last_correlation_save = monotonic_time_coarse()
-        except Exception:
+        except (OSError, TypeError, ValueError):
             # Log error but don't fail - in-memory reset already happened
             # User will see the reset immediately, but if HA restarts before
             # a successful save, the old training data would be restored.
@@ -2008,6 +2008,79 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                         effective_match_score,
                         best_advert_rssi,
                         strongest_visible_rssi - best_advert_rssi,
+                    )
+                return False
+
+        # DISTANCE-BASED SANITY CHECK (BUG 14):
+        # When a device is VERY close to a scanner, it's almost certainly in that
+        # scanner's room. UKF fingerprints can be wrong (bad training), but physical
+        # distance doesn't lie. This prevents the bug where UKF picks a room 2 floors
+        # away when the device is 1.6m from a scanner.
+        #
+        # Only reject UKF if:
+        # 1. There's a scanner VERY close (<2m) to the device
+        # 2. UKF picked a DIFFERENT area than that scanner's area
+        # 3. The scanner has a valid area assigned
+        proximity_threshold = 2.0  # meters - very close means almost certainly in that room
+        nearest_scanner_distance = 999.0
+        nearest_scanner_area_id: str | None = None
+        nearest_scanner_floor_id: str | None = None
+
+        for advert in device.adverts.values():
+            if (
+                advert.rssi_distance is not None
+                and advert.stamp is not None
+                and nowstamp - advert.stamp < EVIDENCE_WINDOW_SECONDS
+                and advert.rssi_distance < nearest_scanner_distance
+                and advert.scanner_device is not None
+            ):
+                scanner_area = getattr(advert.scanner_device, "area_id", None)
+                if scanner_area is not None:
+                    nearest_scanner_distance = advert.rssi_distance
+                    nearest_scanner_area_id = scanner_area
+                    nearest_scanner_floor_id = getattr(advert.scanner_device, "floor_id", None)
+
+        if (
+            nearest_scanner_distance < proximity_threshold
+            and nearest_scanner_area_id is not None
+            and nearest_scanner_area_id != best_area_id
+        ):
+            # Device is very close to a scanner but UKF picked a different room!
+            # Check if this is a cross-floor decision (even more suspicious)
+            ukf_floor_id = self._resolve_floor_id_for_area(best_area_id) if not scanner_less_room else None
+            is_cross_floor_ukf = (
+                nearest_scanner_floor_id is not None
+                and ukf_floor_id is not None
+                and nearest_scanner_floor_id != ukf_floor_id
+            )
+
+            if is_cross_floor_ukf:
+                # UKF picked a room on a DIFFERENT floor while device is <2m from a scanner.
+                # This is almost certainly wrong - fall back to min-distance.
+                if _LOGGER.isEnabledFor(logging.DEBUG):
+                    _LOGGER.debug(
+                        "UKF distance sanity check FAILED for %s: Device is %.1fm from scanner "
+                        "in %s (floor %s), but UKF picked %s (floor %s) - falling back to min-distance",
+                        device.name,
+                        nearest_scanner_distance,
+                        nearest_scanner_area_id,
+                        nearest_scanner_floor_id,
+                        best_area_id,
+                        ukf_floor_id,
+                    )
+                return False
+
+            # Same floor but different room while very close - allow only with very high confidence
+            if effective_match_score < 0.85:
+                if _LOGGER.isEnabledFor(logging.DEBUG):
+                    _LOGGER.debug(
+                        "UKF distance sanity check FAILED for %s: Device is %.1fm from scanner "
+                        "in %s, UKF picked %s with score %.2f < 0.85 - falling back to min-distance",
+                        device.name,
+                        nearest_scanner_distance,
+                        nearest_scanner_area_id,
+                        best_area_id,
+                        effective_match_score,
                     )
                 return False
 

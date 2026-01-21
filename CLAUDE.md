@@ -558,6 +558,58 @@ filtered_rssi = filter.update_adaptive(raw_rssi, ref_power=-55)
 - **Visual feedback**: Icon changes from `mdi:brain` to `mdi:timer-sand` during training
 - **Files**: `correlation/scanner_absolute.py`, `correlation/scanner_pair.py`, `button.py`
 
+### Scannerless Room Misleading Distance Fix (BUG 13)
+- **Problem**: When UKF places device in a scannerless room, the "Distance" sensor showed misleading values
+  - Device in "Lagerraum" (scannerless room in basement)
+  - Distance sensor shows "1.6m" - but from which scanner?
+  - User assumes this is distance to the room, but it's actually distance to the nearest scanner (which is in a DIFFERENT room!)
+- **Root cause**: For scannerless rooms, `area_distance` was being set to the distance from the scanner used for fingerprint matching, not the scanner in the target area (because there IS no scanner in the target area)
+- **Solution**: When UKF selects a scannerless room, clear `area_distance` and `area_distance_stamp` to `None`
+  - This signals "distance not applicable" for scannerless rooms
+  - Prevents user confusion about what the distance actually means
+- **Code change** (`coordinator.py`):
+  ```python
+  if scanner_less_room:
+      # ... existing fingerprint application code ...
+      # FIX: BUG 13 - Clear misleading distance for scannerless rooms
+      device.area_distance = None
+      device.area_distance_stamp = None
+  ```
+- **File**: `coordinator.py`
+
+### UKF Distance Sanity Check (BUG 14)
+- **Problem**: UKF fingerprint matching picks wrong room despite device being very close to a scanner
+  - Device in "Technikraum" (1.6m from scanner in that room)
+  - UKF fingerprints match "Bibliothek" (2 floors up!) with higher confidence
+  - Result: Device shows as being in Bibliothek despite being 1.6m from Technikraum scanner
+- **Root cause**: UKF matching is based purely on RSSI fingerprint patterns, not physical distance. Bad or outdated training data can cause fingerprint matches that contradict physical proximity.
+- **Solution**: Add distance-based sanity check to override UKF when device is very close to a scanner
+  - If device is < 2m from a scanner AND UKF picked a different area:
+    - **Cross-floor**: Always reject UKF, fall back to min-distance (physical proximity wins)
+    - **Same floor, different room**: Require UKF confidence ≥ 0.85 to override proximity
+- **Key insight**: Physical distance < 2m is almost certain proof of room location. Fingerprint matching errors should not override this certainty.
+- **Code change** (`coordinator.py:_refresh_area_by_ukf()`):
+  ```python
+  proximity_threshold = 2.0  # meters
+  # Find nearest scanner
+  for advert in device.adverts.values():
+      if advert.rssi_distance < nearest_scanner_distance:
+          nearest_scanner_distance = advert.rssi_distance
+          nearest_scanner_area_id = scanner_area
+
+  if nearest_scanner_distance < proximity_threshold and nearest_scanner_area_id != best_area_id:
+      if is_cross_floor_ukf:
+          return False  # Fall back to min-distance
+      if effective_match_score < 0.85:
+          return False  # Same floor but low confidence → fall back
+  ```
+- **Constants**:
+  | Constant | Value | Purpose |
+  |----------|-------|---------|
+  | `proximity_threshold` | 2.0m | Distance below which physical proximity overrides fingerprints |
+  | High confidence threshold | 0.85 | UKF score needed to override same-floor proximity |
+- **File**: `coordinator.py`
+
 ## Manual Fingerprint Training System
 
 ### Problem Statement
@@ -2320,6 +2372,36 @@ def is_mature(self):
 ```
 
 **Rule of Thumb**: Auto-learning noise needs statistical validation (sample thresholds). User actions represent deliberate intent and should be trusted immediately, even with minimal samples.
+
+### 32. Physical Proximity Overrides Heuristic Methods
+
+When a strong physical indicator exists (very close proximity to a sensor), it should override heuristic/statistical methods that may have accumulated errors.
+
+**Bug Pattern:**
+```python
+# BAD - Fingerprint matching ignores physical reality
+best_room = fingerprint_match(current_readings)  # Based on learned patterns
+return best_room  # Device at 1.6m from kitchen sensor → returns "Bedroom" (2 floors up)!
+```
+
+**Fix Pattern:**
+```python
+# GOOD - Physical proximity as sanity check
+best_room = fingerprint_match(current_readings)
+
+# Sanity check: is there a sensor VERY close?
+if nearest_sensor_distance < 2.0:  # meters
+    if nearest_sensor_room != best_room:
+        if is_cross_floor:
+            return None  # Fall back to distance-based method
+        if match_confidence < 0.85:
+            return None  # Low confidence + close sensor → trust proximity
+return best_room
+```
+
+**Key Insight**: Statistical/heuristic methods accumulate errors over time (bad training, environmental changes). Physical proximity (< 2m) is almost certain proof of location. Use proximity as a "reality check" for heuristic decisions.
+
+**Rule of Thumb**: When heuristic methods contradict strong physical evidence, trust the physics. Especially for cross-floor decisions where heuristic errors are most damaging.
 
 ---
 
