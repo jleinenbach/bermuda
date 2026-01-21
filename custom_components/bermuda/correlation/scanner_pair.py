@@ -108,39 +108,27 @@ class ScannerPairCorrelation:
 
     def update_button(self, observed_delta: float) -> float:
         """
-        Update correlation with button-trained delta (The Anchor).
+        Update correlation with button-trained delta.
 
-        This creates a high-confidence anchor state. The button filter is set
-        to high confidence (variance=2.0, σ≈1.4dB) and high sample count (500).
+        Unlike auto-learning which adds one sample at a time continuously,
+        button training is called multiple times in quick succession (10x).
+        Each sample is added to the button Kalman filter using update(),
+        allowing all samples to contribute to the estimate.
 
-        IMPORTANT: Variance serves TWO purposes:
-        1. Fusion weighting: Lower variance = higher weight in Clamped Fusion
-        2. Z-Score matching: Variance defines what counts as "acceptable" deviation
-
-        We use variance=2.0 (σ≈1.4dB) because:
-        - It's MUCH lower than typical auto variance (16-25), ensuring fusion dominance
-        - It's PHYSICALLY REALISTIC: BLE signals fluctuate 2-5dB normally
-        - A variance of 0.1 would make 2dB deviation = 6 sigma = "impossible" → room rejected!
-
-        With Clamped Fusion, auto-learning can still refine the result, but
-        its influence is clamped to max 30% - the user anchor dominates.
+        This fixes the previous bug where reset_to_value() was used, which
+        OVERWROTE previous samples - only the last sample counted, but it
+        claimed 500 samples worth of confidence!
 
         Args:
             observed_delta: Current (primary_rssi - other_rssi) value.
 
         Returns:
-            The fused estimate (anchor + limited auto refinement).
+            The fused estimate (button + limited auto refinement).
 
         """
-        # Use reset_to_value to create a high-confidence anchor state
-        # - variance=2.0: High confidence (σ≈1.4dB) but physically realistic for BLE
-        # - sample_count=500: Massive inertia as base
-        # NOTE: Do NOT use variance < 1.0! See "Hyper-Precision Paradox" in CLAUDE.md
-        self._kalman_button.reset_to_value(
-            value=observed_delta,
-            variance=2.0,
-            sample_count=500,
-        )
+        # Use update() to ADD this sample to the button filter
+        # This way all 10 training samples contribute to the average
+        self._kalman_button.update(observed_delta)
         return self.expected_delta
 
     @property
