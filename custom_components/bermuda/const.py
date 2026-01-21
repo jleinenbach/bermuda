@@ -264,9 +264,21 @@ DOCS[CONF_MAX_VELOCITY] = (
     "this limit. 3m/s (10km/h) is good.",
 )
 
+# FIX: Packet Burst Debounce - Minimum interval between processing advertisements
+# BLE trackers send packets in bursts (3 identical packets on different channels
+# within milliseconds). Processing all of them causes "Delta-T Singularity":
+# - Δt approaches 0 (e.g., 5ms between packets)
+# - Any RSSI noise (1dB ≈ 0.1m) leads to impossible velocities: v = 0.1m/0.005s = 20m/s
+# - This triggers false teleport recovery and spams the Kalman filter
+# By discarding packets within 100ms of the last processed one, we:
+# 1. Avoid division-by-near-zero in velocity calculations
+# 2. Prevent Kalman filter over-confidence from redundant identical values
+# 3. Reduce CPU load from processing duplicate information
+MIN_ADVERT_INTERVAL: Final = 0.1  # 100ms - typical BLE burst duration is <50ms
+
 # FIX: Teleport Recovery - Number of consecutive velocity-blocked measurements
 # before accepting the new position anyway (self-healing mechanism)
-VELOCITY_TELEPORT_THRESHOLD: Final = 10
+VELOCITY_TELEPORT_THRESHOLD: Final = 30
 """
 Number of consecutive measurements blocked by MAX_VELOCITY before accepting anyway.
 

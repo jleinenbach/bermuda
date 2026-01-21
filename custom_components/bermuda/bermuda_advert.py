@@ -33,6 +33,7 @@ from .const import (
     DEFAULT_SMOOTHING_SAMPLES,
     DISTANCE_INFINITE,
     HIST_KEEP_COUNT,
+    MIN_ADVERT_INTERVAL,
     RSSI_HISTORY_SAMPLES,
     VELOCITY_TELEPORT_THRESHOLD,
 )
@@ -193,7 +194,7 @@ class BermudaAdvert(dict[str, Any]):
         # Only remote scanners log timestamps, local usb adaptors do not.
         self.scanner_sends_stamps = scanner_device.is_remote_scanner
 
-    def update_advertisement(
+    def update_advertisement(  # noqa: C901
         self, advertisementdata: AdvertisementData, scanner_device: BermudaDevice, *, nowstamp: float | None = None
     ) -> None:
         """
@@ -217,6 +218,29 @@ class BermudaAdvert(dict[str, Any]):
                 self.area_name = self.scanner_device.area_name
 
         stamp_now = nowstamp if nowstamp is not None else monotonic_time_coarse()
+
+        # FIX: Packet Burst Debounce - Discard duplicate packets within MIN_ADVERT_INTERVAL.
+        #
+        # BLE trackers send bursts of 3 identical packets on different frequency channels
+        # within milliseconds to increase reception probability. Fast scanners (ESPHome)
+        # often receive and forward ALL packets, creating timestamps with microscopic Δt.
+        #
+        # This causes the "Delta-T Singularity Problem":
+        # - Packet 1 at T=0.000s, Packet 2 at T=0.005s (same burst)
+        # - Minimal RSSI noise (1dB) → distance change of ~0.1m
+        # - Velocity = 0.1m / 0.005s = 20 m/s ← IMPOSSIBLE!
+        #
+        # By discarding packets within 100ms of the last processed one:
+        # 1. We base velocity calculations on physically meaningful time intervals
+        # 2. We prevent Kalman filter "over-confidence" from redundant values
+        # 3. We reduce computational overhead from duplicate processing
+        #
+        # Note: This check uses self.stamp (last processed time), not new_stamp.
+        # On first packet, self.stamp=0 so the check passes.
+        if self.stamp > 0 and (stamp_now - self.stamp) < MIN_ADVERT_INTERVAL:
+            # Packet arrived too soon after the last one - likely part of same burst
+            self.stale_update_count += 1
+            return
 
         if self.scanner_device.area_id is None:
             last_check: float = getattr(self.scanner_device, "last_devreg_check", 0.0)
