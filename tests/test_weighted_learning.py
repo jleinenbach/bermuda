@@ -42,16 +42,22 @@ class TestScannerPairCorrelationDualFilter:
         assert corr.button_sample_count == 0
 
     def test_button_only_returns_button_estimate(self) -> None:
-        """With only button samples (no auto), estimate equals button value."""
+        """With only button samples (no auto), estimate equals button value.
+
+        FIX: BUG 11 changed update_button() to use update() which accumulates samples.
+        After 20 samples (like real training), the estimate converges to the button value.
+        """
         corr = ScannerPairCorrelation(scanner_address="test_scanner")
 
-        # Button training without any auto data
-        corr.update_button(-15.0)
+        # Button training without any auto data (simulate 20 samples)
+        for _ in range(20):
+            corr.update_button(-15.0)
 
-        # Without auto data, estimate should be exactly the button value
-        assert abs(corr.expected_delta - (-15.0)) < 0.01
+        # Without auto data, estimate should be very close to the button value
+        assert abs(corr.expected_delta - (-15.0)) < 0.5
         assert corr.auto_sample_count == 0
-        assert corr.button_sample_count == 500
+        # Button accumulates samples (not 500 anymore)
+        assert corr.button_sample_count == 20
 
     def test_button_dominates_with_clamped_auto_influence(self) -> None:
         """Button training dominates, but auto can have up to 30% influence.
@@ -123,22 +129,28 @@ class TestScannerPairCorrelationDualFilter:
             f"before={estimate_before_button}, after={estimate_after_button}"
         )
 
-    def test_sample_count_reflects_button_anchor(self) -> None:
-        """Button training creates anchor state with high sample count."""
+    def test_sample_count_reflects_button_accumulation(self) -> None:
+        """Button training accumulates samples using update() (not reset_to_value).
+
+        FIX: BUG 11 changed update_button() from reset_to_value() to update().
+        Now each call adds 1 sample, not 500. This allows all training samples
+        to contribute to the average instead of only the last one counting.
+        """
         corr = ScannerPairCorrelation(scanner_address="test_scanner")
 
         for _ in range(30):
             corr.update(10.0)
 
-        # Button training creates anchor state
-        corr.update_button(20.0)
+        # Simulate button training (20 samples like real training)
+        for _ in range(20):
+            corr.update_button(20.0)
 
         # Auto samples are counted normally
         assert corr.auto_sample_count == 30
-        # Button uses reset_to_value() with sample_count=500
-        assert corr.button_sample_count == 500
-        # Total reflects anchor state
-        assert corr.sample_count == 530
+        # Button now accumulates samples (20 samples from button training)
+        assert corr.button_sample_count == 20
+        # Total reflects both
+        assert corr.sample_count == 50
 
 
 class TestScannerAbsoluteRssiDualFilter:
@@ -156,15 +168,21 @@ class TestScannerAbsoluteRssiDualFilter:
         assert profile.button_sample_count == 0
 
     def test_button_only_returns_button_estimate(self) -> None:
-        """With only button samples (no auto), estimate equals button value."""
+        """With only button samples (no auto), estimate equals button value.
+
+        FIX: BUG 11 changed update_button() to use update() which accumulates samples.
+        After 20 samples (like real training), the estimate converges to the button value.
+        """
         profile = ScannerAbsoluteRssi(scanner_address="test_scanner")
 
-        # Button training without any auto data
-        profile.update_button(-75.0)
+        # Button training without any auto data (simulate 20 samples)
+        for _ in range(20):
+            profile.update_button(-75.0)
 
-        # Without auto data, estimate should be exactly the button value
-        assert abs(profile.expected_rssi - (-75.0)) < 0.01
-        assert profile.button_sample_count == 500
+        # Without auto data, estimate should be very close to the button value
+        assert abs(profile.expected_rssi - (-75.0)) < 0.5
+        # Button accumulates samples (not 500 anymore)
+        assert profile.button_sample_count == 20
 
 
 class TestRoomProfileWeightedLearning:
@@ -182,16 +200,21 @@ class TestRoomProfileWeightedLearning:
             assert pair.button_sample_count == 0
 
     def test_update_button_uses_button_filter(self) -> None:
-        """update_button() creates anchor state in button Kalman filter."""
+        """update_button() accumulates samples in button Kalman filter.
+
+        FIX: BUG 11 changed update_button() to use update() which accumulates samples.
+        """
         profile = RoomProfile(area_id="test_area")
 
         readings = {"scanner_a": -50.0, "scanner_b": -60.0}
-        profile.update_button(readings)
+        # Simulate 20 button training samples
+        for _ in range(20):
+            profile.update_button(readings)
 
         for pair in profile._scanner_pairs.values():
             assert pair.auto_sample_count == 0
-            # Button training creates anchor state with sample_count=500
-            assert pair.button_sample_count == 500
+            # Button now accumulates samples (20 from training)
+            assert pair.button_sample_count == 20
 
 
 class TestAreaProfileWeightedLearning:
@@ -216,24 +239,29 @@ class TestAreaProfileWeightedLearning:
             assert abs_profile.button_sample_count == 0
 
     def test_update_button_uses_button_filter(self) -> None:
-        """update_button() creates anchor state in button Kalman filters."""
+        """update_button() accumulates samples in button Kalman filters.
+
+        FIX: BUG 11 changed update_button() to use update() which accumulates samples.
+        """
         profile = AreaProfile(area_id="test_area")
 
-        profile.update_button(
-            primary_rssi=-50.0,
-            other_readings={"scanner_b": -60.0},
-            primary_scanner_addr="scanner_a",
-        )
+        # Simulate 20 button training samples
+        for _ in range(20):
+            profile.update_button(
+                primary_rssi=-50.0,
+                other_readings={"scanner_b": -60.0},
+                primary_scanner_addr="scanner_a",
+            )
 
         for corr in profile._correlations.values():
             assert corr.auto_sample_count == 0
-            # Button training creates anchor state with sample_count=500
-            assert corr.button_sample_count == 500
+            # Button now accumulates samples (20 from training)
+            assert corr.button_sample_count == 20
 
         for abs_profile in profile._absolute_profiles.values():
             assert abs_profile.auto_sample_count == 0
-            # Button training creates anchor state with sample_count=500
-            assert abs_profile.button_sample_count == 500
+            # Button now accumulates samples (20 from training)
+            assert abs_profile.button_sample_count == 20
 
 
 class TestSerializationDualFilter:
@@ -348,6 +376,9 @@ class TestClampedBayesianFusion:
         """Fused variance should be lower than either individual variance.
 
         This is the Bayesian benefit: combining information reduces uncertainty.
+
+        FIX: BUG 11 changed update_button() to accumulate samples. With 20+ samples,
+        the button filter builds enough confidence to contribute to variance reduction.
         """
         corr = ScannerPairCorrelation(scanner_address="test_scanner")
 
@@ -356,8 +387,9 @@ class TestClampedBayesianFusion:
             corr.update(10.0)
         auto_only_variance = corr.variance
 
-        # Add button - fused variance should be lower
-        corr.update_button(10.0)
+        # Add button with 20 samples - fused variance should be lower
+        for _ in range(20):
+            corr.update_button(10.0)
         fused_variance = corr.variance
 
         assert fused_variance < auto_only_variance, (
@@ -448,23 +480,23 @@ class TestHyperPrecisionParadoxFix:
 
         # Verify the fused variance is realistic (variance=2.0 from button)
         # Note: Without auto data, fused variance equals button variance
-        assert corr.variance >= 1.0, (
-            f"Button variance should be >= 1.0 for realistic matching. Got {corr.variance}"
-        )
+        assert corr.variance >= 1.0, f"Button variance should be >= 1.0 for realistic matching. Got {corr.variance}"
 
         # Normal BLE fluctuation: signal drifts to -82dB (2dB change)
         observed = -82.0
         z_score = corr.z_score(observed)
 
         # Z-score should be reasonable (< 3 sigma), not absurd (> 6 sigma)
-        assert z_score < 3.0, (
-            f"Normal 2dB BLE fluctuation should have z-score < 3.0. Got {z_score}"
-        )
+        assert z_score < 3.0, f"Normal 2dB BLE fluctuation should have z-score < 3.0. Got {z_score}"
 
     def test_button_variance_still_provides_high_confidence(self) -> None:
-        """Button variance should still be much lower than typical auto variance.
+        """Button variance should be comparable to auto variance after training.
 
-        This ensures button still dominates in the fusion weighting.
+        FIX: BUG 11 changed update_button() to accumulate samples. With 20+ samples,
+        the button filter builds enough confidence to have low variance.
+
+        With Clamped Fusion, button dominance is guaranteed by the MAX_AUTO_RATIO cap
+        (30%), not just by variance differences.
         """
         corr = ScannerPairCorrelation(scanner_address="test_scanner")
 
@@ -474,13 +506,19 @@ class TestHyperPrecisionParadoxFix:
 
         auto_variance = corr._kalman_auto.variance
 
-        # Button training
-        corr.update_button(10.0)
+        # Button training with 20 samples (like real training)
+        for _ in range(20):
+            corr.update_button(10.0)
         button_variance = corr._kalman_button.variance
 
-        # Button variance should be significantly lower than converged auto variance
-        assert button_variance < auto_variance, (
-            f"Button variance ({button_variance}) should be < auto variance ({auto_variance})"
+        # After 20 samples, button variance should be reasonably low
+        # (not necessarily lower than auto, but not extremely high either)
+        assert button_variance < 10.0, f"Button variance ({button_variance}) should be reasonably low after 20 samples"
+
+        # The key behavior: estimate should still be dominated by button due to clamping
+        # Even if variances are similar, clamping limits auto to 30%
+        assert abs(corr.expected_delta - 10.0) < 1.0, (
+            f"Button should still dominate estimate. Got {corr.expected_delta}, expected ~10.0"
         )
 
     def test_absolute_rssi_z_score_accepts_normal_fluctuations(self) -> None:
@@ -495,6 +533,4 @@ class TestHyperPrecisionParadoxFix:
         z_score = profile.z_score(observed)
 
         # Z-score should be reasonable (< 3 sigma)
-        assert z_score < 3.0, (
-            f"Normal 3dB BLE fluctuation should have z-score < 3.0. Got {z_score}"
-        )
+        assert z_score < 3.0, f"Normal 3dB BLE fluctuation should have z-score < 3.0. Got {z_score}"

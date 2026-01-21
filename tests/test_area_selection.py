@@ -865,7 +865,7 @@ def test_floor_level_populated_from_floor_registry(coordinator: BermudaDataUpdat
     )
     device.ar = SimpleNamespace(async_get_area=lambda area_id: dummy_area if area_id == "area-kitchen" else None)  # type: ignore[assignment]
 
-    device._update_area_and_floor("area-kitchen")
+    device.update_area_and_floor("area-kitchen")
 
     assert device.floor_level == 1  # type: ignore[comparison-overlap]
     assert device.floor_name == "Level 1"
