@@ -1275,6 +1275,9 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         for device_address in prune_list:
             _LOGGER.debug("Acting on prune list for %s", device_address)
             del self.devices[device_address]
+            # FIX: BUG 7 - Also remove from device_ukfs to prevent memory leak
+            # Without this, UKF states for pruned devices accumulate forever
+            self.device_ukfs.pop(device_address, None)
 
         # Clean out the scanners dicts in metadevices and scanners
         # (scanners will have entries if they are also beacons, although
@@ -2116,15 +2119,25 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             # IMPORTANT: Temporarily clear scanner_device so apply_scanner_selection
             # uses our overridden area_id instead of scanner_device.area_id
             # (see bermuda_device.py apply_scanner_selection priority logic)
+            #
+            # FIX: BUG 8 - Save ALL modified attributes to restore after use
+            # Without full restoration, the advert object remains "tainted" with
+            # the virtual room's area_id, causing incorrect calibration data.
             saved_scanner_device = best_advert.scanner_device
-            best_advert.scanner_device = None  # type: ignore[assignment]  # Temp for area override
-            best_advert.area_id = best_area_id
-            best_advert.area_name = self.resolve_area_name(best_area_id)
+            saved_area_id = best_advert.area_id
+            saved_area_name = best_advert.area_name
 
-            device.apply_scanner_selection(best_advert, nowstamp=nowstamp)
+            try:
+                best_advert.scanner_device = None  # type: ignore[assignment]  # Temp for area override
+                best_advert.area_id = best_area_id
+                best_advert.area_name = self.resolve_area_name(best_area_id)
 
-            # Restore scanner_device for other uses
-            best_advert.scanner_device = saved_scanner_device
+                device.apply_scanner_selection(best_advert, nowstamp=nowstamp)
+            finally:
+                # Restore ALL modified attributes to prevent dirty object state
+                best_advert.scanner_device = saved_scanner_device
+                best_advert.area_id = saved_area_id
+                best_advert.area_name = saved_area_name
         else:
             # Apply the selection using the device's standard method
             device.apply_scanner_selection(best_advert, nowstamp=nowstamp)
