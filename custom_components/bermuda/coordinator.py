@@ -2138,6 +2138,15 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                 best_advert.scanner_device = saved_scanner_device
                 best_advert.area_id = saved_area_id
                 best_advert.area_name = saved_area_name
+
+            # FIX: BUG 13 - Clear misleading distance for scannerless rooms
+            # For scannerless rooms, best_advert comes from a DIFFERENT room's scanner.
+            # The rssi_distance would show distance to THAT scanner, not to the
+            # UKF-selected area. This is misleading (e.g., Area="Bibliothek" but
+            # Distance=1.6m from Technikraum scanner).
+            # Set area_distance to None since there's no scanner in the target room.
+            device.area_distance = None
+            device.area_distance_stamp = None
         else:
             # Apply the selection using the device's standard method
             device.apply_scanner_selection(best_advert, nowstamp=nowstamp)
