@@ -146,6 +146,21 @@ class AreaProfile:
 
         self._enforce_memory_limit()
 
+    def reset_training(self) -> None:
+        """
+        Reset all user training data for this area.
+
+        Clears button filter data from all correlations and absolute profiles,
+        reverting to automatic learning (Shadow Learning) only.
+
+        Use this to undo incorrect manual training for a specific room
+        without losing the automatically learned patterns.
+        """
+        for corr in self._correlations.values():
+            corr.reset_training()
+        for profile in self._absolute_profiles.values():
+            profile.reset_training()
+
     def _enforce_memory_limit(self) -> None:
         """Evict least-sampled correlations if over memory limit."""
         # Enforce limit for delta correlations

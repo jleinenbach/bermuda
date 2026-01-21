@@ -106,6 +106,9 @@
         "button": {
             "training_learn": {
                 "name": "지문 학습"
+            },
+            "reset_training": {
+                "name": "훈련 초기화"
             }
         }
     },

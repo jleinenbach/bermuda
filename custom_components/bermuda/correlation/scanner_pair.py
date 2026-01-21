@@ -7,16 +7,16 @@ a primary scanner and another scanner when a device is in a specific area.
 This module is part of the scanner correlation learning system that
 improves area localization by learning spatial relationships between scanners.
 
-Hierarchical Priority System (Frozen Layers & Shadow Learning):
+Clamped Bayesian Fusion (Controlled Evolution):
     - Two parallel Kalman filters: one for automatic learning, one for button training
-    - Button training ALWAYS overrides auto-learning (no mixing/fusion)
-    - Once a user trains a room, that value is "frozen" - auto-learning cannot change it
-    - Auto-learning continues in "shadow mode" (for diagnostics) but doesn't affect output
-    - This ensures user calibration persists indefinitely against environment drift
+    - Button training sets the "anchor" (user truth)
+    - Auto-learning can "polish" the anchor but NEVER overpower it
+    - Auto-influence is clamped to maximum 30% (user keeps 70%+ authority)
+    - This allows intelligent refinement while preventing anchor drift
 
-Priority Logic:
-    - If button filter is initialized → use ONLY button value
-    - If button filter is not initialized → fallback to auto value
+Fusion Logic:
+    - If only auto data exists → use auto estimate (100% auto)
+    - If button data exists → fuse both, BUT clamp auto influence to max 30%
 """
 
 from __future__ import annotations
@@ -39,6 +39,10 @@ MIN_SAMPLES_FOR_MATURITY: int = 30
 # Minimum variance to prevent division by zero and numerical instability
 MIN_VARIANCE: float = 0.001
 
+# Maximum influence ratio for auto-learning when button training exists.
+# User always retains at least (1 - MAX_AUTO_RATIO) = 70% authority.
+MAX_AUTO_RATIO: float = 0.30
+
 
 @dataclass(slots=True)
 class ScannerPairCorrelation:
@@ -48,19 +52,20 @@ class ScannerPairCorrelation:
     The delta is defined as: primary_rssi - other_rssi
     Positive delta means the other scanner sees a weaker signal.
 
-    Uses HIERARCHICAL PRIORITY (not fusion):
-    - Auto filter: Continuously learns from automatic room detection (Shadow Learning)
-    - Button filter: Learns from manual button training (Frozen Layer)
+    Uses CLAMPED BAYESIAN FUSION (Controlled Evolution):
+    - Auto filter: Continuously learns from automatic room detection
+    - Button filter: Sets the "anchor" from manual button training
 
-    Priority Logic:
-    - If button filter is initialized → use ONLY button value (user truth is absolute)
-    - If button filter is not initialized → fallback to auto value
-    - Auto-learning continues but has NO INFLUENCE when button data exists
+    Fusion Logic:
+    - If only auto data exists → use auto estimate (100% auto)
+    - If button data exists → fuse both, BUT clamp auto influence to max 30%
+    - User always retains at least 70% authority over the final estimate
 
-    Benefits of hierarchical priority:
-    - User training persists indefinitely (no drift from auto-learning)
-    - Solves the "Keller-Lager" problem where auto-learning corrupts calibration
-    - Auto-learning provides fallback for untrained scanner pairs
+    Benefits of clamped fusion:
+    - User training dominates (at least 70% weight)
+    - Auto-learning can "polish" the anchor (adapt to small changes)
+    - Prevents long-term drift while allowing intelligent refinement
+    - Solves the "Keller-Lager" problem while enabling controlled evolution
 
     Attributes:
         scanner_address: MAC address of the "other" scanner being correlated.
@@ -68,7 +73,7 @@ class ScannerPairCorrelation:
     """
 
     scanner_address: str
-    # Two parallel Kalman filters for weighted fusion
+    # Two parallel Kalman filters for hierarchical priority
     _kalman_auto: KalmanFilter = field(
         default_factory=lambda: KalmanFilter(
             process_noise=DELTA_PROCESS_NOISE,
@@ -103,28 +108,37 @@ class ScannerPairCorrelation:
 
     def update_button(self, observed_delta: float) -> float:
         """
-        Update correlation with button-trained delta (The Frozen Layer).
+        Update correlation with button-trained delta (The Anchor).
 
-        This creates a "frozen" state that completely overrides auto-learning.
-        The button filter is set to extremely high confidence (variance=0.01)
-        and high sample count (500) to ensure it dominates any future operations.
+        This creates a high-confidence anchor state. The button filter is set
+        to high confidence (variance=2.0, σ≈1.4dB) and high sample count (500).
 
-        IMPORTANT: Once this is called, the auto-filter becomes "shadow only" -
-        it continues learning but has NO INFLUENCE on expected_delta.
+        IMPORTANT: Variance serves TWO purposes:
+        1. Fusion weighting: Lower variance = higher weight in Clamped Fusion
+        2. Z-Score matching: Variance defines what counts as "acceptable" deviation
+
+        We use variance=2.0 (σ≈1.4dB) because:
+        - It's MUCH lower than typical auto variance (16-25), ensuring fusion dominance
+        - It's PHYSICALLY REALISTIC: BLE signals fluctuate 2-5dB normally
+        - A variance of 0.1 would make 2dB deviation = 6 sigma = "impossible" → room rejected!
+
+        With Clamped Fusion, auto-learning can still refine the result, but
+        its influence is clamped to max 30% - the user anchor dominates.
 
         Args:
             observed_delta: Current (primary_rssi - other_rssi) value.
 
         Returns:
-            The frozen button estimate (user truth).
+            The fused estimate (anchor + limited auto refinement).
 
         """
-        # Use reset_to_value to create a frozen, high-confidence state
-        # - variance=0.01: Extremely high confidence
-        # - sample_count=500: Massive inertia (would need ~500 contrary samples to shift)
+        # Use reset_to_value to create a high-confidence anchor state
+        # - variance=2.0: High confidence (σ≈1.4dB) but physically realistic for BLE
+        # - sample_count=500: Massive inertia as base
+        # NOTE: Do NOT use variance < 1.0! See "Hyper-Precision Paradox" in CLAUDE.md
         self._kalman_button.reset_to_value(
             value=observed_delta,
-            variance=0.01,
+            variance=2.0,
             sample_count=500,
         )
         return self.expected_delta
@@ -132,45 +146,80 @@ class ScannerPairCorrelation:
     @property
     def expected_delta(self) -> float:
         """
-        Return expected delta using HIERARCHICAL PRIORITY (not fusion).
+        Return expected delta using CLAMPED BAYESIAN FUSION.
 
-        Priority Logic:
-        1. If button filter is initialized → return button estimate (user truth is absolute)
-        2. If button filter is not initialized → return auto estimate (learned fallback)
-        3. If neither is initialized → return 0.0
+        Algorithm:
+        1. If only auto data → return auto estimate (100% auto)
+        2. If button data exists → fuse with clamped auto influence
+           - Calculate inverse-variance weights (standard Bayes)
+           - Clamp auto weight to max 30% of total
+           - User anchor retains at least 70% authority
 
-        This ensures user training ALWAYS overrides auto-learning, regardless
-        of how many auto-samples have been collected or their variance.
+        This allows auto-learning to "polish" the user anchor while
+        preventing long-term drift from overwhelming user calibration.
         """
-        # PRIORITY 1: User training is absolute truth
-        if self._kalman_button.is_initialized:
-            return self._kalman_button.estimate
+        # Case 1: Only auto data available
+        if not self._kalman_button.is_initialized:
+            if self._kalman_auto.is_initialized:
+                return self._kalman_auto.estimate
+            return 0.0
 
-        # PRIORITY 2: Fallback to auto-learning if no user training
-        if self._kalman_auto.is_initialized:
-            return self._kalman_auto.estimate
+        # Case 2: Button data exists - use Clamped Fusion
+        est_btn = self._kalman_button.estimate
+        est_auto = self._kalman_auto.estimate if self._kalman_auto.is_initialized else est_btn
 
-        # No data available
-        return 0.0
+        # Variance protection (division by zero prevention)
+        var_btn = max(self._kalman_button.variance, 1e-6)
+        var_auto = max(self._kalman_auto.variance, 1e-6) if self._kalman_auto.is_initialized else var_btn
+
+        # Standard Inverse Variance Weights (Bayes optimal)
+        w_btn = 1.0 / var_btn
+        w_auto = 1.0 / var_auto
+
+        # --- CLAMPING LOGIC ---
+        # Goal: w_auto / (w_btn + w_auto) <= MAX_AUTO_RATIO (0.30)
+        current_auto_ratio = w_auto / (w_btn + w_auto)
+
+        if current_auto_ratio > MAX_AUTO_RATIO:
+            # Auto is too strong! Scale it down.
+            # Formula derived from: w_new / (w_btn + w_new) = MAX_AUTO_RATIO
+            # => w_new = (MAX_AUTO_RATIO / (1 - MAX_AUTO_RATIO)) * w_btn
+            ratio_factor = MAX_AUTO_RATIO / (1.0 - MAX_AUTO_RATIO)  # 0.3/0.7 ≈ 0.428
+            w_auto = w_btn * ratio_factor
+
+        # Weighted average with (potentially clamped) w_auto
+        total_weight = w_btn + w_auto
+        return (est_btn * w_btn + est_auto * w_auto) / total_weight
 
     @property
     def variance(self) -> float:
         """
-        Return variance of the ACTIVE filter (hierarchical priority).
+        Return fused variance using Clamped Bayesian Fusion.
 
-        Priority Logic:
-        1. If button filter is initialized → return button variance only
-        2. If button filter is not initialized → return auto variance
-
-        We do NOT combine variances because that would dilute the high
-        confidence of user training with the uncertainty of auto-learning.
+        When button data exists, returns the combined variance from
+        the clamped fusion. This reflects the reduced uncertainty
+        from having both user anchor and auto refinement.
         """
-        # PRIORITY 1: User training variance (very low = high confidence)
-        if self._kalman_button.is_initialized:
-            return self._kalman_button.variance
+        # Case 1: Only auto data
+        if not self._kalman_button.is_initialized:
+            return self._kalman_auto.variance
 
-        # PRIORITY 2: Fallback to auto variance
-        return self._kalman_auto.variance
+        # Case 2: Clamped Fusion - compute fused variance
+        var_btn = max(self._kalman_button.variance, 1e-6)
+        var_auto = max(self._kalman_auto.variance, 1e-6) if self._kalman_auto.is_initialized else var_btn
+
+        w_btn = 1.0 / var_btn
+        w_auto = 1.0 / var_auto
+
+        # Apply same clamping as in expected_delta
+        current_auto_ratio = w_auto / (w_btn + w_auto)
+        if current_auto_ratio > MAX_AUTO_RATIO:
+            ratio_factor = MAX_AUTO_RATIO / (1.0 - MAX_AUTO_RATIO)
+            w_auto = w_btn * ratio_factor
+
+        # Fused variance = 1 / total_weight
+        total_weight = w_btn + w_auto
+        return 1.0 / total_weight
 
     @property
     def std_dev(self) -> float:
@@ -209,6 +258,18 @@ class ScannerPairCorrelation:
 
         """
         return self.sample_count >= MIN_SAMPLES_FOR_MATURITY
+
+    def reset_training(self) -> None:
+        """
+        Reset user training data (button filter only).
+
+        This reverts the correlation to use automatic learning (Shadow Learning)
+        immediately. The auto-filter is preserved, providing a fallback.
+
+        Use this to undo incorrect manual training without losing the
+        automatically learned patterns.
+        """
+        self._kalman_button.reset()
 
     def z_score(self, observed_delta: float) -> float:
         """

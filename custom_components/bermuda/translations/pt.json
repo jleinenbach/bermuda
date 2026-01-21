@@ -106,6 +106,9 @@
     "button": {
       "training_learn": {
         "name": "Aprender Impressão Digital"
+      },
+      "reset_training": {
+        "name": "Redefinir Treinamento"
       }
     }
   },

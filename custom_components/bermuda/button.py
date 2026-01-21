@@ -38,6 +38,7 @@ async def async_setup_entry(
         if address not in created_devices:
             entities: list[ButtonEntity] = []
             entities.append(BermudaTrainingButton(coordinator, entry, address))
+            entities.append(BermudaResetTrainingButton(coordinator, entry, address))
             async_add_devices(entities, False)
             created_devices.append(address)
 
@@ -216,3 +217,67 @@ class BermudaTrainingButton(BermudaEntity, ButtonEntity):
     def unique_id(self) -> str:
         """Return a unique ID for this entity."""
         return f"{self._device.unique_id}_training_learn"
+
+
+class BermudaResetTrainingButton(BermudaEntity, ButtonEntity):
+    """
+    Button to reset all training data for a device.
+
+    This is the "nuclear option" for fixing incorrect manual training.
+    It clears ALL user-trained fingerprint data (Frozen Layers) for this device
+    across ALL rooms, reverting to automatic learning (Shadow Learning) only.
+
+    Use cases:
+    - "Ghost Scanner" problem: Device was trained in wrong/invisible room
+    - User wants to start fresh with automatic learning
+    - Incorrect training that can't be fixed by re-training
+
+    The auto-learned data is preserved, providing immediate fallback.
+    """
+
+    _attr_should_poll = False
+    _attr_has_entity_name = True
+    _attr_translation_key = "reset_training"
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_icon = "mdi:eraser"
+
+    def __init__(
+        self,
+        coordinator: BermudaDataUpdateCoordinator,
+        entry: BermudaConfigEntry,
+        address: str,
+    ) -> None:
+        """Initialize the reset training button."""
+        super().__init__(coordinator, entry, address)
+        _LOGGER.debug(
+            "Reset training button created for %s",
+            self._device.name,
+        )
+
+    async def async_press(self) -> None:
+        """Handle the button press - reset all training data for this device."""
+        _LOGGER.info(
+            "Resetting all training data for %s...",
+            self._device.name,
+        )
+
+        success = await self.coordinator.async_reset_device_training(self.address)
+
+        if success:
+            _LOGGER.info(
+                "Successfully reset all training data for %s",
+                self._device.name,
+            )
+        else:
+            _LOGGER.info(
+                "No training data found for %s - nothing to reset",
+                self._device.name,
+            )
+
+        # Trigger refresh to update entity states
+        await self.coordinator.async_request_refresh()
+
+    @property
+    def unique_id(self) -> str:
+        """Return a unique ID for this entity."""
+        return f"{self._device.unique_id}_reset_training"

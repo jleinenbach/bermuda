@@ -50,6 +50,9 @@
     "button": {
       "training_learn": {
         "name": "Apprendre l'empreinte"
+      },
+      "reset_training": {
+        "name": "Réinitialiser l'entraînement"
       }
     }
   }

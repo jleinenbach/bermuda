@@ -78,72 +78,91 @@ Learns typical RSSI patterns for each area to improve localization:
 
 **Key insight**: When primary scanner goes offline, absolute profiles let us verify if secondary scanner readings still match the learned room pattern.
 
-### Hierarchical Priority System (Frozen Layers & Shadow Learning)
+### Clamped Bayesian Fusion (Controlled Evolution)
 
-The correlation classes (`ScannerPairCorrelation`, `ScannerAbsoluteRssi`) use a dual-filter architecture with **strict hierarchical priority** (not fusion):
+The correlation classes (`ScannerPairCorrelation`, `ScannerAbsoluteRssi`) use a dual-filter architecture with **clamped fusion**:
 
 ```
                     ┌─────────────────────────────────────┐
 Automatic Learning ─┼─→ _kalman_auto ──┐                  │
-                    │  (Shadow Mode)   │                  │
-                    │                  │ Priority Check   │
-                    │                  ├─→ Final Output   │
+                    │  (Continuous)    │ Inverse-Variance │
+                    │                  │ Weighting        │
+                    │                  ├─→ Clamped Fusion │
 Button Training ────┼─→ _kalman_button─┘                  │
-                    │  (Frozen Layer)  │ Button > Auto    │
+                    │  (The Anchor)    │ Auto ≤ 30%       │
                     └─────────────────────────────────────┘
 ```
 
-**Why Hierarchical Priority (Not Fusion)?**
-- **Problem with fusion**: Auto-learning accumulates indefinitely, eventually overwhelming manual corrections
-- **Solution**: Button training ALWAYS overrides auto-learning (no mixing)
-- User calibration persists indefinitely against environment drift
+**Why Clamped Fusion (Not Pure Override)?**
+- **Problem with pure override**: Auto-learning is completely ignored, no adaptation to small environmental changes
+- **Problem with pure fusion**: Auto-learning eventually overwhelms user corrections
+- **Solution**: Button sets the "anchor", auto can "polish" it with max 30% influence
+- User retains at least 70% authority while system adapts intelligently
 
-**Priority Logic:**
+**Clamped Fusion Logic:**
 ```python
 @property
 def expected_rssi(self) -> float:
-    # PRIORITY 1: User training is absolute truth
-    if self._kalman_button.is_initialized:
-        return self._kalman_button.estimate  # Auto is ignored!
-
-    # PRIORITY 2: Fallback to auto-learning if no user training
-    if self._kalman_auto.is_initialized:
+    # Case 1: Only auto data available
+    if not self._kalman_button.is_initialized:
         return self._kalman_auto.estimate
 
-    return 0.0
+    # Case 2: Clamped Fusion - auto influence limited to 30%
+    w_btn = 1.0 / self._kalman_button.variance
+    w_auto = 1.0 / self._kalman_auto.variance
+
+    # Clamp auto influence to max 30%
+    MAX_AUTO_RATIO = 0.30
+    if w_auto / (w_btn + w_auto) > MAX_AUTO_RATIO:
+        w_auto = w_btn * (MAX_AUTO_RATIO / (1.0 - MAX_AUTO_RATIO))
+
+    total = w_btn + w_auto
+    return (est_btn * w_btn + est_auto * w_auto) / total
 ```
 
-**Frozen Layer via `reset_to_value()`:**
+**Button Anchor via `reset_to_value()`:**
 ```python
 def update_button(self, rssi: float) -> float:
-    # Create frozen state with extremely high confidence
+    # Create high-confidence anchor state
+    # IMPORTANT: variance=2.0 (σ≈1.4dB) is physically realistic for BLE
+    # Do NOT use variance < 1.0! See "Hyper-Precision Paradox" in Lessons Learned
     self._kalman_button.reset_to_value(
         value=rssi,
-        variance=0.01,      # Very low = high confidence
-        sample_count=500,   # Massive inertia against drift
+        variance=2.0,       # High confidence but realistic (σ≈1.4dB)
+        sample_count=500,   # Massive inertia as base
     )
-    return self.expected_rssi
+    return self.expected_rssi  # Returns fused value
 ```
 
-**Example: The "Keller-Lager" Problem Solved**
+**Example: Controlled Evolution**
 ```
-Day 1: User trains device in "Keller" (cellar)
-       → Button filter: Scanner Wohnzimmer = -85dB (frozen)
-       → Auto filter: Empty
+Day 1: User trains device in "Keller" at -85dB
+       → Button (anchor): -85dB, 70-100% weight
+       → Auto: Empty
 
-Weeks later: Auto-learning drifts due to environment changes
-       → Auto filter: Scanner Wohnzimmer = -78dB (drifted!)
-       → Button filter: Still -85dB (frozen, unchanged)
-       → expected_rssi returns -85dB (button wins!)
-       → Room detection stays stable!
+Weeks later: Environment changes slightly
+       → Auto drifts to -80dB (environment change detected)
+       → Button: Still -85dB (anchor)
+       → Auto influence clamped to 30%
+       → expected_rssi ≈ 0.7 * (-85) + 0.3 * (-80) = -83.5dB
+       → Room detection stays stable, but adapts slightly!
 ```
 
 **Key Constants:**
 | Constant | Value | Purpose |
 |----------|-------|---------|
-| Frozen variance | 0.01 | Extremely high confidence for button |
-| Frozen sample_count | 500 | Massive inertia against drift |
+| `MAX_AUTO_RATIO` | 0.30 | Auto influence capped at 30% |
+| Anchor variance | 2.0 | High confidence (σ≈1.4dB) but realistic for BLE |
+| Anchor sample_count | 500 | Massive inertia as base |
 | `MIN_VARIANCE` | 0.001 | Prevents division by zero |
+
+**⚠️ IMPORTANT: Hyper-Precision Paradox**
+
+Do NOT set anchor variance < 1.0! Variance serves TWO purposes:
+1. **Fusion weighting**: Lower variance = higher weight (OK to be low)
+2. **Z-Score matching**: Variance defines acceptable deviation (must be realistic!)
+
+With variance=0.1 (σ≈0.3dB), a normal 2dB BLE fluctuation becomes a "6 sigma event" → room is REJECTED as impossible, even though it's correct!
 
 ## Testing Standards
 
@@ -389,6 +408,24 @@ filtered_rssi = filter.update_adaptive(raw_rssi, ref_power=-55)
 - Added `get_movement_state()` and `area_changed_at` to FakeDevice
 - Added `area_locked_id`, `area_locked_name`, `area_locked_scanner_addr` to FakeDevice
 
+### Reset Training Feature (Ghost Scanner Fix)
+- **Problem**: With hierarchical priority (button > auto), incorrect training persists forever
+  - "Ghost Scanner" problem: Device trained in wrong/invisible room stays stuck
+  - Simple re-training doesn't help if the problematic scanner isn't visible anymore
+  - No way to undo incorrect manual calibration
+- **Solution**: Device-level "Reset Training" button that clears ALL user training
+  - Clears button filter (Frozen Layer) in all AreaProfiles for the device
+  - Preserves auto-learned data (Shadow Learning) as immediate fallback
+  - Persists changes immediately via `correlation_store.async_save()`
+- **Files changed**:
+  - `correlation/scanner_absolute.py`: Added `reset_training()` method
+  - `correlation/scanner_pair.py`: Added `reset_training()` method
+  - `correlation/area_profile.py`: Added `reset_training()` method
+  - `coordinator.py`: Added `async_reset_device_training()` method
+  - `button.py`: Added `BermudaResetTrainingButton` class
+  - `translations/*.json`: Added translations for 8 languages
+- **UI**: New button per device with `mdi:eraser` icon, EntityCategory.CONFIG
+
 ## Manual Fingerprint Training System
 
 ### Problem Statement
@@ -537,25 +574,27 @@ self.correlations[device_address][target_area_id].update_button(
 self.room_profiles[target_area_id].update_button(rssi_readings)
 ```
 
-### Frozen Layer Mechanism (replaces Variance Inflation)
+### Anchor Creation Mechanism (Clamped Fusion)
 
 **Problem**: The old approach used inverse-variance weighted fusion, but auto-learning eventually overwhelmed manual corrections regardless of variance inflation.
 
-**Solution**: Complete hierarchical priority with frozen layers (`scanner_pair.py:104-130`, `scanner_absolute.py:106-132`):
+**Solution**: Clamped Bayesian Fusion with explicit auto-influence limit (`scanner_pair.py:109-134`, `scanner_absolute.py:108-134`):
 ```python
 def update_button(self, rssi: float) -> float:
-    # Create frozen state - this completely overrides auto-learning
+    # Create anchor state - high confidence but PHYSICALLY REALISTIC
+    # IMPORTANT: variance=2.0 (σ≈1.4dB) allows normal BLE fluctuations
+    # Do NOT use variance < 1.0! (See Hyper-Precision Paradox)
     self._kalman_button.reset_to_value(
         value=rssi,
-        variance=0.01,      # Extremely high confidence
+        variance=2.0,       # High confidence, realistic for BLE
         sample_count=500,   # Massive inertia
     )
-    return self.expected_rssi  # Returns button value, ignoring auto!
+    return self.expected_rssi  # Returns clamped fusion result
 ```
 
 **How `reset_to_value()` Works** (`filters/kalman.py:202-229`):
 ```python
-def reset_to_value(self, value: float, variance: float = 0.01, sample_count: int = 500) -> None:
+def reset_to_value(self, value: float, variance: float = 2.0, sample_count: int = 500) -> None:
     """Force filter to a specific state (Teacher Forcing)."""
     self.estimate = value
     self.variance = variance
@@ -563,7 +602,7 @@ def reset_to_value(self, value: float, variance: float = 0.01, sample_count: int
     self._initialized = True
 ```
 
-**Effect on Output**:
+**Effect on Output (with Clamped Fusion)**:
 ```
 Before button training:
   Auto:   1000 samples, estimate=-78dB
@@ -572,8 +611,9 @@ Before button training:
 
 After button training:
   Auto:   1000 samples, estimate=-78dB (still learning in shadow)
-  Button: 500 samples, estimate=-85dB (frozen)
-  → expected_rssi returns -85dB (button wins, auto ignored!)
+  Button: 500 samples, estimate=-85dB (anchor)
+  → Clamped Fusion: auto influence capped at 30%
+  → expected_rssi ≈ 0.7*(-85) + 0.3*(-78) = -82.9dB (anchor + polish)
 ```
 
 ### Area Lock Mechanism
@@ -711,7 +751,11 @@ Kalman filter variance (uncertainty) converges to a steady state after ~20 sampl
 
 Each `ScannerPairCorrelation` and `ScannerAbsoluteRssi` instance has its own filters that converge independently.
 
-**Implication for hierarchical priority**: The button filter variance determines its confidence level, but since we use strict priority (not fusion), the button ALWAYS overrides auto when initialized. The frozen state (variance=0.01, samples=500) ensures maximum confidence for user-trained values.
+**Implication for Clamped Fusion**: The button filter variance determines its confidence level for BOTH fusion weighting AND z-score matching. We use variance=2.0 (σ≈1.4dB) to balance:
+- Fusion: Still much lower than auto variance (~3-16), so button dominates
+- Matching: Realistic for BLE signals, accepts normal 2-3dB fluctuations
+
+See Lesson #27 for why artificially low variance breaks matching.
 
 ### 7. Trace Full Call Chain for Attribute Precedence
 
@@ -1048,62 +1092,68 @@ A device must pass BOTH checks to be confidently placed in a room.
 
 ## Button Training vs Auto-Learning Architecture
 
-### Problem: Fusion Allows Drift Over Time
+### Problem: Pure Fusion Allows Drift Over Time
 
-The original dual-filter system used inverse-variance weighted fusion to combine auto and button estimates. Even with variance inflation, auto-learning could eventually overwhelm manual corrections over weeks/months of continuous operation.
+The original dual-filter system used unclamped inverse-variance weighted fusion. Even with variance inflation, auto-learning could eventually overwhelm manual corrections over weeks/months.
 
 ```
-The "Keller-Lager Problem":
+The "Keller-Lager Problem" (with Pure Fusion):
 Day 1: User trains "Keller" → Button: -85dB
 Week 2: Auto has 10,000 samples at -78dB → Auto starts to dominate
 Month 3: Auto has 100,000 samples → User calibration completely lost
 → Room detection drifts despite initial manual training!
 ```
 
-### Solution: Hierarchical Priority (Frozen Layers)
+### Solution: Clamped Bayesian Fusion (Controlled Evolution)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                     update_button() Flow                             │
+│                     Clamped Fusion Flow                              │
 ├─────────────────────────────────────────────────────────────────────┤
 │                                                                      │
 │  Button Press ──→ reset_to_value()                                  │
 │                          │                                           │
 │                          ▼                                           │
 │  ┌──────────────────────────────────────────────────────────────┐   │
-│  │ Create FROZEN state:                                          │   │
+│  │ Create ANCHOR state:                                          │   │
 │  │   - estimate = user's value                                   │   │
-│  │   - variance = 0.01 (extremely confident)                     │   │
+│  │   - variance = 2.0 (σ≈1.4dB, realistic for BLE)              │   │
 │  │   - sample_count = 500 (massive inertia)                      │   │
-│  │   - _initialized = True                                       │   │
+│  │   ⚠️ Do NOT use variance < 1.0! (Hyper-Precision Paradox)     │   │
 │  └──────────────────────────────────────────────────────────────┘   │
 │                          │                                           │
 │                          ▼                                           │
-│  expected_rssi uses PRIORITY logic:                                  │
-│    if button.is_initialized → return button.estimate (auto ignored!)│
-│    else → return auto.estimate (fallback only)                      │
+│  expected_rssi uses CLAMPED FUSION:                                  │
+│    1. Calculate inverse-variance weights                             │
+│    2. If auto_weight > 30% → clamp to 30%                           │
+│    3. Return weighted average (user ≥70%, auto ≤30%)                │
+│                                                                      │
+│  z_score() uses SAME variance for matching:                          │
+│    - With variance=2.0: 2dB deviation = 1.4 sigma (OK!)             │
+│    - With variance=0.1: 2dB deviation = 6.3 sigma (REJECTED!)       │
 │                                                                      │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
 **Result:**
 ```
-Before: Fusion allowed auto to overwhelm button over time
-After:  Button completely overrides auto (no mixing!)
+Before: Pure fusion allowed auto to overwhelm button over time
+After:  Clamped fusion limits auto to 30% influence
 
-Auto:   100,000 samples, estimate=-78dB (running in shadow)
-Button: 500 samples (frozen), estimate=-85dB
-→ expected_rssi returns -85dB FOREVER (until user re-trains)
-→ Room detection stays stable indefinitely!
+Auto:   100,000 samples, estimate=-78dB (clamped to 30% weight)
+Button: 500 samples (anchor), estimate=-85dB (at least 70% weight)
+→ expected_rssi ≈ 0.7*(-85) + 0.3*(-78) = -82.9dB
+→ Room detection stays stable, but adapts slightly to real changes!
 ```
 
 ### Key Design Decisions
 
-1. **No fusion**: Button > Auto is strict priority, not weighted mixing
-2. **Frozen state**: `reset_to_value()` creates immutable calibration point
-3. **Shadow learning**: Auto continues learning for diagnostics but doesn't affect output
-4. **Permanent override**: User calibration persists until explicitly re-trained
-5. **Both correlation classes**: `ScannerPairCorrelation` AND `ScannerAbsoluteRssi` use identical hierarchical priority logic
+1. **Clamped fusion**: Auto influence limited to max 30% (user keeps ≥70%)
+2. **Anchor state**: `reset_to_value()` creates high-confidence calibration point
+3. **Controlled evolution**: Auto can "polish" the anchor, but never overpower it
+4. **Intelligent adaptation**: System responds to real environmental changes within limits
+5. **Both correlation classes**: `ScannerPairCorrelation` AND `ScannerAbsoluteRssi` use identical clamped fusion logic
+6. **Realistic variance (2.0)**: Avoids "Hyper-Precision Paradox" - variance serves both fusion AND z-score matching, so must be physically realistic (σ≈1.4dB for BLE signals)
 
 ## Cross-Floor Hysteresis Protection
 
@@ -1176,31 +1226,36 @@ if max_absolute_z > 3.0:
     confidence = delta_confidence * (0.5 ** (max_absolute_z - 2.0))
 ```
 
-### 15. Fusion Cannot Preserve Manual Calibration Long-Term
+### 15. Unclamped Fusion Cannot Preserve Manual Calibration Long-Term
 
-When fusing estimates from multiple sources (even with variance inflation), the source with more samples eventually dominates. This is unavoidable with any fusion approach:
+When fusing estimates from multiple sources WITHOUT clamping, the source with more samples eventually dominates:
 - Automatic learning accumulates indefinitely → eventually overwhelms manual
 - Variance inflation only delays the problem, doesn't solve it
 - Manual corrections become ineffective over weeks/months
 
-**Fix Pattern**: Use hierarchical priority instead of fusion - manual completely overrides automatic:
+**Fix Pattern**: Use CLAMPED fusion - limit auto influence to a maximum percentage:
 
 ```python
-def update_manual(self, value):
-    # Create frozen state - auto is now ignored entirely
-    self._manual_filter.reset_to_value(
-        value=value,
-        variance=0.01,      # Extremely confident
-        sample_count=500,   # Massive inertia
-    )
+MAX_AUTO_RATIO = 0.30  # Auto can never exceed 30% influence
 
 @property
 def estimate(self):
-    # PRIORITY: Manual > Auto (no fusion!)
-    if self._manual_filter.is_initialized:
-        return self._manual_filter.estimate  # Auto ignored
-    return self._auto_filter.estimate  # Fallback only
+    if not self._manual_filter.is_initialized:
+        return self._auto_filter.estimate  # 100% auto fallback
+
+    # Clamped Bayesian Fusion
+    w_btn = 1.0 / self._manual_filter.variance
+    w_auto = 1.0 / self._auto_filter.variance
+
+    # CLAMP: Auto influence limited to 30%
+    if w_auto / (w_btn + w_auto) > MAX_AUTO_RATIO:
+        w_auto = w_btn * (MAX_AUTO_RATIO / (1.0 - MAX_AUTO_RATIO))
+
+    total = w_btn + w_auto
+    return (manual * w_btn + auto * w_auto) / total
 ```
+
+**Result**: User retains at least 70% authority, auto can "polish" within limits.
 
 ### 16. Hysteresis Escape Hatches Need Guarding
 
@@ -1775,3 +1830,131 @@ else:
 ```
 
 **Rule of Thumb**: Classify outliers into tiers. Pure noise (physically impossible) should be ignored entirely. Unlikely-but-possible values can count toward state changes after sustained repetition.
+
+### 25. Deterministic Systems Need Explicit Undo Mechanisms
+
+When replacing probabilistic/self-healing behavior with deterministic/user-controlled behavior, you MUST provide an explicit undo mechanism. Otherwise, user errors become permanent.
+
+**The "Ghost Scanner" Problem:**
+```
+Before (Probabilistic - Fusion):
+  User trains wrong room → Auto-learning eventually corrects it
+  Self-healing, but user corrections also get overwritten
+
+After (Deterministic - Hierarchical Priority):
+  User trains wrong room → Stays wrong FOREVER
+  User calibration persists, but errors persist too!
+```
+
+**Bug Pattern**:
+```python
+# BAD - Deterministic system without undo
+def train_room(self, room_id):
+    self._frozen_calibration = room_id  # Permanent!
+    # No way to undo if user made a mistake
+```
+
+**Fix Pattern**:
+```python
+# GOOD - Deterministic system WITH undo
+def train_room(self, room_id):
+    self._frozen_calibration = room_id
+
+def reset_training(self):
+    """Undo mechanism - clears frozen state, falls back to auto."""
+    self._frozen_calibration = None  # Reverts to auto-learning
+```
+
+**Why Device-Level Reset (not Room-Level)?**
+- "Ghost Scanner" problem often involves rooms that are no longer visible
+- User may not know WHICH room has the incorrect training
+- Device-level reset is the "nuclear option" that catches all cases
+
+**Rule of Thumb**: When switching from self-healing to user-controlled behavior, always ask: "What happens if the user makes a mistake?" If the answer is "it stays broken forever", you need an undo mechanism.
+
+### 26. Clamped Fusion Balances User Authority with Intelligent Adaptation
+
+When combining user input with automatic learning, the extremes are:
+- **Pure override**: User always wins, auto is ignored → No adaptation to real changes
+- **Pure fusion**: Weights based on confidence → Auto eventually overwhelms user
+
+**The Middle Path - Clamped Fusion:**
+```python
+MAX_AUTO_RATIO = 0.30  # Auto influence capped at 30%
+
+# Calculate weights, then clamp
+if auto_weight / total_weight > MAX_AUTO_RATIO:
+    auto_weight = btn_weight * (0.30 / 0.70)
+```
+
+**Benefits:**
+1. User retains majority control (≥70%)
+2. Auto can "polish" the anchor (adapt to small changes)
+3. Long-term drift is mathematically impossible
+4. Seasonal/environmental changes are partially accommodated
+
+**When to use Clamped Fusion:**
+- User sets a baseline that should be respected
+- System should adapt intelligently within limits
+- Changes should be gradual, not abrupt
+
+**Rule of Thumb**: When user and auto-learning conflict, ask: "Should auto be able to completely override the user over time?" If no, clamp the auto influence to a maximum percentage (30% is a good default).
+
+### 27. Hyper-Precision Paradox: Variance Dual-Use Trap
+
+When a single variance value serves TWO purposes (weighting AND matching), optimizing for one can destroy the other.
+
+**The Bug (Scannerless Room Detection):**
+```
+User trains "Keller" (cellar) at -80dB with variance=0.1 (σ≈0.3dB)
+Reality: Signal fluctuates to -82dB (normal BLE noise)
+Deviation: 2dB / 0.3dB = 6.7 sigma
+Result: Z-score matching says "impossible!" → Room REJECTED as measurement error
+```
+
+**Why It Happens:**
+
+| Purpose | Ideal Variance | Why |
+|---------|---------------|-----|
+| Fusion weighting | LOW (0.1) | Maximizes button's weight vs auto |
+| Z-score matching | HIGH (2.0+) | Accepts realistic BLE fluctuations |
+
+When both use the SAME variance, you can't optimize for both.
+
+**The Solution:**
+
+With Clamped Fusion, we don't need artificially low variance to "win" the weighting battle - the explicit 30% cap handles that. So we can use a physically realistic variance:
+
+```python
+# BEFORE (broken): variance=0.1 → 2dB = 6.7 sigma → REJECTED
+# AFTER (fixed):   variance=2.0 → 2dB = 1.4 sigma → ACCEPTED
+
+def update_button(self, rssi: float) -> float:
+    self._kalman_button.reset_to_value(
+        value=rssi,
+        variance=2.0,       # σ≈1.4dB - realistic for BLE
+        sample_count=500,
+    )
+```
+
+**Why variance=2.0 (σ≈1.4dB)?**
+- BLE signals typically fluctuate 2-5dB
+- 2dB deviation / 1.4dB σ ≈ 1.4 sigma (acceptable)
+- 5dB deviation / 1.4dB σ ≈ 3.5 sigma (borderline but reasonable)
+- Still MUCH lower than auto variance (~16), so button dominates fusion
+
+**Bug Pattern:**
+```python
+# BAD - Optimizing for weighting destroys matching
+variance = 0.01  # "Maximum confidence!"
+# But z_score(observed) becomes absurdly high for normal data
+```
+
+**Fix Pattern:**
+```python
+# GOOD - Separate concerns or use realistic shared value
+variance = 2.0  # Realistic for BLE, still << auto variance
+# Clamped Fusion handles weighting dominance explicitly
+```
+
+**Rule of Thumb**: When a parameter serves multiple purposes, verify it works for ALL of them. If optimizing for one breaks another, either separate the concerns or find a balanced middle value that works for both.

@@ -111,6 +111,9 @@
     "button": {
       "training_learn": {
         "name": "Vingerafdruk leren"
+      },
+      "reset_training": {
+        "name": "Training resetten"
       }
     }
   },
