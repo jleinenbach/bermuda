@@ -51,14 +51,13 @@ class TestScannerPairCorrelationDualFilter:
         assert corr.button_sample_count == 500
 
     def test_button_training_overrides_converged_auto(self) -> None:
-        """Button training inflates auto variance to allow user corrections to take effect.
+        """Button training completely overrides auto-learning (hierarchical priority).
 
-        FIX for Fehler 2: When auto-filter is converged (low variance from thousands of
-        samples), button training would previously be ineffective because inverse-variance
-        weighting would favor the highly-confident auto estimate.
+        With the Frozen Layers architecture, button training creates a frozen state
+        that takes absolute priority over auto-learning. The auto-filter continues
+        learning in "shadow mode" but has NO influence on the output.
 
-        Now, button training inflates the auto variance, giving button samples more weight.
-        This ensures manual user corrections can override automatic learning.
+        This ensures user calibration persists indefinitely against environment drift.
         """
         corr = ScannerPairCorrelation(scanner_address="test_scanner")
 
@@ -66,22 +65,19 @@ class TestScannerPairCorrelationDualFilter:
         for _ in range(100):
             corr.update(0.0)
 
-        # Add just 2 button samples at 30.0
-        # FIX: The first button call inflates auto variance from ~2.6 to 15.0
-        for _ in range(2):
-            corr.update_button(30.0)
+        # Button training creates frozen state that overrides auto completely
+        corr.update_button(30.0)
 
-        # After button training, auto variance should be inflated (higher than before)
-        auto_var = corr._kalman_auto.variance
+        # With hierarchical priority, button filter is initialized and takes priority
+        assert corr._kalman_button.is_initialized, "Button filter should be initialized"
+
+        # Button creates frozen state with very low variance (0.01)
         button_var = corr._kalman_button.variance
-        assert auto_var > button_var, (
-            f"Auto variance should be inflated after button training: auto={auto_var:.2f}, button={button_var:.2f}"
-        )
+        assert button_var < 0.1, f"Button should have frozen variance ~0.01, got {button_var}"
 
-        # With inflated auto variance, button training should have more influence
-        # Estimate should be closer to 30 (button) than to 0 (auto)
+        # Estimate should be EXACTLY the button value (no fusion with auto)
         estimate = corr.expected_delta
-        assert estimate > 15.0, f"Button training should have influence, got {estimate}"
+        assert abs(estimate - 30.0) < 0.01, f"Button should completely override auto, expected 30.0, got {estimate}"
 
     def test_auto_continues_learning_indefinitely(self) -> None:
         """Auto learning should never stop - adapts to environment changes."""
@@ -296,17 +292,15 @@ class TestSerializationDualFilter:
         assert restored.button_sample_count == profile.button_sample_count
 
 
-class TestInverseVarianceFusionMath:
-    """Tests for the mathematical correctness of inverse-variance fusion."""
+class TestHierarchicalPriority:
+    """Tests for the hierarchical priority system (button > auto)."""
 
-    def test_button_training_dominates_after_convergence(self) -> None:
-        """Button training dominates when auto was previously converged.
+    def test_button_completely_overrides_auto(self) -> None:
+        """Button training completely overrides auto-learning.
 
-        FIX for Fehler 2: Even with many button samples, button training should
-        dominate over auto-learning because auto variance is inflated when
-        button training starts.
-
-        The estimate should be closer to the button value (30.0) than the auto value (0.0).
+        With hierarchical priority, button filter takes absolute precedence
+        when initialized. Auto-learning continues in shadow mode but has
+        NO influence on the output.
         """
         corr = ScannerPairCorrelation(scanner_address="test_scanner")
 
@@ -314,31 +308,27 @@ class TestInverseVarianceFusionMath:
         for _ in range(100):
             corr.update(0.0)
 
-        # Train button - auto variance gets inflated on first call
-        for _ in range(100):
-            corr.update_button(30.0)
+        # Button training creates frozen state - overrides auto completely
+        corr.update_button(30.0)
 
-        # After button training, button filter is converged with low variance,
-        # while auto filter has inflated variance. Button should dominate.
+        # With hierarchical priority, estimate is EXACTLY the button value
         estimate = corr.expected_delta
-        # Button (30.0) should dominate over auto (0.0)
-        assert estimate > 20.0, f"Button should dominate with estimate > 20, got {estimate}"
+        assert abs(estimate - 30.0) < 0.01, f"Button should completely override auto, expected 30.0, got {estimate}"
 
-    def test_lower_variance_gets_more_weight(self) -> None:
-        """Converged filter (lower variance) gets more weight than unconverged."""
+    def test_button_overrides_regardless_of_auto_state(self) -> None:
+        """Button overrides auto regardless of how many auto samples exist."""
         corr = ScannerPairCorrelation(scanner_address="test_scanner")
 
         # Train auto with few samples (high variance ~5.6)
         for _ in range(3):
             corr.update(0.0)
 
-        # Train button with many samples (converged, low variance ~2.6)
-        for _ in range(100):
-            corr.update_button(30.0)
+        # Single button training creates frozen state that overrides auto
+        corr.update_button(30.0)
 
-        # Button is converged → lower variance → more weight → estimate closer to 30
+        # With hierarchical priority, button wins regardless of sample counts
         estimate = corr.expected_delta
-        assert estimate > 20.0, f"Converged button should dominate, got {estimate}"
+        assert abs(estimate - 30.0) < 0.01, f"Button should override auto completely, expected 30.0, got {estimate}"
 
     def test_variance_uses_hierarchical_priority(self) -> None:
         """Variance uses hierarchical priority: button variance when button exists."""

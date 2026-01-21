@@ -71,7 +71,7 @@ class ScannerAbsoluteRssi:
     """
 
     scanner_address: str
-    # Two parallel Kalman filters for weighted fusion
+    # Two parallel Kalman filters for hierarchical priority
     _kalman_auto: KalmanFilter = field(
         default_factory=lambda: KalmanFilter(
             process_noise=RSSI_PROCESS_NOISE,
