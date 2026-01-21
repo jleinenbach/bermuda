@@ -366,6 +366,19 @@ filtered_rssi = filter.update_adaptive(raw_rssi, ref_power=-55)
   2. Added variance inflation to `ScannerAbsoluteRssi.update_button()` - now both correlation classes support button training override
 - **Files**: `const.py`, `correlation/scanner_absolute.py`, `coordinator.py`
 
+### Soft Incumbent Stabilization & BLE Noise Filter
+- **Problem**: Two remaining causes of room flickering:
+  1. "Soft Incumbent Trap": When current scanner temporarily stops sending data, any challenger wins immediately
+  2. BLE noise spikes (100+ m/s calculated velocity) trigger false teleport recovery, resetting history
+- **Root causes**:
+  1. Same-floor soft incumbent replacement had NO protection (only cross-floor had history checks)
+  2. Velocity check didn't distinguish "plausible fast" (3-10 m/s) from "impossible spike" (>10 m/s)
+- **Fixes**:
+  1. **Soft Incumbent Stabilization** (`coordinator.py`): Same-floor challengers need either significant distance advantage (>0.5m) OR sustained history (4+ readings) to replace a soft incumbent that was within range
+  2. **BLE Noise Filter** (`bermuda_advert.py`): Velocities >10 m/s are ignored as measurement errors (don't count toward teleport recovery)
+- **Refactoring**: Extracted device loop into `_determine_area_for_device()` method for better maintainability
+- **Files**: `coordinator.py`, `bermuda_advert.py`
+
 ### Test Fixture Updates
 - Added `correlations`, `_correlations_loaded`, `_last_correlation_save`, `correlation_store` to coordinator mocks
 - Added `scanner_address` to FakeAdvert, `address` to FakeDevice
@@ -1530,3 +1543,67 @@ if self._kalman_auto.variance < 5.0:
 4. Add tests that cover BOTH implementations
 
 **Rule of Thumb**: When you fix a bug in ClassA.method(), ask: "Does ClassB have the same method? Does it need this fix too?"
+
+### 23. Soft State Transitions Need Protection Too
+
+When protecting state transitions (like room switches), don't forget "soft" states where the incumbent has partially failed but still holds the position. These often lack the same protections as normal state changes.
+
+**Bug Pattern**:
+```python
+# Cross-floor has protection, same-floor doesn't!
+if cross_floor:
+    if challenger_history < MIN_HISTORY:
+        continue  # Protected
+else:
+    pass  # No protection - challenger wins immediately!
+tests.reason = "WIN - soft incumbent failed"
+```
+
+**Fix Pattern**:
+```python
+if cross_floor:
+    if challenger_history < CROSS_FLOOR_MIN_HISTORY:
+        continue
+else:
+    # Same-floor ALSO needs protection against opportunistic challengers
+    if incumbent_was_within_range:
+        if not (has_significant_advantage or has_minimum_history):
+            continue  # Require some evidence before switching
+
+tests.reason = "WIN - soft incumbent failed"
+```
+
+**Rule of Thumb**: When an entity is in a "soft" state (partially failed but still valid), challengers should still need to prove themselves. Don't let "soft" become an easy bypass for protections.
+
+### 24. Distinguish Noise from Legitimate Outliers
+
+When filtering outliers, distinguish between "impossible values" (measurement errors) and "unlikely values" (real but unexpected). They should be handled differently.
+
+**Bug Pattern**:
+```python
+# Treats all high values the same way
+if velocity > MAX_VELOCITY:
+    blocked_count += 1  # Even 100 m/s spikes count toward recovery!
+    if blocked_count >= THRESHOLD:
+        accept_and_reset()  # Noise triggers false recovery
+```
+
+**Fix Pattern**:
+```python
+IMPOSSIBLE_THRESHOLD = 10.0  # m/s - physically impossible, pure noise
+
+if velocity > IMPOSSIBLE_THRESHOLD:
+    # NOISE: Completely ignore, don't count toward anything
+    use_previous_value()
+elif velocity > MAX_VELOCITY:
+    # UNLIKELY BUT POSSIBLE: Count toward recovery (teleport scenario)
+    blocked_count += 1
+    if blocked_count >= THRESHOLD:
+        accept_and_reset()
+else:
+    # NORMAL: Accept and reset counter
+    accept_value()
+    blocked_count = 0
+```
+
+**Rule of Thumb**: Classify outliers into tiers. Pure noise (physically impossible) should be ignored entirely. Unlikely-but-possible values can count toward state changes after sustained repetition.
