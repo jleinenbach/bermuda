@@ -2095,53 +2095,72 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                     self.room_profiles[best_area_id] = RoomProfile(area_id=best_area_id)
                 self.room_profiles[best_area_id].update(all_readings)
 
-    def _refresh_areas_by_min_distance(self):
+    def _refresh_areas_by_min_distance(self) -> None:
         """Set area for ALL devices based on UKF+RoomProfile or min-distance fallback."""
         # Check if we have mature room profiles (at least 2 scanner-pairs with 30+ samples)
         has_mature_profiles = any(profile.mature_pair_count >= 2 for profile in self.room_profiles.values())
 
         for device in self.devices.values():
-            if not device.is_scanner and (device.create_sensor or device.create_tracker_done):
-                # Check if device is manually locked to an area
-                if device.area_locked_id is not None:
-                    # Device is locked by user selection for training.
-                    # Only unlock if the locked scanner truly disappears (no advert at all).
-                    if device.area_locked_scanner_addr is not None:
-                        locked_advert = None
-                        for advert in device.adverts.values():
-                            if advert.scanner_address == device.area_locked_scanner_addr:
-                                locked_advert = advert
-                                break
+            self._determine_area_for_device(device, has_mature_profiles=has_mature_profiles)
 
-                        if locked_advert is None:
-                            _LOGGER.info(
-                                "Auto-unlocking %s: locked scanner %s no longer has any advert",
-                                device.name,
-                                device.area_locked_scanner_addr,
-                            )
-                            device.area_locked_id = None
-                            device.area_locked_name = None
-                            device.area_locked_scanner_addr = None
-                        else:
-                            # Locked scanner still has an advert - keep lock active.
-                            continue
-                    else:
-                        continue
+    def _determine_area_for_device(self, device: BermudaDevice, *, has_mature_profiles: bool) -> None:
+        """
+        Determine and set the area for a single device.
 
-                # Primary: UKF with RoomProfile (when profiles are mature)
-                # Fallback: Simple min-distance (bootstrap phase)
-                # FIX: Fehler 4 - Allow UKF for "scannerless rooms" even without mature global profiles.
-                # A scannerless room can ONLY be detected via UKF+fingerprints (min-distance fails
-                # because there's no scanner in that room). Previously, UKF required global
-                # has_mature_profiles, blocking newly-trained scannerless rooms for days/weeks.
-                # Now we allow UKF if EITHER global profiles are mature OR this specific device
-                # has its own learned correlations (AreaProfiles from button training).
-                device_has_correlations = (
-                    device.address in self.correlations and len(self.correlations[device.address]) > 0
-                )
-                if (has_mature_profiles or device_has_correlations) and self._refresh_area_by_ukf(device):
-                    continue
-                self._refresh_area_by_min_distance(device)
+        This method handles the complete area determination flow:
+        1. Check if device needs processing (is tracked and not a scanner)
+        2. Handle manual area locks from training UI
+        3. Try UKF fingerprint matching (when profiles are mature or device has correlations)
+        4. Fall back to min-distance heuristic
+
+        Args:
+            device: The BermudaDevice to determine area for
+            has_mature_profiles: Whether the system has mature RoomProfiles globally
+
+        """
+        # Skip scanners and devices not being tracked
+        if device.is_scanner or not (device.create_sensor or device.create_tracker_done):
+            return
+
+        # Check if device is manually locked to an area
+        if device.area_locked_id is not None:
+            # Device is locked by user selection for training.
+            # Only unlock if the locked scanner truly disappears (no advert at all).
+            if device.area_locked_scanner_addr is not None:
+                locked_advert = None
+                for advert in device.adverts.values():
+                    if advert.scanner_address == device.area_locked_scanner_addr:
+                        locked_advert = advert
+                        break
+
+                if locked_advert is None:
+                    _LOGGER.info(
+                        "Auto-unlocking %s: locked scanner %s no longer has any advert",
+                        device.name,
+                        device.area_locked_scanner_addr,
+                    )
+                    device.area_locked_id = None
+                    device.area_locked_name = None
+                    device.area_locked_scanner_addr = None
+                else:
+                    # Locked scanner still has an advert - keep lock active.
+                    return
+            else:
+                return
+
+        # Primary: UKF with RoomProfile (when profiles are mature)
+        # Fallback: Simple min-distance (bootstrap phase)
+        #
+        # FIX: Fehler 4 - Allow UKF for "scannerless rooms" even without mature global profiles.
+        # A scannerless room can ONLY be detected via UKF+fingerprints (min-distance fails
+        # because there's no scanner in that room). Previously, UKF required global
+        # has_mature_profiles, blocking newly-trained scannerless rooms for days/weeks.
+        # Now we allow UKF if EITHER global profiles are mature OR this specific device
+        # has its own learned correlations (AreaProfiles from button training).
+        device_has_correlations = device.address in self.correlations and len(self.correlations[device.address]) > 0
+        if (has_mature_profiles or device_has_correlations) and self._refresh_area_by_ukf(device):
+            return
+        self._refresh_area_by_min_distance(device)
 
     @dataclass
     class AreaTests:
@@ -2469,6 +2488,67 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                         if len(challenger_hist) < len(incumbent_hist) // 2:
                             tests.reason = "LOSS - soft incumbent has substantial history, challenger needs more"
                             continue
+                else:
+                    # FIX: Same-floor soft incumbent stabilization
+                    # When incumbent scanner temporarily stops sending data ("soft incumbent"),
+                    # don't let any challenger win immediately. This prevents room flickering
+                    # when the current scanner has a brief dropout (common with BLE).
+                    #
+                    # IMPORTANT: Only apply stabilization when the incumbent WAS within range.
+                    # If incumbent was OUT OF RANGE (beyond max_radius), let challenger win
+                    # immediately - we shouldn't protect an invalid position.
+                    #
+                    # Require challenger to have EITHER:
+                    # 1. Significantly better distance (> 0.5m closer) - clear physical proximity
+                    # 2. Some sustained history (half of cross-floor requirement) - consistent readings
+                    #
+                    # This keeps the device in its current room during brief scanner outages,
+                    # rather than jumping to whichever scanner happens to send data next.
+
+                    # Get last known incumbent distance for comparison
+                    soft_inc_distance = device.area_distance if device.area_distance is not None else None
+
+                    # Only apply stabilization if incumbent was within valid range
+                    # If incumbent was out of range (soft_inc_distance > max_radius or None),
+                    # skip stabilization and let the valid challenger win
+                    soft_inc_was_within_range = soft_inc_distance is not None and soft_inc_distance <= _max_radius
+
+                    if soft_inc_was_within_range and soft_inc_distance is not None:
+                        # Note: soft_inc_distance is guaranteed not None here due to the check above,
+                        # but we add the explicit check for mypy's type narrowing.
+                        challenger_hist = challenger.hist_distance_by_interval
+                        challenger_dist = _effective_distance(challenger)
+                        soft_inc_min_history = CROSS_FLOOR_MIN_HISTORY // 2  # 4 readings
+                        soft_inc_min_distance_advantage = 0.5  # meters
+
+                        has_significant_distance_advantage = (
+                            challenger_dist is not None
+                            and (soft_inc_distance - challenger_dist) >= soft_inc_min_distance_advantage
+                        )
+                        has_sufficient_history = len(challenger_hist) >= soft_inc_min_history
+
+                        if not has_significant_distance_advantage and not has_sufficient_history:
+                            dist_adv_str = (
+                                f"{soft_inc_distance - challenger_dist:.2f}" if challenger_dist is not None else "N/A"
+                            )
+                            tests.reason = (
+                                f"LOSS - soft incumbent same-floor protection "
+                                f"(dist adv: {dist_adv_str}m < {soft_inc_min_distance_advantage}m, "
+                                f"hist: {len(challenger_hist)} < {soft_inc_min_history})"
+                            )
+                            if _superchatty:
+                                _LOGGER.debug(
+                                    "%s: Soft incumbent same-floor protection - %s rejected "
+                                    "(distance advantage %.2fm < %.2fm, history %d < %d)",
+                                    device.name,
+                                    challenger.name,
+                                    (soft_inc_distance - challenger_dist) if challenger_dist else 0,
+                                    soft_inc_min_distance_advantage,
+                                    len(challenger_hist),
+                                    soft_inc_min_history,
+                                )
+                            continue
+
                 tests.reason = "WIN - soft incumbent failed distance contention"
                 incumbent = challenger
                 soft_incumbent = None

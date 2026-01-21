@@ -356,6 +356,29 @@ filtered_rssi = filter.update_adaptive(raw_rssi, ref_power=-55)
 - **Files**: `const.py`, `bermuda_device.py`, `coordinator.py`
 - **Key methods**: `get_movement_state()`, `get_dwell_time()`, `area_changed_at`
 
+### BLE Tracking Stability Fix (PR #94)
+- **Problem**: Room flickering and button training ineffective
+- **Root causes**:
+  1. `VELOCITY_TELEPORT_THRESHOLD` too low (5) - BLE noise caused 100+ m/s calculated velocities, triggering false teleport resets that cleared distance history needed for cross-floor protection
+  2. `ScannerAbsoluteRssi.update_button()` was missing variance inflation - only `ScannerPairCorrelation` had it, so button training couldn't override absolute RSSI profiles
+- **Fixes**:
+  1. Increased `VELOCITY_TELEPORT_THRESHOLD` from 5 to 10 - gives Kalman filter time to stabilize
+  2. Added variance inflation to `ScannerAbsoluteRssi.update_button()` - now both correlation classes support button training override
+- **Files**: `const.py`, `correlation/scanner_absolute.py`, `coordinator.py`
+
+### Soft Incumbent Stabilization & BLE Noise Filter
+- **Problem**: Two remaining causes of room flickering:
+  1. "Soft Incumbent Trap": When current scanner temporarily stops sending data, any challenger wins immediately
+  2. BLE noise spikes (100+ m/s calculated velocity) trigger false teleport recovery, resetting history
+- **Root causes**:
+  1. Same-floor soft incumbent replacement had NO protection (only cross-floor had history checks)
+  2. Velocity check didn't distinguish "plausible fast" (3-10 m/s) from "impossible spike" (>10 m/s)
+- **Fixes**:
+  1. **Soft Incumbent Stabilization** (`coordinator.py`): Same-floor challengers need either significant distance advantage (>0.5m) OR sustained history (4+ readings) to replace a soft incumbent that was within range
+  2. **BLE Noise Filter** (`bermuda_advert.py`): Velocities >10 m/s are ignored as measurement errors (don't count toward teleport recovery)
+- **Refactoring**: Extracted device loop into `_determine_area_for_device()` method for better maintainability
+- **Files**: `coordinator.py`, `bermuda_advert.py`
+
 ### Test Fixture Updates
 - Added `correlations`, `_correlations_loaded`, `_last_correlation_save`, `correlation_store` to coordinator mocks
 - Added `scanner_address` to FakeAdvert, `address` to FakeDevice
@@ -921,6 +944,7 @@ Button: 10 samples,   variance=5.6,              weight=0.179
 2. **Target 15.0**: Reset to approximately initial/unconverged state
 3. **One-time inflation**: Once variance >= 5.0, don't inflate again
 4. **Auto can recover**: Continued auto-learning will reconverge naturally
+5. **Both correlation classes**: `ScannerPairCorrelation.update_button()` AND `ScannerAbsoluteRssi.update_button()` both implement variance inflation - they must stay in sync
 
 ## Cross-Floor Hysteresis Protection
 
@@ -1161,10 +1185,10 @@ T6: Even button press doesn't help (velocity history not reset)
 │  │         ↓                                                 │       │
 │  │ velocity_blocked_count++                                  │       │
 │  │         ↓                                                 │       │
-│  │ Count >= VELOCITY_TELEPORT_THRESHOLD (5)?                │       │
+│  │ Count >= VELOCITY_TELEPORT_THRESHOLD (10)?               │       │
 │  │         ↓ Yes                     ↓ No                    │       │
 │  │ Accept reading, reset      Keep blocking, log            │       │
-│  │ history (break trap)       (block N/5)                   │       │
+│  │ history (break trap)       (block N/10)                  │       │
 │  └──────────────────────────────────────────────────────────┘       │
 │                                                                      │
 └─────────────────────────────────────────────────────────────────────┘
@@ -1178,7 +1202,7 @@ T6: Even button press doesn't help (velocity history not reset)
 | `coordinator.py` | `async_train_fingerprint()` | Calls reset on manual training |
 | `bermuda_advert.py` | `velocity_blocked_count` | Counter for consecutive blocks |
 | `bermuda_advert.py` | `calculate_data()` | Teleport recovery logic |
-| `const.py` | `VELOCITY_TELEPORT_THRESHOLD` | Blocks before auto-recovery (5) |
+| `const.py` | `VELOCITY_TELEPORT_THRESHOLD` | Blocks before auto-recovery (10) |
 
 ### Key Code
 
@@ -1219,7 +1243,7 @@ else:
 
 ### Design Decisions
 
-1. **Threshold of 5 blocks**: Balances quick recovery (teleport scenario) with protection against single bad readings. 5 consecutive blocks from the same scanner strongly suggests the device actually moved.
+1. **Threshold of 10 blocks**: Balances quick recovery (teleport scenario) with protection against BLE noise. Initially set to 5, but increased to 10 because noisy RSSI values caused calculated velocities of 100+ m/s, triggering false teleport detections too frequently. This reset distance history, which broke cross-floor protection (requires history). A higher threshold gives the Kalman filter more time to stabilize while still allowing recovery within ~10 seconds (at 1 update/second).
 
 2. **Reset Kalman filter too**: When velocity history is reset, the Kalman filter state is also reset to avoid stale smoothed values contaminating new readings.
 
@@ -1258,6 +1282,8 @@ def on_manual_training():
 ```
 
 **Rule of Thumb**: Any guard that can permanently block valid data needs an escape hatch. For velocity guards: count consecutive blocks and accept after N consistent readings, plus always allow manual override.
+
+**Tuning Note**: The threshold N requires tuning. Initially set to 5, it was increased to 10 because BLE noise caused false teleport detections that broke cross-floor protection (see PR #94).
 
 ---
 
@@ -1486,3 +1512,98 @@ if effective_match_score < effective_threshold:
 | `UKF_RETENTION_THRESHOLD` | 0.15 | Lower threshold when keeping current area (vs 0.3 for switching) |
 
 **Rule of Thumb**: For any logic that determines "where is the device NOW", always use `device.area_id` (confirmed state), never `device.area_advert.area_id` (ephemeral state from last packet). The difference is crucial for scannerless rooms where packets arrive from scanners in OTHER rooms.
+
+### 22. Parallel Implementations Must Stay in Sync
+
+When two classes serve similar purposes with the same interface pattern, bug fixes in one must be applied to the other. Missing this creates subtle behavioral differences.
+
+**Bug Pattern**:
+```python
+# ScannerPairCorrelation.update_button() has variance inflation ✅
+# ScannerAbsoluteRssi.update_button() is missing it ❌
+# Result: Button training works for pair correlations but not absolute RSSI!
+```
+
+**Fix Pattern**:
+```python
+# BOTH classes need the same fix:
+# ScannerPairCorrelation.update_button():
+if self._kalman_auto.variance < 5.0:
+    self._kalman_auto.variance = 15.0
+
+# ScannerAbsoluteRssi.update_button():  # MUST MATCH!
+if self._kalman_auto.variance < 5.0:
+    self._kalman_auto.variance = 15.0
+```
+
+**Checklist for parallel implementations:**
+1. Identify all classes with similar interface/purpose (e.g., `Scanner*` correlation classes)
+2. When fixing a bug, grep for similar patterns in sibling classes
+3. Consider extracting shared logic to a base class or mixin
+4. Add tests that cover BOTH implementations
+
+**Rule of Thumb**: When you fix a bug in ClassA.method(), ask: "Does ClassB have the same method? Does it need this fix too?"
+
+### 23. Soft State Transitions Need Protection Too
+
+When protecting state transitions (like room switches), don't forget "soft" states where the incumbent has partially failed but still holds the position. These often lack the same protections as normal state changes.
+
+**Bug Pattern**:
+```python
+# Cross-floor has protection, same-floor doesn't!
+if cross_floor:
+    if challenger_history < MIN_HISTORY:
+        continue  # Protected
+else:
+    pass  # No protection - challenger wins immediately!
+tests.reason = "WIN - soft incumbent failed"
+```
+
+**Fix Pattern**:
+```python
+if cross_floor:
+    if challenger_history < CROSS_FLOOR_MIN_HISTORY:
+        continue
+else:
+    # Same-floor ALSO needs protection against opportunistic challengers
+    if incumbent_was_within_range:
+        if not (has_significant_advantage or has_minimum_history):
+            continue  # Require some evidence before switching
+
+tests.reason = "WIN - soft incumbent failed"
+```
+
+**Rule of Thumb**: When an entity is in a "soft" state (partially failed but still valid), challengers should still need to prove themselves. Don't let "soft" become an easy bypass for protections.
+
+### 24. Distinguish Noise from Legitimate Outliers
+
+When filtering outliers, distinguish between "impossible values" (measurement errors) and "unlikely values" (real but unexpected). They should be handled differently.
+
+**Bug Pattern**:
+```python
+# Treats all high values the same way
+if velocity > MAX_VELOCITY:
+    blocked_count += 1  # Even 100 m/s spikes count toward recovery!
+    if blocked_count >= THRESHOLD:
+        accept_and_reset()  # Noise triggers false recovery
+```
+
+**Fix Pattern**:
+```python
+IMPOSSIBLE_THRESHOLD = 10.0  # m/s - physically impossible, pure noise
+
+if velocity > IMPOSSIBLE_THRESHOLD:
+    # NOISE: Completely ignore, don't count toward anything
+    use_previous_value()
+elif velocity > MAX_VELOCITY:
+    # UNLIKELY BUT POSSIBLE: Count toward recovery (teleport scenario)
+    blocked_count += 1
+    if blocked_count >= THRESHOLD:
+        accept_and_reset()
+else:
+    # NORMAL: Accept and reset counter
+    accept_value()
+    blocked_count = 0
+```
+
+**Rule of Thumb**: Classify outliers into tiers. Pure noise (physically impossible) should be ignored entirely. Unlikely-but-possible values can count toward state changes after sustained repetition.
