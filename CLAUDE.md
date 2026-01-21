@@ -120,49 +120,47 @@ def expected_rssi(self) -> float:
     return (est_btn * w_btn + est_auto * w_auto) / total
 ```
 
-**Button Anchor via `reset_to_value()`:**
+**Button Training via Kalman `update()`:**
 ```python
 def update_button(self, rssi: float) -> float:
-    # Create high-confidence anchor state
-    # IMPORTANT: variance=2.0 (σ≈1.4dB) is physically realistic for BLE
-    # Do NOT use variance < 1.0! See "Hyper-Precision Paradox" in Lessons Learned
-    self._kalman_button.reset_to_value(
-        value=rssi,
-        variance=2.0,       # High confidence but realistic (σ≈1.4dB)
-        sample_count=500,   # Massive inertia as base
-    )
+    # Add sample to button filter (same as auto-learning)
+    # Each of the 10 training samples contributes to the average
+    self._kalman_button.update(rssi)
     return self.expected_rssi  # Returns fused value
 ```
 
-**Example: Controlled Evolution**
-```
-Day 1: User trains device in "Keller" at -85dB
-       → Button (anchor): -85dB, 70-100% weight
-       → Auto: Empty
+**Why `update()` instead of `reset_to_value()`?**
 
-Weeks later: Environment changes slightly
-       → Auto drifts to -80dB (environment change detected)
-       → Button: Still -85dB (anchor)
-       → Auto influence clamped to 30%
-       → expected_rssi ≈ 0.7 * (-85) + 0.3 * (-80) = -83.5dB
-       → Room detection stays stable, but adapts slightly!
+Previously, `reset_to_value()` was used which OVERWROTE previous samples:
+- 10 training samples collected
+- But only the LAST sample counted (others overwritten!)
+- That one sample claimed 500 samples worth of confidence
+- This could make training WORSE than auto-learning if that one sample was noisy
+
+Now, `update()` is used which ACCUMULATES samples:
+- All 10 training samples contribute to the average
+- Variance naturally decreases as more samples are added
+- Button filter builds confidence from ACTUAL data, not artificial inflation
+
+**Example: Button Training Accumulation**
+```
+Training sample 1: RSSI = -82dB
+  → Button estimate: -82dB, variance: ~8.0
+
+Training sample 5: RSSI = -80dB
+  → Button estimate: -81dB (averaged), variance: ~3.5
+
+Training sample 10: RSSI = -79dB
+  → Button estimate: -80.5dB (averaged), variance: ~2.5
+  → 10 real samples, realistic confidence
 ```
 
 **Key Constants:**
 | Constant | Value | Purpose |
 |----------|-------|---------|
 | `MAX_AUTO_RATIO` | 0.30 | Auto influence capped at 30% |
-| Anchor variance | 2.0 | High confidence (σ≈1.4dB) but realistic for BLE |
-| Anchor sample_count | 500 | Massive inertia as base |
 | `MIN_VARIANCE` | 0.001 | Prevents division by zero |
-
-**⚠️ IMPORTANT: Hyper-Precision Paradox**
-
-Do NOT set anchor variance < 1.0! Variance serves TWO purposes:
-1. **Fusion weighting**: Lower variance = higher weight (OK to be low)
-2. **Z-Score matching**: Variance defines acceptable deviation (must be realistic!)
-
-With variance=0.1 (σ≈0.3dB), a normal 2dB BLE fluctuation becomes a "6 sigma event" → room is REJECTED as impossible, even though it's correct!
+| `TRAINING_SAMPLE_COUNT` | 10 | Samples per training session |
 
 ## Testing Standards
 
@@ -482,6 +480,22 @@ filtered_rssi = filter.update_adaptive(raw_rssi, ref_power=-55)
   ```
 - **Effect**: After training, device starts in the trained room. UKF retention threshold (0.15) is much lower than switching threshold (0.3), helping keep the device in the trained room.
 - **File**: `button.py`
+
+### Button Training Sample Accumulation Fix (BUG 11)
+- **Problem**: Button training produced WORSE results than auto-learning
+  - User observed: Auto-learning worked well → clicked "Learn" → got worse results
+  - After "Reset Training" → back to good (auto-only) results
+- **Root cause**: `update_button()` used `reset_to_value()` which OVERWROTE previous samples
+  - 10 training samples were collected
+  - But each call to `reset_to_value()` replaced the previous value
+  - Only the LAST sample counted, but it claimed 500 samples confidence!
+  - This single (potentially noisy) sample dominated over well-averaged auto data
+- **Solution**: Replace `reset_to_value()` with `update()` in both correlation classes
+  - `ScannerAbsoluteRssi.update_button()`: Now uses `_kalman_button.update(rssi)`
+  - `ScannerPairCorrelation.update_button()`: Now uses `_kalman_button.update(delta)`
+  - All 10 training samples now contribute to the average
+  - Variance decreases naturally based on actual data quality
+- **Files**: `correlation/scanner_absolute.py`, `correlation/scanner_pair.py`
 
 ## Manual Fingerprint Training System
 
