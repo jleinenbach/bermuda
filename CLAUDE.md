@@ -389,6 +389,24 @@ filtered_rssi = filter.update_adaptive(raw_rssi, ref_power=-55)
 - Added `get_movement_state()` and `area_changed_at` to FakeDevice
 - Added `area_locked_id`, `area_locked_name`, `area_locked_scanner_addr` to FakeDevice
 
+### Reset Training Feature (Ghost Scanner Fix)
+- **Problem**: With hierarchical priority (button > auto), incorrect training persists forever
+  - "Ghost Scanner" problem: Device trained in wrong/invisible room stays stuck
+  - Simple re-training doesn't help if the problematic scanner isn't visible anymore
+  - No way to undo incorrect manual calibration
+- **Solution**: Device-level "Reset Training" button that clears ALL user training
+  - Clears button filter (Frozen Layer) in all AreaProfiles for the device
+  - Preserves auto-learned data (Shadow Learning) as immediate fallback
+  - Persists changes immediately via `correlation_store.async_save()`
+- **Files changed**:
+  - `correlation/scanner_absolute.py`: Added `reset_training()` method
+  - `correlation/scanner_pair.py`: Added `reset_training()` method
+  - `correlation/area_profile.py`: Added `reset_training()` method
+  - `coordinator.py`: Added `async_reset_device_training()` method
+  - `button.py`: Added `BermudaResetTrainingButton` class
+  - `translations/*.json`: Added translations for 8 languages
+- **UI**: New button per device with `mdi:eraser` icon, EntityCategory.CONFIG
+
 ## Manual Fingerprint Training System
 
 ### Problem Statement
@@ -1775,3 +1793,44 @@ else:
 ```
 
 **Rule of Thumb**: Classify outliers into tiers. Pure noise (physically impossible) should be ignored entirely. Unlikely-but-possible values can count toward state changes after sustained repetition.
+
+### 25. Deterministic Systems Need Explicit Undo Mechanisms
+
+When replacing probabilistic/self-healing behavior with deterministic/user-controlled behavior, you MUST provide an explicit undo mechanism. Otherwise, user errors become permanent.
+
+**The "Ghost Scanner" Problem:**
+```
+Before (Probabilistic - Fusion):
+  User trains wrong room → Auto-learning eventually corrects it
+  Self-healing, but user corrections also get overwritten
+
+After (Deterministic - Hierarchical Priority):
+  User trains wrong room → Stays wrong FOREVER
+  User calibration persists, but errors persist too!
+```
+
+**Bug Pattern**:
+```python
+# BAD - Deterministic system without undo
+def train_room(self, room_id):
+    self._frozen_calibration = room_id  # Permanent!
+    # No way to undo if user made a mistake
+```
+
+**Fix Pattern**:
+```python
+# GOOD - Deterministic system WITH undo
+def train_room(self, room_id):
+    self._frozen_calibration = room_id
+
+def reset_training(self):
+    """Undo mechanism - clears frozen state, falls back to auto."""
+    self._frozen_calibration = None  # Reverts to auto-learning
+```
+
+**Why Device-Level Reset (not Room-Level)?**
+- "Ghost Scanner" problem often involves rooms that are no longer visible
+- User may not know WHICH room has the incorrect training
+- Device-level reset is the "nuclear option" that catches all cases
+
+**Rule of Thumb**: When switching from self-healing to user-controlled behavior, always ask: "What happens if the user makes a mistake?" If the answer is "it stays broken forever", you need an undo mechanism.

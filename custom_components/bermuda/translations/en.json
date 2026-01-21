@@ -108,6 +108,9 @@
     "button": {
       "training_learn": {
         "name": "Learn Fingerprint"
+      },
+      "reset_training": {
+        "name": "Reset Training"
       }
     }
   },

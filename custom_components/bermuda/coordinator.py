@@ -810,6 +810,66 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
         return True
 
+    async def async_reset_device_training(self, device_address: str) -> bool:
+        """
+        Reset all user training data for a device across ALL areas.
+
+        This is the "nuclear option" for fixing incorrect manual training.
+        It clears all button filter data (Frozen Layers) for this device,
+        reverting to automatic learning (Shadow Learning) only.
+
+        Use cases:
+        - "Ghost Scanner" problem: Device was trained in wrong room
+        - User wants to start fresh with automatic learning
+        - Incorrect training in rooms that are no longer visible
+
+        The auto-filter data is preserved, providing immediate fallback.
+
+        Args:
+            device_address: MAC address of the device to reset.
+
+        Returns:
+            True if any training data was reset, False if device had no training.
+
+        """
+        if device_address not in self.correlations:
+            _LOGGER.debug(
+                "No training data found for device %s - nothing to reset",
+                device_address,
+            )
+            return False
+
+        device_profiles = self.correlations[device_address]
+        if not device_profiles:
+            _LOGGER.debug(
+                "Empty training data for device %s - nothing to reset",
+                device_address,
+            )
+            return False
+
+        # Reset training in all areas for this device
+        area_count = 0
+        for area_id, profile in device_profiles.items():
+            profile.reset_training()
+            area_count += 1
+            _LOGGER.debug(
+                "Reset training for device %s in area %s",
+                device_address,
+                area_id,
+            )
+
+        _LOGGER.info(
+            "Reset all training data for device %s across %d areas",
+            device_address,
+            area_count,
+        )
+
+        # Persist changes immediately
+        await self.correlation_store.async_save(self.correlations, self.room_profiles)
+        self._last_correlation_save = monotonic_time_coarse()
+
+        return True
+
     # def button_created(self, address):
     #     """Receives report from number platform that sensors have been set up."""
     #     dev = self._get_device(address)

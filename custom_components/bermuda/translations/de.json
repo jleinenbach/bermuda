@@ -108,6 +108,9 @@
     "button": {
       "training_learn": {
         "name": "Fingerabdruck lernen"
+      },
+      "reset_training": {
+        "name": "Training zurücksetzen"
       }
     }
   },

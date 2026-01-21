@@ -106,6 +106,9 @@
     "button": {
       "training_learn": {
         "name": "Μάθηση Αποτυπώματος"
+      },
+      "reset_training": {
+        "name": "Επαναφορά Εκπαίδευσης"
       }
     }
   },

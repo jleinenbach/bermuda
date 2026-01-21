@@ -50,6 +50,9 @@
     "button": {
       "training_learn": {
         "name": "Lær fingeravtrykk"
+      },
+      "reset_training": {
+        "name": "Tilbakestill trening"
       }
     }
   }

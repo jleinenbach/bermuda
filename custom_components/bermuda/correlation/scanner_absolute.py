@@ -203,6 +203,18 @@ class ScannerAbsoluteRssi:
         """
         return self.sample_count >= MIN_SAMPLES_FOR_MATURITY
 
+    def reset_training(self) -> None:
+        """
+        Reset user training data (button filter only).
+
+        This reverts the scanner to use automatic learning (Shadow Learning)
+        immediately. The auto-filter is preserved, providing a fallback.
+
+        Use this to undo incorrect manual training without losing the
+        automatically learned patterns.
+        """
+        self._kalman_button.reset()
+
     def z_score(self, observed_rssi: float) -> float:
         """
         Calculate deviation from expected value in standard deviations.
