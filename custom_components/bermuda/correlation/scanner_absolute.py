@@ -9,11 +9,12 @@ scanner goes offline.
 This enables "room fingerprinting" - even without the primary scanner,
 we can verify if secondary scanner readings match the learned pattern.
 
-Weighted Learning System (Two-Pool Fusion with Inverse-Variance Weighting):
+Hierarchical Priority System (Frozen Layers & Shadow Learning):
     - Two parallel Kalman filters: one for automatic learning, one for button training
-    - Weights are determined by INVERSE VARIANCE (mathematically optimal)
-    - Lower variance = higher confidence = more weight
-    - Button training with consistent values naturally dominates over noisy auto learning
+    - Button training ALWAYS overrides auto-learning (no mixing/fusion)
+    - Once a user trains a room, that value is "frozen" - auto-learning cannot change it
+    - Auto-learning continues in "shadow mode" (for diagnostics) but doesn't affect output
+    - This ensures user calibration persists indefinitely against environment drift
 """
 
 from __future__ import annotations
@@ -22,8 +23,6 @@ from dataclasses import dataclass, field
 from typing import Any, Self
 
 from custom_components.bermuda.filters.kalman import KalmanFilter
-
-from .scanner_pair import MIN_VARIANCE
 
 # Kalman parameters for absolute RSSI tracking.
 # RSSI can vary more than deltas due to device orientation, battery state, etc.
@@ -47,23 +46,24 @@ class ScannerAbsoluteRssi:
     verify if the device is still in the same area even when the
     primary scanner goes offline.
 
-    Uses two parallel Kalman filters with INVERSE-VARIANCE fusion:
-    - Auto filter: Continuously learns from automatic room detection
-    - Button filter: Learns from manual button training
+    Uses HIERARCHICAL PRIORITY (not fusion):
+    - Auto filter: Continuously learns from automatic room detection (Shadow Learning)
+    - Button filter: Learns from manual button training (Frozen Layer)
 
-    The final estimate uses mathematically optimal Bayesian fusion:
-    - Weight = 1 / variance (lower uncertainty = more trust)
-    - Button training with consistent values (low variance) naturally dominates
-    - No artificial multipliers - the math handles it automatically
+    Priority Logic:
+    - If button filter is initialized → use ONLY button value (user truth is absolute)
+    - If button filter is not initialized → fallback to auto value
+    - Auto-learning continues but has NO INFLUENCE when button data exists
+
+    This ensures that once a user trains a room, the calibration persists
+    indefinitely regardless of how much the auto-learning drifts over time.
 
     Example:
-        When device is in "Büro":
-        - Scanner 1 (Büro): typically -45dB (primary, might go offline)
-        - Scanner 5: typically -85dB
-        - Scanner 6: typically -78dB
-
-        If Scanner 1 goes offline but Scanner 5 still shows -85dB and
-        Scanner 6 still shows -78dB, the device is likely still in Büro.
+        User trains device in "Keller" (cellar):
+        - Button filter learns: Scanner Wohnzimmer = -85dB
+        - Auto filter continues learning in shadow: -90dB, -80dB, etc.
+        - expected_rssi always returns -85dB (button value)
+        - Even after months of auto-drift, the room stays stable
 
     Attributes:
         scanner_address: MAC address of the scanner being tracked.
@@ -103,83 +103,74 @@ class ScannerAbsoluteRssi:
 
     def update_button(self, rssi: float) -> float:
         """
-        Update with button-trained RSSI value.
+        Update with button-trained RSSI value (The Frozen Layer).
 
-        FIX: Inflate auto-filter variance when button training occurs,
-        but only if auto-filter is already converged (low variance). This ensures
-        button training can override accumulated auto-learning bias without
-        destroying the auto-learning capability entirely.
+        This creates a "frozen" state that completely overrides auto-learning.
+        The button filter is set to extremely high confidence (variance=0.01)
+        and high sample count (500) to ensure it dominates any future operations.
 
-        Button samples with consistent values will have lower variance,
-        thus naturally receiving more weight in the fusion.
+        IMPORTANT: Once this is called, the auto-filter becomes "shadow only" -
+        it continues learning but has NO INFLUENCE on expected_rssi.
 
         Args:
             rssi: Current absolute RSSI value from this scanner.
 
         Returns:
-            Updated fused estimate of expected RSSI.
+            The frozen button estimate (user truth).
 
         """
-        # FIX: Inflate auto-filter variance only if it's converged (variance < 5.0).
-        # A converged auto-filter has thousands of samples and would otherwise
-        # dominate the button training due to inverse-variance weighting.
-        # By inflating variance when converged, we "forget" some auto-confidence
-        # and allow button training to take precedence.
-        # We don't inflate if variance is already high (unconverged or already inflated).
-        converged_threshold = 5.0
-        if self._kalman_auto.sample_count > 0 and self._kalman_auto.variance < converged_threshold:
-            # Inflate to ~15.0 which is roughly the initial/unconverged state
-            self._kalman_auto.variance = 15.0
-
-        self._kalman_button.update(rssi)
+        # Use reset_to_value to create a frozen, high-confidence state
+        # - variance=0.01: Extremely high confidence
+        # - sample_count=500: Massive inertia (would need ~500 contrary samples to shift)
+        self._kalman_button.reset_to_value(
+            value=rssi,
+            variance=0.01,
+            sample_count=500,
+        )
         return self.expected_rssi
 
     @property
     def expected_rssi(self) -> float:
         """
-        Return inverse-variance weighted fusion of auto and button estimates.
+        Return expected RSSI using HIERARCHICAL PRIORITY (not fusion).
 
-        Uses mathematically optimal Bayesian sensor fusion:
-            weight_i = 1 / variance_i
-            fused = Σ(estimate_i * weight_i) / Σ(weight_i)
+        Priority Logic:
+        1. If button filter is initialized → return button estimate (user truth is absolute)
+        2. If button filter is not initialized → return auto estimate (learned fallback)
+        3. If neither is initialized → return 0.0
+
+        This ensures user training ALWAYS overrides auto-learning, regardless
+        of how many auto-samples have been collected or their variance.
         """
-        auto_samples = self._kalman_auto.sample_count
-        button_samples = self._kalman_button.sample_count
-
-        if auto_samples == 0 and button_samples == 0:
-            return 0.0
-        if button_samples == 0:
-            return self._kalman_auto.estimate
-        if auto_samples == 0:
+        # PRIORITY 1: User training is absolute truth
+        if self._kalman_button.is_initialized:
             return self._kalman_button.estimate
 
-        # Inverse-variance weighting (optimal Bayesian fusion)
-        auto_var = max(self._kalman_auto.variance, MIN_VARIANCE)
-        button_var = max(self._kalman_button.variance, MIN_VARIANCE)
+        # PRIORITY 2: Fallback to auto-learning if no user training
+        if self._kalman_auto.is_initialized:
+            return self._kalman_auto.estimate
 
-        auto_weight = 1.0 / auto_var
-        button_weight = 1.0 / button_var
-        total_weight = auto_weight + button_weight
-
-        return (self._kalman_auto.estimate * auto_weight + self._kalman_button.estimate * button_weight) / total_weight
+        # No data available
+        return 0.0
 
     @property
     def variance(self) -> float:
         """
-        Return combined variance from both filters.
+        Return variance of the ACTIVE filter (hierarchical priority).
 
-        Uses inverse-variance fusion formula:
-            combined_variance = 1 / (1/var1 + 1/var2)
+        Priority Logic:
+        1. If button filter is initialized → return button variance only
+        2. If button filter is not initialized → return auto variance
+
+        We do NOT combine variances because that would dilute the high
+        confidence of user training with the uncertainty of auto-learning.
         """
-        if self._kalman_auto.sample_count == 0:
+        # PRIORITY 1: User training variance (very low = high confidence)
+        if self._kalman_button.is_initialized:
             return self._kalman_button.variance
-        if self._kalman_button.sample_count == 0:
-            return self._kalman_auto.variance
 
-        auto_var = max(self._kalman_auto.variance, MIN_VARIANCE)
-        button_var = max(self._kalman_button.variance, MIN_VARIANCE)
-
-        return 1.0 / (1.0 / auto_var + 1.0 / button_var)
+        # PRIORITY 2: Fallback to auto variance
+        return self._kalman_auto.variance
 
     @property
     def std_dev(self) -> float:

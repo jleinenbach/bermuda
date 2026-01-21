@@ -199,6 +199,35 @@ class KalmanFilter(SignalFilter):
         self.sample_count = 0
         self._initialized = False
 
+    def reset_to_value(
+        self,
+        value: float,
+        variance: float = 0.01,
+        sample_count: int = 500,
+    ) -> None:
+        """
+        Force filter to a specific state (Teacher Forcing).
+
+        Used when an authoritative external source (User) provides ground truth.
+        This bypasses normal Kalman filter dynamics and directly sets the state.
+
+        The default parameters (variance=0.01, sample_count=500) create a
+        "frozen" state with extremely high confidence that won't be easily
+        overwritten by future automatic updates.
+
+        Args:
+            value: The authoritative value to set as the estimate.
+            variance: The variance to assign (lower = more confident).
+                      Default 0.01 = extremely high confidence.
+            sample_count: The sample count to assign.
+                         Default 500 = massive inertia against drift.
+
+        """
+        self.estimate = value
+        self.variance = variance
+        self.sample_count = sample_count
+        self._initialized = True
+
     def get_diagnostics(self) -> dict[str, Any]:
         """Return diagnostic information including Kalman-specific state."""
         return {
