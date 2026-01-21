@@ -160,7 +160,8 @@ Training sample 10: RSSI = -79dB
 |----------|-------|---------|
 | `MAX_AUTO_RATIO` | 0.30 | Auto influence capped at 30% |
 | `MIN_VARIANCE` | 0.001 | Prevents division by zero |
-| `TRAINING_SAMPLE_COUNT` | 10 | Samples per training session |
+| `TRAINING_SAMPLE_COUNT` | 20 | Samples per training session (meets maturity threshold) |
+| `TRAINING_SAMPLE_DELAY` | 0.5s | Delay between samples for diverse RSSI readings |
 
 ### Calibration vs Fingerprints (Independence)
 
@@ -474,7 +475,7 @@ filtered_rssi = filter.update_adaptive(raw_rssi, ref_power=-55)
   - During training: Device stayed in the old room (lock was a guard, not an override)
   - After training: Normal competition resumed - trained room had to "win" against incumbents
 - **Root cause**: Design gap in the area lock mechanism - it blocked changes but didn't apply them
-- **Solution**: When `area_locked_id` is set, ACTIVELY call `device._update_area_and_floor(area_locked_id)` to force the area immediately
+- **Solution**: When `area_locked_id` is set, ACTIVELY call `device.update_area_and_floor(area_locked_id)` to force the area immediately
 - **Code change** (`coordinator.py:2231-2242`):
   ```python
   # BEFORE: Just returned without setting the area
@@ -486,7 +487,7 @@ filtered_rssi = filter.update_adaptive(raw_rssi, ref_power=-55)
   else:
       # Locked scanner still has an advert - keep lock active.
       # FIX: ACTIVE OVERRIDE - Set the device area to the locked area immediately.
-      device._update_area_and_floor(device.area_locked_id)
+      device.update_area_and_floor(device.area_locked_id)
       return
   ```
 - **Effect**: When user selects a room for training, the device immediately shows that room in the UI, not the old/wrong room
@@ -503,13 +504,13 @@ filtered_rssi = filter.update_adaptive(raw_rssi, ref_power=-55)
   - UKF switching threshold (0.3) is high
   - Fresh button training creates good profiles, but RSSI values can change between training and refresh
   - If UKF score < 0.3, falls back to min-distance which may pick wrong room
-- **Solution**: After successful training, DIRECTLY set `device._update_area_and_floor(target_area_id)` before clearing the lock
+- **Solution**: After successful training, DIRECTLY set `device.update_area_and_floor(target_area_id)` before clearing the lock
 - **Code change** (`button.py:193-198`):
   ```python
   if successful_samples > 0:
       _LOGGER.info("Fingerprint training complete...")
       # FIX: BUG 10 - Set device area to trained room
-      self._device._update_area_and_floor(target_area_id)
+      self._device.update_area_and_floor(target_area_id)
   ```
 - **Effect**: After training, device starts in the trained room. UKF retention threshold (0.15) is much lower than switching threshold (0.3), helping keep the device in the trained room.
 - **File**: `button.py`
@@ -529,6 +530,33 @@ filtered_rssi = filter.update_adaptive(raw_rssi, ref_power=-55)
   - All 10 training samples now contribute to the average
   - Variance decreases naturally based on actual data quality
 - **Files**: `correlation/scanner_absolute.py`, `correlation/scanner_pair.py`
+
+### Scannerless Room Detection Fix (BUG 12)
+- **Problem**: Training for scannerless rooms (rooms without their own scanner) didn't work
+  - User trains device for "Lagerraum" (basement, no scanner)
+  - Device still shows "Schlafzimmer" (2 floors up, has scanner)
+  - Training appeared to complete successfully but had no effect
+- **Root cause**: Button training creates "immature" profiles that UKF skips
+  - `TRAINING_SAMPLE_COUNT = 10` (button training collects 10 samples)
+  - `MIN_SAMPLES_FOR_MATURITY = 20` (profile needs 20+ samples)
+  - After button training: `sample_count = 10 < 20` → `is_mature = False`
+  - `match_fingerprints()` only includes profiles where `is_mature == True`
+  - Scannerless room profile is NEVER considered → UKF finds no match → falls back to min-distance
+  - Min-distance can't detect scannerless rooms → picks nearest scanner's room
+- **Why only scannerless rooms are affected**:
+  - Rooms WITH scanners get continuous auto-learning (quickly reaches 20+ samples)
+  - Scannerless rooms have NO scanner → NO auto-learning → ONLY button training
+  - 10 button samples < 20 maturity threshold → profile never mature
+- **Solution (two-part)**:
+  1. **Semantic fix**: Added `has_button_training` property - user intent is ALWAYS trusted
+     - Modified `is_mature` to return `True` if `has_button_training` OR `sample_count >= threshold`
+     - User-trained profiles are now always considered "mature enough" for UKF matching
+  2. **Practical fix**: Increased `TRAINING_SAMPLE_COUNT` from 10 to 20
+     - Now naturally meets `MIN_SAMPLES_FOR_MATURITY` threshold
+     - Added `TRAINING_SAMPLE_DELAY = 0.5s` between samples for diverse RSSI readings
+     - Total training time: ~10 seconds (20 samples × 0.5s)
+- **Visual feedback**: Icon changes from `mdi:brain` to `mdi:timer-sand` during training
+- **Files**: `correlation/scanner_absolute.py`, `correlation/scanner_pair.py`, `button.py`
 
 ## Manual Fingerprint Training System
 
@@ -626,14 +654,23 @@ def available(self) -> bool:
 **Press Handler** (`button.py:139-213`):
 ```python
 async def async_press(self) -> None:
+    # Show loading indicator
+    self._is_training = True
+    self._attr_icon = self.ICON_TRAINING  # mdi:timer-sand
+    self.async_write_ha_state()
+
     try:
-        for i in range(TRAINING_SAMPLE_COUNT):  # 10 samples
+        for i in range(TRAINING_SAMPLE_COUNT):  # 20 samples
             await self.coordinator.async_train_fingerprint(
                 device_address=self.address,
                 target_area_id=target_area_id,
             )
+            if i < TRAINING_SAMPLE_COUNT - 1:
+                await asyncio.sleep(TRAINING_SAMPLE_DELAY)  # 0.5s between samples
     finally:
         # ALWAYS cleanup, even on exception
+        self._is_training = False
+        self._attr_icon = self.ICON_IDLE  # mdi:brain
         self._device.training_target_floor_id = None
         self._device.training_target_area_id = None
         self._device.area_locked_id = None
@@ -785,7 +822,8 @@ This pattern allows the button to clear the dropdowns indirectly by:
 
 | Constant | Value | Location | Purpose |
 |----------|-------|----------|---------|
-| `TRAINING_SAMPLE_COUNT` | 10 | `button.py:22` | Samples per button press |
+| `TRAINING_SAMPLE_COUNT` | 20 | `button.py:22` | Samples per button press (meets maturity) |
+| `TRAINING_SAMPLE_DELAY` | 0.5s | `button.py:26` | Delay between samples for diverse data |
 | `EVIDENCE_WINDOW_SECONDS` | - | `const.py` | Max age for RSSI readings |
 | `AREA_LOCK_TIMEOUT_SECONDS` | 60 | `const.py` | Stale threshold for auto-unlock |
 | `MIN_SAMPLES_FOR_MATURITY` | 30/20 | `scanner_pair.py`/`scanner_absolute.py` | Samples before trusting profile |
@@ -2242,11 +2280,46 @@ if device.locked_area_id is not None:
 ```python
 # GOOD - Guard + Override: prevents changes AND applies desired state
 if device.locked_area_id is not None:
-    device._update_area_and_floor(device.locked_area_id)  # ACTIVE OVERRIDE
+    device.update_area_and_floor(device.locked_area_id)  # ACTIVE OVERRIDE
     return  # Then block automatic detection
 ```
 
 **Rule of Thumb**: When a user explicitly sets a desired state (via UI selection, button press, API call), APPLY that state immediately before blocking automatic changes. The lock should enforce the user's intent, not just freeze the old state.
+
+### 31. Maturity Thresholds Must Respect User Intent
+
+When using sample-count-based thresholds to determine data "maturity" or "trustworthiness", ensure that USER-PROVIDED data bypasses or satisfies these thresholds, even if it has fewer samples than auto-collected data.
+
+**Bug Pattern:**
+```python
+# BAD - User training blocked by sample count threshold
+MIN_SAMPLES_FOR_MATURITY = 20
+
+def is_mature(self):
+    return self.sample_count >= MIN_SAMPLES_FOR_MATURITY  # Button training has 10 samples → never mature!
+
+def match_profiles(self):
+    if profile.is_mature:  # User-trained profile skipped!
+        use_profile()
+```
+
+**Fix Pattern:**
+```python
+# GOOD - User intent trumps sample count
+@property
+def has_button_training(self):
+    return self._kalman_button.is_initialized
+
+@property
+def is_mature(self):
+    # User training = explicit intent, trust it regardless of sample count
+    if self.has_button_training:
+        return True
+    # Standard threshold for auto-learning
+    return self.sample_count >= MIN_SAMPLES_FOR_MATURITY
+```
+
+**Rule of Thumb**: Auto-learning noise needs statistical validation (sample thresholds). User actions represent deliberate intent and should be trusted immediately, even with minimal samples.
 
 ---
 

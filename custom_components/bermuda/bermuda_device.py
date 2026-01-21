@@ -482,9 +482,9 @@ class BermudaDevice(dict):
         # Apply any name changes.
         self.make_name()
 
-        self._update_area_and_floor(_area_id)
+        self.update_area_and_floor(_area_id)
 
-    def _update_area_and_floor(self, area_id: str | None):
+    def update_area_and_floor(self, area_id: str | None):
         """Given an area_id, update the area and floor properties."""
         if area_id is None:
             self.area = None
@@ -1064,7 +1064,7 @@ class BermudaDevice(dict):
             if new_area_id is None and _LOGGER.isEnabledFor(logging.DEBUG):
                 _LOGGER.debug("Selected advert for %s lacked an area id (source=%s)", self.name, source)
             self.area_advert = bermuda_advert
-            self._update_area_and_floor(new_area_id)
+            self.update_area_and_floor(new_area_id)
             self.area_distance = distance
             if distance is not None:
                 if distance_stamp is not None:
@@ -1127,7 +1127,7 @@ class BermudaDevice(dict):
             self.last_retained_log = stamp_now
             _LOGGER.debug("Clearing retained area for %s", self.name)
         self.area_advert = None
-        self._update_area_and_floor(None)
+        self.update_area_and_floor(None)
         self.area_distance = None
         self.area_distance_stamp = None
         self.area_rssi = None

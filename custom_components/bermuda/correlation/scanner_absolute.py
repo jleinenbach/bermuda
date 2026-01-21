@@ -229,14 +229,35 @@ class ScannerAbsoluteRssi:
         return self.auto_sample_count + self.button_sample_count
 
     @property
+    def has_button_training(self) -> bool:
+        """Check if this profile has been button-trained by the user."""
+        return self._kalman_button.is_initialized
+
+    @property
     def is_mature(self) -> bool:
         """
         Check if profile has enough data to be trusted.
 
+        A profile is considered mature if:
+        1. It has enough total samples (auto + button >= MIN_SAMPLES_FOR_MATURITY), OR
+        2. It has been explicitly button-trained by the user (any amount).
+
+        The second condition is critical for scannerless rooms which have NO auto-learning
+        data (no scanner in that room to generate samples). Button training represents
+        USER INTENT and should be trusted even with just 10 samples.
+
+        BUG 12 FIX: Without this, scannerless room profiles were never mature
+        (10 button samples < 20 maturity threshold) and were skipped by UKF matching.
+
         Returns:
-            True if sample_count >= MIN_SAMPLES_FOR_MATURITY.
+            True if profile is mature or has button training.
 
         """
+        # Button training = user explicitly said "this is correct" - trust it
+        if self.has_button_training:
+            return True
+
+        # Standard maturity check for auto-learned profiles
         return self.sample_count >= MIN_SAMPLES_FOR_MATURITY
 
     def reset_training(self) -> None:
