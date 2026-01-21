@@ -690,6 +690,8 @@ This pattern allows the button to clear the dropdowns indirectly by:
 
 ## Lessons Learned
 
+> **See also:** [Architecture Decisions & FAQ](#architecture-decisions--faq) for common "Why?" questions about design choices (30% clamping, variance=2.0, device-level reset, etc.)
+
 ### 1. State Transitions Need Careful Handling
 
 When tracking state (like `area_changed_at`), consider ALL transition paths:
@@ -1154,6 +1156,96 @@ Button: 500 samples (anchor), estimate=-85dB (at least 70% weight)
 4. **Intelligent adaptation**: System responds to real environmental changes within limits
 5. **Both correlation classes**: `ScannerPairCorrelation` AND `ScannerAbsoluteRssi` use identical clamped fusion logic
 6. **Realistic variance (2.0)**: Avoids "Hyper-Precision Paradox" - variance serves both fusion AND z-score matching, so must be physically realistic (σ≈1.4dB for BLE signals)
+
+## Architecture Decisions & FAQ
+
+This section answers common questions about design choices. Reference this before asking "Why is X done this way?"
+
+### Q1: Why 30% for MAX_AUTO_RATIO in Clamped Fusion?
+
+**Answer:** Heuristic safety value ensuring user retains mathematical majority (70%).
+
+- At 50/50, long-term auto-drift could "uproot" user's anchor
+- 30% allows "polishing" (seasonal changes, furniture moves) without room reversal
+- Mathematically: user can NEVER be overwhelmed, but system stays adaptive
+
+### Q2: How are Scannerless Rooms Created?
+
+**Answer:** They are NOT auto-detected. They exist only after explicit user training.
+
+```
+User selects "Keller" in UI → Presses "Train" button
+→ AreaProfile created for area_id with NO corresponding ScannerDevice
+→ Now available for UKF fingerprint matching
+```
+
+Without training, a scannerless room is invisible to the system.
+
+### Q3: Why Two UKF Thresholds (0.3 Switch vs 0.15 Retention)?
+
+**Answer:** Intentional hysteresis to prevent flickering.
+
+| Action | Threshold | Rationale |
+|--------|-----------|-----------|
+| **Enter** room (switch) | 0.3 | Strong evidence required |
+| **Stay** in room (retention) | 0.15 | Weaker evidence acceptable |
+
+**Not pendling, but "sticking"**: Score drops to 0.2 → stays in room (retention). Only below 0.15 → fallback to min-distance.
+
+### Q4: Why is VELOCITY_TELEPORT_THRESHOLD = 30 (not dynamic)?
+
+**Answer:** Dynamic adjustment is unreliable because update rate depends on advertisement interval (varies per device, e.g., deep sleep).
+
+- A high static value (30) + packet debounce (100ms) is robust "one-size-fits-all"
+- Initially 5, then 10, finally 30 after real-world testing
+- Lower values caused false teleport detections → broke cross-floor protection
+
+### Q5: What About Devices with >60s Advertisement Intervals vs Area Lock?
+
+**Answer:** Lock expires, but this is acceptable.
+
+- Lock serves ONLY to stabilize during active training (button press)
+- Device sleeping >60s sends no data to interfere with learning
+- If it wakes at 61s, normal detection logic resumes
+- Edge case, not worth complexity of dynamic timeouts
+
+### Q6: Why Not Adaptive Variance in Button Filter?
+
+**Answer:** Adaptive variance in button filter is dangerous.
+
+```
+"Quiet environment" → Lower variance to 0.1
+Door opens → Environment changes
+→ Hyper-Precision Paradox kicks in → Room REJECTED!
+```
+
+**variance=2.0 is NOT a measurement, it's a TOLERANCE DEFINITION.**
+
+Even in a shielded cellar with perfect signal, allowing 2.0 tolerance is fine (z-score ≈ 0.01). The problem was only the OTHER direction (too tight tolerance with normal noise).
+
+### Q7: What Test Coverage is Required?
+
+**Answer:** No hard percentage gate, but critical paths MUST be unit-tested.
+
+| Must Test | Example |
+|-----------|---------|
+| Kalman filter logic | `test_kalman.py` |
+| UKF state transitions | `test_ukf.py` |
+| Correlation updates | `test_correlation_*.py` |
+| Room selection logic | `test_area_selection*.py` |
+
+**Rule:** Any change to room-finding logic requires a test reproducing the scenario.
+
+### Q8: Why Device-Level Reset (not Per-Room)?
+
+**Answer:** "Ghost Scanner" problem often involves INVISIBLE rooms.
+
+- User doesn't know WHICH room has incorrect training
+- Problematic scanner may not be visible anymore
+- Device-level reset is the "nuclear option" that catches ALL cases
+- Granular per-room deletion is future work (requires complex UI)
+
+---
 
 ## Cross-Floor Hysteresis Protection
 
@@ -1958,3 +2050,98 @@ variance = 2.0  # Realistic for BLE, still << auto variance
 ```
 
 **Rule of Thumb**: When a parameter serves multiple purposes, verify it works for ALL of them. If optimizing for one breaks another, either separate the concerns or find a balanced middle value that works for both.
+
+---
+
+## Architectural Notes (Thread Safety & Numerical Stability)
+
+These notes document intentional design decisions that may appear problematic but are actually correct.
+
+### Note 1: Clamped Fusion Division is Safe (Not a Bug)
+
+The Clamped Fusion calculation in `scanner_absolute.py:180` appears to risk division by zero:
+
+```python
+current_auto_ratio = w_auto / (w_btn + w_auto)
+```
+
+**Why this is safe:**
+
+Lines 171-172 guarantee positive weights:
+```python
+var_btn = max(self._kalman_button.variance, 1e-6)
+var_auto = max(self._kalman_auto.variance, 1e-6)
+```
+
+Since both variances are at least `1e-6`:
+- `w_btn = 1/var_btn` is at most `1e6` (and positive)
+- `w_auto = 1/var_auto` is at most `1e6` (and positive)
+- The sum `w_btn + w_auto` is guaranteed > 0
+
+**No additional guard needed.** The `max(..., 1e-6)` protection is sufficient.
+
+### Note 2: No Race Condition Between area_id and area_advert
+
+Code in `coordinator.py` checks `device.area_id` for logic but uses `device.area_advert` for action:
+
+```python
+current_device_area_id = device.area_id  # Check this
+# ... logic ...
+device.apply_scanner_selection(device.area_advert, ...)  # Use this
+```
+
+**Why this is safe:**
+
+Python `asyncio` runs in a **single-threaded event loop**. Between these two lines:
+1. There is no `await` statement (no yield point)
+2. No other coroutine can execute
+3. The state cannot change mid-execution
+
+This is **atomically consistent** - not a race condition. The pattern is intentional:
+- `area_id` is the authoritative source of truth (what the system believes)
+- `area_advert` is the object needed for the operation (contains scanner reference)
+
+### Note 3: UKF Retention Threshold Hysteresis is Intentional
+
+The two UKF thresholds (0.3 for switching, 0.15 for retention) are not a bug but **intentional hysteresis**:
+
+| Action | Threshold | Purpose |
+|--------|-----------|---------|
+| Enter new room | 0.3 | Prevent premature switches |
+| Stay in current room | 0.15 | Keep device "sticky" |
+
+**Designed Behavior:**
+- A device with score 0.25 will NOT switch to a new room (< 0.3)
+- A device already in a room with score 0.16 will STAY (> 0.15)
+- This prevents flickering for scannerless rooms where signals are naturally weaker
+
+See FAQ Q3 for the complete rationale.
+
+---
+
+## Key Constants (Extended)
+
+| Constant | Value | Location | Purpose |
+|----------|-------|----------|---------|
+| `VELOCITY_NOISE_MULTIPLIER` | 3.0 | `const.py` | Multiplier for dynamic noise threshold (`max_velocity * 3`) |
+| `VELOCITY_TELEPORT_THRESHOLD` | 10 | `const.py` | Consecutive blocks before accepting teleport |
+| `MAX_AUTO_RATIO` | 0.30 | `scanner_*.py` | Max auto-learning influence in Clamped Fusion |
+
+**Dynamic Noise Threshold Calculation:**
+```python
+noise_velocity_threshold = max_velocity * VELOCITY_NOISE_MULTIPLIER
+# Default (3 m/s): noise > 9 m/s
+# Vehicle (20 m/s): noise > 60 m/s
+```
+
+---
+
+## Refactoring Notes (PR Review Feedback)
+
+Changes made based on peer review (2026-01-21):
+
+1. **`VELOCITY_NOISE_MULTIPLIER`**: Replaced static `VELOCITY_NOISE_THRESHOLD=10.0` with dynamic calculation. Now adapts to user's `max_velocity` config (e.g., vehicle tracking with higher speeds).
+
+2. **`async_reset_device_training()` Error Handling**: Added try/except around `correlation_store.async_save()`. On failure, logs warning but still returns True (in-memory reset succeeded).
+
+3. **`KalmanFilter.restore_state()`**: New method for clean deserialization. Replaces direct `_initialized` access from external code. Used by `ScannerAbsoluteRssi.from_dict()` and `ScannerPairCorrelation.from_dict()`.

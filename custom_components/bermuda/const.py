@@ -283,6 +283,29 @@ the Kalman filter more time to stabilize while still allowing recovery within
 reasonable time (~10 seconds with 1 update/second).
 """
 
+# FIX: BLE Noise Spike Filter - Multiplier for calculating dynamic noise threshold
+# The actual threshold is: max_velocity * VELOCITY_NOISE_MULTIPLIER
+VELOCITY_NOISE_MULTIPLIER: Final = 3.0
+"""
+Multiplier to calculate the noise velocity threshold from user's max_velocity config.
+
+The noise threshold = max_velocity * VELOCITY_NOISE_MULTIPLIER
+
+This makes the noise filter adapt to user configuration:
+- Default (max_velocity=3 m/s): noise threshold = 9 m/s
+- Vehicle tracking (max_velocity=20 m/s): noise threshold = 60 m/s
+- Conservative (max_velocity=1 m/s): noise threshold = 3 m/s
+
+Values between max_velocity and the noise threshold are considered
+"plausible fast movement" and count toward teleport recovery. Values above
+the noise threshold are physically impossible and treated as measurement errors.
+
+Tier classification (with default max_velocity=3 m/s):
+- <= max_velocity (3 m/s): Normal movement, accept reading
+- > max_velocity, <= noise_threshold (9 m/s): Plausible fast, count toward teleport
+- > noise_threshold (9 m/s): Impossible spike, ignore completely
+"""
+
 CONF_DEVTRACK_TIMEOUT, DEFAULT_DEVTRACK_TIMEOUT = "devtracker_nothome_timeout", 30
 DOCS[CONF_DEVTRACK_TIMEOUT] = "Timeout in seconds for setting devices as `Not Home` / `Away`."  # fmt: skip
 
