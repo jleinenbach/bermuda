@@ -99,6 +99,26 @@ class FakeDevice:
         return "stationary"
 
 
+class MockAreaRegistry:
+    """Mock area registry for testing floor resolution."""
+
+    def __init__(self) -> None:
+        """Initialize with empty areas dictionary."""
+        self._areas: dict[str, Any] = {}
+
+    def async_get_area(self, area_id: str) -> Any:
+        """Get area by ID."""
+        return self._areas.get(area_id)
+
+    def add_area(self, area_id: str, floor_id: str | None = None) -> None:
+        """Add an area to the registry."""
+        area = MagicMock()
+        area.id = area_id
+        area.name = area_id
+        area.floor_id = floor_id
+        self._areas[area_id] = area
+
+
 def create_coordinator_mock() -> BermudaDataUpdateCoordinator:
     """Create a mock coordinator for testing."""
     coordinator = BermudaDataUpdateCoordinator.__new__(BermudaDataUpdateCoordinator)
@@ -113,6 +133,8 @@ def create_coordinator_mock() -> BermudaDataUpdateCoordinator:
     coordinator.correlation_store = MagicMock(async_save=AsyncMock())
     coordinator.device_ukfs = {}
     coordinator.AreaTests = BermudaDataUpdateCoordinator.AreaTests
+    # FIX: Add mock area registry for floor resolution in _refresh_area_by_ukf
+    coordinator.ar = MockAreaRegistry()
     return coordinator
 
 

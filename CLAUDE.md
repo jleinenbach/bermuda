@@ -1426,3 +1426,63 @@ else:
 ```
 
 **Rule of Thumb**: When an entity borrows components from another context, any attribute lookup on those components returns values from the WRONG context. Always resolve such attributes from the authoritative source (e.g., registry) rather than the borrowed component.
+
+### 21. Ephemeral vs Stable State: Always Use Confirmed State for Logic
+
+When tracking device location, two types of state exist:
+- **Ephemeral state**: `device.area_advert` - the LAST received packet (from ANY scanner)
+- **Stable state**: `device.area_id` - the CONFIRMED current location (system state)
+
+Using ephemeral state for location logic causes scannerless rooms to flicker because packets from other rooms constantly overwrite the "current area" reference.
+
+**Bug Pattern (FEHLER 1 - UKF Stickiness)**:
+```python
+# BAD - area_advert points to wherever last packet came from!
+# Device in "Virtual Room", packet from "Hallway" scanner arrives
+# → current_area_id becomes "Hallway" → stickiness bonus to WRONG room!
+current_area_id = getattr(device.area_advert, "area_id", None)
+```
+
+**Bug Pattern (FEHLER 2 - Floor Guard)**:
+```python
+# BAD - scanner floor != device floor for scannerless rooms!
+# Device in "Virtual Room" (OG), heard by "Kitchen" scanner (EG)
+# → inc_floor_id = EG → cross-floor protection doesn't trigger!
+inc_floor_id = getattr(incumbent_scanner, "floor_id", None)
+```
+
+**Bug Pattern (FEHLER 3 - Aggressive Fallback)**:
+```python
+# BAD - Low UKF score triggers immediate min-distance fallback
+# Min-distance can't detect scannerless rooms → device jumps to scanner room!
+if match_score < UKF_MIN_MATCH_SCORE:
+    return False  # Fallback to min-distance
+```
+
+**Fix Pattern**:
+```python
+# GOOD (FEHLER 1) - Use confirmed state, not last packet
+current_area_id = device.area_id
+
+# GOOD (FEHLER 2) - Resolve floor from authoritative source
+if device.area_id is not None:
+    inc_floor_id = self._resolve_floor_id_for_area(device.area_id)
+else:
+    inc_floor_id = getattr(incumbent_scanner, "floor_id", None)  # Fallback only
+
+# GOOD (FEHLER 3) - Lower threshold for RETAINING current area
+is_retention = best_area_id == current_area_id and current_area_id is not None
+effective_threshold = UKF_RETENTION_THRESHOLD if is_retention else UKF_MIN_MATCH_SCORE
+if effective_match_score < effective_threshold:
+    if is_retention:
+        # Keep current area to prevent min-distance fallback
+        return True
+    return False
+```
+
+**Key Constants Added**:
+| Constant | Value | Purpose |
+|----------|-------|---------|
+| `UKF_RETENTION_THRESHOLD` | 0.15 | Lower threshold when keeping current area (vs 0.3 for switching) |
+
+**Rule of Thumb**: For any logic that determines "where is the device NOW", always use `device.area_id` (confirmed state), never `device.area_advert.area_id` (ephemeral state from last packet). The difference is crucial for scannerless rooms where packets arrive from scanners in OTHER rooms.

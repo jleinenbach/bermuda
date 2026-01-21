@@ -116,6 +116,7 @@ from .const import (
     SIGNAL_SCANNERS_CHANGED,
     UKF_MIN_MATCH_SCORE,
     UKF_MIN_SCANNERS,
+    UKF_RETENTION_THRESHOLD,
     UKF_STICKINESS_BONUS,
     UKF_WEAK_SCANNER_MIN_DISTANCE,
     UPDATE_INTERVAL,
@@ -1723,7 +1724,13 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         # FIX: Sticky Virtual Rooms - Apply stickiness bonus for current area
         # When the device is already in an area (especially a scannerless one),
         # give that area a bonus to prevent marginal flickering.
-        current_area_id = getattr(device.area_advert, "area_id", None) if device.area_advert else None
+        #
+        # FIX: FEHLER 1 - MUST use device.area_id (confirmed system state), NOT device.area_advert.area_id!
+        # device.area_advert is the LAST RECEIVED PACKET, which may be from ANY scanner.
+        # For scannerless rooms: device is in "Virtual Room" but scanner in "Hallway" sends packet.
+        # device.area_advert would point to "Hallway", giving stickiness bonus to WRONG room!
+        # device.area_id is the CONFIRMED current location - the authoritative source of truth.
+        current_area_id = device.area_id
 
         # Check if current area is in the matches and apply stickiness
         effective_match_score = match_score
@@ -1756,7 +1763,31 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                         )
 
         # Check if match score meets minimum threshold (after stickiness adjustment)
-        if effective_match_score < UKF_MIN_MATCH_SCORE:
+        # FIX: FEHLER 3 - Use LOWER threshold for RETENTION (keeping current area)
+        # When best_area_id == current_area_id (device would stay in same room), use a much
+        # lower threshold (UKF_RETENTION_THRESHOLD) to prevent fallback to min-distance.
+        # This keeps scannerless rooms "sticky" even with noisy/weak signals.
+        # For SWITCHING to a NEW area, use the normal UKF_MIN_MATCH_SCORE threshold.
+        is_retention = best_area_id == current_area_id and current_area_id is not None
+        effective_threshold = UKF_RETENTION_THRESHOLD if is_retention else UKF_MIN_MATCH_SCORE
+
+        if effective_match_score < effective_threshold:
+            if is_retention:
+                # FIX: FEHLER 3 - For retention case, return True even with low score
+                # to prevent fallback to min-distance (which doesn't know scannerless rooms).
+                # We still want to refresh the selection to update timestamps etc.
+                if _LOGGER.isEnabledFor(logging.DEBUG):
+                    _LOGGER.debug(
+                        "UKF retention for %s: score %.2f < %.2f (retention threshold), "
+                        "but keeping area %s to avoid min-distance fallback",
+                        device.name,
+                        effective_match_score,
+                        effective_threshold,
+                        current_area_id,
+                    )
+                if device.area_advert is not None:
+                    device.apply_scanner_selection(device.area_advert, nowstamp=nowstamp)
+                return True
             return False
 
         # Find the advert corresponding to the best area
@@ -1845,7 +1876,11 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         # CROSS-FLOOR STREAK PROTECTION:
         # Prevent rapid flickering between floors by requiring multiple consecutive
         # cycles picking the same target before allowing a cross-floor switch.
-        current_area_advert = device.area_advert
+        #
+        # FIX: FEHLER 1 (continued) - Use device.area_id for current area, NOT device.area_advert!
+        # device.area_advert is the last received packet (may be from ANY scanner),
+        # device.area_id is the CONFIRMED current location (authoritative source of truth).
+        current_device_area_id = device.area_id
 
         # FIX: Unified Floor Guard - ALWAYS resolve floor_id from AREA, not from scanner_device
         # For scannerless rooms, the scanner_device belongs to a different area (and floor!)
@@ -1856,10 +1891,9 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         # scannerless rooms (e.g., device in "Office" Floor 1 but using scanner from
         # "Bedroom" Floor 2 would incorrectly think current floor was Floor 2).
         current_floor_id = None
-        if current_area_advert is not None:
-            current_area_advert_area_id = getattr(current_area_advert, "area_id", None)
-            if current_area_advert_area_id is not None:
-                current_floor_id = self._resolve_floor_id_for_area(current_area_advert_area_id)
+        if current_device_area_id is not None:
+            # FIX: Resolve floor from device.area_id (authoritative), not from advert's area
+            current_floor_id = self._resolve_floor_id_for_area(current_device_area_id)
 
         # FIX: Unified Floor Guard - Resolve winner floor_id from TARGET AREA, not scanner
         # For scannerless rooms, best_advert.scanner_device is from a different room!
@@ -1876,7 +1910,8 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         )
 
         # If same area as current, just refresh the selection
-        if current_area_advert is not None and best_area_id == getattr(current_area_advert, "area_id", None):
+        # FIX: FEHLER 1 (continued) - Compare with device.area_id, not current_area_advert.area_id
+        if current_device_area_id is not None and best_area_id == current_device_area_id:
             device.pending_area_id = None
             device.pending_floor_id = None
             device.pending_streak = 0
@@ -1886,7 +1921,8 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             return True
 
         # If no current area, bootstrap immediately
-        if current_area_advert is None:
+        # FIX: FEHLER 1 (continued) - Check device.area_id, not current_area_advert
+        if current_device_area_id is None:
             device.pending_area_id = None
             device.pending_floor_id = None
             device.pending_streak = 0
@@ -1921,9 +1957,12 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             self._apply_ukf_selection(
                 device, best_advert, best_area_id, scanner_less_room=scanner_less_room, nowstamp=nowstamp
             )
-        else:
-            # Streak not reached - keep current area
-            device.apply_scanner_selection(current_area_advert, nowstamp=nowstamp)
+        # Streak not reached - keep current area
+        # NOTE: Use device.area_advert here (the actual advert object), not current_device_area_id.
+        # apply_scanner_selection needs an advert object. The area_id determination above
+        # correctly uses device.area_id, but the actual selection still needs the advert.
+        elif device.area_advert is not None:
+            device.apply_scanner_selection(device.area_advert, nowstamp=nowstamp)
 
         return True
 
@@ -2228,21 +2267,36 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             incumbent_scanner = current_incumbent.scanner_device if current_incumbent else None
             inc_floor_level = getattr(incumbent_scanner, "floor_level", None) if incumbent_scanner else None
 
-            # FIX: Unified Floor Guard - For scannerless rooms, ALWAYS resolve floor from area registry
-            # The scanner_device belongs to a different room (and potentially different floor!),
-            # so its floor_id is WRONG for determining cross-floor protection.
+            # FIX: FEHLER 2 - Unified Floor Guard - ALWAYS resolve floor from device.area_id FIRST!
             #
-            # Bug fixed: Previously only used area registry if inc_floor_id was None, but for
-            # scannerless rooms the scanner HAS a floor_id - just the wrong one! (e.g., device
-            # in "Office" Floor 1 using scanner from "Bedroom" Floor 2 would see inc_floor_id=Floor2)
-            if _protect_scannerless_area and current_incumbent is not None:
+            # The scanner_device belongs to a different room (and potentially different floor!),
+            # so its floor_id is WRONG for determining cross-floor protection. This is critical
+            # for "scannerless rooms" (Virtual Rooms) where the device is in a room without
+            # its own scanner, but receives packets from scanners in adjacent rooms.
+            #
+            # Scenario fixed:
+            # - Device is in "Virtual Room" (OG/Floor 1), heard by scanner "Kitchen" (EG/Floor 0)
+            # - OLD CODE: inc_floor_id = scanner "Kitchen".floor_id = EG
+            # - NEW CODE: inc_floor_id = device.area_id ("Virtual Room").floor_id = OG
+            #
+            # The device's CONFIRMED area (device.area_id) is the authoritative source of truth
+            # for floor determination. Only fall back to scanner's floor when device.area_id is None.
+            inc_floor_id: str | None = None
+
+            # PRIMARY: Always try device.area_id first (authoritative source of truth)
+            if device.area_id is not None:
+                inc_floor_id = self._resolve_floor_id_for_area(device.area_id)
+
+            # FALLBACK: Only if device has no confirmed area, use current incumbent's area or scanner
+            if inc_floor_id is None and current_incumbent is not None:
+                # Try incumbent advert's area_id
                 current_inc_area_id = getattr(current_incumbent, "area_id", None)
                 if current_inc_area_id is not None:
                     inc_floor_id = self._resolve_floor_id_for_area(current_inc_area_id)
-                else:
-                    inc_floor_id = getattr(incumbent_scanner, "floor_id", None) if incumbent_scanner else None
-            else:
-                inc_floor_id = getattr(incumbent_scanner, "floor_id", None) if incumbent_scanner else None
+
+            # LAST RESORT: Use scanner's floor (only when we have no area information at all)
+            if inc_floor_id is None and incumbent_scanner is not None:
+                inc_floor_id = getattr(incumbent_scanner, "floor_id", None)
 
             chal_floor_id = getattr(challenger_scanner, "floor_id", None)
             chal_floor_level = getattr(challenger_scanner, "floor_level", None)

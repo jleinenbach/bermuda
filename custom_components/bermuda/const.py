@@ -131,6 +131,10 @@ RSSI_CONSECUTIVE_WINS: Final = 2  # Consecutive cycles required before switching
 CONF_USE_UKF_AREA_SELECTION = "use_ukf_area_selection"
 DEFAULT_USE_UKF_AREA_SELECTION: Final = True  # Enabled by default; uses fingerprints when available
 UKF_MIN_MATCH_SCORE: Final = 0.3  # Minimum match score (0-1) to consider a fingerprint match
+# FIX: FEHLER 3 - Lower threshold for RETAINING the current area (prevents aggressive fallback to min-distance)
+# When UKF winner matches current device.area_id, use this lower threshold instead of UKF_MIN_MATCH_SCORE.
+# This keeps the device "sticky" in scannerless rooms even with noisy signals.
+UKF_RETENTION_THRESHOLD: Final = 0.15  # Much lower threshold when retaining current area
 UKF_MIN_SCANNERS: Final = 2  # Minimum scanners needed for UKF to make a decision
 
 # FIX: Sticky Virtual Rooms - Prevent flickering for scannerless rooms
