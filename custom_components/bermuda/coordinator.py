@@ -1723,8 +1723,8 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                 # Check if the scanner has an absolute RSSI profile for this area
                 abs_profile = area_profile.get_absolute_rssi(scanner_addr)
                 if abs_profile is not None:
-                    expected_rssi = abs_profile.get_estimate()
-                    rssi_variance = abs_profile.get_variance()
+                    expected_rssi = abs_profile.expected_rssi
+                    rssi_variance = abs_profile.variance
                     rssi_delta = abs(current_rssi - expected_rssi)
 
                     # Allow up to 3 standard deviations from expected
