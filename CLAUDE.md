@@ -385,30 +385,204 @@ filtered_rssi = filter.update_adaptive(raw_rssi, ref_power=-55)
 - Added `get_movement_state()` and `area_changed_at` to FakeDevice
 - Added `area_locked_id`, `area_locked_name`, `area_locked_scanner_addr` to FakeDevice
 
-### Manual Fingerprint Training Feature
-- **Problem**: Auto-detection constantly overwrites manual room corrections
-- **Solution**: Select entities for Room/Floor training + Area Lock mechanism
-- **Files**: `select.py`, `coordinator.py`, `bermuda_device.py`, `const.py`
+## Manual Fingerprint Training System
 
-**Components:**
-1. `BermudaTrainingRoomSelect` - Room dropdown (EntityCategory.CONFIG)
-2. `BermudaTrainingFloorSelect` - Floor dropdown (filters rooms by floor)
-3. Area Lock - Prevents auto-detection from overriding trained room
+### Problem Statement
 
-**Area Lock Logic:**
-```python
-# In BermudaDevice:
-self.area_locked_id: str | None = None        # Locked area ID
-self.area_locked_name: str | None = None      # Locked area name
-self.area_locked_scanner_addr: str | None = None  # Scanner that trained it
+Auto-detection constantly overwrites manual room corrections. Users need a way to:
+1. Explicitly train the system for a specific room
+2. Have their training persist against continuous automatic learning
+3. Break out of "stuck" states (velocity trap, wrong room lock-in)
+
+### Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                   Complete Training Flow                                 │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  ┌─────────────┐    ┌─────────────┐    ┌─────────────────────────────┐  │
+│  │ FloorSelect │───►│ RoomSelect  │───►│ BermudaDevice               │  │
+│  │ (select.py  │    │ (select.py  │    │ • training_target_floor_id  │  │
+│  │  :209-322)  │    │  :53-207)   │    │ • training_target_area_id   │  │
+│  └─────────────┘    └─────────────┘    │ • area_locked_id/name/addr  │  │
+│                                        └──────────────┬──────────────┘  │
+│                                                       │                  │
+│  ┌────────────────────────────────────────────────────┘                  │
+│  │                                                                       │
+│  ▼                                                                       │
+│  ┌─────────────────────────────────────────────────────────────────────┐│
+│  │ TrainingButton (button.py:47-219)                                   ││
+│  │ • available: training_target_floor_id AND training_target_area_id  ││
+│  │ • async_press(): 10x async_train_fingerprint() in try/finally      ││
+│  └──────────────────────────────────┬──────────────────────────────────┘│
+│                                     │                                    │
+│                                     ▼                                    │
+│  ┌─────────────────────────────────────────────────────────────────────┐│
+│  │ coordinator.async_train_fingerprint() (coordinator.py:708-811)      ││
+│  │                                                                      ││
+│  │ 1. device.reset_velocity_history()  ← Breaks velocity trap          ││
+│  │ 2. Collect fresh RSSI from all scanners (< EVIDENCE_WINDOW)         ││
+│  │ 3. Identify primary scanner (strongest RSSI)                        ││
+│  │ 4. AreaProfile.update_button() ← Device-specific fingerprint        ││
+│  │ 5. RoomProfile.update_button() ← Device-independent fingerprint     ││
+│  │ 6. correlation_store.async_save() ← Immediate persistence           ││
+│  └──────────────────────────────────┬──────────────────────────────────┘│
+│                                     │                                    │
+│                                     ▼                                    │
+│  ┌─────────────────────────────────────────────────────────────────────┐│
+│  │ Two-Pool Kalman Fusion (in AreaProfile)                             ││
+│  │                                                                      ││
+│  │ ┌─────────────────┐    ┌─────────────────┐                          ││
+│  │ │ ScannerPair     │    │ ScannerAbsolute │                          ││
+│  │ │ Correlation     │    │ Rssi            │                          ││
+│  │ │ (delta tracking)│    │ (abs tracking)  │                          ││
+│  │ └────────┬────────┘    └────────┬────────┘                          ││
+│  │          │                      │                                    ││
+│  │          ▼                      ▼                                    ││
+│  │   _kalman_auto ◄──────► _kalman_button                              ││
+│  │        │                      │                                      ││
+│  │        └──────┬───────────────┘                                      ││
+│  │               ▼                                                      ││
+│  │   Inverse-Variance Weighted Fusion                                  ││
+│  │   weight = 1/variance → lower variance = more trust                 ││
+│  └─────────────────────────────────────────────────────────────────────┘│
+│                                                                          │
+│  finally: Clear training_target_* + area_locked_* → Dropdowns reset     │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Auto-Unlock Conditions:**
+### Key Files
+
+| File | Class/Method | Purpose |
+|------|--------------|---------|
+| `button.py:47-219` | `BermudaTrainingButton` | UI button, triggers training |
+| `select.py:53-207` | `BermudaTrainingRoomSelect` | Room dropdown, sets area lock |
+| `select.py:209-322` | `BermudaTrainingFloorSelect` | Floor dropdown, filters rooms |
+| `coordinator.py:708-811` | `async_train_fingerprint()` | Core training logic |
+| `bermuda_device.py:746-776` | `reset_velocity_history()` | Breaks velocity trap |
+| `correlation/area_profile.py` | `AreaProfile.update_button()` | Device-specific fingerprint |
+| `correlation/scanner_pair.py` | `ScannerPairCorrelation` | Delta RSSI tracking |
+| `correlation/scanner_absolute.py` | `ScannerAbsoluteRssi` | Absolute RSSI tracking |
+
+### Training Button Behavior
+
+**Availability Conditions** (`button.py:91-117`):
+```python
+@property
+def available(self) -> bool:
+    # Button enabled ONLY when BOTH floor AND room selected
+    floor_ok = self._device.training_target_floor_id is not None
+    area_ok = self._device.training_target_area_id is not None
+    return super().available and floor_ok and area_ok
+```
+
+**Press Handler** (`button.py:139-213`):
+```python
+async def async_press(self) -> None:
+    try:
+        for i in range(TRAINING_SAMPLE_COUNT):  # 10 samples
+            await self.coordinator.async_train_fingerprint(
+                device_address=self.address,
+                target_area_id=target_area_id,
+            )
+    finally:
+        # ALWAYS cleanup, even on exception
+        self._device.training_target_floor_id = None
+        self._device.training_target_area_id = None
+        self._device.area_locked_id = None
+        self._device.area_locked_name = None
+        self._device.area_locked_scanner_addr = None
+        await self.coordinator.async_request_refresh()
+```
+
+### Fingerprint Training Process
+
+**Step 1: Velocity Reset** (`coordinator.py:733-738`)
+
+Breaks the "Velocity Trap" where calculated velocity > MAX_VELOCITY causes all readings to be rejected:
+```python
+device.reset_velocity_history()
+# Clears: hist_velocity, hist_distance, hist_stamp on ALL adverts
+# Resets: Kalman filters, velocity_blocked_count
+```
+
+**Step 2: RSSI Collection** (`coordinator.py:740-771`)
+```python
+for advert in device.adverts.values():
+    if (advert.rssi is not None
+        and nowstamp - advert.stamp < EVIDENCE_WINDOW_SECONDS):
+        rssi_readings[advert.scanner_address] = advert.rssi
+        # Track strongest signal as "primary"
+        if advert.rssi > primary_rssi:
+            primary_rssi = advert.rssi
+            primary_scanner_addr = advert.scanner_address
+```
+
+**Step 3: Profile Updates** (`coordinator.py:787-797`)
+```python
+# Device-specific profile (AreaProfile)
+self.correlations[device_address][target_area_id].update_button(
+    primary_rssi=primary_rssi,
+    other_readings=other_readings,
+    primary_scanner_addr=primary_scanner_addr,
+)
+
+# Device-independent profile (RoomProfile)
+self.room_profiles[target_area_id].update_button(rssi_readings)
+```
+
+### Variance Inflation Mechanism
+
+**Problem**: After thousands of auto-learning samples, the auto-filter has extremely low variance and dominates button training via inverse-variance weighting.
+
+**Solution** (`scanner_pair.py:105-133`, `scanner_absolute.py:104-135`):
+```python
+def update_button(self, observed_delta: float) -> float:
+    # Only inflate if auto-filter is converged (has learned a lot)
+    converged_threshold = 5.0
+    if self._kalman_auto.sample_count > 0 and self._kalman_auto.variance < converged_threshold:
+        # Reset to unconverged state (~15.0 variance)
+        self._kalman_auto.variance = 15.0
+
+    self._kalman_button.update(observed_delta)
+    return self.expected_delta
+```
+
+**Effect on Weighting**:
+```
+Before inflation:
+  Auto:   1000 samples, variance=2.6, weight=0.385
+  Button: 10 samples,   variance=5.6, weight=0.179
+  → Auto dominates (68%)
+
+After inflation:
+  Auto:   1000 samples, variance=15.0, weight=0.067
+  Button: 10 samples,   variance=5.6,  weight=0.179
+  → Button dominates (73%)
+```
+
+### Area Lock Mechanism
+
+**Purpose**: Prevents auto-detection from overriding the user's room selection during and after training.
+
+**Attributes** (`bermuda_device.py:191-199`):
+```python
+self.area_locked_id: str | None = None        # Locked area ID
+self.area_locked_name: str | None = None      # Locked area name
+self.area_locked_scanner_addr: str | None = None  # Scanner that was primary when locked
+```
+
+**Set by**: `RoomSelect.async_select_option()` when user picks a room
+**Cleared by**: `TrainingButton.async_press()` in finally block
+
+**Auto-Unlock Conditions** (handled in coordinator):
 - Locked scanner no longer sees device (stamp stale > 60s)
 - AND device is seen by other scanners (last_seen fresh)
 - If device offline everywhere → keep locked
 
-**USB/BlueZ Scanner Fix:**
+**USB/BlueZ Scanner Fix**:
 USB/BlueZ scanners don't update stamp when RSSI is stable. Fixed by requiring device to be seen elsewhere before unlocking:
 ```python
 if nowstamp - locked_advert.stamp > AREA_LOCK_TIMEOUT_SECONDS:
@@ -418,42 +592,7 @@ if nowstamp - locked_advert.stamp > AREA_LOCK_TIMEOUT_SECONDS:
         # Not seen anywhere → keep locked
 ```
 
-### Training UI System Architecture
-
-The training UI uses a coordinated system of Select entities (dropdowns) and a Button entity:
-
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                         Training UI Flow                                 │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                          │
-│  FloorSelect ──────────────────┐                                        │
-│  (dropdown)                    │                                        │
-│       │                        │                                        │
-│       │ on_floor_changed()     │                                        │
-│       ▼                        │                                        │
-│  RoomSelect ───────────────────┼──► BermudaDevice                       │
-│  (dropdown)                    │    • training_target_floor_id          │
-│                                │    • training_target_area_id           │
-│                                │    • area_locked_id/name/scanner_addr  │
-│                                │                                        │
-│  TrainingButton ◄──────────────┘                                        │
-│  (available when both set)                                              │
-│       │                                                                  │
-│       │ async_press()                                                   │
-│       ▼                                                                  │
-│  coordinator.async_train_fingerprint()                                  │
-│       │                                                                  │
-│       │ clears training_target_* fields                                 │
-│       ▼                                                                  │
-│  coordinator.async_request_refresh()                                    │
-│       │                                                                  │
-│       │ triggers _handle_coordinator_update() on all entities           │
-│       ▼                                                                  │
-│  Dropdowns clear (see training_target_* = None)                         │
-│                                                                          │
-└─────────────────────────────────────────────────────────────────────────┘
-```
+### UI State Synchronization
 
 **State Ownership:**
 
@@ -484,6 +623,17 @@ This pattern allows the button to clear the dropdowns indirectly by:
 1. Setting `training_target_*` to `None`
 2. Triggering a coordinator refresh
 3. Each dropdown's `_handle_coordinator_update()` sees `None` and clears itself
+
+### Constants
+
+| Constant | Value | Location | Purpose |
+|----------|-------|----------|---------|
+| `TRAINING_SAMPLE_COUNT` | 10 | `button.py:22` | Samples per button press |
+| `EVIDENCE_WINDOW_SECONDS` | - | `const.py` | Max age for RSSI readings |
+| `AREA_LOCK_TIMEOUT_SECONDS` | 60 | `const.py` | Stale threshold for auto-unlock |
+| `MIN_SAMPLES_FOR_MATURITY` | 30/20 | `scanner_pair.py`/`scanner_absolute.py` | Samples before trusting profile |
+| Converged threshold | 5.0 | inline | Variance below which inflation triggers |
+| Inflation target | 15.0 | inline | Reset variance value |
 
 ## Lessons Learned
 
