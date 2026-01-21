@@ -234,6 +234,19 @@ class AreaProfile:
 
         return results
 
+    def get_absolute_rssi(self, scanner_addr: str) -> ScannerAbsoluteRssi | None:
+        """
+        Get the absolute RSSI profile for a specific scanner.
+
+        Args:
+            scanner_addr: MAC address of the scanner.
+
+        Returns:
+            ScannerAbsoluteRssi instance if it exists, None otherwise.
+
+        """
+        return self._absolute_profiles.get(scanner_addr)
+
     def get_absolute_z_scores(
         self,
         readings: dict[str, float],
