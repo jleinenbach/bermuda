@@ -361,6 +361,56 @@ filtered_rssi = filter.update(raw_rssi)
 filtered_rssi = filter.update_adaptive(raw_rssi, ref_power=-55)
 ```
 
+### Innovation-Based Adaptive Estimation (IAE)
+
+The Kalman filter now includes IAE for dynamic process noise (Q) adaptation.
+
+**The Problem:**
+Standard Kalman filters use fixed Q, creating a dilemma:
+- Low Q = smooth filtering but slow response to movement
+- High Q = fast response but jittery when stationary
+
+**The Solution (IAE):**
+Monitor the Normalized Innovation Squared (NIS):
+```
+NIS = innovation² / S
+where: innovation = measurement - estimate
+       S = variance + measurement_noise
+```
+
+| NIS Value | Interpretation | Action |
+|-----------|---------------|--------|
+| NIS ≤ 1.0 | Stationary (measurement matches prediction) | Decay Q toward baseline |
+| NIS > 1.0 | Moving (measurement deviates unexpectedly) | Increase Q for faster tracking |
+
+**Adaptive Formula:**
+```python
+if NIS > IAE_NIS_THRESHOLD:  # 1.0
+    Q = Q_min * (1 + IAE_Q_SCALE * (NIS - 1))  # Scale up
+    Q = min(Q, Q_min * IAE_Q_MAX_MULTIPLIER)   # Cap at 50x
+else:
+    Q = Q_min + (Q - Q_min) * IAE_Q_DECAY      # Smooth decay
+```
+
+**IAE Constants (`filters/const.py`):**
+| Constant | Value | Purpose |
+|----------|-------|---------|
+| `IAE_Q_SCALE` | 3.0 | Q scaling factor when NIS > 1 |
+| `IAE_Q_MAX_MULTIPLIER` | 50.0 | Maximum Q amplification |
+| `IAE_NIS_THRESHOLD` | 1.0 | NIS threshold for adaptation |
+| `IAE_Q_DECAY` | 0.9 | Q decay rate when stationary |
+
+**Practical Effect:**
+- Device stationary in room: Filter "freezes" (very smooth, low jitter)
+- Device moves to new room: Filter "wakes up" (fast tracking, follows change)
+- Device stops again: Filter settles over ~10-20 samples (natural settling)
+
+**Diagnostics:**
+```python
+diag = filter.get_diagnostics()
+# Returns: {..., "last_nis": 0.5, "q_multiplier": 1.0, "iae_state": "settled"}
+```
+
 ## Recent Changes (Session Notes)
 
 ### Room Flickering Fix
@@ -419,6 +469,19 @@ filtered_rssi = filter.update_adaptive(raw_rssi, ref_power=-55)
   - Processing all 3 gives the Kalman filter false confidence ("over-fitting to noise")
   - Velocity calculations become stable with physically meaningful time intervals (100ms+ instead of 5ms)
 - **Files**: `const.py`, `bermuda_advert.py`
+
+### Innovation-Based Adaptive Estimation (IAE) for Kalman Filter
+- **Problem**: Static process noise (Q) creates a dilemma:
+  - Low Q = smooth filtering, but filter "lags" during room changes
+  - High Q = fast response, but jittery when device is stationary
+- **Root cause**: Standard Kalman filters assume constant noise characteristics, but BLE devices switch between stationary (need smoothing) and moving (need responsiveness).
+- **Solution**: Implement IAE in `filters/kalman.py`:
+  - Monitor Normalized Innovation Squared (NIS) = innovation² / expected_variance
+  - NIS > 1.0 → Device moving → Increase Q for faster tracking
+  - NIS ≤ 1.0 → Device stationary → Decay Q toward baseline (smooth settling)
+- **Key insight**: When innovation (measurement - prediction) exceeds what noise alone can explain, the model is wrong (device moved). Temporarily increasing Q lets the filter "wake up" and follow the change.
+- **Files**: `filters/kalman.py`, `filters/const.py`
+- **New constants**: `IAE_Q_SCALE=3.0`, `IAE_Q_MAX_MULTIPLIER=50.0`, `IAE_NIS_THRESHOLD=1.0`, `IAE_Q_DECAY=0.9`
 
 ### Test Fixture Updates
 - Added `correlations`, `_correlations_loaded`, `_last_correlation_save`, `correlation_store` to coordinator mocks

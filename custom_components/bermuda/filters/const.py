@@ -108,3 +108,47 @@ ADAPTIVE_NOISE_SCALE_PER_10DB: Final = 1.5
 # Prevents over-trusting very strong signals (which can still have noise).
 # 0.5 means even very strong signals use at least 50% of base noise.
 ADAPTIVE_MIN_NOISE_MULTIPLIER: Final = 0.5
+
+# =============================================================================
+# Innovation-Based Adaptive Estimation (IAE) Parameters
+# =============================================================================
+# IAE dynamically adjusts process noise (Q) based on the "innovation" -
+# the difference between predicted and measured values.
+#
+# Scientific basis: Standard Kalman filters assume constant noise parameters.
+# In BLE tracking, this creates a dilemma:
+# - Stationary devices need LOW Q (heavy smoothing to filter RSSI jitter)
+# - Moving devices need HIGH Q (fast response to track position changes)
+#
+# IAE solves this by monitoring the Normalized Innovation Squared (NIS):
+# NIS = innovation² / S, where S = predicted_variance + measurement_noise
+#
+# When NIS > 1.0, measurements deviate more than noise can explain,
+# indicating the device is moving. The filter then increases Q temporarily
+# to "wake up" and follow the new position.
+#
+# References:
+# - "Adaptive Kalman Filtering Methods for Low-Cost GPS/INS Integration"
+# - "Innovation-Based Adaptive Estimation for RSSI-Based Localization"
+
+# Scaling factor for Q adaptation when NIS > 1.0.
+# Higher values = faster response to movement, but potentially more jitter.
+# Formula: Q_adaptive = Q_min * (1 + IAE_Q_SCALE * (NIS - 1))
+# Value of 3.0 provides good balance between responsiveness and stability.
+IAE_Q_SCALE: Final = 3.0
+
+# Maximum Q multiplier to prevent instability during extreme spikes.
+# Caps Q_adaptive at Q_min * IAE_Q_MAX_MULTIPLIER.
+# Value of 50 allows significant adaptation while preventing runaway.
+IAE_Q_MAX_MULTIPLIER: Final = 50.0
+
+# NIS threshold for Q adaptation. When NIS exceeds this, Q starts scaling.
+# Value of 1.0 means: "measurement deviates more than expected by noise alone"
+# Lower values = more sensitive to small movements, higher values = more stable.
+IAE_NIS_THRESHOLD: Final = 1.0
+
+# Decay factor for Q when NIS is low (device appears stationary).
+# Q decays toward Q_min: Q = Q_min + (Q_current - Q_min) * decay
+# Value of 0.9 means Q returns to baseline over ~10-20 samples when stationary.
+# This creates smooth "settling" behavior after movement stops.
+IAE_Q_DECAY: Final = 0.9
