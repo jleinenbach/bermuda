@@ -461,6 +461,28 @@ filtered_rssi = filter.update_adaptive(raw_rssi, ref_power=-55)
 - **Effect**: When user selects a room for training, the device immediately shows that room in the UI, not the old/wrong room
 - **File**: `coordinator.py`
 
+### Post-Training Area Fix (BUG 10)
+- **Problem**: After successful training, device still showed wrong room
+  - Training completed successfully (10 samples)
+  - Area lock was cleared in `finally` block
+  - Coordinator refresh triggered normal area detection
+  - UKF score for trained room was < 0.3 (switching threshold) → fell back to min-distance
+  - Min-distance picked wrong room (e.g., Schlafzimmer 2 floors away instead of Technikraum)
+- **Root cause**: After training, the device's area was determined by normal detection, not by the training result
+  - UKF switching threshold (0.3) is high
+  - Fresh button training creates good profiles, but RSSI values can change between training and refresh
+  - If UKF score < 0.3, falls back to min-distance which may pick wrong room
+- **Solution**: After successful training, DIRECTLY set `device._update_area_and_floor(target_area_id)` before clearing the lock
+- **Code change** (`button.py:193-198`):
+  ```python
+  if successful_samples > 0:
+      _LOGGER.info("Fingerprint training complete...")
+      # FIX: BUG 10 - Set device area to trained room
+      self._device._update_area_and_floor(target_area_id)
+  ```
+- **Effect**: After training, device starts in the trained room. UKF retention threshold (0.15) is much lower than switching threshold (0.3), helping keep the device in the trained room.
+- **File**: `button.py`
+
 ## Manual Fingerprint Training System
 
 ### Problem Statement
