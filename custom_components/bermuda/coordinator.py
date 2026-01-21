@@ -865,8 +865,21 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         )
 
         # Persist changes immediately
-        await self.correlation_store.async_save(self.correlations, self.room_profiles)
-        self._last_correlation_save = monotonic_time_coarse()
+        # FIX: BUG 4 - Add error handling to prevent silent persistence failures
+        try:
+            await self.correlation_store.async_save(self.correlations, self.room_profiles)
+            self._last_correlation_save = monotonic_time_coarse()
+        except Exception:
+            # Log error but don't fail - in-memory reset already happened
+            # User will see the reset immediately, but if HA restarts before
+            # a successful save, the old training data would be restored.
+            _LOGGER.exception(
+                "Failed to persist training reset for device %s. "
+                "Reset is active in memory but may not survive restart.",
+                device_address,
+            )
+            # Still return True - the in-memory reset succeeded
+            # Next periodic save or manual action may succeed
 
         return True
 

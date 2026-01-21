@@ -283,6 +283,27 @@ the Kalman filter more time to stabilize while still allowing recovery within
 reasonable time (~10 seconds with 1 update/second).
 """
 
+# FIX: BLE Noise Spike Filter - Velocity threshold beyond which readings are
+# completely ignored as measurement errors (not counted toward teleport recovery)
+VELOCITY_NOISE_THRESHOLD: Final = 10.0
+"""
+Velocity in m/s beyond which a reading is treated as pure BLE noise.
+
+Values between MAX_VELOCITY (3 m/s) and this threshold (10 m/s) are considered
+"plausible fast movement" and count toward teleport recovery. Values above this
+are physically impossible (would require device to teleport) and are treated as
+measurement errors caused by BLE signal noise.
+
+This prevents noise spikes (which can cause calculated velocities of 100+ m/s)
+from rapidly incrementing the teleport counter and resetting distance history,
+which breaks cross-floor protection.
+
+Tier classification:
+- <= MAX_VELOCITY (3 m/s): Normal movement, accept reading
+- > MAX_VELOCITY, <= VELOCITY_NOISE_THRESHOLD (10 m/s): Plausible fast, count toward teleport
+- > VELOCITY_NOISE_THRESHOLD (10 m/s): Impossible spike, ignore completely
+"""
+
 CONF_DEVTRACK_TIMEOUT, DEFAULT_DEVTRACK_TIMEOUT = "devtracker_nothome_timeout", 30
 DOCS[CONF_DEVTRACK_TIMEOUT] = "Timeout in seconds for setting devices as `Not Home` / `Away`."  # fmt: skip
 

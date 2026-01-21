@@ -228,6 +228,37 @@ class KalmanFilter(SignalFilter):
         self.sample_count = sample_count
         self._initialized = True
 
+    def restore_state(
+        self,
+        estimate: float,
+        variance: float,
+        sample_count: int,
+    ) -> None:
+        """
+        Restore filter state from serialized data (deserialization).
+
+        Unlike reset_to_value() which creates an authoritative "frozen" state,
+        this method restores a previously saved filter state exactly as it was.
+        Used when loading correlation data from persistent storage.
+
+        This method encapsulates the internal state management, avoiding direct
+        access to _initialized from external code (see CLAUDE.md BUG 6 / Clean Code).
+
+        Args:
+            estimate: Previously saved estimate value.
+            variance: Previously saved variance value.
+            sample_count: Previously saved sample count.
+
+        Note:
+            The filter is marked as initialized if sample_count > 0.
+            This matches the semantics: a filter with samples has data.
+
+        """
+        self.estimate = estimate
+        self.variance = variance
+        self.sample_count = sample_count
+        self._initialized = sample_count > 0
+
     def get_diagnostics(self) -> dict[str, Any]:
         """Return diagnostic information including Kalman-specific state."""
         return {

@@ -316,6 +316,7 @@ class ScannerPairCorrelation:
 
         Handles both old format (single Kalman) and new format (dual Kalman).
         Old data is migrated to auto filter only.
+        Uses KalmanFilter.restore_state() for clean state restoration.
 
         Args:
             data: Dictionary from to_dict().
@@ -328,22 +329,24 @@ class ScannerPairCorrelation:
 
         # Check for new dual-filter format
         if "auto_estimate" in data:
-            # New format: restore both filters
-            corr._kalman_auto.estimate = data["auto_estimate"]
-            corr._kalman_auto.variance = data["auto_variance"]
-            corr._kalman_auto.sample_count = data["auto_samples"]
-            corr._kalman_auto._initialized = data["auto_samples"] > 0  # noqa: SLF001
-
-            corr._kalman_button.estimate = data["button_estimate"]
-            corr._kalman_button.variance = data["button_variance"]
-            corr._kalman_button.sample_count = data["button_samples"]
-            corr._kalman_button._initialized = data["button_samples"] > 0  # noqa: SLF001
+            # New format - use restore_state() for clean deserialization
+            corr._kalman_auto.restore_state(
+                estimate=data["auto_estimate"],
+                variance=data["auto_variance"],
+                sample_count=data["auto_samples"],
+            )
+            corr._kalman_button.restore_state(
+                estimate=data["button_estimate"],
+                variance=data["button_variance"],
+                sample_count=data["button_samples"],
+            )
         else:
             # Old format: migrate to auto filter only
-            corr._kalman_auto.estimate = data["estimate"]
-            corr._kalman_auto.variance = data["variance"]
-            corr._kalman_auto.sample_count = data["samples"]
-            corr._kalman_auto._initialized = data["samples"] > 0  # noqa: SLF001
+            corr._kalman_auto.restore_state(
+                estimate=data["estimate"],
+                variance=data["variance"],
+                sample_count=data["samples"],
+            )
             # Button filter stays uninitialized
 
         return corr

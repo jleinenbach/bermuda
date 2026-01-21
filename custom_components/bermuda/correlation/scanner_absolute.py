@@ -303,25 +303,28 @@ class ScannerAbsoluteRssi:
         Deserialize from dictionary.
 
         Handles both old format (single Kalman) and new format (dual Kalman).
+        Uses KalmanFilter.restore_state() for clean state restoration.
         """
         profile = cls(scanner_address=data["scanner"])
 
         if "auto_estimate" in data:
-            # New format
-            profile._kalman_auto.estimate = data["auto_estimate"]
-            profile._kalman_auto.variance = data["auto_variance"]
-            profile._kalman_auto.sample_count = data["auto_samples"]
-            profile._kalman_auto._initialized = data["auto_samples"] > 0  # noqa: SLF001
-
-            profile._kalman_button.estimate = data["button_estimate"]
-            profile._kalman_button.variance = data["button_variance"]
-            profile._kalman_button.sample_count = data["button_samples"]
-            profile._kalman_button._initialized = data["button_samples"] > 0  # noqa: SLF001
+            # New format - use restore_state() for clean deserialization
+            profile._kalman_auto.restore_state(
+                estimate=data["auto_estimate"],
+                variance=data["auto_variance"],
+                sample_count=data["auto_samples"],
+            )
+            profile._kalman_button.restore_state(
+                estimate=data["button_estimate"],
+                variance=data["button_variance"],
+                sample_count=data["button_samples"],
+            )
         else:
             # Old format: migrate to auto filter
-            profile._kalman_auto.estimate = data["estimate"]
-            profile._kalman_auto.variance = data["variance"]
-            profile._kalman_auto.sample_count = data["samples"]
-            profile._kalman_auto._initialized = data["samples"] > 0  # noqa: SLF001
+            profile._kalman_auto.restore_state(
+                estimate=data["estimate"],
+                variance=data["variance"],
+                sample_count=data["samples"],
+            )
 
         return profile

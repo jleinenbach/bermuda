@@ -2050,3 +2050,91 @@ variance = 2.0  # Realistic for BLE, still << auto variance
 ```
 
 **Rule of Thumb**: When a parameter serves multiple purposes, verify it works for ALL of them. If optimizing for one breaks another, either separate the concerns or find a balanced middle value that works for both.
+
+---
+
+## Architectural Notes (Thread Safety & Numerical Stability)
+
+These notes document intentional design decisions that may appear problematic but are actually correct.
+
+### Note 1: Clamped Fusion Division is Safe (Not a Bug)
+
+The Clamped Fusion calculation in `scanner_absolute.py:180` appears to risk division by zero:
+
+```python
+current_auto_ratio = w_auto / (w_btn + w_auto)
+```
+
+**Why this is safe:**
+
+Lines 171-172 guarantee positive weights:
+```python
+var_btn = max(self._kalman_button.variance, 1e-6)
+var_auto = max(self._kalman_auto.variance, 1e-6)
+```
+
+Since both variances are at least `1e-6`:
+- `w_btn = 1/var_btn` is at most `1e6` (and positive)
+- `w_auto = 1/var_auto` is at most `1e6` (and positive)
+- The sum `w_btn + w_auto` is guaranteed > 0
+
+**No additional guard needed.** The `max(..., 1e-6)` protection is sufficient.
+
+### Note 2: No Race Condition Between area_id and area_advert
+
+Code in `coordinator.py` checks `device.area_id` for logic but uses `device.area_advert` for action:
+
+```python
+current_device_area_id = device.area_id  # Check this
+# ... logic ...
+device.apply_scanner_selection(device.area_advert, ...)  # Use this
+```
+
+**Why this is safe:**
+
+Python `asyncio` runs in a **single-threaded event loop**. Between these two lines:
+1. There is no `await` statement (no yield point)
+2. No other coroutine can execute
+3. The state cannot change mid-execution
+
+This is **atomically consistent** - not a race condition. The pattern is intentional:
+- `area_id` is the authoritative source of truth (what the system believes)
+- `area_advert` is the object needed for the operation (contains scanner reference)
+
+### Note 3: UKF Retention Threshold Hysteresis is Intentional
+
+The two UKF thresholds (0.3 for switching, 0.15 for retention) are not a bug but **intentional hysteresis**:
+
+| Action | Threshold | Purpose |
+|--------|-----------|---------|
+| Enter new room | 0.3 | Prevent premature switches |
+| Stay in current room | 0.15 | Keep device "sticky" |
+
+**Designed Behavior:**
+- A device with score 0.25 will NOT switch to a new room (< 0.3)
+- A device already in a room with score 0.16 will STAY (> 0.15)
+- This prevents flickering for scannerless rooms where signals are naturally weaker
+
+See FAQ Q3 for the complete rationale.
+
+---
+
+## Key Constants (Extended)
+
+| Constant | Value | Location | Purpose |
+|----------|-------|----------|---------|
+| `VELOCITY_NOISE_THRESHOLD` | 10.0 | `const.py` | Velocities above this are pure BLE noise, ignored |
+| `VELOCITY_TELEPORT_THRESHOLD` | 10 | `const.py` | Consecutive blocks before accepting teleport |
+| `MAX_AUTO_RATIO` | 0.30 | `scanner_*.py` | Max auto-learning influence in Clamped Fusion |
+
+---
+
+## Refactoring Notes (PR Review Feedback)
+
+Changes made based on peer review (2026-01-21):
+
+1. **`VELOCITY_NOISE_THRESHOLD`**: Moved from inline constant in `bermuda_advert.py` to `const.py` for centralized tuning.
+
+2. **`async_reset_device_training()` Error Handling**: Added try/except around `correlation_store.async_save()`. On failure, logs warning but still returns True (in-memory reset succeeded).
+
+3. **`KalmanFilter.restore_state()`**: New method for clean deserialization. Replaces direct `_initialized` access from external code. Used by `ScannerAbsoluteRssi.from_dict()` and `ScannerPairCorrelation.from_dict()`.
