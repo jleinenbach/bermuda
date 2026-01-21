@@ -441,14 +441,23 @@ where: innovation = measurement - estimate
 | NIS ≤ 1.0 | Stationary (measurement matches prediction) | Decay Q toward baseline |
 | NIS > 1.0 | Moving (measurement deviates unexpectedly) | Increase Q for faster tracking |
 
-**Adaptive Formula:**
+**Adaptive Formula (Peak-Hold-Decay / Fast Attack - Slow Release):**
 ```python
 if NIS > IAE_NIS_THRESHOLD:  # 1.0
-    Q = Q_min * (1 + IAE_Q_SCALE * (NIS - 1))  # Scale up
-    Q = min(Q, Q_min * IAE_Q_MAX_MULTIPLIER)   # Cap at 50x
+    target = Q_min * (1 + IAE_Q_SCALE * (NIS - 1))  # Target multiplier
+    target = min(target, Q_min * IAE_Q_MAX_MULTIPLIER)  # Cap at 50x
+    if target > Q_current:
+        Q = target                          # Fast Attack: jump up immediately
+    else:
+        Q = Q_current * IAE_Q_DECAY         # Slow Release: decay even when moving
 else:
-    Q = Q_min + (Q - Q_min) * IAE_Q_DECAY      # Smooth decay
+    Q = Q_current * IAE_Q_DECAY             # Slow Release: decay toward baseline
 ```
+
+**Why Peak-Hold-Decay?**
+- **Fast Attack**: When device starts moving, Q jumps immediately (no lag)
+- **Slow Release**: When device stops OR movement slows, Q decays gradually
+- **Benefit**: Prevents "jitter" at end of movement (NIS fluctuates near threshold)
 
 **IAE Constants (`filters/const.py`):**
 | Constant | Value | Purpose |
