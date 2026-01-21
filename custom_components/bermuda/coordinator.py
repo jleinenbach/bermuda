@@ -2233,12 +2233,12 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                     # FIX: ACTIVE OVERRIDE - Set the device area to the locked area immediately.
                     # Previously, area_locked only prevented changes (guard) but didn't SET
                     # the area. This caused the UI to show the wrong room during training.
-                    device._update_area_and_floor(device.area_locked_id)
+                    device.update_area_and_floor(device.area_locked_id)
                     return
             else:
                 # Scannerless room: no specific scanner to track, just force the area.
                 # FIX: ACTIVE OVERRIDE for scannerless rooms.
-                device._update_area_and_floor(device.area_locked_id)
+                device.update_area_and_floor(device.area_locked_id)
                 return
 
         # Primary: UKF with RoomProfile (when profiles are mature)

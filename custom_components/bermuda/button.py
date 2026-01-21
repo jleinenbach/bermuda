@@ -219,7 +219,7 @@ class BermudaTrainingButton(BermudaEntity, ButtonEntity):
                 # (switching threshold), it falls back to min-distance which might pick wrong room.
                 # By setting the area HERE, the device starts in the trained room after refresh,
                 # and UKF retention threshold (0.15) will help keep it there.
-                self._device._update_area_and_floor(target_area_id)
+                self._device.update_area_and_floor(target_area_id)
             else:
                 _LOGGER.warning(
                     "Fingerprint training failed for %s - no valid samples",

@@ -475,7 +475,7 @@ filtered_rssi = filter.update_adaptive(raw_rssi, ref_power=-55)
   - During training: Device stayed in the old room (lock was a guard, not an override)
   - After training: Normal competition resumed - trained room had to "win" against incumbents
 - **Root cause**: Design gap in the area lock mechanism - it blocked changes but didn't apply them
-- **Solution**: When `area_locked_id` is set, ACTIVELY call `device._update_area_and_floor(area_locked_id)` to force the area immediately
+- **Solution**: When `area_locked_id` is set, ACTIVELY call `device.update_area_and_floor(area_locked_id)` to force the area immediately
 - **Code change** (`coordinator.py:2231-2242`):
   ```python
   # BEFORE: Just returned without setting the area
@@ -487,7 +487,7 @@ filtered_rssi = filter.update_adaptive(raw_rssi, ref_power=-55)
   else:
       # Locked scanner still has an advert - keep lock active.
       # FIX: ACTIVE OVERRIDE - Set the device area to the locked area immediately.
-      device._update_area_and_floor(device.area_locked_id)
+      device.update_area_and_floor(device.area_locked_id)
       return
   ```
 - **Effect**: When user selects a room for training, the device immediately shows that room in the UI, not the old/wrong room
@@ -504,13 +504,13 @@ filtered_rssi = filter.update_adaptive(raw_rssi, ref_power=-55)
   - UKF switching threshold (0.3) is high
   - Fresh button training creates good profiles, but RSSI values can change between training and refresh
   - If UKF score < 0.3, falls back to min-distance which may pick wrong room
-- **Solution**: After successful training, DIRECTLY set `device._update_area_and_floor(target_area_id)` before clearing the lock
+- **Solution**: After successful training, DIRECTLY set `device.update_area_and_floor(target_area_id)` before clearing the lock
 - **Code change** (`button.py:193-198`):
   ```python
   if successful_samples > 0:
       _LOGGER.info("Fingerprint training complete...")
       # FIX: BUG 10 - Set device area to trained room
-      self._device._update_area_and_floor(target_area_id)
+      self._device.update_area_and_floor(target_area_id)
   ```
 - **Effect**: After training, device starts in the trained room. UKF retention threshold (0.15) is much lower than switching threshold (0.3), helping keep the device in the trained room.
 - **File**: `button.py`
@@ -2280,7 +2280,7 @@ if device.locked_area_id is not None:
 ```python
 # GOOD - Guard + Override: prevents changes AND applies desired state
 if device.locked_area_id is not None:
-    device._update_area_and_floor(device.locked_area_id)  # ACTIVE OVERRIDE
+    device.update_area_and_floor(device.locked_area_id)  # ACTIVE OVERRIDE
     return  # Then block automatic detection
 ```
 
