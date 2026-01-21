@@ -1714,7 +1714,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             return False
 
         # Single-scanner retention: verify RSSI against trained profile
-        if can_retain_with_single_scanner:
+        if can_retain_with_single_scanner and current_area_id is not None:
             scanner_addr = next(iter(rssi_readings))
             current_rssi = rssi_readings[scanner_addr]
             area_profile = device_profiles.get(current_area_id)

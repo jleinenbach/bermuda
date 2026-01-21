@@ -266,7 +266,7 @@ DOCS[CONF_MAX_VELOCITY] = (
 
 # FIX: Teleport Recovery - Number of consecutive velocity-blocked measurements
 # before accepting the new position anyway (self-healing mechanism)
-VELOCITY_TELEPORT_THRESHOLD: Final = 5
+VELOCITY_TELEPORT_THRESHOLD: Final = 10
 """
 Number of consecutive measurements blocked by MAX_VELOCITY before accepting anyway.
 
@@ -274,6 +274,13 @@ When a device physically moves to a new location (e.g., from Scanner A at 12m to
 Scanner B at 1m), the calculated velocity may exceed MAX_VELOCITY, causing all
 new readings to be rejected. This threshold allows the system to self-heal:
 after N consecutive blocks from the SAME scanner, accept the new position.
+
+FIX: Increased from 5 to 10 to reduce false teleport detections caused by BLE noise.
+With noisy RSSI values causing calculated velocities of 100+ m/s, a threshold of 5
+triggered too frequently, constantly resetting the distance history. This caused
+cross-floor protection (which requires history) to fail. A higher threshold gives
+the Kalman filter more time to stabilize while still allowing recovery within
+reasonable time (~10 seconds with 1 update/second).
 """
 
 CONF_DEVTRACK_TIMEOUT, DEFAULT_DEVTRACK_TIMEOUT = "devtracker_nothome_timeout", 30
