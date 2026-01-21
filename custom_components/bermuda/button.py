@@ -190,6 +190,12 @@ class BermudaTrainingButton(BermudaEntity, ButtonEntity):
                     successful_samples,
                     TRAINING_SAMPLE_COUNT,
                 )
+                # FIX: BUG 10 - After successful training, SET the device's area to the trained room.
+                # Without this, the area lock is cleared, UKF runs, and if the score is < 0.3
+                # (switching threshold), it falls back to min-distance which might pick wrong room.
+                # By setting the area HERE, the device starts in the trained room after refresh,
+                # and UKF retention threshold (0.15) will help keep it there.
+                self._device._update_area_and_floor(target_area_id)
             else:
                 _LOGGER.warning(
                     "Fingerprint training failed for %s - no valid samples",
