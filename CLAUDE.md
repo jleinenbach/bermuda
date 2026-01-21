@@ -162,6 +162,39 @@ Training sample 10: RSSI = -79dB
 | `MIN_VARIANCE` | 0.001 | Prevents division by zero |
 | `TRAINING_SAMPLE_COUNT` | 10 | Samples per training session |
 
+### Calibration vs Fingerprints (Independence)
+
+**Important**: Scanner/device calibration settings do NOT affect fingerprint data.
+
+| Calibration | Affects | Used By | Fingerprint Impact |
+|-------------|---------|---------|-------------------|
+| `ref_power` | Distance calculation | `rssi_to_metres()` | ❌ None |
+| `attenuation` | Signal decay model | `rssi_to_metres()` | ❌ None |
+| `rssi_offset` | Per-scanner correction | `_update_raw_distance()` | ❌ None |
+
+**Why this works:**
+
+Both training and matching use RAW RSSI (`advert.rssi`), not calibrated values:
+```python
+# Training (coordinator.py)
+rssi_readings[advert.scanner_address] = advert.rssi  # Raw RSSI
+
+# UKF Matching (coordinator.py)
+rssi_readings[advert.scanner_address] = advert.rssi  # Same raw RSSI
+```
+
+**Hardware biases cancel out:**
+```
+Scanner A: Hardware reports -5dB too low
+Scanner B: Hardware reports +3dB too high
+
+Training captures: A=-80dB, B=-72dB (biased)
+Matching sees:     A=-80dB, B=-72dB (same biases)
+→ Pattern match works because biases are consistent!
+```
+
+**Implication**: When user changes calibration settings, learned fingerprint data remains valid. No need to re-train or invalidate stored correlations.
+
 ## Testing Standards
 
 ### Running Tests
