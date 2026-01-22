@@ -1836,18 +1836,51 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         # Get all matches from UKF
         matches = ukf.match_fingerprints(device_profiles, self.room_profiles)
 
+        # DEBUG: Log what we're working with for scannerless room diagnosis
+        if _LOGGER.isEnabledFor(logging.DEBUG):
+            _LOGGER.debug(
+                "Virtual distance check for %s: %d device_profiles, %d matches, rssi_readings=%s, ukf_scanners=%s",
+                device.name,
+                len(device_profiles),
+                len(matches),
+                list(rssi_readings.keys()),
+                ukf.scanner_addresses,
+            )
+            for area_id, profile in device_profiles.items():
+                has_btn = profile.has_button_training
+                has_scanner = self._area_has_scanner(area_id)
+                abs_scanners = list(profile._absolute_profiles.keys()) if hasattr(profile, "_absolute_profiles") else []  # noqa: SLF001
+                _LOGGER.debug(
+                    "  Profile %s: has_button_training=%s, area_has_scanner=%s, abs_profile_scanners=%s",
+                    area_id,
+                    has_btn,
+                    has_scanner,
+                    abs_scanners,
+                )
+
         for area_id, _d_squared, score in matches:
             # Only consider button-trained profiles (explicit user intent)
             profile = device_profiles.get(area_id)
             if profile is None or not profile.has_button_training:
+                if _LOGGER.isEnabledFor(logging.DEBUG):
+                    _LOGGER.debug(
+                        "  Skipping %s: no button training (profile=%s, has_btn=%s)",
+                        area_id,
+                        profile is not None,
+                        profile.has_button_training if profile else "N/A",
+                    )
                 continue
 
             # Only consider scannerless rooms (rooms with scanners use real distance)
             if self._area_has_scanner(area_id):
+                if _LOGGER.isEnabledFor(logging.DEBUG):
+                    _LOGGER.debug("  Skipping %s: area has scanner", area_id)
                 continue
 
             # Minimum score threshold to avoid phantom matches
             if score < VIRTUAL_DISTANCE_MIN_SCORE:
+                if _LOGGER.isEnabledFor(logging.DEBUG):
+                    _LOGGER.debug("  Skipping %s: score %.4f < min %.4f", area_id, score, VIRTUAL_DISTANCE_MIN_SCORE)
                 continue
 
             # Calculate virtual distance using scaled quadratic formula
