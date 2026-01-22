@@ -26,6 +26,7 @@ from custom_components.bermuda.const import (
     EVIDENCE_WINDOW_SECONDS,
 )
 from custom_components.bermuda.coordinator import BermudaDataUpdateCoordinator
+from custom_components.bermuda.area_selection import AreaSelectionHandler
 
 
 # Test constants
@@ -67,6 +68,7 @@ def _make_coordinator() -> BermudaDataUpdateCoordinator:
     coordinator.fr = MagicMock()
     coordinator.irk_manager = MagicMock()
     coordinator.fmdn = MagicMock()
+    coordinator.area_selection = AreaSelectionHandler(coordinator)
     return coordinator
 
 

@@ -27,6 +27,7 @@ from custom_components.bermuda.const import (
     DEFAULT_SMOOTHING_SAMPLES,
 )
 from custom_components.bermuda.coordinator import BermudaDataUpdateCoordinator
+from custom_components.bermuda.area_selection import AreaSelectionHandler
 from custom_components.bermuda.services import BermudaServiceHandler
 
 
@@ -68,6 +69,7 @@ def _make_coordinator(hass: HomeAssistant) -> BermudaDataUpdateCoordinator:
     coordinator.last_update_success = False
     coordinator._waitingfor_load_manufacturer_ids = False
     coordinator.config_entry = SimpleNamespace(async_on_unload=lambda cb: cb)  # type: ignore[assignment]
+    coordinator.area_selection = AreaSelectionHandler(coordinator)
     return coordinator
 
 

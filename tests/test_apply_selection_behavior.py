@@ -26,6 +26,7 @@ from custom_components.bermuda.const import (
     DEFAULT_REF_POWER,
 )
 from custom_components.bermuda.coordinator import BermudaDataUpdateCoordinator
+from custom_components.bermuda.area_selection import AreaSelectionHandler
 
 
 def _make_coordinator(hass: HomeAssistant) -> BermudaDataUpdateCoordinator:
@@ -52,6 +53,7 @@ def _make_coordinator(hass: HomeAssistant) -> BermudaDataUpdateCoordinator:
     coordinator.irk_manager = BermudaIrkManager()
     coordinator.fmdn = FmdnIntegration(coordinator)
     coordinator.hass_version_min_2025_4 = False
+    coordinator.area_selection = AreaSelectionHandler(coordinator)
     return coordinator
 
 

@@ -20,6 +20,7 @@ from custom_components.bermuda.const import (
     EVIDENCE_WINDOW_SECONDS,
 )
 from custom_components.bermuda.coordinator import BermudaDataUpdateCoordinator
+from custom_components.bermuda.area_selection import AreaSelectionHandler
 
 
 # Test constants
@@ -53,6 +54,7 @@ def _make_coordinator() -> BermudaDataUpdateCoordinator:
     coordinator.fr = MagicMock()
     coordinator.irk_manager = MagicMock()
     coordinator.fmdn = MagicMock()
+    coordinator.area_selection = AreaSelectionHandler(coordinator)
     return coordinator
 
 
@@ -127,7 +129,7 @@ class TestCollectCurrentStamps:
 
         device.adverts[(DEVICE_ADDRESS, SCANNER_A)] = advert
 
-        stamps = coordinator._collect_current_stamps(device, nowstamp)
+        stamps = coordinator.area_selection._collect_current_stamps(device, nowstamp)
 
         assert SCANNER_A in stamps
         assert stamps[SCANNER_A] == BASE_TIME - 1.0
@@ -142,7 +144,7 @@ class TestCollectCurrentStamps:
 
         device.adverts[(DEVICE_ADDRESS, SCANNER_A)] = advert
 
-        stamps = coordinator._collect_current_stamps(device, nowstamp)
+        stamps = coordinator.area_selection._collect_current_stamps(device, nowstamp)
 
         assert SCANNER_A not in stamps
 
@@ -160,7 +162,7 @@ class TestCollectCurrentStamps:
         device.adverts[(DEVICE_ADDRESS, SCANNER_A)] = advert_a
         device.adverts[(DEVICE_ADDRESS, SCANNER_B)] = advert_b
 
-        stamps = coordinator._collect_current_stamps(device, nowstamp)
+        stamps = coordinator.area_selection._collect_current_stamps(device, nowstamp)
 
         assert len(stamps) == 2
         assert stamps[SCANNER_A] == BASE_TIME - 1.0
@@ -180,7 +182,7 @@ class TestHasNewAdvertData:
         current_stamps = {SCANNER_A: BASE_TIME + 1.0}
         last_stamps = {SCANNER_A: BASE_TIME}
 
-        result = coordinator._has_new_advert_data(current_stamps, last_stamps)
+        result = coordinator.area_selection._has_new_advert_data(current_stamps, last_stamps)
 
         assert result is True
 
@@ -189,7 +191,7 @@ class TestHasNewAdvertData:
         current_stamps = {SCANNER_A: BASE_TIME}
         last_stamps = {SCANNER_A: BASE_TIME}
 
-        result = coordinator._has_new_advert_data(current_stamps, last_stamps)
+        result = coordinator.area_selection._has_new_advert_data(current_stamps, last_stamps)
 
         assert result is False
 
@@ -198,7 +200,7 @@ class TestHasNewAdvertData:
         current_stamps = {SCANNER_A: BASE_TIME, SCANNER_B: BASE_TIME + 1.0}
         last_stamps = {SCANNER_A: BASE_TIME, SCANNER_B: BASE_TIME}
 
-        result = coordinator._has_new_advert_data(current_stamps, last_stamps)
+        result = coordinator.area_selection._has_new_advert_data(current_stamps, last_stamps)
 
         assert result is True
 
@@ -207,7 +209,7 @@ class TestHasNewAdvertData:
         current_stamps = {SCANNER_A: BASE_TIME}
         last_stamps: dict[str, float] = {}
 
-        result = coordinator._has_new_advert_data(current_stamps, last_stamps)
+        result = coordinator.area_selection._has_new_advert_data(current_stamps, last_stamps)
 
         assert result is True
 
@@ -216,7 +218,7 @@ class TestHasNewAdvertData:
         current_stamps = {SCANNER_A: BASE_TIME, SCANNER_B: BASE_TIME}
         last_stamps = {SCANNER_A: BASE_TIME}  # Only scanner A was seen before
 
-        result = coordinator._has_new_advert_data(current_stamps, last_stamps)
+        result = coordinator.area_selection._has_new_advert_data(current_stamps, last_stamps)
 
         # Scanner B is new, but its stamp (BASE_TIME) is not > last_stamps.get(SCANNER_B, 0)
         # So this should be True because BASE_TIME > 0
@@ -310,8 +312,8 @@ class TestStreakNoIncrementSameData:
 
         # Collect current stamps - should be newer
         nowstamp = BASE_TIME + 2.0
-        current_stamps = coordinator._collect_current_stamps(device, nowstamp)
-        has_new_data = coordinator._has_new_advert_data(current_stamps, device.pending_last_stamps)
+        current_stamps = coordinator.area_selection._collect_current_stamps(device, nowstamp)
+        has_new_data = coordinator.area_selection._has_new_advert_data(current_stamps, device.pending_last_stamps)
 
         # Verify new data is detected
         assert has_new_data is True
@@ -334,8 +336,8 @@ class TestStreakNoIncrementSameData:
 
         # Collect current stamps - should be same
         nowstamp = BASE_TIME + 1.0
-        current_stamps = coordinator._collect_current_stamps(device, nowstamp)
-        has_new_data = coordinator._has_new_advert_data(current_stamps, device.pending_last_stamps)
+        current_stamps = coordinator.area_selection._collect_current_stamps(device, nowstamp)
+        has_new_data = coordinator.area_selection._has_new_advert_data(current_stamps, device.pending_last_stamps)
 
         # Verify NO new data detected
         assert has_new_data is False
@@ -365,8 +367,8 @@ class TestStreakNoIncrementSameData:
         # Simulate multiple coordinator polls at t=1001, 1002, 1003 (same advert stamp)
         streak_increments = 0
         for poll_time in [BASE_TIME + 1, BASE_TIME + 2, BASE_TIME + 3]:
-            current_stamps = coordinator._collect_current_stamps(device, poll_time)
-            has_new_data = coordinator._has_new_advert_data(current_stamps, device.pending_last_stamps)
+            current_stamps = coordinator.area_selection._collect_current_stamps(device, poll_time)
+            has_new_data = coordinator.area_selection._has_new_advert_data(current_stamps, device.pending_last_stamps)
             if has_new_data:
                 streak_increments += 1
                 device.pending_last_stamps = dict(current_stamps)
@@ -389,14 +391,14 @@ class TestStreakNoIncrementSameData:
         # First poll - same data (t=1000)
         advert = _make_advert(scanner, -60.0, BASE_TIME, 2.0)
         device.adverts[(DEVICE_ADDRESS, SCANNER_A)] = advert
-        current_stamps = coordinator._collect_current_stamps(device, BASE_TIME + 1)
-        has_new_data_1 = coordinator._has_new_advert_data(current_stamps, device.pending_last_stamps)
+        current_stamps = coordinator.area_selection._collect_current_stamps(device, BASE_TIME + 1)
+        has_new_data_1 = coordinator.area_selection._has_new_advert_data(current_stamps, device.pending_last_stamps)
 
         # Second poll - new data (t=1003, new advertisement arrived)
         advert_new = _make_advert(scanner, -62.0, BASE_TIME + 3.0, 2.1)
         device.adverts[(DEVICE_ADDRESS, SCANNER_A)] = advert_new
-        current_stamps_new = coordinator._collect_current_stamps(device, BASE_TIME + 4)
-        has_new_data_2 = coordinator._has_new_advert_data(current_stamps_new, device.pending_last_stamps)
+        current_stamps_new = coordinator.area_selection._collect_current_stamps(device, BASE_TIME + 4)
+        has_new_data_2 = coordinator.area_selection._has_new_advert_data(current_stamps_new, device.pending_last_stamps)
 
         # First poll should not detect new data
         assert has_new_data_1 is False

@@ -351,7 +351,7 @@ class TestUKFIntegration:
         def mock_min_dist_refresh(dev: FakeDevice) -> None:
             min_dist_called["count"] += 1
 
-        coordinator._refresh_area_by_min_distance = mock_min_dist_refresh  # type: ignore[method-assign]
+        coordinator.area_selection._refresh_area_by_min_distance = mock_min_dist_refresh  # type: ignore[method-assign]
 
         # Call the refresh method
         coordinator._refresh_areas_by_min_distance()
@@ -386,7 +386,7 @@ class TestUKFIntegration:
         def mock_min_dist_refresh(dev: FakeDevice) -> None:
             min_dist_called["count"] += 1
 
-        coordinator._refresh_area_by_min_distance = mock_min_dist_refresh  # type: ignore[method-assign]
+        coordinator.area_selection._refresh_area_by_min_distance = mock_min_dist_refresh  # type: ignore[method-assign]
 
         # Call the refresh method
         coordinator._refresh_areas_by_min_distance()
@@ -421,7 +421,7 @@ class TestUKFIntegration:
         def mock_min_dist_refresh(dev: FakeDevice) -> None:
             min_dist_called["count"] += 1
 
-        coordinator._refresh_area_by_min_distance = mock_min_dist_refresh  # type: ignore[method-assign]
+        coordinator.area_selection._refresh_area_by_min_distance = mock_min_dist_refresh  # type: ignore[method-assign]
 
         # Call the refresh method
         coordinator._refresh_areas_by_min_distance()

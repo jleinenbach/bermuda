@@ -24,6 +24,7 @@ from custom_components.bermuda.const import (
     RSSI_CONSISTENCY_MARGIN_DB,
 )
 from custom_components.bermuda.coordinator import BermudaDataUpdateCoordinator
+from custom_components.bermuda.area_selection import AreaSelectionHandler
 from custom_components.bermuda.fmdn import BermudaFmdnManager, FmdnIntegration
 from custom_components.bermuda.bermuda_irk import BermudaIrkManager
 from custom_components.bermuda.util import rssi_to_metres
@@ -34,6 +35,7 @@ def _patch_monotonic_time(monkeypatch: pytest.MonkeyPatch, current_time: list[fl
     monkeypatch.setattr("bluetooth_data_tools.monotonic_time_coarse", lambda: current_time[0])
     monkeypatch.setattr("custom_components.bermuda.coordinator.monotonic_time_coarse", lambda: current_time[0])
     monkeypatch.setattr("custom_components.bermuda.bermuda_device.monotonic_time_coarse", lambda: current_time[0])
+    monkeypatch.setattr("custom_components.bermuda.area_selection.monotonic_time_coarse", lambda: current_time[0])
     # Also patch this test module's import so _make_advert uses the patched time
     monkeypatch.setattr("tests.test_physical_rssi_priority.monotonic_time_coarse", lambda: current_time[0])
 
@@ -73,6 +75,7 @@ def _make_coordinator(hass: HomeAssistant, use_physical_rssi_priority: bool = Fa
     coordinator.fr = fr.async_get(hass)
     coordinator.irk_manager = BermudaIrkManager()
     coordinator.fmdn = FmdnIntegration(coordinator)
+    coordinator.area_selection = AreaSelectionHandler(coordinator)
     return coordinator
 
 

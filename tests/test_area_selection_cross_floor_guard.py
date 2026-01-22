@@ -12,6 +12,7 @@ from custom_components.bermuda.const import (
     CROSS_FLOOR_STREAK,
     MOVEMENT_STATE_STATIONARY,
 )
+from custom_components.bermuda.area_selection import AreaSelectionHandler
 from custom_components.bermuda.coordinator import BermudaDataUpdateCoordinator
 
 if TYPE_CHECKING:
@@ -194,6 +195,7 @@ def _build_coord(
         for area in areas:
             area_registry.add_area(area)
     coord.ar = area_registry
+    coord.area_selection = AreaSelectionHandler(coord)
     return coord
 
 
@@ -201,6 +203,7 @@ def test_cross_floor_historical_minmax_requires_stronger_history(monkeypatch: py
     """Cross-floor switches must not happen with short history via historical win."""
     now = 1000.0
     monkeypatch.setattr("custom_components.bermuda.coordinator.monotonic_time_coarse", lambda: now)
+    monkeypatch.setattr("custom_components.bermuda.area_selection.monotonic_time_coarse", lambda: now)
 
     # FIX: Create areas for mock area registry (needed for floor resolution)
     areas = [
@@ -281,6 +284,7 @@ def test_cross_floor_switch_allowed_with_long_history(monkeypatch: pytest.Monkey
         return now[0]
 
     monkeypatch.setattr("custom_components.bermuda.coordinator.monotonic_time_coarse", _fake_time)
+    monkeypatch.setattr("custom_components.bermuda.area_selection.monotonic_time_coarse", _fake_time)
 
     areas = [
         FakeArea(id="area_a", name="Room A", floor_id="floor_a"),
@@ -350,6 +354,7 @@ def test_transient_gap_still_allows_cross_floor_switch(monkeypatch: pytest.Monke
         return now[0]
 
     monkeypatch.setattr("custom_components.bermuda.coordinator.monotonic_time_coarse", _fake_time)
+    monkeypatch.setattr("custom_components.bermuda.area_selection.monotonic_time_coarse", _fake_time)
 
     areas = [
         FakeArea(id="area_a", name="Room A", floor_id="floor_a"),
@@ -426,6 +431,7 @@ def test_missing_scanner_device_does_not_crash(monkeypatch: pytest.MonkeyPatch) 
     """Missing scanner metadata must not raise or switch."""
     now = 4000.0
     monkeypatch.setattr("custom_components.bermuda.coordinator.monotonic_time_coarse", lambda: now)
+    monkeypatch.setattr("custom_components.bermuda.area_selection.monotonic_time_coarse", lambda: now)
 
     areas = [
         FakeArea(id="area_ok", name="Room OK", floor_id="floor_ok"),
@@ -479,6 +485,7 @@ def test_same_floor_confirmation_blocks_cross_floor_switch(monkeypatch: pytest.M
     cross-floor switches should require much stronger evidence."""
     now = 5000.0
     monkeypatch.setattr("custom_components.bermuda.coordinator.monotonic_time_coarse", lambda: now)
+    monkeypatch.setattr("custom_components.bermuda.area_selection.monotonic_time_coarse", lambda: now)
 
     areas = [
         FakeArea(id="area_a1", name="Room A1", floor_id="floor_a"),
@@ -605,6 +612,7 @@ def test_same_floor_confirmation_allows_strong_switch(monkeypatch: pytest.Monkey
         return now[0]
 
     monkeypatch.setattr("custom_components.bermuda.coordinator.monotonic_time_coarse", _fake_time)
+    monkeypatch.setattr("custom_components.bermuda.area_selection.monotonic_time_coarse", _fake_time)
 
     areas = [
         FakeArea(id="area_a1", name="Room A1", floor_id="floor_a"),
@@ -697,6 +705,7 @@ def test_floor_sandwich_logic_blocks_switch(monkeypatch: pytest.MonkeyPatch) -> 
     the incumbent floor (middle) is most likely correct - block switches."""
     now = 7000.0
     monkeypatch.setattr("custom_components.bermuda.coordinator.monotonic_time_coarse", lambda: now)
+    monkeypatch.setattr("custom_components.bermuda.area_selection.monotonic_time_coarse", lambda: now)
 
     areas = [
         FakeArea(id="area_basement", name="Keller", floor_id="floor_basement"),
@@ -796,6 +805,7 @@ def test_non_adjacent_floor_requires_stronger_evidence(monkeypatch: pytest.Monke
     much stronger evidence since BLE rarely skips floors cleanly."""
     now = 8000.0
     monkeypatch.setattr("custom_components.bermuda.coordinator.monotonic_time_coarse", lambda: now)
+    monkeypatch.setattr("custom_components.bermuda.area_selection.monotonic_time_coarse", lambda: now)
 
     areas = [
         FakeArea(id="area_basement", name="Keller", floor_id="floor_basement"),
@@ -876,6 +886,7 @@ def test_challenger_floor_witnesses_penalty(monkeypatch: pytest.MonkeyPatch) -> 
     """
     now = 9000.0
     monkeypatch.setattr("custom_components.bermuda.coordinator.monotonic_time_coarse", lambda: now)
+    monkeypatch.setattr("custom_components.bermuda.area_selection.monotonic_time_coarse", lambda: now)
 
     areas = [
         FakeArea(id="area_eg", name="Wohnzimmer", floor_id="floor_eg"),
@@ -1010,6 +1021,7 @@ def test_near_field_distance_ratio_protection(monkeypatch: pytest.MonkeyPatch) -
     """
     now = 9500.0
     monkeypatch.setattr("custom_components.bermuda.coordinator.monotonic_time_coarse", lambda: now)
+    monkeypatch.setattr("custom_components.bermuda.area_selection.monotonic_time_coarse", lambda: now)
 
     areas = [
         FakeArea(id="area_eg", name="Wohnzimmer", floor_id="floor_eg"),
@@ -1210,6 +1222,7 @@ def test_cross_floor_requires_streak_even_when_incumbent_out_of_range(
     """
     now = 5000.0
     monkeypatch.setattr("custom_components.bermuda.coordinator.monotonic_time_coarse", lambda: now)
+    monkeypatch.setattr("custom_components.bermuda.area_selection.monotonic_time_coarse", lambda: now)
 
     areas = [
         FakeArea(id="area_basement", name="Basement Room", floor_id="floor_basement"),

@@ -36,6 +36,7 @@ def _make_coordinator() -> MagicMock:
         CONF_RSSI_OFFSETS: {},
     }
     coordinator.hass_version_min_2025_4 = True
+    coordinator.area_selection = MagicMock()
     return coordinator
 
 
