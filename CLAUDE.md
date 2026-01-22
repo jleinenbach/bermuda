@@ -62,26 +62,31 @@ python -m pytest --cov -q
 The coordinator was refactored to follow Home Assistant best practices (similar to ESPHome, ZHA, Bluetooth integrations). Large modules are extracted into separate handler classes:
 
 ```
-coordinator.py
+coordinator.py (3379 lines, was 4274)
 ├── self.service_handler = BermudaServiceHandler(self)     # services.py
 ├── self.area_selection = AreaSelectionHandler(self)       # area_selection.py
 │
-│   Entry Points:
+│   Entry Points (delegation):
 ├── _refresh_areas_by_min_distance()  ──► area_selection.refresh_areas_by_min_distance()
 ├── service_dump_devices()            ──► service_handler.async_dump_devices()
 │
-│   Internal (still in coordinator, Phase 3-4):
-├── _refresh_area_by_ukf(device)           # ~500 lines - fingerprint matching
-└── _refresh_area_by_min_distance(device)  # ~1250 lines - proximity heuristic
+│   Still in coordinator (Phase 4 pending):
+├── _refresh_area_by_min_distance(device)  # ~1250 lines - proximity heuristic
+├── Helper methods (duplicates)            # To be removed after Phase 4
+│
+│   Future extraction candidates:
+├── metadevice methods                     # ~316 lines - IRK, iBeacon, Private BLE
+└── scanner management + repairs           # ~116 lines - Scanner list, area repairs
 ```
 
 **Phase 1-2 Complete:**
-- `services.py` - BermudaServiceHandler (~150 lines)
+- `services.py` - BermudaServiceHandler (~253 lines)
   - `async_dump_devices()` - Device dump service
   - `redact_data()` - MAC address redaction for privacy
   - `redaction_list_update()` - Redaction cache management
 
-- `area_selection.py` - AreaSelectionHandler (~520 lines)
+**Phase 3 Complete:**
+- `area_selection.py` - AreaSelectionHandler (~1171 lines)
   - `AreaTests` dataclass - Diagnostic info for area decisions
   - Helper functions: `_calculate_virtual_distance()`, `_collect_current_stamps()`, `_has_new_advert_data()`
   - Registry helpers: `_resolve_floor_id_for_area()`, `_area_has_scanner()`, `resolve_area_name()`, `effective_distance()`
@@ -89,11 +94,26 @@ coordinator.py
   - `_get_virtual_distances_for_scannerless_rooms()` - UKF fingerprint to distance
   - `refresh_areas_by_min_distance()` - Main entry point
   - `_determine_area_for_device()` - Per-device area logic
+  - **`_refresh_area_by_ukf()`** (~500 lines) - UKF fingerprint matching ✅
+  - **`_apply_ukf_selection()`** (~95 lines) - Apply UKF decision to device ✅
 
-**Phase 3-4 Pending:**
-- `_refresh_area_by_ukf()` (~500 lines) - UKF fingerprint matching
-- `_apply_ukf_selection()` - Apply UKF decision to device
+**Phase 4 Pending:**
 - `_refresh_area_by_min_distance(device)` (~1250 lines) - Min-distance heuristic
+- Remove duplicate helper methods from coordinator (already in area_selection)
+
+**Future Phases (Optional):**
+- `metadevice_manager.py` - IRK resolution, iBeacon, Private BLE Device (~316 lines)
+- `scanner_manager.py` - Scanner list management, area repair issues (~116 lines)
+
+### Refactoring Statistics
+
+| Phase | File | Lines Added | Lines Removed | Net Change |
+|-------|------|-------------|---------------|------------|
+| 1-2 | services.py | +253 | - | +253 |
+| 1-2 | area_selection.py | +575 | - | +575 |
+| 3 | area_selection.py | +596 | - | +596 |
+| 3 | coordinator.py | - | -661 | -661 |
+| **Total** | | **+1424** | **-661** | **-21% coordinator** |
 
 ### Area Selection System
 
