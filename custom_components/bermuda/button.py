@@ -19,13 +19,17 @@ if TYPE_CHECKING:
     from . import BermudaConfigEntry
     from .coordinator import BermudaDataUpdateCoordinator
 
-# Number of training samples to apply for stronger fingerprint weight
+# Number of unique training samples to collect
 # 20 samples meets MIN_SAMPLES_FOR_MATURITY threshold for both correlation classes
 TRAINING_SAMPLE_COUNT = 20
 
-# Delay between training samples in seconds
-# Allows RSSI values to vary slightly for more diverse/robust training data
-TRAINING_SAMPLE_DELAY = 0.5
+# Maximum time to wait for training to complete (seconds)
+# Allows for slow-advertising devices (some trackers advertise every 5-10 seconds)
+TRAINING_MAX_TIME_SECONDS = 120.0
+
+# How often to poll for new advertisement data (seconds)
+# Short interval to catch new data quickly, but not so short as to waste CPU
+TRAINING_POLL_INTERVAL = 0.3
 
 
 async def async_setup_entry(
@@ -177,34 +181,62 @@ class BermudaTrainingButton(BermudaEntity, ButtonEntity):
         self.async_write_ha_state()
 
         _LOGGER.info(
-            "Training fingerprint for %s in room %s (%d samples, ~%.0fs)...",
+            "Training fingerprint for %s in room %s (waiting for %d unique samples, max %.0fs)...",
             self._device.name,
             target_area_name,
             TRAINING_SAMPLE_COUNT,
-            TRAINING_SAMPLE_COUNT * TRAINING_SAMPLE_DELAY,
+            TRAINING_MAX_TIME_SECONDS,
         )
 
         try:
+            # BUG 19 FIX: Wait for REAL new advertisements instead of re-reading cached values
+            # BLE trackers typically advertise every 1-10 seconds. Polling faster than that
+            # would read the same cached RSSI value multiple times, causing over-confidence
+            # in the Kalman filter without adding real information.
+            #
+            # We track timestamps from previous samples and only count a sample as "successful"
+            # when at least one scanner has NEW data (stamp changed since last sample).
             successful_samples = 0
-            for i in range(TRAINING_SAMPLE_COUNT):
-                success = await self.coordinator.async_train_fingerprint(
+            last_stamps: dict[str, float] = {}
+            start_time = asyncio.get_event_loop().time()
+
+            while successful_samples < TRAINING_SAMPLE_COUNT:
+                # Check timeout
+                elapsed = asyncio.get_event_loop().time() - start_time
+                if elapsed >= TRAINING_MAX_TIME_SECONDS:
+                    _LOGGER.warning(
+                        "Training timeout for %s after %.0fs (%d/%d samples)",
+                        self._device.name,
+                        elapsed,
+                        successful_samples,
+                        TRAINING_SAMPLE_COUNT,
+                    )
+                    break
+
+                # Try to get a training sample with NEW data
+                success, current_stamps = await self.coordinator.async_train_fingerprint(
                     device_address=self.address,
                     target_area_id=target_area_id,
+                    last_stamps=last_stamps,
                 )
+
                 if success:
                     successful_samples += 1
-                else:
+                    last_stamps = current_stamps
                     _LOGGER.debug(
-                        "Training sample %d/%d failed for %s",
-                        i + 1,
+                        "Training sample %d/%d collected for %s (%.0fs elapsed)",
+                        successful_samples,
                         TRAINING_SAMPLE_COUNT,
                         self._device.name,
+                        elapsed,
                     )
+                elif current_stamps:
+                    # No new data yet - update stamps anyway for next comparison
+                    # (in case device is offline, stamps stay empty and we keep waiting)
+                    last_stamps = current_stamps
 
-                # Delay between samples to get diverse RSSI readings
-                # Skip delay after last sample
-                if i < TRAINING_SAMPLE_COUNT - 1:
-                    await asyncio.sleep(TRAINING_SAMPLE_DELAY)
+                # Short poll interval - we're waiting for new BLE advertisements
+                await asyncio.sleep(TRAINING_POLL_INTERVAL)
 
             if successful_samples > 0:
                 _LOGGER.info(
