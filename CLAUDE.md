@@ -196,6 +196,85 @@ Matching sees:     A=-80dB, B=-72dB (same biases)
 
 **Implication**: When user changes calibration settings, learned fingerprint data remains valid. No need to re-train or invalidate stored correlations.
 
+### Indirect Feedback Loop (Button → Room Selection → Auto)
+
+**Important**: While the two Kalman filters (`_kalman_auto` and `_kalman_button`) don't directly share data, there IS an indirect feedback mechanism through room selection.
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    INDIRECT FEEDBACK LOOP                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  STEP 1: Room Selection (UKF Matching)                                   │
+│  ┌────────────────────────────────────────────────────────────────────┐ │
+│  │  ukf.match_fingerprints() reads:                                   │ │
+│  │  abs_profile.expected_rssi  ← This IS the Clamped Fusion!          │ │
+│  │                                                                     │ │
+│  │  Button: -85dB (70%) ─┬─→ Fusion: -84.5dB ─→ fp_mean for matching  │ │
+│  │  Auto:   -80dB (30%) ─┘                                            │ │
+│  │                                                                     │ │
+│  │  Current signal: -83dB → Difference: 1.5dB → Good match!           │ │
+│  │  Result: "Room A wins"                                              │ │
+│  └────────────────────────────────────────────────────────────────────┘ │
+│                               │                                          │
+│                               ▼                                          │
+│  STEP 2: Auto-Learning                                                   │
+│  ┌────────────────────────────────────────────────────────────────────┐ │
+│  │  coordinator calls:                                                 │ │
+│  │  profile.update(rssi=-83)  ← Learns: "In Room A I see -83dB"       │ │
+│  │         │                                                          │ │
+│  │         ▼                                                          │ │
+│  │  _kalman_auto.update(-83)                                          │ │
+│  │  Auto estimate moves: -80dB → -81dB (toward -83)                   │ │
+│  └────────────────────────────────────────────────────────────────────┘ │
+│                               │                                          │
+│                               ▼                                          │
+│  STEP 3: Next Cycle                                                      │
+│  ┌────────────────────────────────────────────────────────────────────┐ │
+│  │  expected_rssi recalculated:                                        │ │
+│  │  Button: -85dB (70%) ─┬─→ Fusion: -84.2dB (slightly adjusted!)     │ │
+│  │  Auto:   -81dB (30%) ─┘                                            │ │
+│  └────────────────────────────────────────────────────────────────────┘ │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+**The Mechanism:**
+
+| Step | Action | Filter Affected |
+|------|--------|-----------------|
+| 1 | UKF reads `expected_rssi` (fused value) | Neither (read-only) |
+| 2 | Room A wins based on fused fingerprint | Neither |
+| 3 | `profile.update()` called for Room A | `_kalman_auto` only |
+| 4 | Auto learns "-83dB = Room A" | `_kalman_auto` only |
+
+**Key Insight**: The button training indirectly influences WHAT the auto-filter learns by affecting WHICH room is selected. This creates contextual consistency:
+
+| Without Button Training | With Button Training |
+|------------------------|---------------------|
+| Auto decides alone: Room B wins | Button influences: Room A wins |
+| Auto learns: "-83dB = Room B" | Auto learns: "-83dB = Room A" |
+| Auto reinforces wrong decision | Auto reinforces correct decision |
+
+**Why This Is Beneficial:**
+
+1. **Consistent Learning**: Auto-filter learns data that matches the button-trained context
+2. **Refinement, Not Contradiction**: Auto "polishes" within the button's framework
+3. **Convergence**: Over time, button and auto estimates approach each other (within 30% limit)
+
+**Convergence Example Over Time:**
+```
+Day 1:   Button=-85dB, Auto=-80dB → Fusion=-83.5dB
+Day 7:   Button=-85dB, Auto=-82dB → Fusion=-84.1dB (Auto learned closer values)
+Day 30:  Button=-85dB, Auto=-84dB → Fusion=-84.7dB (Converging)
+Day 60:  Button=-85dB, Auto=-84.5dB → Fusion=-84.85dB (Stabilized)
+```
+
+**Code References:**
+- `ukf.py:550`: `fp_mean.append(abs_profile.expected_rssi)` - Uses fused value
+- `coordinator.py:2252`: `profile.update(...)` - Auto-learning after room selection
+- `scanner_absolute.py:134-179`: `expected_rssi` property - Clamped fusion logic
+
 ## Testing Standards
 
 ### Running Tests
@@ -609,6 +688,79 @@ filtered_rssi = filter.update_adaptive(raw_rssi, ref_power=-55)
   | `proximity_threshold` | 2.0m | Distance below which physical proximity overrides fingerprints |
   | High confidence threshold | 0.85 | UKF score needed to override same-floor proximity |
 - **File**: `coordinator.py`
+
+### Virtual Min-Distance for Scannerless Rooms (BUG 15)
+- **Problem**: Scannerless rooms (rooms without their own scanner) can't compete in min-distance fallback
+  - Device trained for "Lagerraum" (basement, no scanner)
+  - UKF score is 0.25 (below 0.3 switching threshold) → falls back to min-distance
+  - Min-distance algorithm only sees physical scanners
+  - "Yunas Zimmer" (upper floor, 5.2m away) wins because it HAS a scanner
+  - Result: Device shows wrong room despite good fingerprint training
+- **Root cause**: When UKF score is below switching threshold, min-distance takes over. But min-distance can ONLY see rooms with physical scanners. Scannerless rooms are invisible to it.
+- **Solution**: "Virtual Distance" - convert UKF fingerprint scores to virtual distances
+  - Only for button-trained profiles (explicit user intent)
+  - Only for scannerless rooms (rooms with scanners use real distance)
+  - Formula: `virtual_distance = max_radius × SCALE × (1 - score)²`
+  - Quadratic formula rewards good matches more aggressively
+- **Key insight**: A scannerless room with a good fingerprint match should be able to "compete" with a distant physical scanner.
+- **Architecture**:
+  ```
+  ┌─────────────────────────────────────────────────────────────────────┐
+  │           _refresh_area_by_min_distance() with Virtual Distance     │
+  ├─────────────────────────────────────────────────────────────────────┤
+  │                                                                      │
+  │  Physical Scanners ──→ Real measured distances                      │
+  │       │                      │                                       │
+  │       │                      ▼                                       │
+  │       │              ┌──────────────────┐                           │
+  │       │              │ Distance Contest │                           │
+  │       │              │ (all distances)  │                           │
+  │       │              └────────┬─────────┘                           │
+  │       │                       │                                      │
+  │  Scannerless Rooms ──→ Virtual distances ─┘                         │
+  │       │                                                              │
+  │       ▼                                                              │
+  │  ┌─────────────────────────────────────────────────────────────┐   │
+  │  │ _get_virtual_distances_for_scannerless_rooms()              │   │
+  │  │                                                              │   │
+  │  │ For each button-trained, scannerless area:                  │   │
+  │  │   1. Get UKF fingerprint match score                        │   │
+  │  │   2. Convert to virtual distance:                           │   │
+  │  │      distance = max_radius × 0.7 × (1 - score)²             │   │
+  │  │   3. Add to distance contest                                │   │
+  │  └─────────────────────────────────────────────────────────────┘   │
+  │                                                                      │
+  └─────────────────────────────────────────────────────────────────────┘
+  ```
+- **Formula Details**:
+  ```python
+  virtual_distance = max_radius * VIRTUAL_DISTANCE_SCALE * ((1.0 - score) ** 2)
+  # VIRTUAL_DISTANCE_SCALE = 0.7 (30% shorter than pure quadratic)
+  ```
+  | UKF Score | Virtual Distance (10m radius) | Interpretation |
+  |-----------|------------------------------|----------------|
+  | 1.0 | 0.0m | Perfect match → wins any contest |
+  | 0.5 | 1.75m | Good match → beats 5m+ scanners |
+  | 0.3 | 3.43m | Threshold match → competitive |
+  | 0.1 | 5.67m | Poor match → likely loses |
+  | 0.0 | 7.0m | No match → only beats very distant |
+- **Why Quadratic (not Linear)?**
+  - Linear: `7m * (1-0.5) = 3.5m` for score 0.5
+  - Quadratic: `7m * (0.5)² = 1.75m` for score 0.5
+  - Quadratic rewards good matches MORE aggressively
+  - A "good match" (0.5+) should strongly compete, not just barely
+- **Filter Conditions** (all must be true for virtual distance):
+  1. `has_button_training == True` (user explicitly trained this room)
+  2. `_area_has_scanner(area_id) == False` (room has no physical scanner)
+  3. `score >= VIRTUAL_DISTANCE_MIN_SCORE` (0.05, prevents phantom matches)
+  4. `len(rssi_readings) >= UKF_MIN_SCANNERS` (2, meaningful calculation)
+- **Constants**:
+  | Constant | Value | Purpose |
+  |----------|-------|---------|
+  | `VIRTUAL_DISTANCE_SCALE` | 0.7 | Makes virtual distances 30% shorter than pure quadratic |
+  | `VIRTUAL_DISTANCE_MIN_SCORE` | 0.05 | Minimum score to generate virtual distance |
+- **Files changed**: `coordinator.py`, `const.py`, `correlation/area_profile.py`
+- **Test file**: `tests/test_virtual_distance_scannerless.py` (21 tests)
 
 ## Manual Fingerprint Training System
 
@@ -1275,6 +1427,80 @@ for k in range(n_sub):
 4. **Hybrid Mode**: Combine UKF confidence with min-distance for tiebreaking
 5. **Performance**: Profile UKF overhead on large scanner networks
 
+### Rejected Alternative: Student-t Score Function (Phase 2)
+
+**Status:** ❌ Not implemented (variance floor is sufficient)
+
+A proposal was made to replace the Gaussian score function `exp(-D²/(2n))` with a
+Student-t kernel to handle "heavy-tailed" BLE RSSI distributions. After mathematical
+analysis, this was **rejected** because the variance floor (Phase 1) already solves
+the problem, and combining both would make matching too tolerant.
+
+**The Standard Multivariate Student-t Formula:**
+
+According to [Wikipedia](https://en.wikipedia.org/wiki/Multivariate_t-distribution):
+```
+f(x) ∝ (1 + D²/ν)^(-(ν+p)/2)
+```
+Where:
+- D² = Mahalanobis distance squared
+- ν = degrees of freedom (typically 4-5 for robust estimation)
+- p = dimension (number of scanners)
+
+**The Proposed (Ad-hoc) Formula:**
+```python
+avg_d_squared = d_squared / n_sub      # = D²/p
+base = 1.0 + (avg_d_squared / NU)      # = 1 + D²/(p·ν)
+exponent = -(NU + 1.0) / 2.0           # = -(ν+1)/2
+device_score = math.pow(base, exponent)
+```
+
+**Critical Differences:**
+
+| Aspect | Standard t | Proposed | Impact |
+|--------|------------|----------|--------|
+| Base denominator | ν | p·ν | p times smaller |
+| Exponent | -(ν+p)/2 | -(ν+1)/2 | Constant, not dimensional |
+
+**Example Calculation (p=3 scanners, D²=9, ν=4):**
+
+| Method | Formula | Score |
+|--------|---------|-------|
+| Standard t | (1 + 9/4)^(-(4+3)/2) | 0.017 |
+| Proposed | (1 + 9/12)^(-(4+1)/2) | 0.25 |
+| Current Gaussian | exp(-9/6) | 0.22 |
+
+The proposed formula is **15x more tolerant** than standard Student-t!
+
+**Risk: Over-Tolerance with Both Fixes**
+
+| Config | 5dB deviation score | 12dB deviation score |
+|--------|---------------------|----------------------|
+| Phase 1 alone | 0.61 | 0.38 |
+| Phase 1 + Phase 2 | 0.72 | 0.52 |
+
+With both fixes, a **wrong room** with 12dB deviation gets score 0.52 (should be < 0.3).
+
+**Why Variance Floor Alone is Sufficient:**
+
+1. The "hyper-precision paradox" is caused by converged Kalman variances, not by
+   the Gaussian score function itself
+2. The variance floor ensures D² stays reasonable (< 5 for normal BLE noise)
+3. With reasonable D², the Gaussian function works correctly
+4. Adding Student-t on top would reduce discrimination between correct/wrong rooms
+
+**If Student-t is Ever Needed (Extreme Multipath Environments):**
+
+1. Use the **correct** multivariate formula: `(1 + D²/ν)^(-(ν+n)/2)`
+2. **Reduce** the variance floor to 10-15 (not 25)
+3. Add tests for false-positive rate
+4. Verify discrimination ratio between correct and wrong rooms stays > 2.0
+
+**References:**
+- [Multivariate t-distribution - Wikipedia](https://en.wikipedia.org/wiki/Multivariate_t-distribution)
+- [Statlect: Multivariate Student's t](https://www.statlect.com/probability-distributions/multivariate-student-t-distribution)
+- [UWB/IMU Fusion with Mahalanobis Distance](https://pubmed.ncbi.nlm.nih.gov/30322106/)
+
 ## Correlation Confidence Architecture
 
 ### Problem: Delta-Only Matching Causes False Positives
@@ -1486,6 +1712,35 @@ Even in a shielded cellar with perfect signal, allowing 2.0 tolerance is fine (z
 - Problematic scanner may not be visible anymore
 - Device-level reset is the "nuclear option" that catches ALL cases
 - Granular per-room deletion is future work (requires complex UI)
+
+### Q9: Why Quadratic Formula for Virtual Distance (not Linear)?
+
+**Answer:** Quadratic rewards good matches MORE aggressively.
+
+| Score | Linear (7m base) | Quadratic (7m base) |
+|-------|-----------------|---------------------|
+| 0.5 | 3.5m | 1.75m |
+| 0.3 | 4.9m | 3.43m |
+
+- A "good" fingerprint match (score ≥ 0.3) should STRONGLY compete
+- Linear gives mediocre distances that often lose to mid-range scanners
+- Quadratic makes fingerprint-trained rooms meaningful competitors
+- The 0.7 scale factor ensures even score=0 doesn't exceed `max_radius * 0.7`
+
+### Q10: Why Only Button-Trained Profiles Get Virtual Distance?
+
+**Answer:** Virtual distance represents USER INTENT, not automatic patterns.
+
+- **Auto-learned profiles**: System guesses, may be wrong, shouldn't compete with real measurements
+- **Button-trained profiles**: User explicitly said "this device IS in this room"
+- Giving virtual distances to auto-learned profiles could cause phantom room detections
+- User's explicit training is the ONLY reliable signal for scannerless rooms
+
+**The Flow:**
+```
+Auto-learned room → No button training → No virtual distance → Invisible to min-distance
+Button-trained room → has_button_training=True → Virtual distance → Competes with scanners
+```
 
 ---
 
@@ -2482,6 +2737,85 @@ The floor represents this irreducible physical noise.
 **Rule of Thumb**: When comparing two estimators that can both converge to low variance,
 apply a variance floor representing the physical measurement noise of the underlying signal.
 
+### 34. Invisible Entities Need Synthetic Competition Metrics
+
+When an algorithm (like min-distance) can only "see" entities with a specific property (like physical scanners), entities without that property become invisible and can never win—even when other metrics (like fingerprint matching) strongly suggest they should.
+
+**Bug Pattern:**
+```python
+# BAD - Scannerless rooms are invisible to min-distance
+distances = {}
+for scanner in physical_scanners:
+    distances[scanner.area_id] = scanner.distance
+# Scannerless rooms never appear in distances → can never win!
+winner = min(distances, key=distances.get)
+```
+
+**Fix Pattern:**
+```python
+# GOOD - Create synthetic metric for invisible entities
+distances = {}
+for scanner in physical_scanners:
+    distances[scanner.area_id] = scanner.distance
+
+# Add virtual distances for scannerless rooms
+for area_id, profile in button_trained_profiles.items():
+    if not has_scanner(area_id):
+        # Convert fingerprint score to virtual distance
+        score = get_fingerprint_score(area_id)
+        distances[area_id] = score_to_virtual_distance(score)
+
+winner = min(distances, key=distances.get)  # Now scannerless rooms can compete!
+```
+
+**Key Design Decisions for Synthetic Metrics:**
+1. **Only for user-intent entities**: Don't create virtual metrics for auto-learned data
+2. **Scale appropriately**: Ensure synthetic values are in the same range as real values
+3. **Prefer quadratic over linear**: Rewards good matches more aggressively
+4. **Add minimum threshold**: Prevent phantom matches from very weak signals
+
+**Rule of Thumb**: When an entity can't participate in a competition due to missing properties, ask: "Is there another metric that could represent this entity's 'fitness'?" If yes, convert that metric to a compatible scale and include it in the competition.
+
+### 35. Test Fixtures Must Mirror Production Data Structures
+
+When production code adds new data structures (like `device_ukfs`), ALL test fixtures that mock the coordinator must be updated to include these structures—even if the specific tests don't directly use them.
+
+**Bug Pattern:**
+```python
+# Test fixture created before device_ukfs existed
+def make_coordinator():
+    coord = Coordinator.__new__(Coordinator)
+    coord.devices = {}
+    coord.correlations = {}
+    # device_ukfs not added!
+    return coord
+
+# Production code later added:
+def new_feature(self):
+    if device.address not in self.device_ukfs:  # AttributeError!
+        ...
+```
+
+**Fix Pattern:**
+```python
+# GOOD - Include all production attributes
+def make_coordinator():
+    coord = Coordinator.__new__(Coordinator)
+    coord.devices = {}
+    coord.correlations = {}
+    coord.device_ukfs = {}  # Added when production added it
+    coord._scanners = set()  # Include related structures
+    return coord
+```
+
+**Checklist when adding new coordinator attributes:**
+1. Add to `coordinator.__init__()` or initialization
+2. Search for `_make_coordinator`, `_build_coord`, `@pytest.fixture` in tests
+3. Add the new attribute to ALL coordinator fixtures
+4. Run full test suite to verify no AttributeError
+
+**Rule of Thumb**: Production coordinator attributes and test fixture attributes must stay in sync. When you add an attribute to production, grep for test fixtures and update them too.
+
 ---
 
 ## Architectural Notes (Thread Safety & Numerical Stability)
@@ -2557,6 +2891,8 @@ See FAQ Q3 for the complete rationale.
 | `VELOCITY_NOISE_MULTIPLIER` | 3.0 | `const.py` | Multiplier for dynamic noise threshold (`max_velocity * 3`) |
 | `VELOCITY_TELEPORT_THRESHOLD` | 10 | `const.py` | Consecutive blocks before accepting teleport |
 | `MAX_AUTO_RATIO` | 0.30 | `scanner_*.py` | Max auto-learning influence in Clamped Fusion |
+| `VIRTUAL_DISTANCE_SCALE` | 0.7 | `const.py` | Virtual distance scaling (30% shorter than pure quadratic) |
+| `VIRTUAL_DISTANCE_MIN_SCORE` | 0.05 | `const.py` | Minimum UKF score for virtual distance generation |
 
 **Dynamic Noise Threshold Calculation:**
 ```python

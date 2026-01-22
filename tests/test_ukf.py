@@ -516,11 +516,13 @@ class TestLagerraumScenario:
         # Scanner 02 (Praxis, 2 floors up): Weak signal -85 dB
         # Scanner 03: Medium signal -72 dB
         for _ in range(30):
-            ukf.update_multi({
-                "AA:BB:CC:DD:EE:01": -60.0,
-                "AA:BB:CC:DD:EE:02": -85.0,
-                "AA:BB:CC:DD:EE:03": -72.0,
-            })
+            ukf.update_multi(
+                {
+                    "AA:BB:CC:DD:EE:01": -60.0,
+                    "AA:BB:CC:DD:EE:02": -85.0,
+                    "AA:BB:CC:DD:EE:03": -72.0,
+                }
+            )
 
         # Lagerraum profile (well-trained, but with slight deviation due to BLE noise)
         # Training captured -63, -88, -75 but current readings are -60, -85, -72
@@ -548,10 +550,12 @@ class TestLagerraumScenario:
                 primary_scanner_addr="AA:BB:CC:DD:EE:01",
             )
 
-        results = ukf.match_fingerprints({
-            "lagerraum": lagerraum,
-            "praxis": praxis,
-        })
+        results = ukf.match_fingerprints(
+            {
+                "lagerraum": lagerraum,
+                "praxis": praxis,
+            }
+        )
 
         # Extract scores
         lagerraum_result = next(r for r in results if r[0] == "lagerraum")
@@ -566,9 +570,7 @@ class TestLagerraumScenario:
         )
 
         # Lagerraum should have a good score despite 3dB deviation
-        assert lagerraum_score > 0.6, (
-            f"Lagerraum score {lagerraum_score:.4f} too low for 3dB deviation"
-        )
+        assert lagerraum_score > 0.6, f"Lagerraum score {lagerraum_score:.4f} too low for 3dB deviation"
 
     def test_scannerless_room_detection(self) -> None:
         """Test detection of rooms without their own scanner.
@@ -590,10 +592,12 @@ class TestLagerraumScenario:
         # Current readings (device in scannerless room)
         # Both scanners show moderate signal (neither is very close)
         for _ in range(30):
-            ukf.update_multi({
-                "AA:BB:CC:DD:EE:01": -72.0,
-                "AA:BB:CC:DD:EE:02": -78.0,
-            })
+            ukf.update_multi(
+                {
+                    "AA:BB:CC:DD:EE:01": -72.0,
+                    "AA:BB:CC:DD:EE:02": -78.0,
+                }
+            )
 
         # Scannerless room profile (trained with button)
         # Small deviation (2dB) from current readings
@@ -614,16 +618,17 @@ class TestLagerraumScenario:
                 primary_scanner_addr="AA:BB:CC:DD:EE:01",
             )
 
-        results = ukf.match_fingerprints({
-            "scannerless_room": scannerless,
-            "adjacent_room": adjacent,
-        })
+        results = ukf.match_fingerprints(
+            {
+                "scannerless_room": scannerless,
+                "adjacent_room": adjacent,
+            }
+        )
 
         scannerless_result = next(r for r in results if r[0] == "scannerless_room")
         adjacent_result = next(r for r in results if r[0] == "adjacent_room")
 
         # Scannerless room should match better (smaller deviation)
         assert scannerless_result[2] > adjacent_result[2], (
-            f"Scannerless room ({scannerless_result[2]:.4f}) should beat "
-            f"adjacent room ({adjacent_result[2]:.4f})"
+            f"Scannerless room ({scannerless_result[2]:.4f}) should beat adjacent room ({adjacent_result[2]:.4f})"
         )

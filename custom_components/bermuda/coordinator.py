@@ -121,6 +121,8 @@ from .const import (
     UKF_STICKINESS_BONUS,
     UKF_WEAK_SCANNER_MIN_DISTANCE,
     UPDATE_INTERVAL,
+    VIRTUAL_DISTANCE_MIN_SCORE,
+    VIRTUAL_DISTANCE_SCALE,
 )
 from .correlation import AreaProfile, CorrelationStore, RoomProfile, z_scores_to_confidence
 from .filters import UnscentedKalmanFilter
@@ -1744,6 +1746,117 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             return getattr(area, "floor_id", None)
         return None
 
+    def _area_has_scanner(self, area_id: str) -> bool:
+        """
+        Check if an area has at least one scanner assigned to it.
+
+        Args:
+            area_id: The Home Assistant area ID to check.
+
+        Returns:
+            True if the area contains at least one scanner device.
+
+        """
+        return any(scanner.area_id == area_id for scanner in self._scanners)
+
+    def _calculate_virtual_distance(self, score: float, max_radius: float) -> float:
+        """
+        Convert a UKF fingerprint match score to a virtual distance.
+
+        Uses a scaled quadratic formula that rewards medium scores (0.3-0.5)
+        more aggressively than linear, allowing scannerless rooms to compete
+        against physical scanners through walls.
+
+        Formula: max_radius * SCALE * (1 - score)²
+
+        Args:
+            score: UKF match score (0.0 to 1.0)
+            max_radius: Maximum radius from configuration
+
+        Returns:
+            Virtual distance in meters. Lower scores produce larger distances.
+
+        """
+        score_clamped = max(VIRTUAL_DISTANCE_MIN_SCORE, min(1.0, score))
+        return max_radius * VIRTUAL_DISTANCE_SCALE * ((1.0 - score_clamped) ** 2)
+
+    def _get_virtual_distances_for_scannerless_rooms(
+        self,
+        device: BermudaDevice,
+        rssi_readings: dict[str, float],
+    ) -> dict[str, float]:
+        """
+        Calculate virtual distances for scannerless rooms based on UKF fingerprint match.
+
+        When UKF score is below threshold for switching, scannerless rooms would normally
+        be invisible to min-distance fallback (since they have no scanner to measure).
+        This method calculates a "virtual distance" based on how well the current RSSI
+        pattern matches the trained fingerprint, allowing scannerless rooms to compete.
+
+        Only considers rooms that:
+        1. Have been explicitly button-trained by the user
+        2. Have no physical scanner in the room
+        3. Have a minimum UKF score (to avoid phantom matches)
+
+        Args:
+            device: The device to calculate virtual distances for.
+            rssi_readings: Current RSSI readings from all visible scanners.
+
+        Returns:
+            Dict mapping area_id to virtual distance (meters) for scannerless rooms.
+
+        """
+        virtual_distances: dict[str, float] = {}
+
+        # Need device profiles to calculate fingerprint matches
+        if device.address not in self.correlations:
+            return virtual_distances
+
+        device_profiles = self.correlations[device.address]
+        max_radius = self.options.get(CONF_MAX_RADIUS, DEFAULT_MAX_RADIUS)
+
+        # Need minimum scanners for meaningful score calculation
+        if len(rssi_readings) < UKF_MIN_SCANNERS:
+            return virtual_distances
+
+        # Get or create UKF for this device (may already exist from earlier in cycle)
+        if device.address not in self.device_ukfs:
+            return virtual_distances  # No UKF state to compare against
+
+        ukf = self.device_ukfs[device.address]
+
+        # Get all matches from UKF
+        matches = ukf.match_fingerprints(device_profiles, self.room_profiles)
+
+        for area_id, _d_squared, score in matches:
+            # Only consider button-trained profiles (explicit user intent)
+            profile = device_profiles.get(area_id)
+            if profile is None or not profile.has_button_training:
+                continue
+
+            # Only consider scannerless rooms (rooms with scanners use real distance)
+            if self._area_has_scanner(area_id):
+                continue
+
+            # Minimum score threshold to avoid phantom matches
+            if score < VIRTUAL_DISTANCE_MIN_SCORE:
+                continue
+
+            # Calculate virtual distance using scaled quadratic formula
+            virtual_dist = self._calculate_virtual_distance(score, max_radius)
+            virtual_distances[area_id] = virtual_dist
+
+            if _LOGGER.isEnabledFor(logging.DEBUG):
+                _LOGGER.debug(
+                    "Virtual distance for %s in scannerless room %s: score=%.3f → distance=%.2fm",
+                    device.name,
+                    area_id,
+                    score,
+                    virtual_dist,
+                )
+
+        return virtual_distances
+
     def _refresh_area_by_ukf(self, device: BermudaDevice) -> bool:  # noqa: PLR0911, C901
         """
         Use UKF (Unscented Kalman Filter) for area selection via fingerprint matching.
@@ -3134,6 +3247,92 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         rssi_fallback_margin = 3.0
         rssi_fallback_cross_floor_margin = 6.0  # Bug Fix: Higher margin for cross-floor RSSI switches
         winner = incumbent or soft_incumbent
+
+        # Virtual Distance for Scannerless Rooms
+        # When a device has been button-trained for a scannerless room, we calculate a
+        # "virtual distance" based on how well the current RSSI pattern matches the trained
+        # fingerprint. This allows scannerless rooms to compete with physical scanner-based
+        # distance measurements. Without this, scannerless rooms are invisible to min-distance
+        # and can never be selected as the winner.
+        virtual_winner_area_id: str | None = None
+        virtual_winner_distance: float | None = None
+
+        # Collect fresh RSSI readings for virtual distance calculation
+        rssi_readings_for_virtual: dict[str, float] = {}
+        for adv in device.adverts.values():
+            if _within_evidence(adv) and adv.rssi is not None and adv.scanner_address is not None:
+                rssi_readings_for_virtual[adv.scanner_address] = adv.rssi
+
+        if rssi_readings_for_virtual:
+            virtual_distances = self._get_virtual_distances_for_scannerless_rooms(device, rssi_readings_for_virtual)
+
+            if virtual_distances:
+                # Find the best virtual candidate (shortest virtual distance)
+                best_virtual_area = min(
+                    virtual_distances.keys(),
+                    key=lambda area: virtual_distances[area],
+                )
+                best_virtual_dist = virtual_distances[best_virtual_area]
+
+                # Compare against physical winner
+                winner_distance = _effective_distance(winner) if winner else None
+
+                # Virtual room wins if:
+                # 1. No physical winner exists, OR
+                # 2. Virtual distance is shorter than physical distance
+                if winner is None or winner_distance is None:
+                    # No physical winner - virtual room takes over
+                    virtual_winner_area_id = best_virtual_area
+                    virtual_winner_distance = best_virtual_dist
+                    if _LOGGER.isEnabledFor(logging.DEBUG):
+                        _LOGGER.debug(
+                            "Virtual distance winner for %s: %s at %.2fm (no physical winner)",
+                            device.name,
+                            best_virtual_area,
+                            best_virtual_dist,
+                        )
+                elif best_virtual_dist < winner_distance:
+                    # Virtual room beats physical scanner
+                    virtual_winner_area_id = best_virtual_area
+                    virtual_winner_distance = best_virtual_dist
+                    if _LOGGER.isEnabledFor(logging.DEBUG):
+                        _LOGGER.debug(
+                            "Virtual distance winner for %s: %s at %.2fm beats physical %.2fm",
+                            device.name,
+                            best_virtual_area,
+                            best_virtual_dist,
+                            winner_distance,
+                        )
+
+        # If a virtual room won, apply it directly and return
+        if virtual_winner_area_id is not None:
+            # Apply the scannerless room as the winner
+            device.update_area_and_floor(virtual_winner_area_id)
+
+            # Set area_distance to the virtual distance for UI display
+            # Note: This is a "virtual" distance based on fingerprint match, not physical
+            device.area_distance = virtual_winner_distance
+            device.area_distance_stamp = nowstamp
+
+            # Mark this as a UKF-detected scannerless area for stickiness protection
+            device._ukf_scannerless_area = True  # type: ignore[attr-defined]  # noqa: SLF001
+
+            # Clear pending state since we've made a decision
+            device.pending_area_id = None
+            device.pending_floor_id = None
+            device.pending_streak = 0
+
+            tests.reason = f"WIN via virtual distance ({virtual_winner_distance:.2f}m) for scannerless room"
+            device.diag_area_switch = tests.sensortext()
+
+            if _LOGGER.isEnabledFor(logging.DEBUG):
+                _LOGGER.debug(
+                    "Applied virtual distance winner for %s: area=%s distance=%.2fm",
+                    device.name,
+                    virtual_winner_area_id,
+                    virtual_winner_distance if virtual_winner_distance else 0,
+                )
+            return
 
         if not has_distance_contender:
 

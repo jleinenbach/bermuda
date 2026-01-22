@@ -580,8 +580,7 @@ class UnscentedKalmanFilter(SignalFilter):
 
                         # Debug logging for UKF matching diagnostics
                         _LOGGER.debug(
-                            "UKF match area=%s: n=%d diff=%s d²=%.2f score=%.4f "
-                            "diag_before=%s diag_after=%s",
+                            "UKF match area=%s: n=%d diff=%s d²=%.2f score=%.4f diag_before=%s diag_after=%s",
                             area_id,
                             n_sub,
                             [round(d, 1) for d in diff],

@@ -47,6 +47,7 @@ def _make_coordinator(hass: HomeAssistant, use_physical_rssi_priority: bool = Fa
     coordinator._scanners = set()
     coordinator._scanner_list = set()
     coordinator._scanners_without_areas = None
+    coordinator.device_ukfs = {}  # UKF state for fingerprint matching
     coordinator.ar = ar.async_get(hass)
     coordinator.fr = fr.async_get(hass)
     coordinator.irk_manager = BermudaIrkManager()
