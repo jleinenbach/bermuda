@@ -33,12 +33,15 @@ Note on naming:
 
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from .base import SignalFilter
 from .const import KALMAN_MEASUREMENT_NOISE
+
+_LOGGER = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from custom_components.bermuda.correlation.area_profile import AreaProfile
@@ -66,6 +69,22 @@ MIN_VARIANCE: float = 0.01
 
 # Default RSSI for unobserved scanners (very weak signal)
 DEFAULT_RSSI: float = -100.0
+
+# Minimum variance floor for fingerprint matching.
+# Prevents "hyper-precision paradox" where converged Kalman filters
+# have very low variance (2-5), causing normal BLE fluctuations (3-5 dB)
+# to be rejected as massive deviations (2+ sigma).
+#
+# Value 25.0 corresponds to sigma = 5 dB, the upper end of typical BLE noise.
+#
+# IMPORTANT: This is SEPARATE from UKF_MEASUREMENT_NOISE (4.0) which is
+# for per-sample Kalman updates. This floor applies when comparing a
+# momentary UKF state against a long-term profile average, where the
+# full measurement noise (not just estimation error) is relevant.
+#
+# Effect: With floor 25.0, a 3dB deviation → D² ≈ 0.36 → score ≈ 0.94
+#         Without floor (var=4.5), 3dB deviation → D² ≈ 2.0 → score ≈ 0.72
+UKF_MIN_MATCHING_VARIANCE: float = 25.0
 
 
 def _cholesky_decompose(matrix: list[list[float]]) -> list[list[float]]:
@@ -542,6 +561,14 @@ class UnscentedKalmanFilter(SignalFilter):
                     combined_cov = [
                         [p_sub[i][j] + (fp_var[i] if i == j else 0.0) for j in range(n_sub)] for i in range(n_sub)
                     ]
+
+                    # Apply variance floor to diagonal (BUG FIX: Hyper-Precision Paradox)
+                    # Without this floor, converged filters produce combined_cov[i][i] ~ 4-5,
+                    # making normal BLE fluctuations (3-5 dB) look like 2+ sigma deviations.
+                    # The floor ensures realistic tolerance for RSSI variation.
+                    for k in range(n_sub):
+                        combined_cov[k][k] = max(combined_cov[k][k], UKF_MIN_MATCHING_VARIANCE)
+
                     diff = [x_sub[i] - fp_mean[i] for i in range(n_sub)]
 
                     try:
@@ -550,6 +577,19 @@ class UnscentedKalmanFilter(SignalFilter):
                             diff[i] * sum(cov_inv[i][j] * diff[j] for j in range(n_sub)) for i in range(n_sub)
                         )
                         device_score = math.exp(-d_squared / (2 * n_sub))
+
+                        # Debug logging for UKF matching diagnostics
+                        _LOGGER.debug(
+                            "UKF match area=%s: n=%d diff=%s d²=%.2f score=%.4f "
+                            "diag_before=%s diag_after=%s",
+                            area_id,
+                            n_sub,
+                            [round(d, 1) for d in diff],
+                            d_squared,
+                            device_score,
+                            [round(p_sub[k][k] + fp_var[k], 1) for k in range(n_sub)],
+                            [round(combined_cov[k][k], 1) for k in range(n_sub)],
+                        )
                     except (ValueError, ZeroDivisionError):
                         pass
 
