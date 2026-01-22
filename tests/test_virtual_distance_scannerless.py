@@ -576,25 +576,38 @@ class TestVirtualDistanceEdgeCases:
 
         assert len(virtual_distances) == 0
 
-    def test_no_ukf_state_returns_empty(self, coordinator: BermudaDataUpdateCoordinator) -> None:
-        """Device without UKF state should get empty virtual distances."""
+    def test_ukf_created_dynamically_when_missing(self, coordinator: BermudaDataUpdateCoordinator) -> None:
+        """UKF should be created automatically if missing when virtual distances are requested.
+
+        FIX: BUG 16 - Previously, if _refresh_area_by_ukf() returned early (e.g., single scanner),
+        no UKF was created, and virtual distances would return empty. Now the UKF is created
+        dynamically in _get_virtual_distances_for_scannerless_rooms() when needed.
+        """
         device_addr = "AA:BB:CC:DD:EE:12"
         device = _configure_device(coordinator, device_addr)
 
-        # Set up correlations but NO UKF state
+        # Set up correlations but NO UKF state initially
         profile = _create_button_trained_profile(
             "scannerless-room",
             ["scanner-1", "scanner-2"],
             [-70.0, -75.0],
         )
         coordinator.correlations[device.address] = {"scannerless-room": profile}
-        # Don't add to device_ukfs!
+        # Deliberately don't add to device_ukfs - it should be created automatically
 
         rssi_readings = {"scanner-1": -70.0, "scanner-2": -75.0}
 
+        # Before: no UKF exists
+        assert device.address not in coordinator.device_ukfs
+
         virtual_distances = coordinator._get_virtual_distances_for_scannerless_rooms(device, rssi_readings)
 
-        assert len(virtual_distances) == 0
+        # After: UKF should have been created
+        assert device.address in coordinator.device_ukfs
+
+        # And we should get a virtual distance for the scannerless room
+        assert len(virtual_distances) == 1
+        assert "scannerless-room" in virtual_distances
 
     def test_multiple_scannerless_rooms_compete(self, coordinator: BermudaDataUpdateCoordinator) -> None:
         """Multiple scannerless rooms should all get virtual distances."""

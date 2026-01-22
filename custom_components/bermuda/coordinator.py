@@ -1819,11 +1819,19 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         if len(rssi_readings) < UKF_MIN_SCANNERS:
             return virtual_distances
 
-        # Get or create UKF for this device (may already exist from earlier in cycle)
+        # Get or create UKF for this device
+        # FIX: BUG 16 - UKF must be created HERE if it doesn't exist, because
+        # _refresh_area_by_ukf() may have returned early (e.g., single scanner)
+        # before creating the UKF. We need the UKF to call match_fingerprints().
         if device.address not in self.device_ukfs:
-            return virtual_distances  # No UKF state to compare against
+            self.device_ukfs[device.address] = UnscentedKalmanFilter()
 
         ukf = self.device_ukfs[device.address]
+
+        # Update UKF with current readings before matching
+        # This ensures the UKF state reflects current RSSI values
+        ukf.predict(dt=UPDATE_INTERVAL)
+        ukf.update_multi(rssi_readings)
 
         # Get all matches from UKF
         matches = ukf.match_fingerprints(device_profiles, self.room_profiles)

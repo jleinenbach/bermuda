@@ -762,6 +762,33 @@ filtered_rssi = filter.update_adaptive(raw_rssi, ref_power=-55)
 - **Files changed**: `coordinator.py`, `const.py`, `correlation/area_profile.py`
 - **Test file**: `tests/test_virtual_distance_scannerless.py` (21 tests)
 
+### UKF Dynamic Creation for Single Scanner (BUG 16)
+- **Problem**: Virtual distance didn't work when only 1 scanner was visible
+  - Device trained for "Lagerraum" (basement, no scanner)
+  - Only 1 scanner sees the device (typical for isolated areas like basements)
+  - `_refresh_area_by_ukf()` returns early at line 1902 (needs 2 scanners)
+  - UKF is NEVER created (creation happens after the early return at line 1951)
+  - `_get_virtual_distances_for_scannerless_rooms()` finds no UKF → returns empty
+  - Result: "Bibliothek" (2 floors up with scanner) wins instead of "Lagerraum"
+- **Root cause**: UKF was only created in `_refresh_area_by_ukf()`, but that function has early exit conditions that prevent UKF creation
+- **Solution**: Create and update UKF dynamically in `_get_virtual_distances_for_scannerless_rooms()` when needed
+- **Code change** (`coordinator.py:1822-1833`):
+  ```python
+  # Before: Return empty if no UKF exists
+  if device.address not in self.device_ukfs:
+      return virtual_distances  # Empty!
+
+  # After: Create UKF if missing, update it with current readings
+  if device.address not in self.device_ukfs:
+      self.device_ukfs[device.address] = UnscentedKalmanFilter()
+
+  ukf = self.device_ukfs[device.address]
+  ukf.predict(dt=UPDATE_INTERVAL)
+  ukf.update_multi(rssi_readings)
+  ```
+- **Key insight**: The UKF must be available for virtual distance calculation regardless of whether `_refresh_area_by_ukf()` succeeded
+- **File**: `coordinator.py`
+
 ## Manual Fingerprint Training System
 
 ### Problem Statement
@@ -2815,6 +2842,52 @@ def make_coordinator():
 4. Run full test suite to verify no AttributeError
 
 **Rule of Thumb**: Production coordinator attributes and test fixture attributes must stay in sync. When you add an attribute to production, grep for test fixtures and update them too.
+
+### 36. Shared Resources Must Be Created at Point of Use, Not Just in Primary Path
+
+When multiple code paths need a shared resource (like UKF state), the resource must be created at the point of use, not only in one "primary" path. Otherwise, fallback paths fail when the primary path exits early.
+
+**Bug Pattern:**
+```python
+# BAD - Resource only created in primary path
+def primary_path(device):
+    if early_exit_condition:
+        return False  # UKF NEVER created!
+
+    if device not in self.shared_resource:
+        self.shared_resource[device] = Resource()  # Only created here
+
+    # ... use resource ...
+    return True
+
+def fallback_path(device):
+    if device not in self.shared_resource:
+        return {}  # Silently fails! Resource doesn't exist
+    # ... try to use resource ...
+```
+
+**Fix Pattern:**
+```python
+# GOOD - Resource created at point of use in ALL paths
+def primary_path(device):
+    if early_exit_condition:
+        return False  # OK to exit, fallback_path will handle it
+
+    if device not in self.shared_resource:
+        self.shared_resource[device] = Resource()
+    # ... use resource ...
+
+def fallback_path(device):
+    # Create resource here too if needed
+    if device not in self.shared_resource:
+        self.shared_resource[device] = Resource()
+
+    resource = self.shared_resource[device]
+    resource.update(current_data)  # Initialize with current data
+    # ... use resource ...
+```
+
+**Rule of Thumb**: If Path A and Path B both need resource R, and Path B is a fallback when Path A fails, then Path B MUST be able to create R independently. Don't assume the "happy path" always runs first.
 
 ---
 
