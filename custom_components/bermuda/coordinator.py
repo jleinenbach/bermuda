@@ -711,7 +711,8 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         self,
         device_address: str,
         target_area_id: str,
-    ) -> bool:
+        last_stamps: dict[str, float] | None = None,
+    ) -> tuple[bool, dict[str, float]]:
         """
         Train fingerprint for a device in a specific area using current RSSI readings.
 
@@ -719,18 +720,27 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         Collects current RSSI readings from all visible scanners and feeds them
         into the AreaProfile for that area.
 
+        IMPORTANT: This function only succeeds if at least one scanner has NEW data
+        since the last call (based on last_stamps). This prevents over-confidence
+        from re-reading the same cached RSSI values multiple times.
+
         Args:
             device_address: Address of the device to train
             target_area_id: Home Assistant area ID to train for
+            last_stamps: Dict of scanner_addr -> last stamp from previous call.
+                         If None or empty, any valid reading counts as "new".
 
         Returns:
-            True if training was successful, False otherwise
+            Tuple of (success: bool, current_stamps: dict[str, float])
+            - success: True if training was successful with NEW data
+            - current_stamps: Current timestamps for all visible scanners
+              (caller should pass this as last_stamps on next call)
 
         """
         device = self._get_device(device_address)
         if device is None:
             _LOGGER.warning("Cannot train fingerprint: device %s not found", device_address)
-            return False
+            return (False, {})
 
         # FIX: Velocity Reset - When user manually trains, reset velocity history
         # This breaks the "Velocity Trap" where a device moving from Scanner A (12m)
@@ -739,9 +749,10 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         # calculations are irrelevant and should not block acceptance of new readings.
         device.reset_velocity_history()
 
-        # Collect current RSSI readings from all visible scanners
+        # Collect current RSSI readings AND timestamps from all visible scanners
         nowstamp = monotonic_time_coarse()
         rssi_readings: dict[str, float] = {}
+        current_stamps: dict[str, float] = {}
         primary_scanner_addr: str | None = None
         primary_rssi: float | None = None
 
@@ -753,24 +764,42 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                 and nowstamp - advert.stamp < EVIDENCE_WINDOW_SECONDS
             ):
                 rssi_readings[advert.scanner_address] = advert.rssi
+                current_stamps[advert.scanner_address] = advert.stamp
                 # Track the strongest signal as "primary" for the delta correlations
                 if primary_rssi is None or advert.rssi > primary_rssi:
                     primary_rssi = advert.rssi
                     primary_scanner_addr = advert.scanner_address
 
         if len(rssi_readings) < 1:
-            _LOGGER.warning(
-                "Cannot train fingerprint for %s: no recent RSSI readings",
+            _LOGGER.debug(
+                "Training for %s: no recent RSSI readings, waiting...",
                 device.name,
             )
-            return False
+            return (False, current_stamps)
 
         if primary_rssi is None or primary_scanner_addr is None:
-            _LOGGER.warning(
-                "Cannot train fingerprint for %s: no primary scanner identified",
+            _LOGGER.debug(
+                "Training for %s: no primary scanner identified, waiting...",
                 device.name,
             )
-            return False
+            return (False, current_stamps)
+
+        # BUG 19 FIX: Only train if we have NEW advertisement data
+        # Without this check, we'd re-read the same cached RSSI values multiple times,
+        # causing over-confidence in the Kalman filter (many samples, but same data).
+        # BLE trackers typically advertise every 1-10 seconds, so 0.5s polling would
+        # read the same value 2-20 times before new data arrives.
+        if last_stamps:
+            has_new_data = False
+            for scanner_addr, stamp in current_stamps.items():
+                last_stamp = last_stamps.get(scanner_addr, 0.0)
+                if stamp > last_stamp:
+                    has_new_data = True
+                    break
+
+            if not has_new_data:
+                # No new data yet - return current stamps so caller can retry
+                return (False, current_stamps)
 
         # BUG 17 FIX: Use device.address (normalized) instead of device_address (raw parameter)
         # This ensures the correlations key matches the lookup key used elsewhere in the code.
@@ -827,7 +856,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             len(self.correlations),
         )
 
-        return True
+        return (True, current_stamps)
 
     async def async_reset_device_training(self, device_address: str) -> bool:
         """

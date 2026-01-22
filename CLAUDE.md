@@ -850,6 +850,33 @@ filtered_rssi = filter.update_adaptive(raw_rssi, ref_power=-55)
   | 0.3 | 3.43m | Threshold match → further away |
 - **Files**: `coordinator.py`
 
+### Training Over-Confidence Fix (BUG 19)
+- **Problem**: Button training re-read the same cached RSSI values, causing over-confidence
+  - Training collected 20 samples at 0.5s intervals = 10 seconds total
+  - BLE trackers typically advertise every 1-10 seconds
+  - Result: Most samples were the SAME cached value repeated!
+  - Kalman filter counted each as a "new" measurement → artificial confidence boost
+  - Example: 20 training calls, but only 2-3 unique RSSI values
+- **Root cause**: Training loop polled faster than BLE advertisement rate
+  - `advert.stamp` check only verified "not too old", not "changed since last sample"
+  - Same RSSI value read 5-10 times before new advertisement arrived
+- **Solution**: Wait for NEW advertisements between samples
+  - Track `last_stamps` (scanner_addr → timestamp) between calls
+  - Only count a sample as "successful" if at least one scanner has a newer stamp
+  - Use timeout (120s max) instead of fixed iteration count
+  - Poll quickly (0.3s) but only train when new data arrives
+- **Code changes**:
+  - `coordinator.py`: `async_train_fingerprint()` now accepts `last_stamps` parameter and returns `(success, current_stamps)` tuple
+  - `button.py`: Training loop tracks timestamps, waits for real new data
+- **New constants** (`button.py`):
+  | Constant | Value | Purpose |
+  |----------|-------|---------|
+  | `TRAINING_SAMPLE_COUNT` | 20 | Target number of UNIQUE samples |
+  | `TRAINING_MAX_TIME_SECONDS` | 120.0 | Maximum training duration |
+  | `TRAINING_POLL_INTERVAL` | 0.3s | How often to check for new data |
+- **User impact**: Training may take longer (depends on device's advertisement interval), but produces REAL diverse samples instead of duplicates
+- **Files**: `coordinator.py`, `button.py`
+
 ## Manual Fingerprint Training System
 
 ### Problem Statement
@@ -879,7 +906,7 @@ Auto-detection constantly overwrites manual room corrections. Users need a way t
 │  ┌─────────────────────────────────────────────────────────────────────┐│
 │  │ TrainingButton (button.py:47-219)                                   ││
 │  │ • available: training_target_floor_id AND training_target_area_id  ││
-│  │ • async_press(): 10x async_train_fingerprint() in try/finally      ││
+│  │ • async_press(): Wait for 20 UNIQUE samples (max 120s timeout)     ││
 │  └──────────────────────────────────┬──────────────────────────────────┘│
 │                                     │                                    │
 │                                     ▼                                    │
@@ -1114,8 +1141,9 @@ This pattern allows the button to clear the dropdowns indirectly by:
 
 | Constant | Value | Location | Purpose |
 |----------|-------|----------|---------|
-| `TRAINING_SAMPLE_COUNT` | 20 | `button.py:22` | Samples per button press (meets maturity) |
-| `TRAINING_SAMPLE_DELAY` | 0.5s | `button.py:26` | Delay between samples for diverse data |
+| `TRAINING_SAMPLE_COUNT` | 20 | `button.py` | Target UNIQUE samples (meets maturity) |
+| `TRAINING_MAX_TIME_SECONDS` | 120.0 | `button.py` | Max training duration |
+| `TRAINING_POLL_INTERVAL` | 0.3s | `button.py` | Poll interval for new data |
 | `EVIDENCE_WINDOW_SECONDS` | - | `const.py` | Max age for RSSI readings |
 | `AREA_LOCK_TIMEOUT_SECONDS` | 60 | `const.py` | Stale threshold for auto-unlock |
 | `MIN_SAMPLES_FOR_MATURITY` | 30/20 | `scanner_pair.py`/`scanner_absolute.py` | Samples before trusting profile |
