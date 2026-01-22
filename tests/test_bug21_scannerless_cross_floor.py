@@ -1,23 +1,22 @@
-"""Tests for BUG 21 fix: Cross-floor sanity check for scannerless rooms.
+"""Tests for BUG 21 fix: Topological sanity check for scannerless rooms.
 
 This test verifies that:
-1. When UKF picks a scannerless room on a DIFFERENT floor than the strongest scanner
-2. AND the strongest scanner has a strong RSSI signal (> -75 dBm)
-3. The UKF decision is rejected as physically implausible
+1. When UKF picks a scannerless room on floor X
+2. At least ONE scanner on floor X must see the device
+3. If NO scanner on floor X sees the device → reject as topologically impossible
 
 Scenario:
 - Device is in "Lagerraum" (basement, scannerless)
 - UKF picks "Bad OG" (bathroom, 2 floors up, scannerless) with high score
-- But a basement scanner sees device at -73 dBm (strong!)
-- If device were really 2 floors up, scanner would see ~-85 dBm or worse
-- Strong signal + cross-floor = impossible → reject UKF decision
+- But NO scanner on the OG floor sees the device
+- Only basement scanners see the device
+- Topologically impossible → reject UKF decision
 """
 
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -25,7 +24,6 @@ from custom_components.bermuda.const import (
     CONF_MAX_RADIUS,
     DEFAULT_MAX_RADIUS,
     EVIDENCE_WINDOW_SECONDS,
-    UKF_SCANNERLESS_CROSS_FLOOR_RSSI_THRESHOLD,
 )
 from custom_components.bermuda.coordinator import BermudaDataUpdateCoordinator
 
@@ -33,17 +31,18 @@ from custom_components.bermuda.coordinator import BermudaDataUpdateCoordinator
 # Test constants
 BASE_TIME = 1000.0
 SCANNER_BASEMENT = "AA:BB:CC:DD:EE:01"  # Scanner in basement
-SCANNER_GROUND = "AA:BB:CC:DD:EE:02"  # Scanner on ground floor
+SCANNER_OG = "AA:BB:CC:DD:EE:02"  # Scanner on OG floor
 DEVICE_ADDRESS = "FF:EE:DD:CC:BB:AA"
 
 # Area IDs
 AREA_LAGERRAUM = "area_lagerraum"  # Basement, scannerless
-AREA_BAD_OG = "area_bad_og"  # 2 floors up, scannerless
+AREA_BAD_OG = "area_bad_og"  # OG floor, scannerless
 AREA_TECHNIKRAUM = "area_technikraum"  # Basement, has scanner
+AREA_FLUR_OG = "area_flur_og"  # OG floor, has scanner
 
 # Floor IDs
 FLOOR_BASEMENT = "floor_basement"
-FLOOR_OG = "floor_og"  # 2 floors up
+FLOOR_OG = "floor_og"
 
 
 def _make_coordinator() -> BermudaDataUpdateCoordinator:
@@ -74,7 +73,7 @@ def _make_coordinator() -> BermudaDataUpdateCoordinator:
 def _make_scanner(
     address: str,
     area_id: str,
-    floor_id: str,
+    floor_id: str | None,
 ) -> SimpleNamespace:
     """Create a minimal scanner-like object."""
     return SimpleNamespace(
@@ -121,166 +120,255 @@ def _make_device() -> SimpleNamespace:
     return device
 
 
-class TestScannerlessCrossFloorSanityCheck:
-    """Test the BUG 21 fix: Cross-floor sanity check for scannerless rooms."""
+def _check_topological_condition(
+    device: SimpleNamespace,
+    target_floor_id: str | None,
+    nowstamp: float,
+) -> bool:
+    """Check the topological condition: does ANY scanner on target floor see the device?
 
-    def test_rejects_cross_floor_scannerless_with_strong_signal(self) -> None:
-        """Test that UKF is rejected when scannerless room is on different floor with strong signal.
+    Returns True if a scanner on the target floor sees the device (check PASSES).
+    Returns False if NO scanner on the target floor sees the device (check FAILS).
+    """
+    if target_floor_id is None:
+        # If target floor is None, we can't do the check, so we pass
+        return True
+
+    for advert in device.adverts.values():
+        if (
+            advert.stamp is not None
+            and nowstamp - advert.stamp < EVIDENCE_WINDOW_SECONDS
+            and advert.scanner_device is not None
+        ):
+            scanner_floor_id = getattr(advert.scanner_device, "floor_id", None)
+            if scanner_floor_id == target_floor_id:
+                return True  # A scanner on the target floor sees the device
+
+    return False  # No scanner on the target floor sees the device
+
+
+class TestScannerlessTopologicalCheck:
+    """Test the BUG 21 fix: Topological sanity check for scannerless rooms."""
+
+    def test_rejects_when_no_scanner_on_target_floor(self) -> None:
+        """Test that UKF is rejected when NO scanner on target floor sees the device.
 
         Scenario:
         - UKF picks "Bad OG" (floor OG, scannerless)
-        - But strongest scanner is in basement with -73 dBm (strong!)
-        - Cross-floor + strong signal = physically impossible → reject
+        - Only a basement scanner sees the device
+        - NO scanner on the OG floor sees the device
+        - Topologically impossible → reject
         """
-        coordinator = _make_coordinator()
         device = _make_device()
 
-        # Scanner in basement sees device with strong signal
+        # Scanner in BASEMENT sees device (not on target floor OG)
         scanner_basement = _make_scanner(SCANNER_BASEMENT, AREA_TECHNIKRAUM, FLOOR_BASEMENT)
         advert = _make_advert(scanner_basement, -73.0, BASE_TIME - 1.0, 2.0)
         device.adverts[(DEVICE_ADDRESS, SCANNER_BASEMENT)] = advert
 
-        # Mock _resolve_floor_id_for_area to return correct floor IDs
-        def mock_resolve_floor(area_id: str) -> str | None:
-            if area_id == AREA_BAD_OG:
-                return FLOOR_OG  # 2 floors up
-            if area_id in (AREA_LAGERRAUM, AREA_TECHNIKRAUM):
-                return FLOOR_BASEMENT
-            return None
+        # Target floor is OG, but no scanner on OG sees the device
+        target_floor_id = FLOOR_OG
+        nowstamp = BASE_TIME
 
-        # The condition that triggers the sanity check:
-        # 1. scanner_less_room = True (UKF picked a scannerless room)
-        # 2. best_advert = advert from basement scanner (-73 dBm, strong)
-        # 3. best_area_id = AREA_BAD_OG (floor OG)
-        # 4. strongest_scanner_floor_id = FLOOR_BASEMENT
-        # 5. target_area_floor_id = FLOOR_OG (different!)
-        # 6. rssi (-73) > threshold (-75) = True (strong signal)
-        # → Should return False (reject UKF)
+        # Topological check should FAIL (no scanner on OG sees device)
+        result = _check_topological_condition(device, target_floor_id, nowstamp)
+        assert result is False, "Should reject when no scanner on target floor sees device"
 
-        # Verify the threshold constant
-        assert UKF_SCANNERLESS_CROSS_FLOOR_RSSI_THRESHOLD == -75.0
+    def test_allows_when_scanner_on_target_floor_sees_device(self) -> None:
+        """Test that UKF is allowed when a scanner on the target floor sees the device.
 
-        # Test the condition directly
-        strongest_scanner_floor_id = scanner_basement.floor_id
-        target_area_floor_id = FLOOR_OG  # From mock_resolve_floor(AREA_BAD_OG)
-        rssi = advert.rssi
-
-        # All conditions for rejection should be true
-        assert strongest_scanner_floor_id is not None
-        assert target_area_floor_id is not None
-        assert strongest_scanner_floor_id != target_area_floor_id  # Different floors
-        assert rssi is not None
-        assert rssi > UKF_SCANNERLESS_CROSS_FLOOR_RSSI_THRESHOLD  # -73 > -75
-
-    def test_allows_same_floor_scannerless_with_strong_signal(self) -> None:
-        """Test that UKF is allowed when scannerless room is on SAME floor.
-
-        Even with strong signal, same-floor is physically plausible.
+        Scenario:
+        - UKF picks "Bad OG" (floor OG, scannerless)
+        - A scanner on the OG floor sees the device
+        - Topologically plausible → allow
         """
-        coordinator = _make_coordinator()
         device = _make_device()
 
-        # Scanner in basement sees device with strong signal
+        # Scanner on OG floor sees device
+        scanner_og = _make_scanner(SCANNER_OG, AREA_FLUR_OG, FLOOR_OG)
+        advert = _make_advert(scanner_og, -80.0, BASE_TIME - 1.0, 5.0)
+        device.adverts[(DEVICE_ADDRESS, SCANNER_OG)] = advert
+
+        # Target floor is OG, and a scanner on OG sees the device
+        target_floor_id = FLOOR_OG
+        nowstamp = BASE_TIME
+
+        # Topological check should PASS
+        result = _check_topological_condition(device, target_floor_id, nowstamp)
+        assert result is True, "Should allow when scanner on target floor sees device"
+
+    def test_allows_when_one_of_multiple_scanners_on_target_floor(self) -> None:
+        """Test that check passes when at least one scanner on target floor sees device.
+
+        Multiple scanners see the device, but only one is on the target floor.
+        """
+        device = _make_device()
+
+        # Scanner in basement sees device
+        scanner_basement = _make_scanner(SCANNER_BASEMENT, AREA_TECHNIKRAUM, FLOOR_BASEMENT)
+        advert_basement = _make_advert(scanner_basement, -73.0, BASE_TIME - 1.0, 2.0)
+        device.adverts[(DEVICE_ADDRESS, SCANNER_BASEMENT)] = advert_basement
+
+        # Scanner on OG floor also sees device (even with weak signal)
+        scanner_og = _make_scanner(SCANNER_OG, AREA_FLUR_OG, FLOOR_OG)
+        advert_og = _make_advert(scanner_og, -90.0, BASE_TIME - 1.0, 10.0)  # Weak but fresh
+        device.adverts[(DEVICE_ADDRESS, SCANNER_OG)] = advert_og
+
+        # Target floor is OG
+        target_floor_id = FLOOR_OG
+        nowstamp = BASE_TIME
+
+        # Topological check should PASS (at least one scanner on OG sees device)
+        result = _check_topological_condition(device, target_floor_id, nowstamp)
+        assert result is True, "Should allow when at least one scanner on target floor sees device"
+
+    def test_rejects_when_scanner_on_target_floor_is_stale(self) -> None:
+        """Test that stale adverts don't count toward the topological check.
+
+        A scanner on the target floor saw the device, but the advert is too old.
+        """
+        device = _make_device()
+
+        # Scanner in basement sees device (fresh)
+        scanner_basement = _make_scanner(SCANNER_BASEMENT, AREA_TECHNIKRAUM, FLOOR_BASEMENT)
+        advert_basement = _make_advert(scanner_basement, -73.0, BASE_TIME - 1.0, 2.0)
+        device.adverts[(DEVICE_ADDRESS, SCANNER_BASEMENT)] = advert_basement
+
+        # Scanner on OG floor has STALE advert (older than EVIDENCE_WINDOW_SECONDS)
+        scanner_og = _make_scanner(SCANNER_OG, AREA_FLUR_OG, FLOOR_OG)
+        stale_time = BASE_TIME - EVIDENCE_WINDOW_SECONDS - 1.0  # Too old
+        advert_og = _make_advert(scanner_og, -80.0, stale_time, 5.0)
+        device.adverts[(DEVICE_ADDRESS, SCANNER_OG)] = advert_og
+
+        # Target floor is OG
+        target_floor_id = FLOOR_OG
+        nowstamp = BASE_TIME
+
+        # Topological check should FAIL (OG scanner advert is stale)
+        result = _check_topological_condition(device, target_floor_id, nowstamp)
+        assert result is False, "Should reject when scanner on target floor has stale advert"
+
+    def test_handles_none_target_floor_gracefully(self) -> None:
+        """Test that the check passes when target floor ID is None.
+
+        If we can't determine the target floor, we skip the check.
+        """
+        device = _make_device()
+
+        # Scanner in basement sees device
         scanner_basement = _make_scanner(SCANNER_BASEMENT, AREA_TECHNIKRAUM, FLOOR_BASEMENT)
         advert = _make_advert(scanner_basement, -73.0, BASE_TIME - 1.0, 2.0)
         device.adverts[(DEVICE_ADDRESS, SCANNER_BASEMENT)] = advert
 
-        # Both scanner and target room are on same floor
-        strongest_scanner_floor_id = FLOOR_BASEMENT
-        target_area_floor_id = FLOOR_BASEMENT  # Same floor!
-        rssi = advert.rssi
+        # Target floor is None (unknown)
+        target_floor_id = None
+        nowstamp = BASE_TIME
 
-        # Same floor → should NOT reject (condition fails)
-        assert strongest_scanner_floor_id == target_area_floor_id
+        # Topological check should PASS (can't determine target floor)
+        result = _check_topological_condition(device, target_floor_id, nowstamp)
+        assert result is True, "Should skip check when target floor is None"
 
-    def test_allows_cross_floor_scannerless_with_weak_signal(self) -> None:
-        """Test that UKF is allowed when signal is weak (even cross-floor).
-
-        A weak signal (-80 dBm or below) is plausible for cross-floor.
-        """
-        coordinator = _make_coordinator()
+    def test_handles_scanner_without_floor_id(self) -> None:
+        """Test that scanners without floor_id don't match any target floor."""
         device = _make_device()
 
-        # Scanner in basement sees device with WEAK signal
-        scanner_basement = _make_scanner(SCANNER_BASEMENT, AREA_TECHNIKRAUM, FLOOR_BASEMENT)
-        advert = _make_advert(scanner_basement, -80.0, BASE_TIME - 1.0, 5.0)  # Weak!
-        device.adverts[(DEVICE_ADDRESS, SCANNER_BASEMENT)] = advert
+        # Scanner without floor_id
+        scanner_no_floor = _make_scanner(SCANNER_OG, AREA_FLUR_OG, None)  # No floor_id
+        advert = _make_advert(scanner_no_floor, -80.0, BASE_TIME - 1.0, 5.0)
+        device.adverts[(DEVICE_ADDRESS, SCANNER_OG)] = advert
 
-        strongest_scanner_floor_id = FLOOR_BASEMENT
-        target_area_floor_id = FLOOR_OG  # Different floor
-        rssi = advert.rssi
+        # Target floor is OG
+        target_floor_id = FLOOR_OG
+        nowstamp = BASE_TIME
 
-        # Different floors BUT weak signal → should NOT reject
-        assert strongest_scanner_floor_id != target_area_floor_id
-        assert rssi <= UKF_SCANNERLESS_CROSS_FLOOR_RSSI_THRESHOLD  # -80 <= -75
-
-    def test_threshold_boundary_at_minus_75(self) -> None:
-        """Test the boundary condition at exactly -75 dBm."""
-        # At exactly -75 dBm, the condition `rssi > -75` is False
-        # So at -75 dBm, the check should NOT trigger (allow the selection)
-        rssi_at_threshold = -75.0
-        assert not (rssi_at_threshold > UKF_SCANNERLESS_CROSS_FLOOR_RSSI_THRESHOLD)
-
-        # Just above threshold (-74.9) should trigger
-        rssi_above_threshold = -74.9
-        assert rssi_above_threshold > UKF_SCANNERLESS_CROSS_FLOOR_RSSI_THRESHOLD
-
-        # Below threshold (-75.1) should not trigger
-        rssi_below_threshold = -75.1
-        assert not (rssi_below_threshold > UKF_SCANNERLESS_CROSS_FLOOR_RSSI_THRESHOLD)
-
-    def test_handles_none_floor_ids_gracefully(self) -> None:
-        """Test that the check handles None floor IDs without crashing.
-
-        If either floor_id is None, the check should NOT trigger.
-        """
-        # Case 1: scanner has no floor_id
-        strongest_scanner_floor_id = None
-        target_area_floor_id = FLOOR_OG
-        rssi = -73.0
-
-        condition = (
-            strongest_scanner_floor_id is not None
-            and target_area_floor_id is not None
-            and strongest_scanner_floor_id != target_area_floor_id
-            and rssi > UKF_SCANNERLESS_CROSS_FLOOR_RSSI_THRESHOLD
-        )
-        assert not condition  # Should not reject (None floor)
-
-        # Case 2: target area has no floor_id
-        strongest_scanner_floor_id = FLOOR_BASEMENT
-        target_area_floor_id = None
-
-        condition = (
-            strongest_scanner_floor_id is not None
-            and target_area_floor_id is not None
-            and strongest_scanner_floor_id != target_area_floor_id
-            and rssi > UKF_SCANNERLESS_CROSS_FLOOR_RSSI_THRESHOLD
-        )
-        assert not condition  # Should not reject (None floor)
+        # Topological check should FAIL (scanner has no floor_id, so doesn't match OG)
+        result = _check_topological_condition(device, target_floor_id, nowstamp)
+        assert result is False, "Scanner without floor_id should not match target floor"
 
     def test_real_world_scenario_lagerraum_vs_bad_og(self) -> None:
         """Test the real-world scenario from the bug report.
 
         Device is in Lagerraum (basement), but UKF incorrectly picks Bad OG (2 floors up).
-        Scanner in basement sees -73 dBm. This should be rejected.
+        Only basement scanners see the device. This should be rejected.
         """
-        # Real values from the bug report
-        rssi_from_scanner = -73.0  # Strong signal!
-        scanner_floor = FLOOR_BASEMENT
-        ukf_picked_floor = FLOOR_OG  # 2 floors up!
+        device = _make_device()
 
-        # The sanity check condition
-        should_reject = (
-            scanner_floor is not None
-            and ukf_picked_floor is not None
-            and scanner_floor != ukf_picked_floor
-            and rssi_from_scanner > UKF_SCANNERLESS_CROSS_FLOOR_RSSI_THRESHOLD
-        )
+        # Only basement scanner sees the device (real scenario)
+        scanner_basement = _make_scanner(SCANNER_BASEMENT, AREA_TECHNIKRAUM, FLOOR_BASEMENT)
+        advert = _make_advert(scanner_basement, -73.0, BASE_TIME - 1.0, 2.0)
+        device.adverts[(DEVICE_ADDRESS, SCANNER_BASEMENT)] = advert
 
-        # This scenario SHOULD be rejected
-        assert should_reject, (
+        # UKF picks Bad OG which is on FLOOR_OG
+        target_floor_id = FLOOR_OG
+        nowstamp = BASE_TIME
+
+        # Topological check should FAIL
+        result = _check_topological_condition(device, target_floor_id, nowstamp)
+        assert result is False, (
             f"BUG 21 scenario should be rejected: "
-            f"scanner_floor={scanner_floor}, ukf_floor={ukf_picked_floor}, "
-            f"rssi={rssi_from_scanner}, threshold={UKF_SCANNERLESS_CROSS_FLOOR_RSSI_THRESHOLD}"
+            f"Device only seen by basement scanner, but UKF picked floor {target_floor_id}"
         )
+
+    def test_same_floor_always_allowed(self) -> None:
+        """Test that same-floor scannerless rooms are always allowed.
+
+        If the scanner and target room are on the same floor, the check passes.
+        """
+        device = _make_device()
+
+        # Scanner in basement sees device
+        scanner_basement = _make_scanner(SCANNER_BASEMENT, AREA_TECHNIKRAUM, FLOOR_BASEMENT)
+        advert = _make_advert(scanner_basement, -73.0, BASE_TIME - 1.0, 2.0)
+        device.adverts[(DEVICE_ADDRESS, SCANNER_BASEMENT)] = advert
+
+        # Target scannerless room is ALSO in basement (same floor)
+        target_floor_id = FLOOR_BASEMENT
+        nowstamp = BASE_TIME
+
+        # Topological check should PASS (scanner on same floor sees device)
+        result = _check_topological_condition(device, target_floor_id, nowstamp)
+        assert result is True, "Same-floor scannerless room should be allowed"
+
+    def test_rssi_strength_does_not_affect_check(self) -> None:
+        """Test that RSSI strength does NOT affect the topological check.
+
+        Even with weak signal, as long as a scanner on the target floor sees the device,
+        the check should pass. This is the key difference from the old RSSI-based check.
+        """
+        device = _make_device()
+
+        # Scanner on OG floor sees device with VERY weak signal
+        scanner_og = _make_scanner(SCANNER_OG, AREA_FLUR_OG, FLOOR_OG)
+        advert = _make_advert(scanner_og, -95.0, BASE_TIME - 1.0, 20.0)  # Very weak!
+        device.adverts[(DEVICE_ADDRESS, SCANNER_OG)] = advert
+
+        # Target floor is OG
+        target_floor_id = FLOOR_OG
+        nowstamp = BASE_TIME
+
+        # Topological check should PASS regardless of RSSI strength
+        result = _check_topological_condition(device, target_floor_id, nowstamp)
+        assert result is True, "Weak RSSI should not affect topological check"
+
+    def test_multiple_floors_only_checks_target(self) -> None:
+        """Test that only the target floor matters, not other floors."""
+        device = _make_device()
+
+        # Scanner on ground floor (different from both basement and OG)
+        floor_ground = "floor_ground"
+        scanner_ground = _make_scanner("AA:BB:CC:DD:EE:03", "area_ground", floor_ground)
+        advert_ground = _make_advert(scanner_ground, -75.0, BASE_TIME - 1.0, 3.0)
+        device.adverts[(DEVICE_ADDRESS, "AA:BB:CC:DD:EE:03")] = advert_ground
+
+        # Scanner in basement
+        scanner_basement = _make_scanner(SCANNER_BASEMENT, AREA_TECHNIKRAUM, FLOOR_BASEMENT)
+        advert_basement = _make_advert(scanner_basement, -70.0, BASE_TIME - 1.0, 1.5)
+        device.adverts[(DEVICE_ADDRESS, SCANNER_BASEMENT)] = advert_basement
+
+        # Target floor is OG (neither basement nor ground)
+        target_floor_id = FLOOR_OG
+        nowstamp = BASE_TIME
+
+        # Topological check should FAIL (no scanner on OG, only basement and ground)
+        result = _check_topological_condition(device, target_floor_id, nowstamp)
+        assert result is False, "Should reject when no scanner on target floor OG"

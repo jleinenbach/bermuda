@@ -878,47 +878,44 @@ filtered_rssi = filter.update_adaptive(raw_rssi, ref_power=-55)
 - **User impact**: Training may take longer (depends on device's advertisement interval), but produces REAL diverse samples instead of duplicates
 - **Files**: `coordinator.py`, `button.py`
 
-### Scannerless Room Cross-Floor Sanity Check (BUG 21)
-- **Problem**: UKF picks wrong scannerless room 2 floors away despite strong local signal
+### Scannerless Room Topological Sanity Check (BUG 21)
+- **Problem**: UKF picks wrong scannerless room 2 floors away
   - Device is in "Lagerraum" (basement, scannerless)
   - UKF picks "Bad OG" (bathroom, 2 floors up, scannerless) with score 0.83
   - Distance shows ~0.1m (virtual distance from high UKF score)
-  - BUT: Nearest scanner sees device at -73 dBm (strong signal!)
-  - If device were really 2 floors up, RSSI would be ~-85 dBm or weaker
-  - Result: Device shows wrong room despite strong physical evidence
-- **Root cause**: For scannerless rooms, two sanity checks were bypassed:
-  1. RSSI sanity check (line 2252): Skipped entirely with `if not scanner_less_room`
-  2. Distance sanity check (line 2321): `ukf_floor_id` set to `None` for scannerless rooms
-  - This allowed UKF to pick ANY scannerless room regardless of physical plausibility
-- **Solution**: Add cross-floor RSSI sanity check specifically for scannerless rooms
-  - Find the strongest scanner (by RSSI) - this is the "borrowed" scanner for scannerless rooms
-  - Get that scanner's floor_id
-  - Resolve the target scannerless room's floor_id from area registry
-  - If different floors AND RSSI > -75 dBm (strong signal), reject the UKF decision
-- **Key insight**: Cross-floor signal attenuation is typically 10-15 dB per floor.
-  A signal stronger than -75 dBm indicates the device is NEAR that scanner, not floors away.
-- **Code change** (`coordinator.py:2240-2278`):
+  - But NO scanner on the OG floor sees the device - only basement scanners do
+  - Result: Device shows wrong room despite being topologically impossible
+- **Root cause**: For scannerless rooms, sanity checks were bypassed, allowing UKF to
+  pick ANY scannerless room regardless of whether the device is actually on that floor
+- **Solution**: Add topological sanity check for scannerless rooms
+  - When UKF picks a scannerless room on floor X
+  - Check if ANY scanner on floor X sees the device (fresh advert)
+  - If NO scanner on the target floor sees the device → reject as topologically impossible
+- **Why topological instead of RSSI threshold?** Static RSSI thresholds (like -75 dBm)
+  don't account for varying scanner and tracker hardware strengths. A topological check
+  asks a simpler question: "Is there ANY evidence the device is on this floor?"
+- **Code change** (`coordinator.py:2240-2285`):
   ```python
   if scanner_less_room:
-      # BUG 21 FIX: CROSS-FLOOR SANITY CHECK FOR SCANNERLESS ROOMS
-      if best_advert is not None and best_advert.scanner_device is not None:
-          strongest_scanner_floor_id = getattr(best_advert.scanner_device, "floor_id", None)
-          target_area_floor_id = self._resolve_floor_id_for_area(best_area_id)
+      # BUG 21 FIX: TOPOLOGICAL SANITY CHECK FOR SCANNERLESS ROOMS
+      target_area_floor_id = self._resolve_floor_id_for_area(best_area_id)
 
-          if (
-              strongest_scanner_floor_id is not None
-              and target_area_floor_id is not None
-              and strongest_scanner_floor_id != target_area_floor_id
-              and best_advert.rssi is not None
-              and best_advert.rssi > UKF_SCANNERLESS_CROSS_FLOOR_RSSI_THRESHOLD
-          ):
+      if target_area_floor_id is not None:
+          scanner_on_target_floor_sees_device = False
+
+          for advert in device.adverts.values():
+              if (advert.stamp is not None
+                  and nowstamp - advert.stamp < EVIDENCE_WINDOW_SECONDS
+                  and advert.scanner_device is not None):
+                  scanner_floor_id = getattr(advert.scanner_device, "floor_id", None)
+                  if scanner_floor_id == target_area_floor_id:
+                      scanner_on_target_floor_sees_device = True
+                      break
+
+          if not scanner_on_target_floor_sees_device:
               return False  # Fall back to min-distance
   ```
-- **Constants**:
-  | Constant | Value | Purpose |
-  |----------|-------|---------|
-  | `UKF_SCANNERLESS_CROSS_FLOOR_RSSI_THRESHOLD` | -75.0 dBm | Strong signal threshold for cross-floor rejection |
-- **Files**: `coordinator.py`, `const.py`
+- **Files**: `coordinator.py`
 
 ## Manual Fingerprint Training System
 
@@ -3407,7 +3404,6 @@ See FAQ Q3 for the complete rationale.
 | `MAX_AUTO_RATIO` | 0.30 | `scanner_*.py` | Max auto-learning influence in Clamped Fusion |
 | `VIRTUAL_DISTANCE_SCALE` | 0.7 | `const.py` | Virtual distance scaling (30% shorter than pure quadratic) |
 | `VIRTUAL_DISTANCE_MIN_SCORE` | 0.05 | `const.py` | Minimum UKF score for virtual distance generation |
-| `UKF_SCANNERLESS_CROSS_FLOOR_RSSI_THRESHOLD` | -75.0 | `const.py` | BUG 21: RSSI threshold for cross-floor scannerless room rejection |
 
 **Dynamic Noise Threshold Calculation:**
 ```python

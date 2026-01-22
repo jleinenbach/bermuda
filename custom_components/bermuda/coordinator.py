@@ -120,7 +120,6 @@ from .const import (
     UKF_MIN_SCANNERS,
     UKF_RETENTION_THRESHOLD,
     UKF_RSSI_SANITY_MARGIN,
-    UKF_SCANNERLESS_CROSS_FLOOR_RSSI_THRESHOLD,
     UKF_STICKINESS_BONUS,
     UKF_WEAK_SCANNER_MIN_DISTANCE,
     UPDATE_INTERVAL,
@@ -2239,42 +2238,49 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
             scanner_less_room = True
 
-            # BUG 21 FIX: CROSS-FLOOR SANITY CHECK FOR SCANNERLESS ROOMS
-            # When UKF picks a scannerless room, check if the strongest scanner (by RSSI)
-            # is on a DIFFERENT floor. If the signal is strong (> -75 dBm), the device is
-            # likely NEAR that scanner, not floors away. Cross-floor signals are typically
-            # 10-15 dB weaker per floor. A strong signal + cross-floor = impossible.
+            # BUG 21 FIX: TOPOLOGICAL SANITY CHECK FOR SCANNERLESS ROOMS
+            # When UKF picks a scannerless room on floor X, at least ONE scanner on floor X
+            # must see the device. If NO scanner on the target floor sees the device,
+            # the UKF decision is topologically impossible.
+            #
+            # This is robust because it doesn't rely on static RSSI thresholds which
+            # vary by scanner/tracker hardware. Instead, it checks: "Is there ANY evidence
+            # that the device is actually on this floor?"
             #
             # Example scenario this fixes:
             # - Device is in "Lagerraum" (basement, scannerless)
             # - UKF picks "Bad OG" (bathroom, 2 floors up, scannerless) with score 0.83
-            # - But a basement scanner sees device at -73 dBm (strong!)
-            # - If device were really 2 floors up, scanner would see ~-85 dBm or worse
-            # - Strong signal + cross-floor = impossible → reject UKF decision
-            if best_advert is not None and best_advert.scanner_device is not None:
-                strongest_scanner_floor_id = getattr(best_advert.scanner_device, "floor_id", None)
-                target_area_floor_id = self._resolve_floor_id_for_area(best_area_id)
+            # - But NO scanner on the "OG" floor sees the device
+            # - Only basement scanners see the device
+            # - Topologically impossible → reject UKF decision
+            target_area_floor_id = self._resolve_floor_id_for_area(best_area_id)
 
-                if (
-                    strongest_scanner_floor_id is not None
-                    and target_area_floor_id is not None
-                    and strongest_scanner_floor_id != target_area_floor_id
-                    and best_advert.rssi is not None
-                    and best_advert.rssi > UKF_SCANNERLESS_CROSS_FLOOR_RSSI_THRESHOLD
-                ):
-                    # UKF picked a scannerless room on a DIFFERENT floor, but the strongest
-                    # scanner has a strong signal. This is physically implausible.
+            if target_area_floor_id is not None:
+                # Check if any scanner on the target floor sees the device
+                scanner_on_target_floor_sees_device = False
+
+                for advert in device.adverts.values():
+                    if (
+                        advert.stamp is not None
+                        and nowstamp - advert.stamp < EVIDENCE_WINDOW_SECONDS
+                        and advert.scanner_device is not None
+                    ):
+                        scanner_floor_id = getattr(advert.scanner_device, "floor_id", None)
+                        if scanner_floor_id == target_area_floor_id:
+                            scanner_on_target_floor_sees_device = True
+                            break
+
+                if not scanner_on_target_floor_sees_device:
+                    # UKF picked a scannerless room on a floor where NO scanner sees
+                    # the device. This is topologically impossible.
                     if _LOGGER.isEnabledFor(logging.DEBUG):
                         _LOGGER.debug(
-                            "BUG 21 FIX: UKF scannerless cross-floor sanity check FAILED for %s: "
-                            "UKF picked %s (floor %s), but strongest scanner is on floor %s with "
-                            "RSSI %.1f dBm (> threshold %.1f) - falling back to min-distance",
+                            "BUG 21 FIX: UKF scannerless topological check FAILED for %s: "
+                            "UKF picked %s (floor %s), but NO scanner on that floor sees "
+                            "the device - falling back to min-distance",
                             device.name,
                             best_area_id,
                             target_area_floor_id,
-                            strongest_scanner_floor_id,
-                            best_advert.rssi,
-                            UKF_SCANNERLESS_CROSS_FLOOR_RSSI_THRESHOLD,
                         )
                     return False
 
