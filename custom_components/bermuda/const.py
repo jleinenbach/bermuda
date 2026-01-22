@@ -143,6 +143,11 @@ UKF_STICKINESS_BONUS: Final = 0.15  # 15% bonus added to current area's match sc
 # Minimum distance (meters) required for scanner-based room to override UKF-detected area
 UKF_WEAK_SCANNER_MIN_DISTANCE: Final = 3.0
 
+# UKF RSSI Sanity Check constants
+# When UKF picks a room with significantly weaker signal, verify the match confidence
+UKF_RSSI_SANITY_MARGIN: Final = 15.0  # dB threshold - signal must be this much weaker to trigger check
+UKF_LOW_CONFIDENCE_THRESHOLD: Final = 0.6  # Only apply sanity check when score is below this
+
 # Virtual Distance for Scannerless Rooms
 # When UKF score is below threshold, scannerless rooms can still compete in min-distance
 # by calculating a "virtual distance" based on their fingerprint match quality.

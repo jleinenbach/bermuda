@@ -115,9 +115,11 @@ from .const import (
     SAVEOUT_COOLDOWN,
     SIGNAL_DEVICE_NEW,
     SIGNAL_SCANNERS_CHANGED,
+    UKF_LOW_CONFIDENCE_THRESHOLD,
     UKF_MIN_MATCH_SCORE,
     UKF_MIN_SCANNERS,
     UKF_RETENTION_THRESHOLD,
+    UKF_RSSI_SANITY_MARGIN,
     UKF_STICKINESS_BONUS,
     UKF_WEAK_SCANNER_MIN_DISTANCE,
     UPDATE_INTERVAL,
@@ -771,17 +773,19 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                     primary_scanner_addr = advert.scanner_address
 
         if len(rssi_readings) < 1:
-            _LOGGER.debug(
-                "Training for %s: no recent RSSI readings, waiting...",
-                device.name,
-            )
+            if _LOGGER.isEnabledFor(logging.DEBUG):
+                _LOGGER.debug(
+                    "Training for %s: no recent RSSI readings, waiting...",
+                    device.name,
+                )
             return (False, current_stamps)
 
         if primary_rssi is None or primary_scanner_addr is None:
-            _LOGGER.debug(
-                "Training for %s: no primary scanner identified, waiting...",
-                device.name,
-            )
+            if _LOGGER.isEnabledFor(logging.DEBUG):
+                _LOGGER.debug(
+                    "Training for %s: no primary scanner identified, waiting...",
+                    device.name,
+                )
             return (False, current_stamps)
 
         # BUG 19 FIX: Only train if we have NEW advertisement data
@@ -850,11 +854,12 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         # Save correlations immediately after manual training
         await self.correlation_store.async_save(self.correlations, self.room_profiles)
         self._last_correlation_save = nowstamp
-        _LOGGER.debug(
-            "Saved correlations for %s after training. Total devices: %d",
-            device.name,
-            len(self.correlations),
-        )
+        if _LOGGER.isEnabledFor(logging.DEBUG):
+            _LOGGER.debug(
+                "Saved correlations for %s after training. Total devices: %d",
+                device.name,
+                len(self.correlations),
+            )
 
         return (True, current_stamps)
 
@@ -881,18 +886,20 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
         """
         if device_address not in self.correlations:
-            _LOGGER.debug(
-                "No training data found for device %s - nothing to reset",
-                device_address,
-            )
+            if _LOGGER.isEnabledFor(logging.DEBUG):
+                _LOGGER.debug(
+                    "No training data found for device %s - nothing to reset",
+                    device_address,
+                )
             return False
 
         device_profiles = self.correlations[device_address]
         if not device_profiles:
-            _LOGGER.debug(
-                "Empty training data for device %s - nothing to reset",
-                device_address,
-            )
+            if _LOGGER.isEnabledFor(logging.DEBUG):
+                _LOGGER.debug(
+                    "Empty training data for device %s - nothing to reset",
+                    device_address,
+                )
             return False
 
         # Reset training in all areas for this device
@@ -900,11 +907,12 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         for area_id, profile in device_profiles.items():
             profile.reset_training()
             area_count += 1
-            _LOGGER.debug(
-                "Reset training for device %s in area %s",
-                device_address,
-                area_id,
-            )
+            if _LOGGER.isEnabledFor(logging.DEBUG):
+                _LOGGER.debug(
+                    "Reset training for device %s in area %s",
+                    device_address,
+                    area_id,
+                )
 
         _LOGGER.info(
             "Reset all training data for device %s across %d areas",
@@ -2211,13 +2219,11 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                     strongest_visible_rssi = advert.rssi
 
             # Only apply sanity check when UKF confidence is low AND signal is much weaker
-            rssi_sanity_margin = 15.0  # dB threshold (increased from 10)
-            ukf_confidence_threshold = 0.6  # Only check when match_score below this
             if (
-                effective_match_score < ukf_confidence_threshold
+                effective_match_score < UKF_LOW_CONFIDENCE_THRESHOLD
                 and best_advert_rssi is not None
                 and strongest_visible_rssi > -999.0
-                and strongest_visible_rssi - best_advert_rssi > rssi_sanity_margin
+                and strongest_visible_rssi - best_advert_rssi > UKF_RSSI_SANITY_MARGIN
             ):
                 # Low confidence UKF picked a room with weak signal - suspicious
                 if _LOGGER.isEnabledFor(logging.DEBUG):
