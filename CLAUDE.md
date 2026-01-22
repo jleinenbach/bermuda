@@ -51,13 +51,53 @@ python -m pytest --cov -q
 | Component | File | Purpose |
 |-----------|------|---------|
 | **Coordinator** | `coordinator.py` | Drives Bluetooth processing, subscribes to HA Bluetooth manager, tracks scanners, prunes stale devices |
+| **AreaSelectionHandler** | `area_selection.py` | All area/room selection algorithms (UKF, min-distance, virtual distance) |
+| **BermudaServiceHandler** | `services.py` | Service handlers (dump_devices) and MAC redaction for privacy |
 | **BermudaDevice** | `bermuda_device.py` | Represents each Bluetooth address, normalizes MACs, classifies address types, caches area/floor metadata |
 | **Metadevices** | - | Group rotating identities (IRK, iBeacon) so changing MACs map to stable logical devices |
 | **Entities** | `sensor.py`, `device_tracker.py`, etc. | Read state from coordinator |
 
+### Coordinator Modularization (Refactoring)
+
+The coordinator was refactored to follow Home Assistant best practices (similar to ESPHome, ZHA, Bluetooth integrations). Large modules are extracted into separate handler classes:
+
+```
+coordinator.py
+├── self.service_handler = BermudaServiceHandler(self)     # services.py
+├── self.area_selection = AreaSelectionHandler(self)       # area_selection.py
+│
+│   Entry Points:
+├── _refresh_areas_by_min_distance()  ──► area_selection.refresh_areas_by_min_distance()
+├── service_dump_devices()            ──► service_handler.async_dump_devices()
+│
+│   Internal (still in coordinator, Phase 3-4):
+├── _refresh_area_by_ukf(device)           # ~500 lines - fingerprint matching
+└── _refresh_area_by_min_distance(device)  # ~1250 lines - proximity heuristic
+```
+
+**Phase 1-2 Complete:**
+- `services.py` - BermudaServiceHandler (~150 lines)
+  - `async_dump_devices()` - Device dump service
+  - `redact_data()` - MAC address redaction for privacy
+  - `redaction_list_update()` - Redaction cache management
+
+- `area_selection.py` - AreaSelectionHandler (~520 lines)
+  - `AreaTests` dataclass - Diagnostic info for area decisions
+  - Helper functions: `_calculate_virtual_distance()`, `_collect_current_stamps()`, `_has_new_advert_data()`
+  - Registry helpers: `_resolve_floor_id_for_area()`, `_area_has_scanner()`, `resolve_area_name()`, `effective_distance()`
+  - `_get_correlation_confidence()` - RSSI pattern matching
+  - `_get_virtual_distances_for_scannerless_rooms()` - UKF fingerprint to distance
+  - `refresh_areas_by_min_distance()` - Main entry point
+  - `_determine_area_for_device()` - Per-device area logic
+
+**Phase 3-4 Pending:**
+- `_refresh_area_by_ukf()` (~500 lines) - UKF fingerprint matching
+- `_apply_ukf_selection()` - Apply UKF decision to device
+- `_refresh_area_by_min_distance(device)` (~1250 lines) - Min-distance heuristic
+
 ### Area Selection System
 
-The area selection logic in `coordinator.py` (`_refresh_area_by_min_distance`) determines which room a device is in:
+The area selection logic (in `area_selection.py` and `coordinator.py`) determines which room a device is in:
 
 1. **Distance contender check**: Adverts must have valid distance within max_radius
 2. **Stability margin**: Challenger must be significantly closer (8% or 0.2m) to compete
