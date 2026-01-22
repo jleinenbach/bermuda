@@ -157,6 +157,35 @@ UKF_LOW_CONFIDENCE_THRESHOLD: Final = 0.6  # Only apply sanity check when score 
 VIRTUAL_DISTANCE_SCALE: Final = 0.7  # Scaling factor (0.7 = 30% shorter than pure quadratic)
 VIRTUAL_DISTANCE_MIN_SCORE: Final = 0.05  # Minimum score to consider (below = no virtual distance)
 
+# Cross-floor hysteresis protection constants
+# These control how strict the protection is against false cross-floor switches
+CROSS_FLOOR_MARGIN_BASE: Final = 0.25  # Base percentage margin for cross-floor switching
+CROSS_FLOOR_ESCAPE_BASE: Final = 0.45  # Base escape threshold percentage (now requires 100%+)
+HISTORY_WINDOW: Final = 5  # Number of historical samples to consider for hysteresis
+
+# Soft incumbent protection - when primary scanner stops reporting, challenger needs evidence
+SOFT_INC_MIN_DISTANCE_ADVANTAGE: Final = 0.5  # Meters advantage needed without history
+SOFT_INC_MIN_HISTORY_DIVISOR: Final = 2  # Divide CROSS_FLOOR_MIN_HISTORY by this for soft incumbent
+
+# Near-field detection constants
+NEAR_FIELD_THRESHOLD: Final = 3.0  # Meters - near-field zone for cross-floor ratio checks
+NEAR_FIELD_CUTOFF: Final = 1.0  # Meters - cutoff for absolute wins
+NEAR_FIELD_ABS_WIN_METERS: Final = 0.08  # Meters improvement required for near-field win
+
+# Hysteresis percentage thresholds
+PDIFF_OUTRIGHT: Final = 0.30  # 30% difference for outright win
+PDIFF_HISTORICAL: Final = 0.15  # 15% difference for historical win
+
+# RSSI fallback constants (when no distance contenders exist)
+RSSI_FALLBACK_MARGIN: Final = 3.0  # dB advantage needed for RSSI fallback switch
+RSSI_FALLBACK_CROSS_FLOOR_MARGIN: Final = 6.0  # dB advantage needed for cross-floor RSSI switch
+
+# Co-visibility and correlation confidence thresholds
+CONFIDENCE_WINNER_MIN: Final = 0.7  # Minimum winner confidence before doubling streak
+CONFIDENCE_WINNER_MARGIN: Final = 0.2  # Incumbent must be this much better to double streak
+CORR_CONFIDENCE_WINNER_MIN: Final = 0.5  # Correlation confidence threshold
+CORR_CONFIDENCE_WINNER_MARGIN: Final = 0.3  # Correlation confidence margin
+
 # Beacon-handling constants. Source devices are tracked by MAC-address and are the
 # originators of beacon-like data. We then create a "meta-device" for the beacon's
 # uuid. Other non-static-mac protocols should use this method as well, by adding their

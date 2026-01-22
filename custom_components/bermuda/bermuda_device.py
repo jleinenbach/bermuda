@@ -201,6 +201,10 @@ class BermudaDevice(dict):
         self.training_target_floor_id: str | None = None
         self.training_target_area_id: str | None = None
 
+        # UKF scannerless area detection flag - True when the current area was selected
+        # via UKF fingerprint matching for a room without its own scanner
+        self._ukf_scannerless_area: bool = False
+
         self._async_process_address_type()
 
     def _async_process_address_type(self):

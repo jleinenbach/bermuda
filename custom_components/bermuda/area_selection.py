@@ -23,11 +23,18 @@ from .const import (
     AREA_MAX_AD_AGE_LIMIT,
     CONF_MAX_RADIUS,
     CONF_USE_PHYSICAL_RSSI_PRIORITY,
+    CONFIDENCE_WINNER_MARGIN,
+    CONFIDENCE_WINNER_MIN,
+    CORR_CONFIDENCE_WINNER_MARGIN,
+    CORR_CONFIDENCE_WINNER_MIN,
+    CROSS_FLOOR_ESCAPE_BASE,
+    CROSS_FLOOR_MARGIN_BASE,
     CROSS_FLOOR_MIN_HISTORY,
     CROSS_FLOOR_STREAK,
     DEFAULT_MAX_RADIUS,
     DEFAULT_USE_PHYSICAL_RSSI_PRIORITY,
     EVIDENCE_WINDOW_SECONDS,
+    HISTORY_WINDOW,
     INCUMBENT_MARGIN_METERS,
     MARGIN_MOVING_PERCENT,
     MARGIN_SETTLING_PERCENT,
@@ -35,9 +42,18 @@ from .const import (
     MARGIN_STATIONARY_PERCENT,
     MOVEMENT_STATE_MOVING,
     MOVEMENT_STATE_SETTLING,
+    NEAR_FIELD_ABS_WIN_METERS,
+    NEAR_FIELD_CUTOFF,
+    NEAR_FIELD_THRESHOLD,
+    PDIFF_HISTORICAL,
+    PDIFF_OUTRIGHT,
     RSSI_CONSISTENCY_MARGIN_DB,
+    RSSI_FALLBACK_CROSS_FLOOR_MARGIN,
+    RSSI_FALLBACK_MARGIN,
     SAME_FLOOR_MIN_HISTORY,
     SAME_FLOOR_STREAK,
+    SOFT_INC_MIN_DISTANCE_ADVANTAGE,
+    SOFT_INC_MIN_HISTORY_DIVISOR,
     UKF_LOW_CONFIDENCE_THRESHOLD,
     UKF_MIN_MATCH_SCORE,
     UKF_MIN_SCANNERS,
@@ -940,7 +956,7 @@ class AreaSelectionHandler:
                     return False
 
         # Track whether current area is scannerless (for stickiness in future cycles)
-        device._ukf_scannerless_area = scanner_less_room  # type: ignore[attr-defined]  # noqa: SLF001
+        device._ukf_scannerless_area = scanner_less_room  # noqa: SLF001
 
         # RSSI SANITY CHECK:
         # Only reject UKF decision if BOTH conditions are met:
@@ -1230,7 +1246,7 @@ class AreaSelectionHandler:
         has_distance_contender = any(_is_distance_contender(advert) for advert in device.adverts.values())
 
         # FIX: Weak Scanner Override Protection
-        _protect_scannerless_area = getattr(device, "_ukf_scannerless_area", False)
+        _protect_scannerless_area = device._ukf_scannerless_area  # noqa: SLF001
         _scannerless_min_dist_override = UKF_WEAK_SCANNER_MIN_DISTANCE
 
         if not _is_distance_contender(incumbent):
@@ -1311,7 +1327,7 @@ class AreaSelectionHandler:
                 soft_incumbent = None
                 if _superchatty:
                     _LOGGER.debug(
-                        "%s IS closesr to %s: Encumbant is invalid",
+                        "%s IS closer to %s: Incumbent is invalid",
                         device.name,
                         challenger.name,
                     )
@@ -1369,8 +1385,8 @@ class AreaSelectionHandler:
                     if soft_inc_was_within_range and soft_inc_distance is not None:
                         challenger_hist = challenger.hist_distance_by_interval
                         challenger_dist = _effective_distance(challenger)
-                        soft_inc_min_history = CROSS_FLOOR_MIN_HISTORY // 2
-                        soft_inc_min_distance_advantage = 0.5
+                        soft_inc_min_history = CROSS_FLOOR_MIN_HISTORY // SOFT_INC_MIN_HISTORY_DIVISOR
+                        soft_inc_min_distance_advantage = SOFT_INC_MIN_DISTANCE_ADVANTAGE
 
                         has_significant_distance_advantage = (
                             challenger_dist is not None
@@ -1443,7 +1459,7 @@ class AreaSelectionHandler:
                 if _use_physical_rssi_priority and challenger_rssi_advantage > RSSI_CONSISTENCY_MARGIN_DB:
                     passed_via_rssi_override = True
                     if _superchatty:
-                        _LOGGER.info(
+                        _LOGGER.debug(
                             "RSSI priority override: %s allowed despite further distance "
                             "(RSSI advantage %.1f dB > %.1f dB margin)",
                             challenger.name,
@@ -1489,7 +1505,7 @@ class AreaSelectionHandler:
             # RSSI consistency check
             if _use_physical_rssi_priority and challenger_rssi_advantage < -RSSI_CONSISTENCY_MARGIN_DB:
                 if _superchatty:
-                    _LOGGER.info(
+                    _LOGGER.debug(
                         "RSSI consistency check: %s rejected (RSSI disadvantage %.1f dB > %.1f dB margin)",
                         challenger.name,
                         -challenger_rssi_advantage,
@@ -1518,9 +1534,9 @@ class AreaSelectionHandler:
             tests.pcnt_diff = abs(_pda - _pdb) / ((_pda + _pdb) / 2)
             abs_diff = abs(_pda - _pdb)
             avg_dist = (_pda + _pdb) / 2
-            cross_floor_margin = 0.25
-            cross_floor_escape = 0.45
-            history_window = 5
+            cross_floor_margin = CROSS_FLOOR_MARGIN_BASE
+            cross_floor_escape = CROSS_FLOOR_ESCAPE_BASE
+            history_window = HISTORY_WINDOW
             cross_floor_min_history = CROSS_FLOOR_MIN_HISTORY
 
             # Same-Floor-Confirmation
@@ -1558,7 +1574,7 @@ class AreaSelectionHandler:
                     cross_floor_margin = min(0.70, cross_floor_margin + imbalance_margin)
                     cross_floor_escape = min(0.85, cross_floor_escape + imbalance_margin)
 
-                near_field_threshold = 3.0
+                near_field_threshold = NEAR_FIELD_THRESHOLD
                 if incumbent_distance <= near_field_threshold and challenger_floor_distances:
                     min_challenger_dist = min(challenger_floor_distances)
                     if min_challenger_dist > incumbent_distance:
@@ -1597,9 +1613,9 @@ class AreaSelectionHandler:
                 continue
 
             # Hysteresis checks
-            min_history = 3
-            pdiff_outright = 0.30
-            pdiff_historical = 0.15
+            min_history = SAME_FLOOR_MIN_HISTORY
+            pdiff_outright = PDIFF_OUTRIGHT
+            pdiff_historical = PDIFF_HISTORICAL
             incumbent_hist_all = current_incumbent.hist_distance_by_interval
             challenger_hist_all = challenger.hist_distance_by_interval
             if cross_floor:
@@ -1623,8 +1639,8 @@ class AreaSelectionHandler:
                         incumbent = challenger
                         continue
 
-            near_field_cutoff = 1.0
-            abs_win_meters = 0.08
+            near_field_cutoff = NEAR_FIELD_CUTOFF
+            abs_win_meters = NEAR_FIELD_ABS_WIN_METERS
             near_field_win = avg_dist <= near_field_cutoff and abs_diff >= abs_win_meters
             significant_improvement = tests.pcnt_diff >= pdiff_outright
 
@@ -1693,14 +1709,14 @@ class AreaSelectionHandler:
             soft_incumbent = None
 
         if _superchatty and tests.reason is not None:
-            _LOGGER.info(
+            _LOGGER.debug(
                 "***************\n**************** %s *******************\n%s",
                 tests.reason,
                 tests,
             )
 
-        rssi_fallback_margin = 3.0
-        rssi_fallback_cross_floor_margin = 6.0
+        rssi_fallback_margin = RSSI_FALLBACK_MARGIN
+        rssi_fallback_cross_floor_margin = RSSI_FALLBACK_CROSS_FLOOR_MARGIN
         winner = incumbent or soft_incumbent
 
         # Virtual Distance for Scannerless Rooms
@@ -1751,7 +1767,7 @@ class AreaSelectionHandler:
             device.update_area_and_floor(virtual_winner_area_id)
             device.area_distance = virtual_winner_distance
             device.area_distance_stamp = nowstamp
-            device._ukf_scannerless_area = True  # type: ignore[attr-defined]  # noqa: SLF001
+            device._ukf_scannerless_area = True  # noqa: SLF001
             device.reset_pending_state()
             tests.reason = f"WIN via virtual distance ({virtual_winner_distance:.2f}m) for scannerless room"
             device.diag_area_switch = tests.sensortext()
@@ -2008,11 +2024,17 @@ class AreaSelectionHandler:
                 )
 
             if winner.area_id != (device.area_advert.area_id if device.area_advert else None):
-                if winner_confidence < 0.7 and incumbent_confidence > winner_confidence + 0.2:
+                if (
+                    winner_confidence < CONFIDENCE_WINNER_MIN
+                    and incumbent_confidence > winner_confidence + CONFIDENCE_WINNER_MARGIN
+                ):
                     streak_target = max(streak_target, streak_target * 2)
                     low_confidence_winner = True
 
-                if winner_corr_confidence < 0.5 and incumbent_corr_confidence > winner_corr_confidence + 0.3:
+                if (
+                    winner_corr_confidence < CORR_CONFIDENCE_WINNER_MIN
+                    and incumbent_corr_confidence > winner_corr_confidence + CORR_CONFIDENCE_WINNER_MARGIN
+                ):
                     streak_target = max(streak_target, streak_target * 2)
                     low_confidence_winner = True
 

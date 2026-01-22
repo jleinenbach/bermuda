@@ -117,6 +117,8 @@ class FakeDevice:
         self.co_visibility_min_samples: int = 50
         # Dwell time tracking (stub for testing)
         self.area_changed_at: float = 0.0
+        # UKF scannerless area flag (stub for testing)
+        self._ukf_scannerless_area: bool = False
 
     def get_movement_state(self, *, stamp_now: float | None = None) -> str:
         """Stub for movement state - returns stationary for tests (hardest to switch)."""
