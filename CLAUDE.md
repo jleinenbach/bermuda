@@ -817,6 +817,39 @@ filtered_rssi = filter.update_adaptive(raw_rssi, ref_power=-55)
 - **Files**: `coordinator.py`
 - **Test file**: `tests/test_button_training_persistence.py` (TestAddressNormalization class)
 
+### Virtual Distance for UKF-Selected Scannerless Rooms (BUG 18)
+- **Problem**: When UKF selected a scannerless room, "Distance" showed "Unbekannt" (Unknown)
+  - User trains device for "Lagerraum" (basement, no scanner)
+  - UKF correctly identifies the room, device shows "Area: Lagerraum"
+  - But "Distance: Unbekannt" confuses users
+- **Root cause**: BUG 13 fix set `area_distance = None` for scannerless rooms
+  - This was to avoid showing misleading distance to scanner in a DIFFERENT room
+  - But `None` renders as "Unbekannt" in the UI, which is confusing
+  - Other devices using min-distance fallback showed virtual distances, but UKF path didn't
+- **Solution**: Calculate virtual distance using UKF match score
+  - Same formula as `_get_virtual_distances_for_scannerless_rooms()`:
+    `virtual_distance = max_radius × VIRTUAL_DISTANCE_SCALE × (1 - score)²`
+  - Now UKF-selected scannerless rooms show meaningful distance values
+- **Code change** (`coordinator.py`):
+  - Added `match_score` parameter to `_apply_ukf_selection()`
+  - Updated 3 call sites to pass `effective_match_score`
+  - Replaced `area_distance = None` with virtual distance calculation
+  ```python
+  # FIX: BUG 18 - Calculate virtual distance for scannerless rooms
+  max_radius = self.options.get(CONF_MAX_RADIUS, DEFAULT_MAX_RADIUS)
+  virtual_distance = max_radius * VIRTUAL_DISTANCE_SCALE * ((1.0 - match_score) ** 2)
+  device.area_distance = virtual_distance
+  device.area_distance_stamp = nowstamp
+  ```
+- **Example**: With max_radius=10m, VIRTUAL_DISTANCE_SCALE=0.7:
+  | UKF Score | Virtual Distance | Interpretation |
+  |-----------|-----------------|----------------|
+  | 0.9 | 0.07m | Excellent match → very close |
+  | 0.7 | 0.63m | Good match → nearby |
+  | 0.5 | 1.75m | Moderate match → medium distance |
+  | 0.3 | 3.43m | Threshold match → further away |
+- **Files**: `coordinator.py`
+
 ## Manual Fingerprint Training System
 
 ### Problem Statement

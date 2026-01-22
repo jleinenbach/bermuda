@@ -2318,7 +2318,12 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             device.pending_floor_id = None
             device.pending_streak = 0
             self._apply_ukf_selection(
-                device, best_advert, best_area_id, scanner_less_room=scanner_less_room, nowstamp=nowstamp
+                device,
+                best_advert,
+                best_area_id,
+                scanner_less_room=scanner_less_room,
+                match_score=effective_match_score,
+                nowstamp=nowstamp,
             )
             return True
 
@@ -2329,7 +2334,12 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             device.pending_floor_id = None
             device.pending_streak = 0
             self._apply_ukf_selection(
-                device, best_advert, best_area_id, scanner_less_room=scanner_less_room, nowstamp=nowstamp
+                device,
+                best_advert,
+                best_area_id,
+                scanner_less_room=scanner_less_room,
+                match_score=effective_match_score,
+                nowstamp=nowstamp,
             )
             return True
 
@@ -2357,7 +2367,12 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             device.pending_floor_id = None
             device.pending_streak = 0
             self._apply_ukf_selection(
-                device, best_advert, best_area_id, scanner_less_room=scanner_less_room, nowstamp=nowstamp
+                device,
+                best_advert,
+                best_area_id,
+                scanner_less_room=scanner_less_room,
+                match_score=effective_match_score,
+                nowstamp=nowstamp,
             )
         # Streak not reached - keep current area
         # NOTE: Use device.area_advert here (the actual advert object), not current_device_area_id.
@@ -2375,6 +2390,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         best_area_id: str,
         *,
         scanner_less_room: bool,
+        match_score: float,
         nowstamp: float,
     ) -> None:
         """Apply the UKF-selected area to the device and update correlations."""
@@ -2403,14 +2419,23 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                 best_advert.area_id = saved_area_id
                 best_advert.area_name = saved_area_name
 
-            # FIX: BUG 13 - Clear misleading distance for scannerless rooms
-            # For scannerless rooms, best_advert comes from a DIFFERENT room's scanner.
-            # The rssi_distance would show distance to THAT scanner, not to the
-            # UKF-selected area. This is misleading (e.g., Area="Bibliothek" but
-            # Distance=1.6m from Technikraum scanner).
-            # Set area_distance to None since there's no scanner in the target room.
-            device.area_distance = None
-            device.area_distance_stamp = None
+            # FIX: BUG 18 - Calculate virtual distance for scannerless rooms
+            # Previously (BUG 13 fix) we set area_distance=None, but this shows "Unbekannt"
+            # in the UI which confuses users. Instead, calculate a virtual distance from the
+            # UKF match score using the same formula as _get_virtual_distances_for_scannerless_rooms.
+            # Formula: distance = max_radius * VIRTUAL_DISTANCE_SCALE * (1 - score)²
+            max_radius = self.options.get(CONF_MAX_RADIUS, DEFAULT_MAX_RADIUS)
+            virtual_distance = max_radius * VIRTUAL_DISTANCE_SCALE * ((1.0 - match_score) ** 2)
+            device.area_distance = virtual_distance
+            device.area_distance_stamp = nowstamp
+            if _LOGGER.isEnabledFor(logging.DEBUG):
+                _LOGGER.debug(
+                    "UKF scannerless room %s for %s: score=%.3f → virtual distance=%.2fm",
+                    best_area_id,
+                    device.name,
+                    match_score,
+                    virtual_distance,
+                )
         else:
             # Apply the selection using the device's standard method
             device.apply_scanner_selection(best_advert, nowstamp=nowstamp)
