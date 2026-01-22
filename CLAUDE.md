@@ -960,47 +960,113 @@ Auto-detection constantly overwrites manual room corrections. Users need a way t
 
 ### Training Button Behavior
 
-**Availability Conditions** (`button.py:91-117`):
+**Availability Conditions** (`button.py:108-137`):
 ```python
 @property
 def available(self) -> bool:
+    if not super().available:
+        return False
+
+    # Disable during training (prevent double-click)
+    if self._is_training:
+        return False
+
     # Button enabled ONLY when BOTH floor AND room selected
     floor_ok = self._device.training_target_floor_id is not None
     area_ok = self._device.training_target_area_id is not None
-    return super().available and floor_ok and area_ok
+    return floor_ok and area_ok
 ```
 
-**Press Handler** (`button.py:139-213`):
+**Press Handler** (`button.py:165-255`) - Waits for REAL new advertisements:
 ```python
 async def async_press(self) -> None:
-    # Show loading indicator
+    # Guard against double-click
+    if self._is_training:
+        return
+
     self._is_training = True
     self._attr_icon = self.ICON_TRAINING  # mdi:timer-sand
     self.async_write_ha_state()
 
     try:
-        for i in range(TRAINING_SAMPLE_COUNT):  # 20 samples
-            await self.coordinator.async_train_fingerprint(
+        # BUG 19 FIX: Wait for REAL new advertisements
+        # Tracks timestamps to ensure each sample has genuinely new data
+        successful_samples = 0
+        last_stamps: dict[str, float] = {}
+        start_time = asyncio.get_event_loop().time()
+
+        while successful_samples < TRAINING_SAMPLE_COUNT:
+            elapsed = asyncio.get_event_loop().time() - start_time
+            if elapsed >= TRAINING_MAX_TIME_SECONDS:  # 120s timeout
+                break
+
+            # Only succeeds when at least one scanner has NEW data
+            success, current_stamps = await self.coordinator.async_train_fingerprint(
                 device_address=self.address,
                 target_area_id=target_area_id,
+                last_stamps=last_stamps,
             )
-            if i < TRAINING_SAMPLE_COUNT - 1:
-                await asyncio.sleep(TRAINING_SAMPLE_DELAY)  # 0.5s between samples
+
+            if success:
+                successful_samples += 1
+                last_stamps = current_stamps
+            elif current_stamps:
+                last_stamps = current_stamps
+
+            await asyncio.sleep(TRAINING_POLL_INTERVAL)  # 0.3s poll
+
     finally:
         # ALWAYS cleanup, even on exception
         self._is_training = False
         self._attr_icon = self.ICON_IDLE  # mdi:brain
         self._device.training_target_floor_id = None
-        self._device.training_target_area_id = None
-        self._device.area_locked_id = None
-        self._device.area_locked_name = None
-        self._device.area_locked_scanner_addr = None
+        # ... clear other fields ...
         await self.coordinator.async_request_refresh()
+```
+
+**Training Data Flow:**
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    Training Sample Collection                            │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  BLE Tracker ─────────────► Home Assistant ─────────────► Bermuda       │
+│  (advertises every 1-10s)   (receives adverts)           (caches RSSI)  │
+│                                                                          │
+│  Training Loop (polls every 0.3s):                                       │
+│  ┌────────────────────────────────────────────────────────────────────┐ │
+│  │ Poll 1: stamp=100.0, rssi=-75dB → NEW! Sample 1 ✓                  │ │
+│  │ Poll 2: stamp=100.0, rssi=-75dB → Same stamp, skip                 │ │
+│  │ Poll 3: stamp=100.0, rssi=-75dB → Same stamp, skip                 │ │
+│  │ ...                                                                 │ │
+│  │ Poll 12: stamp=103.5, rssi=-73dB → NEW! Sample 2 ✓                 │ │
+│  │ Poll 13: stamp=103.5, rssi=-73dB → Same stamp, skip                │ │
+│  │ ...                                                                 │ │
+│  │ Poll 25: stamp=108.2, rssi=-76dB → NEW! Sample 3 ✓                 │ │
+│  └────────────────────────────────────────────────────────────────────┘ │
+│                                                                          │
+│  Result: 20 UNIQUE samples with real diverse RSSI values                │
+│          (not 20 copies of the same cached value!)                      │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Fingerprint Training Process
 
-**Step 1: Velocity Reset** (`coordinator.py:733-738`)
+**Function Signature** (`coordinator.py:710-739`):
+```python
+async def async_train_fingerprint(
+    self,
+    device_address: str,
+    target_area_id: str,
+    last_stamps: dict[str, float] | None = None,  # BUG 19: Track previous timestamps
+) -> tuple[bool, dict[str, float]]:
+    """
+    Returns (success, current_stamps) - only succeeds with NEW data.
+    """
+```
+
+**Step 1: Velocity Reset** (`coordinator.py:750-760`)
 
 Breaks the "Velocity Trap" where calculated velocity > MAX_VELOCITY causes all readings to be rejected:
 ```python
@@ -1009,22 +1075,40 @@ device.reset_velocity_history()
 # Resets: Kalman filters, velocity_blocked_count
 ```
 
-**Step 2: RSSI Collection** (`coordinator.py:740-771`)
+**Step 2: RSSI + Timestamp Collection** (`coordinator.py:762-795`)
 ```python
+rssi_readings: dict[str, float] = {}
+current_stamps: dict[str, float] = {}  # BUG 19: Track timestamps
+
 for advert in device.adverts.values():
     if (advert.rssi is not None
         and nowstamp - advert.stamp < EVIDENCE_WINDOW_SECONDS):
         rssi_readings[advert.scanner_address] = advert.rssi
+        current_stamps[advert.scanner_address] = advert.stamp  # NEW
         # Track strongest signal as "primary"
         if advert.rssi > primary_rssi:
             primary_rssi = advert.rssi
             primary_scanner_addr = advert.scanner_address
 ```
 
-**Step 3: Profile Updates** (`coordinator.py:787-797`)
+**Step 2b: Check for NEW Data** (`coordinator.py:797-810`)
+```python
+# BUG 19 FIX: Only train if we have NEW advertisement data
+if last_stamps:
+    has_new_data = any(
+        current_stamps.get(k, 0) > last_stamps.get(k, 0)
+        for k in current_stamps
+    )
+    if not has_new_data:
+        return (False, current_stamps)  # No new data, caller should retry
+```
+
+**Step 3: Profile Updates** (`coordinator.py:820-835`)
 ```python
 # Device-specific profile (AreaProfile)
-self.correlations[device_address][target_area_id].update_button(
+# BUG 17 FIX: Use normalized address
+normalized_address = device.address
+self.correlations[normalized_address][target_area_id].update_button(
     primary_rssi=primary_rssi,
     other_readings=other_readings,
     primary_scanner_addr=primary_scanner_addr,
@@ -1032,6 +1116,8 @@ self.correlations[device_address][target_area_id].update_button(
 
 # Device-independent profile (RoomProfile)
 self.room_profiles[target_area_id].update_button(rssi_readings)
+
+return (True, current_stamps)  # Success with new data
 ```
 
 ### Anchor Creation Mechanism (Clamped Fusion)
@@ -1983,6 +2069,78 @@ if improvement > 100% and has_minimum_history:
 **Rule of Thumb**: The more severe the action (cross-floor > same-floor > same-room), the stricter the escape hatch should be. Consider whether "impossible" thresholds (100%+) are actually desirable for critical transitions.
 
 ## Scannerless Room Detection
+
+### Complete Architecture (Post-BUG 15-19 Fixes)
+
+Scannerless rooms are rooms without their own BLE scanner. They can only be detected through fingerprint matching, not physical proximity to a scanner.
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│               Scannerless Room Detection Flow (Complete)                     │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  1. USER TRAINING (button.py)                                                │
+│  ┌────────────────────────────────────────────────────────────────────────┐ │
+│  │ • User selects floor + room in dropdowns                               │ │
+│  │ • Clicks "Learn" button                                                 │ │
+│  │ • Button disabled during training (BUG 19 double-click fix)            │ │
+│  │ • Waits for 20 UNIQUE samples (real new advertisements)                │ │
+│  │ • Max 120s timeout                                                      │ │
+│  └────────────────────────────────────────────────────────────────────────┘ │
+│                              │                                               │
+│                              ▼                                               │
+│  2. FINGERPRINT STORAGE (coordinator.py)                                     │
+│  ┌────────────────────────────────────────────────────────────────────────┐ │
+│  │ • Uses normalized address (BUG 17 fix)                                 │ │
+│  │ • Only trains when stamp changed (BUG 19 fix)                          │ │
+│  │ • Creates AreaProfile with has_button_training=True                    │ │
+│  │ • Profile is_mature=True regardless of sample count (BUG 12 fix)       │ │
+│  └────────────────────────────────────────────────────────────────────────┘ │
+│                              │                                               │
+│                              ▼                                               │
+│  3. AREA DETECTION (coordinator._refresh_area_by_ukf)                        │
+│  ┌────────────────────────────────────────────────────────────────────────┐ │
+│  │ • UKF created dynamically if missing (BUG 16 fix)                      │ │
+│  │ • Fingerprint matching via Mahalanobis distance                        │ │
+│  │ • Retention threshold 0.15 (vs 0.30 for switching)                     │ │
+│  │                                                                         │ │
+│  │ If UKF score >= threshold:                                              │ │
+│  │   → _apply_ukf_selection()                                              │ │
+│  │   → Virtual distance calculated (BUG 18 fix)                           │ │
+│  │                                                                         │ │
+│  │ If UKF score < threshold:                                               │ │
+│  │   → Falls back to _refresh_area_by_min_distance()                      │ │
+│  └────────────────────────────────────────────────────────────────────────┘ │
+│                              │                                               │
+│                              ▼                                               │
+│  4. MIN-DISTANCE FALLBACK (with Virtual Distance)                            │
+│  ┌────────────────────────────────────────────────────────────────────────┐ │
+│  │ • Physical scanners: Real measured distance                            │ │
+│  │ • Scannerless rooms: Virtual distance from UKF score (BUG 15 fix)      │ │
+│  │                                                                         │ │
+│  │   virtual_distance = max_radius × 0.7 × (1 - score)²                   │ │
+│  │                                                                         │ │
+│  │ • Only button-trained profiles get virtual distance                    │ │
+│  │ • Quadratic formula rewards good matches aggressively                  │ │
+│  └────────────────────────────────────────────────────────────────────────┘ │
+│                                                                              │
+│  RESULT: Scannerless room can "win" against physical scanners               │
+│          by having a better fingerprint match score                          │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Bug Fix Summary for Scannerless Rooms
+
+| BUG | Problem | Fix |
+|-----|---------|-----|
+| **12** | Button training profiles "immature" (< 20 samples) | `is_mature=True` if `has_button_training` |
+| **15** | Scannerless rooms invisible to min-distance | Virtual distance from UKF score |
+| **16** | UKF not created for 1-scanner scenarios | Create UKF dynamically in virtual distance calc |
+| **17** | Training stored under wrong key | Use normalized `device.address` |
+| **18** | UKF path showed "Unknown" distance | Calculate virtual distance in UKF path too |
+| **19** | Training re-read same cached values | Wait for NEW advertisements (stamp changed) |
+| **Double-click** | Concurrent training loops | Disable button during training |
 
 ### Problem: UKF Blocked by Global Maturity Check
 
@@ -3007,6 +3165,127 @@ def lookup(self, device):
 ```
 
 **Rule of Thumb**: For dictionaries keyed by identifiers (addresses, IDs), always normalize the key at the point of access. Use a canonical source (`device.address`) rather than raw parameters. This prevents subtle key mismatches that cause "phantom data loss."
+
+### 38. Async Operations Need Re-Entry Guards
+
+Long-running async operations (like training loops) can be triggered multiple times if the UI allows it. Without re-entry guards, concurrent executions cause race conditions and data corruption.
+
+**Bug Pattern:**
+```python
+# BAD - No guard against double-click
+async def async_press(self) -> None:
+    self._is_running = True  # Set flag, but never checked!
+    try:
+        for i in range(20):
+            await do_work()  # Takes 60+ seconds total
+            await asyncio.sleep(0.5)
+    finally:
+        self._is_running = False
+```
+
+**Fix Pattern:**
+```python
+# GOOD - Two-layer protection
+@property
+def available(self) -> bool:
+    if self._is_running:
+        return False  # Button disabled in UI
+    return super().available
+
+async def async_press(self) -> None:
+    if self._is_running:  # Safety guard
+        return
+    self._is_running = True
+    try:
+        # ... long operation ...
+    finally:
+        self._is_running = False
+```
+
+**Why Two Layers?**
+1. **`available` property**: Disables button in UI → clear visual feedback
+2. **Guard in method**: Catches edge cases where UI might still send events
+
+**Rule of Thumb**: Any async operation that takes more than a few seconds should have both UI-level disabling AND method-level re-entry guards.
+
+### 39. Polling Must Wait for Real Data Changes, Not Just Time
+
+When collecting multiple samples from a data source, polling at fixed intervals can re-read the same cached value multiple times. This causes artificial confidence from duplicate data.
+
+**Bug Pattern:**
+```python
+# BAD - Polls faster than data source updates
+SAMPLE_COUNT = 20
+SAMPLE_DELAY = 0.5  # seconds
+
+for i in range(SAMPLE_COUNT):
+    rssi = get_cached_rssi()  # Same value returned 5-10 times!
+    kalman.update(rssi)  # Each counted as "new" measurement
+    await asyncio.sleep(SAMPLE_DELAY)
+
+# Result: 20 "samples" but only 3 unique values
+# Kalman filter has artificial confidence from duplicates
+```
+
+**Fix Pattern:**
+```python
+# GOOD - Wait for actual new data
+last_stamps: dict[str, float] = {}
+
+while successful_samples < SAMPLE_COUNT:
+    if elapsed > MAX_TIMEOUT:
+        break
+
+    current_stamps = get_current_timestamps()
+    has_new_data = any(
+        current_stamps.get(k, 0) > last_stamps.get(k, 0)
+        for k in current_stamps
+    )
+
+    if has_new_data:
+        rssi = get_cached_rssi()
+        kalman.update(rssi)  # Only real new measurements
+        successful_samples += 1
+        last_stamps = current_stamps
+
+    await asyncio.sleep(POLL_INTERVAL)  # Short poll, but only count new data
+```
+
+**Key Insight**: The data source (BLE advertisements) has its own update rate (1-10 seconds). Polling faster than this rate just re-reads cached values. Track timestamps to detect actual changes.
+
+**Rule of Thumb**: When collecting samples from a cached data source, track the data's timestamp (not just "is it fresh enough?") and only count samples when the timestamp actually changes.
+
+### 40. Feature Parity: Parallel Code Paths Must Produce Consistent Results
+
+When two code paths (e.g., UKF path and min-distance path) can produce the same type of output (e.g., area selection), they must handle all edge cases consistently. Otherwise, users see different behavior depending on which path runs.
+
+**Bug Pattern (BUG 18):**
+```python
+# Min-distance path: calculates virtual distance for scannerless rooms ✓
+if scannerless_room:
+    device.area_distance = calculate_virtual_distance(score)
+
+# UKF path: forgets to handle scannerless rooms ✗
+if scannerless_room:
+    device.area_distance = None  # Shows "Unknown" in UI!
+```
+
+**Fix Pattern:**
+```python
+# BOTH paths handle scannerless rooms the same way
+def _apply_area_selection(self, ..., scannerless_room: bool, match_score: float):
+    if scannerless_room:
+        # Same formula in both paths
+        device.area_distance = max_radius * SCALE * ((1.0 - match_score) ** 2)
+```
+
+**Checklist for Parallel Code Paths:**
+1. List all outputs/side effects of Path A
+2. Verify Path B produces the same outputs
+3. Check edge cases (None values, empty collections, boundary conditions)
+4. Consider extracting shared logic to a helper function
+
+**Rule of Thumb**: When you fix a bug in one code path, ask: "Is there a parallel path that handles the same scenario? Does it need the same fix?"
 
 ---
 
