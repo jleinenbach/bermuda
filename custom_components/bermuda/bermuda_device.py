@@ -778,6 +778,23 @@ class BermudaDevice(dict):
             len(self.adverts),
         )
 
+    def reset_pending_state(self) -> None:
+        """
+        Reset pending area selection state.
+
+        Called when a streak threshold is met and an area switch occurs,
+        or when the device switches to a different pending candidate.
+        This clears all pending state to prepare for new streak counting.
+
+        Pending state is used for hysteresis protection - a device must
+        consistently "vote" for a new area multiple times (streak) before
+        the system switches to it. This prevents flickering due to noise.
+        """
+        self.pending_area_id = None
+        self.pending_floor_id = None
+        self.pending_streak = 0
+        self.pending_last_stamps = {}
+
     def _area_state_age(self, stamp_now: float) -> float | None:
         """Return the age of the last applied area selection."""
         if self.area_state_stamp is None:

@@ -163,6 +163,13 @@ class FakeDevice:
         self.floor_id = selected.scanner_device.floor_id
         self.floor_name = selected.scanner_device.floor_name
 
+    def reset_pending_state(self) -> None:
+        """Reset pending area selection state."""
+        self.pending_area_id = None
+        self.pending_floor_id = None
+        self.pending_streak = 0
+        self.pending_last_stamps = {}
+
 
 def _pcnt_diff(a: float, b: float) -> float:
     return abs(a - b) / ((a + b) / 2)

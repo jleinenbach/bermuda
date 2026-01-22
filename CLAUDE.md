@@ -160,8 +160,9 @@ Training sample 10: RSSI = -79dB
 |----------|-------|---------|
 | `MAX_AUTO_RATIO` | 0.30 | Auto influence capped at 30% |
 | `MIN_VARIANCE` | 0.001 | Prevents division by zero |
-| `TRAINING_SAMPLE_COUNT` | 20 | Samples per training session (meets maturity threshold) |
-| `TRAINING_SAMPLE_DELAY` | 0.5s | Delay between samples for diverse RSSI readings |
+| `TRAINING_SAMPLE_COUNT` | 20 | Target UNIQUE samples per training session |
+| `TRAINING_MAX_TIME_SECONDS` | 120.0 | Maximum training duration timeout |
+| `TRAINING_POLL_INTERVAL` | 0.3s | Poll interval for checking new advertisement data |
 
 ### Calibration vs Fingerprints (Independence)
 

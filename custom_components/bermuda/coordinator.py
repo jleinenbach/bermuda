@@ -1848,6 +1848,50 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         score_clamped = max(VIRTUAL_DISTANCE_MIN_SCORE, min(1.0, score))
         return max_radius * VIRTUAL_DISTANCE_SCALE * ((1.0 - score_clamped) ** 2)
 
+    def _collect_current_stamps(self, device: BermudaDevice, nowstamp: float) -> dict[str, float]:
+        """
+        Collect current scanner timestamps from device adverts.
+
+        This helper is used by BUG 20 fix to ensure streak counting only
+        increments when NEW advertisement data arrives, preventing cached
+        values from being counted multiple times.
+
+        Args:
+            device: The BermudaDevice to collect stamps from.
+            nowstamp: Current monotonic timestamp for freshness check.
+
+        Returns:
+            Dictionary mapping scanner_address to advert timestamp.
+            Only includes adverts within EVIDENCE_WINDOW_SECONDS.
+
+        """
+        current_stamps: dict[str, float] = {}
+        for advert in device.adverts.values():
+            if (
+                advert.stamp is not None
+                and advert.scanner_address is not None
+                and nowstamp - advert.stamp < EVIDENCE_WINDOW_SECONDS
+            ):
+                current_stamps[advert.scanner_address] = advert.stamp
+        return current_stamps
+
+    def _has_new_advert_data(self, current_stamps: dict[str, float], last_stamps: dict[str, float]) -> bool:
+        """
+        Check if any scanner has newer advertisement data.
+
+        Compares current timestamps against previously recorded timestamps
+        to detect when new BLE advertisement data has arrived.
+
+        Args:
+            current_stamps: Current scanner timestamps from _collect_current_stamps().
+            last_stamps: Previously recorded timestamps (e.g., device.pending_last_stamps).
+
+        Returns:
+            True if at least one scanner has a newer timestamp.
+
+        """
+        return any(current_stamps.get(scanner, 0) > last_stamps.get(scanner, 0) for scanner in current_stamps)
+
     def _get_virtual_distances_for_scannerless_rooms(
         self,
         device: BermudaDevice,
@@ -2350,10 +2394,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         # If same area as current, just refresh the selection
         # FIX: FEHLER 1 (continued) - Compare with device.area_id, not current_area_advert.area_id
         if current_device_area_id is not None and best_area_id == current_device_area_id:
-            device.pending_area_id = None
-            device.pending_floor_id = None
-            device.pending_streak = 0
-            device.pending_last_stamps = {}
+            device.reset_pending_state()
             self._apply_ukf_selection(
                 device,
                 best_advert,
@@ -2367,10 +2408,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         # If no current area, bootstrap immediately
         # FIX: FEHLER 1 (continued) - Check device.area_id, not current_area_advert
         if current_device_area_id is None:
-            device.pending_area_id = None
-            device.pending_floor_id = None
-            device.pending_streak = 0
-            device.pending_last_stamps = {}
+            device.reset_pending_state()
             self._apply_ukf_selection(
                 device,
                 best_advert,
@@ -2389,18 +2427,8 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         # counted multiple times. BLE devices advertise every 1-10s, but coordinator
         # updates every ~1s. Without this check, the same cached RSSI would count
         # as multiple "votes" for a room switch.
-        current_stamps: dict[str, float] = {}
-        for advert in device.adverts.values():
-            if (
-                advert.stamp is not None
-                and advert.scanner_address is not None
-                and nowstamp - advert.stamp < EVIDENCE_WINDOW_SECONDS
-            ):
-                current_stamps[advert.scanner_address] = advert.stamp
-
-        has_new_data = any(
-            current_stamps.get(scanner, 0) > device.pending_last_stamps.get(scanner, 0) for scanner in current_stamps
-        )
+        current_stamps = self._collect_current_stamps(device, nowstamp)
+        has_new_data = self._has_new_advert_data(current_stamps, device.pending_last_stamps)
 
         # Update streak counter - only if we have new data
         if device.pending_area_id == best_area_id and device.pending_floor_id == winner_floor_id:
@@ -2424,10 +2452,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
         # Check if streak meets threshold
         if device.pending_streak >= streak_target:
-            device.pending_area_id = None
-            device.pending_floor_id = None
-            device.pending_streak = 0
-            device.pending_last_stamps = {}  # Clear stamps when streak completes
+            device.reset_pending_state()
             self._apply_ukf_selection(
                 device,
                 best_advert,
@@ -3483,10 +3508,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             device._ukf_scannerless_area = True  # type: ignore[attr-defined]  # noqa: SLF001
 
             # Clear pending state since we've made a decision
-            device.pending_area_id = None
-            device.pending_floor_id = None
-            device.pending_streak = 0
-            device.pending_last_stamps = {}
+            device.reset_pending_state()
 
             tests.reason = f"WIN via virtual distance ({virtual_winner_distance:.2f}m) for scannerless room"
             device.diag_area_switch = tests.sensortext()
@@ -3723,18 +3745,12 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                         _max_radius,
                         top_summary,
                     )
-            device.pending_area_id = None
-            device.pending_floor_id = None
-            device.pending_streak = 0
-            device.pending_last_stamps = {}
+            device.reset_pending_state()
             _apply_selection(None)
             return
 
         if device.area_advert is winner:
-            device.pending_area_id = None
-            device.pending_floor_id = None
-            device.pending_streak = 0
-            device.pending_last_stamps = {}
+            device.reset_pending_state()
             _apply_selection(winner)
             return
 
@@ -3788,10 +3804,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
         if device.area_advert is None and winner is not None:
             # Bootstrap immediately when we have no area yet; don't wait for streak logic.
-            device.pending_area_id = None
-            device.pending_floor_id = None
-            device.pending_streak = 0
-            device.pending_last_stamps = {}
+            device.reset_pending_state()
             _apply_selection(winner)
             return
 
@@ -3866,10 +3879,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         )
 
         if allow_immediate_switch:
-            device.pending_area_id = None
-            device.pending_floor_id = None
-            device.pending_streak = 0
-            device.pending_last_stamps = {}
+            device.reset_pending_state()
             _apply_selection(winner)
             return
 
@@ -3883,18 +3893,8 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
         # BUG 20 FIX: Only count streak if we have NEW advertisement data
         # Similar to BUG 19 fix for training and UKF streak above.
-        current_stamps: dict[str, float] = {}
-        for advert in device.adverts.values():
-            if (
-                advert.stamp is not None
-                and advert.scanner_address is not None
-                and nowstamp - advert.stamp < EVIDENCE_WINDOW_SECONDS
-            ):
-                current_stamps[advert.scanner_address] = advert.stamp
-
-        has_new_data = any(
-            current_stamps.get(scanner, 0) > device.pending_last_stamps.get(scanner, 0) for scanner in current_stamps
-        )
+        current_stamps = self._collect_current_stamps(device, nowstamp)
+        has_new_data = self._has_new_advert_data(current_stamps, device.pending_last_stamps)
 
         if device.pending_area_id == winner.area_id and device.pending_floor_id == winner_floor_id:
             # Winner matches pending candidate - increment streak
@@ -3946,10 +3946,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             device.pending_last_stamps = dict(current_stamps)
 
         if device.pending_streak >= streak_target:
-            device.pending_area_id = None
-            device.pending_floor_id = None
-            device.pending_streak = 0
-            device.pending_last_stamps = {}  # Clear stamps when streak completes
+            device.reset_pending_state()
             _apply_selection(winner)
         else:
             device.diag_area_switch = tests.sensortext()

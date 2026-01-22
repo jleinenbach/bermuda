@@ -97,6 +97,7 @@ class FakeDevice:
         self.pending_area_id: str | None = None
         self.pending_floor_id: str | None = None
         self.pending_streak: int = 0
+        self.pending_last_stamps: dict[str, float] = {}
         self.diag_area_switch: str = ""
         self.area_changed_at: float = 0.0
         self.area_locked_id: str | None = None
@@ -117,6 +118,13 @@ class FakeDevice:
     def get_movement_state(self, stamp_now: float = 0.0) -> str:
         """Return movement state."""
         return "stationary"
+
+    def reset_pending_state(self) -> None:
+        """Reset pending area selection state."""
+        self.pending_area_id = None
+        self.pending_floor_id = None
+        self.pending_streak = 0
+        self.pending_last_stamps = {}
 
 
 class MockAreaRegistry:
