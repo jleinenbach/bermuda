@@ -148,6 +148,13 @@ UKF_WEAK_SCANNER_MIN_DISTANCE: Final = 3.0
 UKF_RSSI_SANITY_MARGIN: Final = 15.0  # dB threshold - signal must be this much weaker to trigger check
 UKF_LOW_CONFIDENCE_THRESHOLD: Final = 0.6  # Only apply sanity check when score is below this
 
+# BUG 21 FIX: Cross-floor sanity check for scannerless rooms
+# When UKF picks a scannerless room on a DIFFERENT floor than the strongest scanner,
+# and the strongest scanner has a strong signal, the UKF decision is suspicious.
+# A strong signal means the device is likely NEAR that scanner, not floors away.
+# Typical cross-floor attenuation: 10-15 dB per floor. -75 dBm is still quite strong.
+UKF_SCANNERLESS_CROSS_FLOOR_RSSI_THRESHOLD: Final = -75.0  # dB - reject if stronger and cross-floor
+
 # Virtual Distance for Scannerless Rooms
 # When UKF score is below threshold, scannerless rooms can still compete in min-distance
 # by calculating a "virtual distance" based on their fingerprint match quality.

@@ -120,6 +120,7 @@ from .const import (
     UKF_MIN_SCANNERS,
     UKF_RETENTION_THRESHOLD,
     UKF_RSSI_SANITY_MARGIN,
+    UKF_SCANNERLESS_CROSS_FLOOR_RSSI_THRESHOLD,
     UKF_STICKINESS_BONUS,
     UKF_WEAK_SCANNER_MIN_DISTANCE,
     UPDATE_INTERVAL,
@@ -2237,6 +2238,45 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                 return False
 
             scanner_less_room = True
+
+            # BUG 21 FIX: CROSS-FLOOR SANITY CHECK FOR SCANNERLESS ROOMS
+            # When UKF picks a scannerless room, check if the strongest scanner (by RSSI)
+            # is on a DIFFERENT floor. If the signal is strong (> -75 dBm), the device is
+            # likely NEAR that scanner, not floors away. Cross-floor signals are typically
+            # 10-15 dB weaker per floor. A strong signal + cross-floor = impossible.
+            #
+            # Example scenario this fixes:
+            # - Device is in "Lagerraum" (basement, scannerless)
+            # - UKF picks "Bad OG" (bathroom, 2 floors up, scannerless) with score 0.83
+            # - But a basement scanner sees device at -73 dBm (strong!)
+            # - If device were really 2 floors up, scanner would see ~-85 dBm or worse
+            # - Strong signal + cross-floor = impossible → reject UKF decision
+            if best_advert is not None and best_advert.scanner_device is not None:
+                strongest_scanner_floor_id = getattr(best_advert.scanner_device, "floor_id", None)
+                target_area_floor_id = self._resolve_floor_id_for_area(best_area_id)
+
+                if (
+                    strongest_scanner_floor_id is not None
+                    and target_area_floor_id is not None
+                    and strongest_scanner_floor_id != target_area_floor_id
+                    and best_advert.rssi is not None
+                    and best_advert.rssi > UKF_SCANNERLESS_CROSS_FLOOR_RSSI_THRESHOLD
+                ):
+                    # UKF picked a scannerless room on a DIFFERENT floor, but the strongest
+                    # scanner has a strong signal. This is physically implausible.
+                    if _LOGGER.isEnabledFor(logging.DEBUG):
+                        _LOGGER.debug(
+                            "BUG 21 FIX: UKF scannerless cross-floor sanity check FAILED for %s: "
+                            "UKF picked %s (floor %s), but strongest scanner is on floor %s with "
+                            "RSSI %.1f dBm (> threshold %.1f) - falling back to min-distance",
+                            device.name,
+                            best_area_id,
+                            target_area_floor_id,
+                            strongest_scanner_floor_id,
+                            best_advert.rssi,
+                            UKF_SCANNERLESS_CROSS_FLOOR_RSSI_THRESHOLD,
+                        )
+                    return False
 
         # Track whether current area is scannerless (for stickiness in future cycles)
         device._ukf_scannerless_area = scanner_less_room  # type: ignore[attr-defined]  # noqa: SLF001
