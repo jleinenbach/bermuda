@@ -38,6 +38,7 @@ from custom_components.bermuda.const import (
     VIRTUAL_DISTANCE_SCALE,
 )
 from custom_components.bermuda.coordinator import BermudaDataUpdateCoordinator
+from custom_components.bermuda.area_selection import AreaSelectionHandler
 from custom_components.bermuda.correlation.area_profile import AreaProfile
 from custom_components.bermuda.correlation.scanner_absolute import ScannerAbsoluteRssi
 from custom_components.bermuda.filters import UnscentedKalmanFilter
@@ -75,6 +76,7 @@ def _make_coordinator(hass: HomeAssistant) -> BermudaDataUpdateCoordinator:
     coordinator.correlation_store = MagicMock(async_save=AsyncMock())
     coordinator._correlations_loaded = True
     coordinator._last_correlation_save = 0.0
+    coordinator.area_selection = AreaSelectionHandler(coordinator)
     return coordinator
 
 
@@ -202,7 +204,7 @@ class TestVirtualDistanceCalculation:
         max_radius = 10.0
         score = 1.0
 
-        virtual_dist = coordinator._calculate_virtual_distance(score, max_radius)
+        virtual_dist = coordinator.area_selection._calculate_virtual_distance(score, max_radius)
 
         # With score 1.0: (1 - 1.0)² * 0.7 * 10 = 0
         assert virtual_dist == pytest.approx(0.0, abs=0.01)
@@ -212,7 +214,7 @@ class TestVirtualDistanceCalculation:
         max_radius = 10.0
         score = 0.5
 
-        virtual_dist = coordinator._calculate_virtual_distance(score, max_radius)
+        virtual_dist = coordinator.area_selection._calculate_virtual_distance(score, max_radius)
 
         # With score 0.5: (1 - 0.5)² * 0.7 * 10 = 0.25 * 7 = 1.75m
         expected = max_radius * VIRTUAL_DISTANCE_SCALE * ((1.0 - score) ** 2)
@@ -224,7 +226,7 @@ class TestVirtualDistanceCalculation:
         max_radius = 10.0
         score = 0.25
 
-        virtual_dist = coordinator._calculate_virtual_distance(score, max_radius)
+        virtual_dist = coordinator.area_selection._calculate_virtual_distance(score, max_radius)
 
         # With score 0.25: (1 - 0.25)² * 0.7 * 10 = 0.5625 * 7 = 3.9375m
         expected = max_radius * VIRTUAL_DISTANCE_SCALE * ((1.0 - score) ** 2)
@@ -236,7 +238,7 @@ class TestVirtualDistanceCalculation:
         max_radius = 10.0
         score = 0.3
 
-        virtual_dist = coordinator._calculate_virtual_distance(score, max_radius)
+        virtual_dist = coordinator.area_selection._calculate_virtual_distance(score, max_radius)
 
         # With score 0.3: (1 - 0.3)² * 0.7 * 10 = 0.49 * 7 = 3.43m
         # This should beat a scanner at 5.2m (Yunas Zimmer scenario)
@@ -248,7 +250,7 @@ class TestVirtualDistanceCalculation:
         max_radius = 10.0
         score = 0.01  # Below VIRTUAL_DISTANCE_MIN_SCORE (0.05)
 
-        virtual_dist = coordinator._calculate_virtual_distance(score, max_radius)
+        virtual_dist = coordinator.area_selection._calculate_virtual_distance(score, max_radius)
 
         # Should be clamped to minimum score of 0.05
         expected_clamped = max_radius * VIRTUAL_DISTANCE_SCALE * ((1.0 - VIRTUAL_DISTANCE_MIN_SCORE) ** 2)
@@ -259,7 +261,7 @@ class TestVirtualDistanceCalculation:
         max_radius = 10.0
 
         for score in [0.3, 0.4, 0.5, 0.6]:
-            quadratic_dist = coordinator._calculate_virtual_distance(score, max_radius)
+            quadratic_dist = coordinator.area_selection._calculate_virtual_distance(score, max_radius)
             linear_dist = max_radius * (1 - score)  # What linear would give
 
             # Quadratic should be shorter (more competitive)
@@ -279,7 +281,7 @@ class TestAreaHasScanner:
         scanner = _make_scanner_device("kitchen-scanner", "area-kitchen")
         coordinator._scanners.add(scanner)  # type: ignore[arg-type]
 
-        assert coordinator._area_has_scanner("area-kitchen") is True
+        assert coordinator.area_selection._area_has_scanner("area-kitchen") is True
 
     def test_area_without_scanner_returns_false(self, coordinator: BermudaDataUpdateCoordinator) -> None:
         """Area without a scanner should return False."""
@@ -287,11 +289,11 @@ class TestAreaHasScanner:
         coordinator._scanners.add(scanner)  # type: ignore[arg-type]
 
         # Different area should return False
-        assert coordinator._area_has_scanner("area-basement") is False
+        assert coordinator.area_selection._area_has_scanner("area-basement") is False
 
     def test_empty_scanners_returns_false(self, coordinator: BermudaDataUpdateCoordinator) -> None:
         """Empty scanner set should return False for any area."""
-        assert coordinator._area_has_scanner("any-area") is False
+        assert coordinator.area_selection._area_has_scanner("any-area") is False
 
 
 # =============================================================================
@@ -497,7 +499,9 @@ class TestScannerlessRoomScenarios:
         _setup_ukf_with_readings(coordinator, device.address, current_readings)
 
         # Calculate virtual distances
-        virtual_distances = coordinator._get_virtual_distances_for_scannerless_rooms(device, current_readings)
+        virtual_distances = coordinator.area_selection._get_virtual_distances_for_scannerless_rooms(
+            device, current_readings
+        )
 
         # Should be empty - auto-learned profiles don't get virtual distances
         assert len(virtual_distances) == 0, "Auto-learned profiles should not get virtual distances"
@@ -540,7 +544,9 @@ class TestScannerlessRoomScenarios:
         _setup_ukf_with_readings(coordinator, device.address, current_readings)
 
         # Calculate virtual distances
-        virtual_distances = coordinator._get_virtual_distances_for_scannerless_rooms(device, current_readings)
+        virtual_distances = coordinator.area_selection._get_virtual_distances_for_scannerless_rooms(
+            device, current_readings
+        )
 
         # Should be empty - room has a scanner, so uses real distance
         assert len(virtual_distances) == 0, "Rooms with scanners should not get virtual distances"
@@ -556,7 +562,9 @@ class TestVirtualDistanceEdgeCases:
 
         rssi_readings = {"scanner-1": -70.0, "scanner-2": -75.0}
 
-        virtual_distances = coordinator._get_virtual_distances_for_scannerless_rooms(device, rssi_readings)
+        virtual_distances = coordinator.area_selection._get_virtual_distances_for_scannerless_rooms(
+            device, rssi_readings
+        )
 
         assert len(virtual_distances) == 0
 
@@ -572,7 +580,9 @@ class TestVirtualDistanceEdgeCases:
         profile = _create_button_trained_profile("some-area", ["scanner-1"], [-70.0])
         coordinator.correlations[device.address] = {"some-area": profile}
 
-        virtual_distances = coordinator._get_virtual_distances_for_scannerless_rooms(device, rssi_readings)
+        virtual_distances = coordinator.area_selection._get_virtual_distances_for_scannerless_rooms(
+            device, rssi_readings
+        )
 
         assert len(virtual_distances) == 0
 
@@ -600,7 +610,9 @@ class TestVirtualDistanceEdgeCases:
         # Before: no UKF exists
         assert device.address not in coordinator.device_ukfs
 
-        virtual_distances = coordinator._get_virtual_distances_for_scannerless_rooms(device, rssi_readings)
+        virtual_distances = coordinator.area_selection._get_virtual_distances_for_scannerless_rooms(
+            device, rssi_readings
+        )
 
         # After: UKF should have been created
         assert device.address in coordinator.device_ukfs
@@ -632,7 +644,9 @@ class TestVirtualDistanceEdgeCases:
         rssi_readings = {"scanner-upstairs-1": -78.0, "scanner-upstairs-2": -82.0}
         _setup_ukf_with_readings(coordinator, device.address, rssi_readings)
 
-        virtual_distances = coordinator._get_virtual_distances_for_scannerless_rooms(device, rssi_readings)
+        virtual_distances = coordinator.area_selection._get_virtual_distances_for_scannerless_rooms(
+            device, rssi_readings
+        )
 
         # Both rooms should have virtual distances
         assert room1 in virtual_distances or room2 in virtual_distances, (

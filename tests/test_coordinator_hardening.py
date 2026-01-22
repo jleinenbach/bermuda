@@ -13,6 +13,7 @@ from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import floor_registry as fr
 
 from custom_components.bermuda import coordinator as coordinator_mod
+from custom_components.bermuda import services as services_mod
 from custom_components.bermuda.bermuda_device import BermudaDevice
 from custom_components.bermuda.fmdn import BermudaFmdnManager, FmdnIntegration
 from custom_components.bermuda.bermuda_irk import BermudaIrkManager
@@ -26,6 +27,8 @@ from custom_components.bermuda.const import (
     DEFAULT_SMOOTHING_SAMPLES,
 )
 from custom_components.bermuda.coordinator import BermudaDataUpdateCoordinator
+from custom_components.bermuda.area_selection import AreaSelectionHandler
+from custom_components.bermuda.services import BermudaServiceHandler
 
 
 def _make_coordinator(hass: HomeAssistant) -> BermudaDataUpdateCoordinator:
@@ -59,18 +62,14 @@ def _make_coordinator(hass: HomeAssistant) -> BermudaDataUpdateCoordinator:
     coordinator.fr = fr.async_get(hass)
     coordinator.irk_manager = BermudaIrkManager()
     coordinator.fmdn = FmdnIntegration(coordinator)
-    coordinator.redactions = {}
-    coordinator._redact_generic_re = re.compile(
-        r"(?P<start>[0-9A-Fa-f]{2})[:_-]([0-9A-Fa-f]{2}[:_-]){4}(?P<end>[0-9A-Fa-f]{2})"
-    )
-    coordinator._redact_generic_sub = r"\g<start>:xx:xx:xx:xx:\g<end>"
+    coordinator.service_handler = BermudaServiceHandler(coordinator)
     coordinator.pb_state_sources = {}
     coordinator.stamp_last_prune = 0
-    coordinator.stamp_redactions_expiry = None
     coordinator.update_in_progress = False
     coordinator.last_update_success = False
     coordinator._waitingfor_load_manufacturer_ids = False
     coordinator.config_entry = SimpleNamespace(async_on_unload=lambda cb: cb)  # type: ignore[assignment]
+    coordinator.area_selection = AreaSelectionHandler(coordinator)
     return coordinator
 
 
@@ -145,9 +144,10 @@ def test_refresh_area_by_min_distance_handles_empty_incumbent_history(
 def test_redact_data_handles_many_entries(hass: HomeAssistant) -> None:
     """Large redaction sets should remain functional."""
     coordinator = _make_coordinator(hass)
-    coordinator.redactions = {f"aa:bb:cc:dd:ee:{i:02x}": f"redacted-{i}" for i in range(500)}
+    # Access redactions via service_handler
+    coordinator.service_handler.redactions = {f"aa:bb:cc:dd:ee:{i:02x}": f"redacted-{i}" for i in range(500)}
 
-    result = coordinator.redact_data("AA:BB:CC:DD:EE:00 is present", first_recursion=False)
+    result = coordinator.service_handler.redact_data("AA:BB:CC:DD:EE:00 is present", first_recursion=False)
 
     assert "redacted-0" in result
 
@@ -168,7 +168,7 @@ async def test_async_update_data_returns_internal_result(hass: HomeAssistant) ->
 @pytest.mark.asyncio
 async def test_dump_devices_limits_when_over_soft_cap(monkeypatch: pytest.MonkeyPatch, hass: HomeAssistant) -> None:
     """Dump service should fall back when device graph is oversized."""
-    monkeypatch.setattr(coordinator_mod, "DUMP_DEVICE_SOFT_LIMIT", 2)
+    monkeypatch.setattr(services_mod, "DUMP_DEVICE_SOFT_LIMIT", 2)
     coordinator = _make_coordinator(hass)
     coordinator.options[CONF_DEVICES] = ["AA:BB:CC:DD:EE:01"]
     coordinator._scanner_list = {"aa:bb:cc:dd:ee:ff"}

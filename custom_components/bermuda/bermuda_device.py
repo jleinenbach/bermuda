@@ -201,6 +201,10 @@ class BermudaDevice(dict):
         self.training_target_floor_id: str | None = None
         self.training_target_area_id: str | None = None
 
+        # UKF scannerless area detection flag - True when the current area was selected
+        # via UKF fingerprint matching for a room without its own scanner
+        self._ukf_scannerless_area: bool = False
+
         self._async_process_address_type()
 
     def _async_process_address_type(self):
@@ -777,6 +781,23 @@ class BermudaDevice(dict):
             self.name,
             len(self.adverts),
         )
+
+    def reset_pending_state(self) -> None:
+        """
+        Reset pending area selection state.
+
+        Called when a streak threshold is met and an area switch occurs,
+        or when the device switches to a different pending candidate.
+        This clears all pending state to prepare for new streak counting.
+
+        Pending state is used for hysteresis protection - a device must
+        consistently "vote" for a new area multiple times (streak) before
+        the system switches to it. This prevents flickering due to noise.
+        """
+        self.pending_area_id = None
+        self.pending_floor_id = None
+        self.pending_streak = 0
+        self.pending_last_stamps = {}
 
     def _area_state_age(self, stamp_now: float) -> float | None:
         """Return the age of the last applied area selection."""

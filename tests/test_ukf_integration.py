@@ -14,6 +14,7 @@ from custom_components.bermuda.const import (
     DEFAULT_USE_UKF_AREA_SELECTION,
     UKF_MIN_SCANNERS,
 )
+from custom_components.bermuda.area_selection import AreaSelectionHandler
 from custom_components.bermuda.coordinator import BermudaDataUpdateCoordinator
 from custom_components.bermuda.correlation import AreaProfile
 from custom_components.bermuda.correlation.room_profile import RoomProfile
@@ -28,15 +29,20 @@ TEST_BASE_TIME = 1000.0
 def mock_monotonic_time(monkeypatch: pytest.MonkeyPatch) -> None:
     """Mock monotonic_time_coarse to return a value close to TEST_BASE_TIME.
 
-    This is needed because the coordinator checks if adverts are recent using:
+    This is needed because the area_selection checks if adverts are recent using:
         nowstamp - advert.stamp < EVIDENCE_WINDOW_SECONDS
 
     Without this mock, monotonic_time_coarse() returns system uptime which is
     much larger than our test fixture stamps (1000.0), making all adverts appear stale.
     """
     # Return a time slightly after TEST_BASE_TIME so adverts with stamp=TEST_BASE_TIME are "recent"
+    # Patch both coordinator and area_selection modules since the UKF method moved
     monkeypatch.setattr(
         "custom_components.bermuda.coordinator.monotonic_time_coarse",
+        lambda: TEST_BASE_TIME + 5.0,
+    )
+    monkeypatch.setattr(
+        "custom_components.bermuda.area_selection.monotonic_time_coarse",
         lambda: TEST_BASE_TIME + 5.0,
     )
 
@@ -97,6 +103,7 @@ class FakeDevice:
         self.pending_area_id: str | None = None
         self.pending_floor_id: str | None = None
         self.pending_streak: int = 0
+        self.pending_last_stamps: dict[str, float] = {}
         self.diag_area_switch: str = ""
         self.area_changed_at: float = 0.0
         self.area_locked_id: str | None = None
@@ -117,6 +124,13 @@ class FakeDevice:
     def get_movement_state(self, stamp_now: float = 0.0) -> str:
         """Return movement state."""
         return "stationary"
+
+    def reset_pending_state(self) -> None:
+        """Reset pending area selection state."""
+        self.pending_area_id = None
+        self.pending_floor_id = None
+        self.pending_streak = 0
+        self.pending_last_stamps = {}
 
 
 class MockAreaRegistry:
@@ -155,6 +169,8 @@ def create_coordinator_mock() -> BermudaDataUpdateCoordinator:
     coordinator.AreaTests = BermudaDataUpdateCoordinator.AreaTests
     # FIX: Add mock area registry for floor resolution in _refresh_area_by_ukf
     coordinator.ar = MockAreaRegistry()
+    # FIX: Add area_selection handler for delegated area selection logic
+    coordinator.area_selection = AreaSelectionHandler(coordinator)
     return coordinator
 
 
@@ -187,7 +203,7 @@ class TestUKFIntegration:
         coordinator = create_coordinator_mock()
         device = FakeDevice("AA:BB:CC:DD:EE:01", "Test Device")
 
-        result = coordinator._refresh_area_by_ukf(device)
+        result = coordinator.area_selection._refresh_area_by_ukf(device)
         assert result is False
 
     def test_refresh_area_by_ukf_insufficient_scanners(self, mock_monotonic_time: None) -> None:
@@ -206,7 +222,7 @@ class TestUKFIntegration:
         )
         device.adverts[scanner.address] = advert
 
-        result = coordinator._refresh_area_by_ukf(device)
+        result = coordinator.area_selection._refresh_area_by_ukf(device)
         assert result is False
         assert UKF_MIN_SCANNERS >= 2  # Confirm we need at least 2
 
@@ -231,7 +247,7 @@ class TestUKFIntegration:
             device.adverts[scanner.address] = advert
 
         # Call UKF refresh (will return False due to no profiles, but should create UKF)
-        coordinator._refresh_area_by_ukf(device)
+        coordinator.area_selection._refresh_area_by_ukf(device)
 
         assert device.address in coordinator.device_ukfs
         assert isinstance(coordinator.device_ukfs[device.address], UnscentedKalmanFilter)
@@ -256,7 +272,7 @@ class TestUKFIntegration:
             )
             device.adverts[scanner.address] = advert
 
-        result = coordinator._refresh_area_by_ukf(device)
+        result = coordinator.area_selection._refresh_area_by_ukf(device)
         assert result is False
 
     def test_refresh_area_by_ukf_with_profiles(self, mock_monotonic_time: None) -> None:
@@ -298,7 +314,7 @@ class TestUKFIntegration:
         coordinator.correlations[device.address] = {"kitchen": kitchen_profile}
 
         # UKF should now find a match
-        result = coordinator._refresh_area_by_ukf(device)
+        result = coordinator.area_selection._refresh_area_by_ukf(device)
 
         # The result depends on whether the match score meets the threshold
         # With identical readings, match should be very good
@@ -327,7 +343,7 @@ class TestUKFIntegration:
             ukf_called["count"] += 1
             return False  # Return False to fall through to min-distance
 
-        coordinator._refresh_area_by_ukf = mock_ukf_refresh  # type: ignore[method-assign]
+        coordinator.area_selection._refresh_area_by_ukf = mock_ukf_refresh  # type: ignore[method-assign]
 
         # Mock min-distance method
         min_dist_called = {"count": 0}
@@ -335,7 +351,7 @@ class TestUKFIntegration:
         def mock_min_dist_refresh(dev: FakeDevice) -> None:
             min_dist_called["count"] += 1
 
-        coordinator._refresh_area_by_min_distance = mock_min_dist_refresh  # type: ignore[method-assign]
+        coordinator.area_selection._refresh_area_by_min_distance = mock_min_dist_refresh  # type: ignore[method-assign]
 
         # Call the refresh method
         coordinator._refresh_areas_by_min_distance()
@@ -362,7 +378,7 @@ class TestUKFIntegration:
             ukf_called["count"] += 1
             return True  # UKF made a decision
 
-        coordinator._refresh_area_by_ukf = mock_ukf_refresh  # type: ignore[method-assign]
+        coordinator.area_selection._refresh_area_by_ukf = mock_ukf_refresh  # type: ignore[method-assign]
 
         # Mock min-distance method
         min_dist_called = {"count": 0}
@@ -370,7 +386,7 @@ class TestUKFIntegration:
         def mock_min_dist_refresh(dev: FakeDevice) -> None:
             min_dist_called["count"] += 1
 
-        coordinator._refresh_area_by_min_distance = mock_min_dist_refresh  # type: ignore[method-assign]
+        coordinator.area_selection._refresh_area_by_min_distance = mock_min_dist_refresh  # type: ignore[method-assign]
 
         # Call the refresh method
         coordinator._refresh_areas_by_min_distance()
@@ -397,7 +413,7 @@ class TestUKFIntegration:
             ukf_called["count"] += 1
             return True
 
-        coordinator._refresh_area_by_ukf = mock_ukf_refresh  # type: ignore[method-assign]
+        coordinator.area_selection._refresh_area_by_ukf = mock_ukf_refresh  # type: ignore[method-assign]
 
         # Mock min-distance method
         min_dist_called = {"count": 0}
@@ -405,7 +421,7 @@ class TestUKFIntegration:
         def mock_min_dist_refresh(dev: FakeDevice) -> None:
             min_dist_called["count"] += 1
 
-        coordinator._refresh_area_by_min_distance = mock_min_dist_refresh  # type: ignore[method-assign]
+        coordinator.area_selection._refresh_area_by_min_distance = mock_min_dist_refresh  # type: ignore[method-assign]
 
         # Call the refresh method
         coordinator._refresh_areas_by_min_distance()
@@ -536,7 +552,7 @@ class TestUKFAreaSelectionWithPseudoData:
         }
 
         # Run UKF area selection
-        result = coordinator._refresh_area_by_ukf(device)
+        result = coordinator.area_selection._refresh_area_by_ukf(device)
 
         # UKF should make a decision (have profiles and enough scanners)
         assert result is True
@@ -610,7 +626,7 @@ class TestUKFAreaSelectionWithPseudoData:
             "bedroom": bedroom_profile,
         }
 
-        result = coordinator._refresh_area_by_ukf(device)
+        result = coordinator.area_selection._refresh_area_by_ukf(device)
 
         assert result is True
         assert device.area_id == "living"
@@ -655,7 +671,7 @@ class TestUKFAreaSelectionWithPseudoData:
         coordinator.correlations[device.address] = {"kitchen": kitchen_profile}
 
         # Should still work with 2 scanners
-        result = coordinator._refresh_area_by_ukf(device)
+        result = coordinator.area_selection._refresh_area_by_ukf(device)
 
         # UKF should be created and process the data
         assert device.address in coordinator.device_ukfs
@@ -685,12 +701,12 @@ class TestUKFAreaSelectionWithPseudoData:
         )
 
         # First call creates UKF
-        coordinator._refresh_area_by_ukf(device)
+        coordinator.area_selection._refresh_area_by_ukf(device)
         first_ukf = coordinator.device_ukfs.get(device.address)
         assert first_ukf is not None
 
         # Second call should reuse same instance
-        coordinator._refresh_area_by_ukf(device)
+        coordinator.area_selection._refresh_area_by_ukf(device)
         second_ukf = coordinator.device_ukfs.get(device.address)
 
         assert first_ukf is second_ukf
@@ -728,7 +744,7 @@ class TestUKFAreaSelectionWithPseudoData:
                 area_id="driveway",
                 scanner_device=scanner2,
             )
-            coordinator._refresh_area_by_ukf(device)
+            coordinator.area_selection._refresh_area_by_ukf(device)
 
         # After multiple consistent updates, UKF should have converged
         ukf = coordinator.device_ukfs[device.address]
@@ -798,7 +814,7 @@ class TestUKFAreaSelectionWithPseudoData:
             scanner_device=scanner3,
         )
 
-        result = coordinator._refresh_area_by_ukf(device)
+        result = coordinator.area_selection._refresh_area_by_ukf(device)
 
         assert result is True
         assert device.area_id == "room_a"
@@ -828,7 +844,7 @@ class TestUKFAreaSelectionWithPseudoData:
         )
 
         # With only 1 fresh advert, UKF should return False (need min 2 scanners)
-        result = coordinator._refresh_area_by_ukf(device)
+        result = coordinator.area_selection._refresh_area_by_ukf(device)
 
         # Result depends on evidence window check
         # The stale advert should be filtered out
@@ -864,8 +880,8 @@ class TestUKFWithMultipleDevices:
                 scanner_device=scanner2,
             )
 
-        coordinator._refresh_area_by_ukf(device1)
-        coordinator._refresh_area_by_ukf(device2)
+        coordinator.area_selection._refresh_area_by_ukf(device1)
+        coordinator.area_selection._refresh_area_by_ukf(device2)
 
         # Each device should have its own UKF
         assert device1.address in coordinator.device_ukfs
@@ -914,8 +930,8 @@ class TestUKFWithMultipleDevices:
             scanner_device=scanner2,
         )
 
-        coordinator._refresh_area_by_ukf(device1)
-        coordinator._refresh_area_by_ukf(device2)
+        coordinator.area_selection._refresh_area_by_ukf(device1)
+        coordinator.area_selection._refresh_area_by_ukf(device2)
 
         ukf1 = coordinator.device_ukfs[device1.address]
         ukf2 = coordinator.device_ukfs[device2.address]

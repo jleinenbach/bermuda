@@ -1,0 +1,2144 @@
+"""
+Area selection logic for Bermuda BLE tracker.
+
+This module contains all area/room selection algorithms including:
+- UKF (Unscented Kalman Filter) fingerprint matching
+- Min-distance heuristic fallback
+- Virtual distance calculation for scannerless rooms
+- Cross-floor protection and streak logic
+"""
+
+from __future__ import annotations
+
+import logging
+import math
+from collections.abc import Hashable
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
+
+from bluetooth_data_tools import monotonic_time_coarse
+
+from .const import (
+    AREA_MAX_AD_AGE_DEFAULT,
+    AREA_MAX_AD_AGE_LIMIT,
+    CONF_MAX_RADIUS,
+    CONF_USE_PHYSICAL_RSSI_PRIORITY,
+    CONFIDENCE_WINNER_MARGIN,
+    CONFIDENCE_WINNER_MIN,
+    CORR_CONFIDENCE_WINNER_MARGIN,
+    CORR_CONFIDENCE_WINNER_MIN,
+    CROSS_FLOOR_ESCAPE_BASE,
+    CROSS_FLOOR_MARGIN_BASE,
+    CROSS_FLOOR_MIN_HISTORY,
+    CROSS_FLOOR_STREAK,
+    DEFAULT_MAX_RADIUS,
+    DEFAULT_USE_PHYSICAL_RSSI_PRIORITY,
+    EVIDENCE_WINDOW_SECONDS,
+    HISTORY_WINDOW,
+    INCUMBENT_MARGIN_METERS,
+    MARGIN_MOVING_PERCENT,
+    MARGIN_SETTLING_PERCENT,
+    MARGIN_STATIONARY_METERS,
+    MARGIN_STATIONARY_PERCENT,
+    MOVEMENT_STATE_MOVING,
+    MOVEMENT_STATE_SETTLING,
+    NEAR_FIELD_ABS_WIN_METERS,
+    NEAR_FIELD_CUTOFF,
+    NEAR_FIELD_THRESHOLD,
+    PDIFF_HISTORICAL,
+    PDIFF_OUTRIGHT,
+    RSSI_CONSISTENCY_MARGIN_DB,
+    RSSI_FALLBACK_CROSS_FLOOR_MARGIN,
+    RSSI_FALLBACK_MARGIN,
+    SAME_FLOOR_MIN_HISTORY,
+    SAME_FLOOR_STREAK,
+    SOFT_INC_MIN_DISTANCE_ADVANTAGE,
+    SOFT_INC_MIN_HISTORY_DIVISOR,
+    UKF_LOW_CONFIDENCE_THRESHOLD,
+    UKF_MIN_MATCH_SCORE,
+    UKF_MIN_SCANNERS,
+    UKF_RETENTION_THRESHOLD,
+    UKF_RSSI_SANITY_MARGIN,
+    UKF_STICKINESS_BONUS,
+    UKF_WEAK_SCANNER_MIN_DISTANCE,
+    UPDATE_INTERVAL,
+    VIRTUAL_DISTANCE_MIN_SCORE,
+    VIRTUAL_DISTANCE_SCALE,
+)
+from .correlation import AreaProfile, RoomProfile, z_scores_to_confidence
+from .filters import UnscentedKalmanFilter
+
+if TYPE_CHECKING:
+    from .bermuda_advert import BermudaAdvert
+    from .bermuda_device import BermudaDevice
+    from .coordinator import BermudaDataUpdateCoordinator
+
+_LOGGER = logging.getLogger(__name__)
+
+
+@dataclass
+class AreaTests:
+    """
+    Holds the results of Area-based tests.
+
+    Likely to become a stand-alone class for performing the whole area-selection
+    process.
+    """
+
+    device: str = ""
+    scannername: tuple[str, str] = ("", "")
+    areas: tuple[str, str] = ("", "")
+    pcnt_diff: float = 0  # distance percentage difference.
+    same_area: bool = False  # The old scanner is in the same area as us.
+    last_ad_age: tuple[float, float] = (0, 0)  # seconds since we last got *any* ad from scanner
+    this_ad_age: tuple[float, float] = (0, 0)  # how old the *current* advert is on this scanner
+    distance: tuple[float, float] = (0, 0)
+    hist_min_max: tuple[float, float] = (0, 0)  # min/max distance from history
+    floors: tuple[str | None, str | None] = (None, None)
+    floor_levels: tuple[str | int | None, str | int | None] = (None, None)
+    reason: str | None = None  # reason/result
+
+    def sensortext(self) -> str:
+        """Return a text summary suitable for use in a sensor entity."""
+        out = ""
+        for var, val in vars(self).items():
+            out += f"{var}|"
+            if isinstance(val, tuple):
+                for v in val:
+                    if isinstance(v, float):
+                        out += f"{v:.2f}|"
+                    else:
+                        out += f"{v}"
+            elif var == "pcnt_diff":
+                out += f"{val:.3f}"
+            else:
+                out += f"{val}"
+            out += "\n"
+        return out[:255]
+
+    def __str__(self) -> str:
+        """
+        Create string representation for easy debug logging/dumping
+        and potentially a sensor for logging Area decisions.
+        """
+        out = ""
+        for var, val in vars(self).items():
+            out += f"** {var:20} "
+            if isinstance(val, tuple):
+                for v in val:
+                    if isinstance(v, float):
+                        out += f"{v:.2f} "
+                    else:
+                        out += f"{v} "
+                out += "\n"
+            elif var == "pcnt_diff":
+                out += f"{val:.3f}\n"
+            else:
+                out += f"{val}\n"
+        return out
+
+
+class AreaSelectionHandler:
+    """
+    Handles all area/room selection logic for Bermuda devices.
+
+    This class encapsulates the complex area selection algorithms including:
+    - UKF fingerprint matching for learned room patterns
+    - Min-distance heuristic for simple proximity-based selection
+    - Virtual distance calculation for scannerless rooms
+    - Cross-floor protection with streak requirements
+    - Stability margins and hysteresis to prevent flickering
+    """
+
+    def __init__(self, coordinator: BermudaDataUpdateCoordinator) -> None:
+        """
+        Initialize the area selection handler.
+
+        Args:
+            coordinator: The parent coordinator that owns device state and configuration.
+
+        """
+        self.coordinator = coordinator
+
+    # =========================================================================
+    # Property accessors for coordinator state
+    # =========================================================================
+
+    @property
+    def options(self) -> dict[str, Any]:
+        """Access coordinator options."""
+        return self.coordinator.options
+
+    @property
+    def correlations(self) -> dict[str, dict[str, Any]]:
+        """Access device-specific correlation profiles."""
+        return self.coordinator.correlations
+
+    @property
+    def room_profiles(self) -> dict[str, Any]:
+        """Access device-independent room profiles."""
+        return self.coordinator.room_profiles
+
+    @property
+    def device_ukfs(self) -> dict[str, Any]:
+        """Access per-device UKF states."""
+        return self.coordinator.device_ukfs
+
+    @property
+    def _scanners(self) -> set[Any]:
+        """Access scanner set."""
+        return self.coordinator._scanners  # noqa: SLF001
+
+    @property
+    def ar(self) -> Any:
+        """Access Home Assistant area registry."""
+        return self.coordinator.ar
+
+    @property
+    def devices(self) -> dict[str, BermudaDevice]:
+        """Access device dictionary."""
+        return self.coordinator.devices
+
+    # =========================================================================
+    # Pure helper functions (no coordinator state access)
+    # =========================================================================
+
+    def _calculate_virtual_distance(self, score: float, max_radius: float) -> float:
+        """
+        Convert a UKF fingerprint match score to a virtual distance.
+
+        Uses a scaled quadratic formula that rewards medium scores (0.3-0.5)
+        more aggressively than linear, allowing scannerless rooms to compete
+        against physical scanners through walls.
+
+        Formula: max_radius * SCALE * (1 - score)²
+
+        Args:
+            score: UKF match score (0.0 to 1.0)
+            max_radius: Maximum radius from configuration
+
+        Returns:
+            Virtual distance in meters. Lower scores produce larger distances.
+
+        """
+        score_clamped = max(VIRTUAL_DISTANCE_MIN_SCORE, min(1.0, score))
+        return max_radius * VIRTUAL_DISTANCE_SCALE * ((1.0 - score_clamped) ** 2)
+
+    def _collect_current_stamps(self, device: BermudaDevice, nowstamp: float) -> dict[str, float]:
+        """
+        Collect current scanner timestamps from device adverts.
+
+        This helper is used by BUG 20 fix to ensure streak counting only
+        increments when NEW advertisement data arrives, preventing cached
+        values from being counted multiple times.
+
+        Args:
+            device: The BermudaDevice to collect stamps from.
+            nowstamp: Current monotonic timestamp for freshness check.
+
+        Returns:
+            Dictionary mapping scanner_address to advert timestamp.
+            Only includes adverts within EVIDENCE_WINDOW_SECONDS.
+
+        """
+        current_stamps: dict[str, float] = {}
+        for advert in device.adverts.values():
+            if (
+                advert.stamp is not None
+                and advert.scanner_address is not None
+                and nowstamp - advert.stamp < EVIDENCE_WINDOW_SECONDS
+            ):
+                current_stamps[advert.scanner_address] = advert.stamp
+        return current_stamps
+
+    def _has_new_advert_data(self, current_stamps: dict[str, float], last_stamps: dict[str, float]) -> bool:
+        """
+        Check if any scanner has newer advertisement data.
+
+        Compares current timestamps against previously recorded timestamps
+        to detect when new BLE advertisement data has arrived.
+
+        Args:
+            current_stamps: Current scanner timestamps from _collect_current_stamps().
+            last_stamps: Previously recorded timestamps (e.g., device.pending_last_stamps).
+
+        Returns:
+            True if at least one scanner has a newer timestamp.
+
+        """
+        return any(current_stamps.get(scanner, 0) > last_stamps.get(scanner, 0) for scanner in current_stamps)
+
+    # =========================================================================
+    # Registry helper functions (access ar, _scanners)
+    # =========================================================================
+
+    def _resolve_floor_id_for_area(self, area_id: str | None) -> str | None:
+        """
+        Resolve floor_id for an area_id using the Home Assistant area registry.
+
+        This is essential for scannerless rooms where we can't get floor_id from
+        a scanner_device - we must look up the area directly.
+        """
+        if area_id is None:
+            return None
+        area = self.ar.async_get_area(area_id)
+        if area is not None:
+            return getattr(area, "floor_id", None)
+        return None
+
+    def _area_has_scanner(self, area_id: str) -> bool:
+        """
+        Check if an area has at least one scanner assigned to it.
+
+        Args:
+            area_id: The Home Assistant area ID to check.
+
+        Returns:
+            True if the area contains at least one scanner device.
+
+        """
+        return any(scanner.area_id == area_id for scanner in self._scanners)
+
+    def resolve_area_name(self, area_id: str | None) -> str | None:
+        """
+        Given an area_id, return the current area name.
+
+        Will return None if the area id does *not* resolve to a single
+        known area name.
+        """
+        if area_id is None:
+            return None
+
+        areas = self.ar.async_get_area(area_id)
+        if hasattr(areas, "name"):
+            return getattr(areas, "name", "invalid_area")
+        return None
+
+    def effective_distance(self, advert: BermudaAdvert | None, nowstamp: float) -> float | None:
+        """
+        Calculate the best available distance estimate for an advert.
+
+        Rules:
+        1) If advert.rssi_distance is present, prefer it (smoothed distance).
+        2) If the advert is fresh and has historical distance samples, return the most recent
+           historical value to preserve the last known proximity when smoothing yields None.
+        3) Otherwise return None.
+        """
+        if advert is None:
+            return None
+
+        if advert.rssi_distance is not None:
+            return advert.rssi_distance
+
+        # Use the advert's adaptive timeout if available, otherwise fall back to default.
+        max_age = getattr(advert, "adaptive_timeout", None) or AREA_MAX_AD_AGE_DEFAULT
+        max_age = min(max_age, AREA_MAX_AD_AGE_LIMIT)
+
+        if advert.stamp < nowstamp - max_age:
+            return None
+
+        hist_distances = [
+            value for value in getattr(advert, "hist_distance_by_interval", []) if isinstance(value, (int, float))
+        ]
+        if hist_distances:
+            return hist_distances[0]
+
+        return None
+
+    # =========================================================================
+    # Correlation confidence (accesses self.correlations)
+    # =========================================================================
+
+    def _get_correlation_confidence(  # noqa: PLR0911
+        self,
+        device_address: str,
+        area_id: str,
+        primary_rssi: float | None,
+        current_readings: dict[str, float],
+    ) -> float:
+        """
+        Calculate correlation confidence for a device in an area.
+
+        Compares observed RSSI patterns against learned expectations.
+
+        Args:
+            device_address: The device's address.
+            area_id: The area to check confidence for.
+            primary_rssi: RSSI from the primary scanner.
+            current_readings: Map of scanner_id to RSSI for all visible scanners.
+
+        Returns:
+            Confidence value 0.0-1.0. Returns 1.0 if no learned data exists.
+
+        """
+        if device_address not in self.correlations:
+            return 1.0
+        if area_id not in self.correlations[device_address]:
+            return 1.0
+        if primary_rssi is None:
+            return 1.0
+
+        profile = self.correlations[device_address][area_id]
+        if profile.mature_correlation_count == 0:
+            return 1.0
+
+        z_scores = profile.get_z_scores(primary_rssi, current_readings)
+        if not z_scores:
+            return 1.0
+
+        # FIX: Integrate absolute RSSI z-scores to detect far-field false positives.
+        absolute_z_scores = profile.get_absolute_z_scores(current_readings)
+        if absolute_z_scores:
+            max_abs_z = max(z for _, z in absolute_z_scores)
+            if max_abs_z > 3.0:
+                absolute_penalty: float = 0.5 ** (max_abs_z - 2.0)
+                delta_confidence: float = z_scores_to_confidence(z_scores)
+                return float(delta_confidence * absolute_penalty)
+
+        return z_scores_to_confidence(z_scores)
+
+    # =========================================================================
+    # Virtual distance for scannerless rooms
+    # =========================================================================
+
+    def _get_virtual_distances_for_scannerless_rooms(
+        self,
+        device: BermudaDevice,
+        rssi_readings: dict[str, float],
+    ) -> dict[str, float]:
+        """
+        Calculate virtual distances for scannerless rooms based on UKF fingerprint match.
+
+        When UKF score is below threshold for switching, scannerless rooms would normally
+        be invisible to min-distance fallback (since they have no scanner to measure).
+        This method calculates a "virtual distance" based on how well the current RSSI
+        pattern matches the trained fingerprint, allowing scannerless rooms to compete.
+
+        Only considers rooms that:
+        1. Have been explicitly button-trained by the user
+        2. Have no physical scanner in the room
+        3. Have a minimum UKF score (to avoid phantom matches)
+
+        Args:
+            device: The device to calculate virtual distances for.
+            rssi_readings: Current RSSI readings from all visible scanners.
+
+        Returns:
+            Dict mapping area_id to virtual distance (meters) for scannerless rooms.
+
+        """
+        from .filters.ukf import UnscentedKalmanFilter  # noqa: PLC0415
+
+        virtual_distances: dict[str, float] = {}
+
+        # Need device profiles to calculate fingerprint matches
+        if device.address not in self.correlations:
+            return virtual_distances
+
+        device_profiles = self.correlations[device.address]
+        max_radius = self.options.get(CONF_MAX_RADIUS, DEFAULT_MAX_RADIUS)
+
+        # Need minimum scanners for meaningful score calculation
+        if len(rssi_readings) < UKF_MIN_SCANNERS:
+            return virtual_distances
+
+        # Get or create UKF for this device
+        if device.address not in self.device_ukfs:
+            self.device_ukfs[device.address] = UnscentedKalmanFilter()
+
+        ukf = self.device_ukfs[device.address]
+
+        # Update UKF with current readings before matching
+        ukf.predict(dt=UPDATE_INTERVAL)
+        ukf.update_multi(rssi_readings)
+
+        # Get all matches from UKF
+        matches = ukf.match_fingerprints(device_profiles, self.room_profiles)
+
+        # DEBUG logging
+        if _LOGGER.isEnabledFor(logging.DEBUG):
+            _LOGGER.debug(
+                "Virtual distance check for %s: %d device_profiles, %d matches, rssi_readings=%s, ukf_scanners=%s",
+                device.name,
+                len(device_profiles),
+                len(matches),
+                list(rssi_readings.keys()),
+                ukf.scanner_addresses,
+            )
+            for area_id, profile in device_profiles.items():
+                has_btn = profile.has_button_training
+                has_scanner = self._area_has_scanner(area_id)
+                abs_details = []
+                if hasattr(profile, "_absolute_profiles"):
+                    for scanner_addr, abs_prof in profile._absolute_profiles.items():  # noqa: SLF001
+                        abs_details.append(
+                            f"{scanner_addr[-8:]}:btn={abs_prof.button_sample_count}/auto={abs_prof.auto_sample_count}"
+                        )
+                _LOGGER.debug(
+                    "  Profile %s: has_button_training=%s, area_has_scanner=%s, abs_profiles=[%s]",
+                    area_id,
+                    has_btn,
+                    has_scanner,
+                    ", ".join(abs_details) if abs_details else "none",
+                )
+
+        for area_id, _d_squared, score in matches:
+            # Only consider button-trained profiles (explicit user intent)
+            area_profile = device_profiles.get(area_id)
+            if area_profile is None or not area_profile.has_button_training:
+                if _LOGGER.isEnabledFor(logging.DEBUG):
+                    _LOGGER.debug(
+                        "  Skipping %s: no button training (profile=%s, has_btn=%s)",
+                        area_id,
+                        area_profile is not None,
+                        area_profile.has_button_training if area_profile else "N/A",
+                    )
+                continue
+
+            # Only consider scannerless rooms (rooms with scanners use real distance)
+            if self._area_has_scanner(area_id):
+                if _LOGGER.isEnabledFor(logging.DEBUG):
+                    _LOGGER.debug("  Skipping %s: area has scanner", area_id)
+                continue
+
+            # Minimum score threshold to avoid phantom matches
+            if score < VIRTUAL_DISTANCE_MIN_SCORE:
+                if _LOGGER.isEnabledFor(logging.DEBUG):
+                    _LOGGER.debug("  Skipping %s: score %.4f < min %.4f", area_id, score, VIRTUAL_DISTANCE_MIN_SCORE)
+                continue
+
+            # Calculate virtual distance using scaled quadratic formula
+            virtual_dist = self._calculate_virtual_distance(score, max_radius)
+            virtual_distances[area_id] = virtual_dist
+
+            if _LOGGER.isEnabledFor(logging.DEBUG):
+                _LOGGER.debug(
+                    "Virtual distance for %s in scannerless room %s: score=%.3f → distance=%.2fm",
+                    device.name,
+                    area_id,
+                    score,
+                    virtual_dist,
+                )
+
+        return virtual_distances
+
+    # =========================================================================
+    # Main entry point - refresh areas for all devices
+    # =========================================================================
+
+    def refresh_areas_by_min_distance(self) -> None:
+        """Set area for ALL devices based on UKF+RoomProfile or min-distance fallback."""
+        # Check if we have mature room profiles (at least 2 scanner-pairs with 30+ samples)
+        has_mature_profiles = any(profile.mature_pair_count >= 2 for profile in self.room_profiles.values())
+
+        for device in self.devices.values():
+            self._determine_area_for_device(device, has_mature_profiles=has_mature_profiles)
+
+    def _determine_area_for_device(self, device: BermudaDevice, *, has_mature_profiles: bool) -> None:
+        """
+        Determine and set the area for a single device.
+
+        This method handles the complete area determination flow:
+        1. Check if device needs processing (is tracked and not a scanner)
+        2. Handle manual area locks from training UI
+        3. Try UKF fingerprint matching (when profiles are mature or device has correlations)
+        4. Fall back to min-distance heuristic
+
+        Args:
+            device: The BermudaDevice to determine area for
+            has_mature_profiles: Whether the system has mature RoomProfiles globally
+
+        """
+        # Skip scanners and devices not being tracked
+        if device.is_scanner or not (device.create_sensor or device.create_tracker_done):
+            return
+
+        # Check if device is manually locked to an area
+        if device.area_locked_id is not None:
+            # Device is locked by user selection for training.
+            if device.area_locked_scanner_addr is not None:
+                locked_advert = None
+                for advert in device.adverts.values():
+                    if advert.scanner_address == device.area_locked_scanner_addr:
+                        locked_advert = advert
+                        break
+
+                if locked_advert is None:
+                    _LOGGER.info(
+                        "Auto-unlocking %s: locked scanner %s no longer has any advert",
+                        device.name,
+                        device.area_locked_scanner_addr,
+                    )
+                    device.area_locked_id = None
+                    device.area_locked_name = None
+                    device.area_locked_scanner_addr = None
+                else:
+                    # FIX: ACTIVE OVERRIDE - Set the device area to the locked area immediately.
+                    device.update_area_and_floor(device.area_locked_id)
+                    return
+            else:
+                # Scannerless room: no specific scanner to track, just force the area.
+                device.update_area_and_floor(device.area_locked_id)
+                return
+
+        # Primary: UKF with RoomProfile (when profiles are mature)
+        # Fallback: Simple min-distance (bootstrap phase)
+        device_has_correlations = device.address in self.correlations and len(self.correlations[device.address]) > 0
+        if (has_mature_profiles or device_has_correlations) and self._refresh_area_by_ukf(device):
+            return
+        self._refresh_area_by_min_distance(device)
+
+    # =========================================================================
+    # UKF-based area selection
+    # =========================================================================
+
+    def _apply_ukf_selection(
+        self,
+        device: BermudaDevice,
+        best_advert: BermudaAdvert,
+        best_area_id: str,
+        *,
+        scanner_less_room: bool,
+        match_score: float,
+        nowstamp: float,
+    ) -> None:
+        """Apply the UKF-selected area to the device and update correlations."""
+        if scanner_less_room:
+            # Override the advert's area with the UKF-matched area.
+            # IMPORTANT: Temporarily clear scanner_device so apply_scanner_selection
+            # uses our overridden area_id instead of scanner_device.area_id
+            # (see bermuda_device.py apply_scanner_selection priority logic)
+            #
+            # FIX: BUG 8 - Save ALL modified attributes to restore after use
+            # Without full restoration, the advert object remains "tainted" with
+            # the virtual room's area_id, causing incorrect calibration data.
+            saved_scanner_device = best_advert.scanner_device
+            saved_area_id = best_advert.area_id
+            saved_area_name = best_advert.area_name
+
+            try:
+                best_advert.scanner_device = None  # type: ignore[assignment]  # Temp for area override
+                best_advert.area_id = best_area_id
+                best_advert.area_name = self.resolve_area_name(best_area_id)
+
+                device.apply_scanner_selection(best_advert, nowstamp=nowstamp)
+            finally:
+                # Restore ALL modified attributes to prevent dirty object state
+                best_advert.scanner_device = saved_scanner_device
+                best_advert.area_id = saved_area_id
+                best_advert.area_name = saved_area_name
+
+            # FIX: BUG 18 - Calculate virtual distance for scannerless rooms
+            # Previously (BUG 13 fix) we set area_distance=None, but this shows "Unbekannt"
+            # in the UI which confuses users. Instead, calculate a virtual distance from the
+            # UKF match score using the same formula as _get_virtual_distances_for_scannerless_rooms.
+            # Formula: distance = max_radius * VIRTUAL_DISTANCE_SCALE * (1 - score)²
+            max_radius = self.options.get(CONF_MAX_RADIUS, DEFAULT_MAX_RADIUS)
+            virtual_distance = max_radius * VIRTUAL_DISTANCE_SCALE * ((1.0 - match_score) ** 2)
+            device.area_distance = virtual_distance
+            device.area_distance_stamp = nowstamp
+            if _LOGGER.isEnabledFor(logging.DEBUG):
+                _LOGGER.debug(
+                    "UKF scannerless room %s for %s: score=%.3f → virtual distance=%.2fm",
+                    best_area_id,
+                    device.name,
+                    match_score,
+                    virtual_distance,
+                )
+        else:
+            # Apply the selection using the device's standard method
+            device.apply_scanner_selection(best_advert, nowstamp=nowstamp)
+
+        # AUTO-LEARNING: Update correlations so fingerprints adapt to environment changes
+        # This mirrors the learning logic in _refresh_area_by_min_distance
+        if best_advert.rssi is not None and best_area_id is not None:
+            # Collect RSSI readings from other visible scanners
+            other_readings: dict[str, float] = {}
+            for other_adv in device.adverts.values():
+                if (
+                    other_adv is not best_advert
+                    and other_adv.stamp is not None
+                    and nowstamp - other_adv.stamp < EVIDENCE_WINDOW_SECONDS
+                    and other_adv.rssi is not None
+                    and other_adv.scanner_address is not None
+                ):
+                    other_readings[other_adv.scanner_address] = other_adv.rssi
+
+            if other_readings:
+                # Ensure device entry exists in correlations
+                if device.address not in self.correlations:
+                    self.correlations[device.address] = {}
+                # Ensure area entry exists for this device
+                if best_area_id not in self.correlations[device.address]:
+                    self.correlations[device.address][best_area_id] = AreaProfile(
+                        area_id=best_area_id,
+                    )
+                # Update the device-specific profile
+                self.correlations[device.address][best_area_id].update(
+                    primary_rssi=best_advert.rssi,
+                    other_readings=other_readings,
+                    primary_scanner_addr=best_advert.scanner_address,
+                )
+
+                # Also update the device-independent room profile
+                all_readings = dict(other_readings)
+                if best_advert.scanner_address is not None:
+                    all_readings[best_advert.scanner_address] = best_advert.rssi
+                if best_area_id not in self.room_profiles:
+                    self.room_profiles[best_area_id] = RoomProfile(area_id=best_area_id)
+                self.room_profiles[best_area_id].update(all_readings)
+
+    def _refresh_area_by_ukf(self, device: BermudaDevice) -> bool:  # noqa: PLR0911, C901
+        """
+        Use UKF (Unscented Kalman Filter) for area selection via fingerprint matching.
+
+        This method maintains a per-device UKF that fuses RSSI readings from all visible
+        scanners. It then matches the fused state against learned area fingerprints to
+        determine the most likely area.
+
+        Returns True if a decision was made (area may or may not have changed),
+        False if UKF cannot make a decision (e.g., insufficient scanners or profiles).
+        """
+        nowstamp = monotonic_time_coarse()
+
+        # Collect RSSI readings from all visible scanners
+        rssi_readings: dict[str, float] = {}
+        for advert in device.adverts.values():
+            if (
+                advert.rssi is not None
+                and advert.scanner_address is not None
+                and advert.stamp is not None
+                and nowstamp - advert.stamp < EVIDENCE_WINDOW_SECONDS
+            ):
+                rssi_readings[advert.scanner_address] = advert.rssi
+
+        # Need minimum scanners for UKF to be useful
+        # FIX: Bug 3 - Allow single-scanner RETENTION for scannerless rooms
+        # In basements/isolated areas, often only 1 distant scanner sees the device.
+        # If UKF requires 2 scanners, it bails out and min-distance takes over.
+        # min_distance can't detect scannerless rooms → device jumps to scanner's room.
+        #
+        # Solution: For RETENTION (keeping current area), allow 1 scanner when:
+        # 1. Device already has a confirmed area (device.area_id is not None)
+        # 2. Device has trained profiles that include that area
+        # 3. The single scanner's RSSI is consistent with the trained profile
+        device_profiles = self.correlations.get(device.address, {})
+        current_area_id = device.area_id
+
+        # Check if this is a retention candidate with trained profiles
+        can_retain_with_single_scanner = (
+            len(rssi_readings) == 1 and current_area_id is not None and current_area_id in device_profiles
+        )
+
+        if len(rssi_readings) < UKF_MIN_SCANNERS and not can_retain_with_single_scanner:
+            return False
+
+        # Single-scanner retention: verify RSSI against trained profile
+        if can_retain_with_single_scanner and current_area_id is not None:
+            scanner_addr = next(iter(rssi_readings))
+            current_rssi = rssi_readings[scanner_addr]
+            area_profile = device_profiles.get(current_area_id)
+
+            if area_profile is not None:
+                # Check if the scanner has an absolute RSSI profile for this area
+                abs_profile = area_profile.get_absolute_rssi(scanner_addr)
+                if abs_profile is not None:
+                    expected_rssi = abs_profile.expected_rssi
+                    rssi_variance = abs_profile.variance
+                    rssi_delta = abs(current_rssi - expected_rssi)
+
+                    # Allow up to 3 standard deviations from expected
+                    rssi_threshold = 3.0 * math.sqrt(max(rssi_variance, 4.0))
+
+                    if rssi_delta <= rssi_threshold:
+                        # RSSI matches profile - retain current area
+                        if _LOGGER.isEnabledFor(logging.DEBUG):
+                            _LOGGER.debug(
+                                "UKF single-scanner retention for %s: "
+                                "RSSI %.1f matches profile %.1f ± %.1f for area %s",
+                                device.name,
+                                current_rssi,
+                                expected_rssi,
+                                rssi_threshold,
+                                current_area_id,
+                            )
+                        # Apply retention by updating the advert timestamp
+                        if device.area_advert is not None:
+                            device.apply_scanner_selection(device.area_advert, nowstamp=nowstamp)
+                        return True
+                    # RSSI doesn't match profile - fall back to min_distance
+                    if _LOGGER.isEnabledFor(logging.DEBUG):
+                        _LOGGER.debug(
+                            "UKF single-scanner retention rejected for %s: RSSI %.1f too far from profile %.1f ± %.1f",
+                            device.name,
+                            current_rssi,
+                            expected_rssi,
+                            rssi_threshold,
+                        )
+            # No usable profile - fall back to min_distance
+            return False
+
+        # Get or create UKF for this device
+        if device.address not in self.device_ukfs:
+            self.device_ukfs[device.address] = UnscentedKalmanFilter()
+
+        ukf = self.device_ukfs[device.address]
+
+        # Update UKF with current measurements
+        ukf.predict(dt=UPDATE_INTERVAL)
+        ukf.update_multi(rssi_readings)
+
+        # Device profiles already fetched above for single-scanner check
+
+        # Need either device profiles or room profiles
+        if not device_profiles and not self.room_profiles:
+            return False
+
+        # Match against both device-specific and room-level fingerprints
+        matches = ukf.match_fingerprints(device_profiles, self.room_profiles)
+
+        if not matches:
+            return False
+
+        # Get best match
+        best_area_id, _d_squared, match_score = matches[0]
+
+        # FIX: Sticky Virtual Rooms - Apply stickiness bonus for current area
+        # When the device is already in an area (especially a scannerless one),
+        # give that area a bonus to prevent marginal flickering.
+        #
+        # FIX: FEHLER 1 - MUST use device.area_id (confirmed system state), NOT device.area_advert.area_id!
+        # device.area_advert is the LAST RECEIVED PACKET, which may be from ANY scanner.
+        # For scannerless rooms: device is in "Virtual Room" but scanner in "Hallway" sends packet.
+        # device.area_advert would point to "Hallway", giving stickiness bonus to WRONG room!
+        # device.area_id is the CONFIRMED current location - the authoritative source of truth.
+        # (current_area_id already fetched above for single-scanner check)
+
+        # Check if current area is in the matches and apply stickiness
+        effective_match_score = match_score
+        current_area_match_score: float | None = None
+
+        if current_area_id is not None:
+            for area_id, _d_sq, score in matches:
+                if area_id == current_area_id:
+                    current_area_match_score = score
+                    break
+
+            # FIX: Sticky Virtual Rooms - If current area has a reasonable score,
+            # it needs to be beaten by a significant margin
+            if current_area_match_score is not None and best_area_id != current_area_id:
+                # Apply stickiness: challenger must beat current by UKF_STICKINESS_BONUS
+                stickiness_adjusted_current = current_area_match_score + UKF_STICKINESS_BONUS
+
+                if match_score <= stickiness_adjusted_current:
+                    # Current area wins with stickiness bonus
+                    best_area_id = current_area_id
+                    effective_match_score = current_area_match_score
+                    if _LOGGER.isEnabledFor(logging.DEBUG):
+                        _LOGGER.debug(
+                            "UKF stickiness for %s: keeping %s (score=%.2f+%.2f bonus) over challenger (score=%.2f)",
+                            device.name,
+                            current_area_id,
+                            current_area_match_score,
+                            UKF_STICKINESS_BONUS,
+                            match_score,
+                        )
+
+        # Check if match score meets minimum threshold (after stickiness adjustment)
+        # FIX: FEHLER 3 - Use LOWER threshold for RETENTION (keeping current area)
+        # When best_area_id == current_area_id (device would stay in same room), use a much
+        # lower threshold (UKF_RETENTION_THRESHOLD) to prevent fallback to min-distance.
+        # This keeps scannerless rooms "sticky" even with noisy/weak signals.
+        # For SWITCHING to a NEW area, use the normal UKF_MIN_MATCH_SCORE threshold.
+        is_retention = best_area_id == current_area_id and current_area_id is not None
+        effective_threshold = UKF_RETENTION_THRESHOLD if is_retention else UKF_MIN_MATCH_SCORE
+
+        if effective_match_score < effective_threshold:
+            if is_retention:
+                # FIX: FEHLER 3 - For retention case, return True even with low score
+                # to prevent fallback to min-distance (which doesn't know scannerless rooms).
+                # We still want to refresh the selection to update timestamps etc.
+                if _LOGGER.isEnabledFor(logging.DEBUG):
+                    _LOGGER.debug(
+                        "UKF retention for %s: score %.2f < %.2f (retention threshold), "
+                        "but keeping area %s to avoid min-distance fallback",
+                        device.name,
+                        effective_match_score,
+                        effective_threshold,
+                        current_area_id,
+                    )
+                if device.area_advert is not None:
+                    device.apply_scanner_selection(device.area_advert, nowstamp=nowstamp)
+                return True
+            return False
+
+        # Find the advert corresponding to the best area
+        best_advert: BermudaAdvert | None = None
+        for advert in device.adverts.values():
+            if advert.area_id == best_area_id:
+                best_advert = advert
+                break
+
+        if best_advert is None:
+            # No current advert for the matched area - check if we can use any
+            # advert with a scanner in that area
+            for advert in device.adverts.values():
+                if advert.scanner_device is not None:
+                    scanner_area = getattr(advert.scanner_device, "area_id", None)
+                    if scanner_area == best_area_id:
+                        best_advert = advert
+                        break
+
+        scanner_less_room = False
+        if best_advert is None:
+            # Scanner-less room: UKF matched an area with no scanner.
+            # Use the best available advert (strongest RSSI) and override its area.
+            strongest_rssi = -999.0
+            for advert in device.adverts.values():
+                if (
+                    advert.rssi is not None
+                    and advert.stamp is not None
+                    and nowstamp - advert.stamp < EVIDENCE_WINDOW_SECONDS
+                    and advert.rssi > strongest_rssi
+                ):
+                    strongest_rssi = advert.rssi
+                    best_advert = advert
+
+            if best_advert is None:
+                return False
+
+            scanner_less_room = True
+
+            # BUG 21 FIX: TOPOLOGICAL SANITY CHECK FOR SCANNERLESS ROOMS
+            # When UKF picks a scannerless room on floor X, at least ONE scanner on floor X
+            # must see the device. If NO scanner on the target floor sees the device,
+            # the UKF decision is topologically impossible.
+            #
+            # This is robust because it doesn't rely on static RSSI thresholds which
+            # vary by scanner/tracker hardware. Instead, it checks: "Is there ANY evidence
+            # that the device is actually on this floor?"
+            #
+            # Example scenario this fixes:
+            # - Device is in "Lagerraum" (basement, scannerless)
+            # - UKF picks "Bad OG" (bathroom, 2 floors up, scannerless) with score 0.83
+            # - But NO scanner on the "OG" floor sees the device
+            # - Only basement scanners see the device
+            # - Topologically impossible → reject UKF decision
+            target_area_floor_id = self._resolve_floor_id_for_area(best_area_id)
+
+            if target_area_floor_id is not None:
+                # Check if any scanner on the target floor sees the device
+                scanner_on_target_floor_sees_device = False
+
+                for advert in device.adverts.values():
+                    if (
+                        advert.stamp is not None
+                        and nowstamp - advert.stamp < EVIDENCE_WINDOW_SECONDS
+                        and advert.scanner_device is not None
+                    ):
+                        scanner_floor_id = getattr(advert.scanner_device, "floor_id", None)
+                        if scanner_floor_id == target_area_floor_id:
+                            scanner_on_target_floor_sees_device = True
+                            break
+
+                if not scanner_on_target_floor_sees_device:
+                    # UKF picked a scannerless room on a floor where NO scanner sees
+                    # the device. This is topologically impossible.
+                    if _LOGGER.isEnabledFor(logging.DEBUG):
+                        _LOGGER.debug(
+                            "BUG 21 FIX: UKF scannerless topological check FAILED for %s: "
+                            "UKF picked %s (floor %s), but NO scanner on that floor sees "
+                            "the device - falling back to min-distance",
+                            device.name,
+                            best_area_id,
+                            target_area_floor_id,
+                        )
+                    return False
+
+        # Track whether current area is scannerless (for stickiness in future cycles)
+        device._ukf_scannerless_area = scanner_less_room  # noqa: SLF001
+
+        # RSSI SANITY CHECK:
+        # Only reject UKF decision if BOTH conditions are met:
+        # 1. The selected room has significantly weaker signal (>15 dB)
+        # 2. The UKF match score is borderline (< 0.6)
+        #
+        # If UKF has high confidence, trust it even with weaker signal - this allows
+        # proper handling of scanner-less rooms and blocked/dampened scanners.
+        # The fingerprint pattern is more reliable than raw RSSI in these cases.
+        if not scanner_less_room and best_advert is not None:
+            best_advert_rssi = best_advert.rssi
+            strongest_visible_rssi = -999.0
+
+            for advert in device.adverts.values():
+                if (
+                    advert.rssi is not None
+                    and advert.stamp is not None
+                    and nowstamp - advert.stamp < EVIDENCE_WINDOW_SECONDS
+                    and advert.rssi > strongest_visible_rssi
+                ):
+                    strongest_visible_rssi = advert.rssi
+
+            # Only apply sanity check when UKF confidence is low AND signal is much weaker
+            if (
+                effective_match_score < UKF_LOW_CONFIDENCE_THRESHOLD
+                and best_advert_rssi is not None
+                and strongest_visible_rssi > -999.0
+                and strongest_visible_rssi - best_advert_rssi > UKF_RSSI_SANITY_MARGIN
+            ):
+                # Low confidence UKF picked a room with weak signal - suspicious
+                if _LOGGER.isEnabledFor(logging.DEBUG):
+                    _LOGGER.debug(
+                        "UKF sanity check failed for %s: UKF picked %s (score=%.2f, RSSI %.1f) but "
+                        "strongest signal is %.1f dB stronger - falling back to min-distance",
+                        device.name,
+                        best_area_id,
+                        effective_match_score,
+                        best_advert_rssi,
+                        strongest_visible_rssi - best_advert_rssi,
+                    )
+                return False
+
+        # DISTANCE-BASED SANITY CHECK (BUG 14):
+        # When a device is VERY close to a scanner, it's almost certainly in that
+        # scanner's room. UKF fingerprints can be wrong (bad training), but physical
+        # distance doesn't lie. This prevents the bug where UKF picks a room 2 floors
+        # away when the device is 1.6m from a scanner.
+        #
+        # Only reject UKF if:
+        # 1. There's a scanner VERY close (<2m) to the device
+        # 2. UKF picked a DIFFERENT area than that scanner's area
+        # 3. The scanner has a valid area assigned
+        proximity_threshold = 2.0  # meters - very close means almost certainly in that room
+        nearest_scanner_distance = 999.0
+        nearest_scanner_area_id: str | None = None
+        nearest_scanner_floor_id: str | None = None
+
+        for advert in device.adverts.values():
+            if (
+                advert.rssi_distance is not None
+                and advert.stamp is not None
+                and nowstamp - advert.stamp < EVIDENCE_WINDOW_SECONDS
+                and advert.rssi_distance < nearest_scanner_distance
+                and advert.scanner_device is not None
+            ):
+                scanner_area = getattr(advert.scanner_device, "area_id", None)
+                if scanner_area is not None:
+                    nearest_scanner_distance = advert.rssi_distance
+                    nearest_scanner_area_id = scanner_area
+                    nearest_scanner_floor_id = getattr(advert.scanner_device, "floor_id", None)
+
+        if (
+            nearest_scanner_distance < proximity_threshold
+            and nearest_scanner_area_id is not None
+            and nearest_scanner_area_id != best_area_id
+        ):
+            # Device is very close to a scanner but UKF picked a different room!
+            # Check if this is a cross-floor decision (even more suspicious)
+            ukf_floor_id = self._resolve_floor_id_for_area(best_area_id) if not scanner_less_room else None
+            is_cross_floor_ukf = (
+                nearest_scanner_floor_id is not None
+                and ukf_floor_id is not None
+                and nearest_scanner_floor_id != ukf_floor_id
+            )
+
+            if is_cross_floor_ukf:
+                # UKF picked a room on a DIFFERENT floor while device is <2m from a scanner.
+                # This is almost certainly wrong - fall back to min-distance.
+                if _LOGGER.isEnabledFor(logging.DEBUG):
+                    _LOGGER.debug(
+                        "UKF distance sanity check FAILED for %s: Device is %.1fm from scanner "
+                        "in %s (floor %s), but UKF picked %s (floor %s) - falling back to min-distance",
+                        device.name,
+                        nearest_scanner_distance,
+                        nearest_scanner_area_id,
+                        nearest_scanner_floor_id,
+                        best_area_id,
+                        ukf_floor_id,
+                    )
+                return False
+
+            # Same floor but different room while very close - allow only with very high confidence
+            if effective_match_score < 0.85:
+                if _LOGGER.isEnabledFor(logging.DEBUG):
+                    _LOGGER.debug(
+                        "UKF distance sanity check FAILED for %s: Device is %.1fm from scanner "
+                        "in %s, UKF picked %s with score %.2f < 0.85 - falling back to min-distance",
+                        device.name,
+                        nearest_scanner_distance,
+                        nearest_scanner_area_id,
+                        best_area_id,
+                        effective_match_score,
+                    )
+                return False
+
+        # CROSS-FLOOR STREAK PROTECTION:
+        # Prevent rapid flickering between floors by requiring multiple consecutive
+        # cycles picking the same target before allowing a cross-floor switch.
+        #
+        # FIX: FEHLER 1 (continued) - Use device.area_id for current area, NOT device.area_advert!
+        # device.area_advert is the last received packet (may be from ANY scanner),
+        # device.area_id is the CONFIRMED current location (authoritative source of truth).
+        current_device_area_id = device.area_id
+
+        # FIX: Unified Floor Guard - ALWAYS resolve floor_id from AREA, not from scanner_device
+        # For scannerless rooms, the scanner_device belongs to a different area (and floor!)
+        # entirely. We must ALWAYS look up the floor_id from the area registry directly to
+        # ensure cross-floor protection works correctly for scannerless rooms.
+        #
+        # Bug fixed: Previously we tried scanner_device.floor_id first, which was WRONG for
+        # scannerless rooms (e.g., device in "Office" Floor 1 but using scanner from
+        # "Bedroom" Floor 2 would incorrectly think current floor was Floor 2).
+        current_floor_id = None
+        if current_device_area_id is not None:
+            # FIX: Resolve floor from device.area_id (authoritative), not from advert's area
+            current_floor_id = self._resolve_floor_id_for_area(current_device_area_id)
+
+        # FIX: Unified Floor Guard - Resolve winner floor_id from TARGET AREA, not scanner
+        # For scannerless rooms, best_advert.scanner_device is from a different room!
+        winner_floor_id = None
+        if scanner_less_room:
+            # Scannerless room: get floor_id from the TARGET area (best_area_id)
+            winner_floor_id = self._resolve_floor_id_for_area(best_area_id)
+        elif best_advert is not None and best_advert.scanner_device is not None:
+            # Scanner-based room: can use scanner_device's floor_id
+            winner_floor_id = getattr(best_advert.scanner_device, "floor_id", None)
+
+        is_cross_floor = (
+            current_floor_id is not None and winner_floor_id is not None and current_floor_id != winner_floor_id
+        )
+
+        # If same area as current, just refresh the selection
+        # FIX: FEHLER 1 (continued) - Compare with device.area_id, not current_area_advert.area_id
+        if current_device_area_id is not None and best_area_id == current_device_area_id:
+            device.reset_pending_state()
+            self._apply_ukf_selection(
+                device,
+                best_advert,
+                best_area_id,
+                scanner_less_room=scanner_less_room,
+                match_score=effective_match_score,
+                nowstamp=nowstamp,
+            )
+            return True
+
+        # If no current area, bootstrap immediately
+        # FIX: FEHLER 1 (continued) - Check device.area_id, not current_area_advert
+        if current_device_area_id is None:
+            device.reset_pending_state()
+            self._apply_ukf_selection(
+                device,
+                best_advert,
+                best_area_id,
+                scanner_less_room=scanner_less_room,
+                match_score=effective_match_score,
+                nowstamp=nowstamp,
+            )
+            return True
+
+        # Determine streak target based on floor change
+        streak_target = CROSS_FLOOR_STREAK if is_cross_floor else SAME_FLOOR_STREAK
+
+        # BUG 20 FIX: Only count streak if we have NEW advertisement data
+        # Similar to BUG 19 fix for training - prevents cached values from being
+        # counted multiple times. BLE devices advertise every 1-10s, but coordinator
+        # updates every ~1s. Without this check, the same cached RSSI would count
+        # as multiple "votes" for a room switch.
+        current_stamps = self._collect_current_stamps(device, nowstamp)
+        has_new_data = self._has_new_advert_data(current_stamps, device.pending_last_stamps)
+
+        # Update streak counter - only if we have new data
+        if device.pending_area_id == best_area_id and device.pending_floor_id == winner_floor_id:
+            # Same target as before - only increment if new data
+            if has_new_data:
+                device.pending_streak += 1
+                device.pending_last_stamps = dict(current_stamps)
+            # If no new data, keep current streak count (don't increment)
+        elif device.pending_area_id is not None and device.pending_area_id != best_area_id:
+            # Different target - reset streak to new candidate
+            device.pending_area_id = best_area_id
+            device.pending_floor_id = winner_floor_id
+            device.pending_streak = 1
+            device.pending_last_stamps = dict(current_stamps)
+        else:
+            # First pending or same floor different area
+            device.pending_area_id = best_area_id
+            device.pending_floor_id = winner_floor_id
+            device.pending_streak = 1
+            device.pending_last_stamps = dict(current_stamps)
+
+        # Check if streak meets threshold
+        if device.pending_streak >= streak_target:
+            device.reset_pending_state()
+            self._apply_ukf_selection(
+                device,
+                best_advert,
+                best_area_id,
+                scanner_less_room=scanner_less_room,
+                match_score=effective_match_score,
+                nowstamp=nowstamp,
+            )
+        # Streak not reached - keep current area
+        # NOTE: Use device.area_advert here (the actual advert object), not current_device_area_id.
+        # apply_scanner_selection needs an advert object. The area_id determination above
+        # correctly uses device.area_id, but the actual selection still needs the advert.
+        elif device.area_advert is not None:
+            device.apply_scanner_selection(device.area_advert, nowstamp=nowstamp)
+
+        return True
+
+    # =========================================================================
+    # Min-distance area selection
+    # =========================================================================
+
+    def _refresh_area_by_min_distance(self, device: BermudaDevice) -> None:  # noqa: C901
+        """Very basic Area setting by finding closest proxy to a given device."""
+        # The current area_scanner (which might be None) is the one to beat.
+        incumbent: BermudaAdvert | None = device.area_advert
+        soft_incumbent: BermudaAdvert | None = None
+
+        _max_radius = self.options.get(CONF_MAX_RADIUS, DEFAULT_MAX_RADIUS)
+        _use_physical_rssi_priority = self.options.get(
+            CONF_USE_PHYSICAL_RSSI_PRIORITY, DEFAULT_USE_PHYSICAL_RSSI_PRIORITY
+        )
+        nowstamp = monotonic_time_coarse()
+        evidence_cutoff = nowstamp - EVIDENCE_WINDOW_SECONDS
+
+        tests = AreaTests()
+        tests.device = device.name
+
+        _superchatty = False  # Set to true for very verbose logging about area wins
+
+        effective_cache: dict[BermudaAdvert, float | None] = {}
+
+        def _effective_distance(advert: BermudaAdvert | None) -> float | None:
+            """Return cached effective distance for an advert."""
+            if advert is None:
+                return None
+            if isinstance(advert, Hashable):
+                if advert not in effective_cache:
+                    effective_cache[advert] = self.effective_distance(advert, nowstamp)
+                return effective_cache[advert]
+            return self.effective_distance(advert, nowstamp)
+
+        def _belongs(advert: BermudaAdvert | None) -> bool:
+            return advert is not None and advert in device.adverts.values()
+
+        def _within_evidence(advert: BermudaAdvert | None) -> bool:
+            return advert is not None and advert.stamp is not None and advert.stamp >= evidence_cutoff
+
+        def _has_area(advert: BermudaAdvert | None) -> bool:
+            return advert is not None and advert.area_id is not None
+
+        def _area_candidate(advert: BermudaAdvert | None) -> bool:
+            return _belongs(advert) and _has_area(advert)
+
+        def _is_distance_contender(advert: BermudaAdvert | None) -> bool:
+            effective_distance = _effective_distance(advert)
+            return (
+                _area_candidate(advert)
+                and advert is not None
+                and _within_evidence(advert)
+                and effective_distance is not None
+                and effective_distance <= _max_radius
+            )
+
+        has_distance_contender = any(_is_distance_contender(advert) for advert in device.adverts.values())
+
+        # FIX: Weak Scanner Override Protection
+        _protect_scannerless_area = device._ukf_scannerless_area  # noqa: SLF001
+        _scannerless_min_dist_override = UKF_WEAK_SCANNER_MIN_DISTANCE
+
+        if not _is_distance_contender(incumbent):
+            if _area_candidate(incumbent) and _within_evidence(incumbent):
+                soft_incumbent = incumbent
+            incumbent = None
+
+        for challenger in device.adverts.values():
+            if not _within_evidence(challenger):
+                continue
+
+            if (incumbent or soft_incumbent) is challenger:
+                continue
+
+            if not _is_distance_contender(challenger):
+                continue
+
+            # At this point the challenger is a valid contender...
+
+            current_incumbent = incumbent or soft_incumbent
+            incumbent_distance = _effective_distance(current_incumbent)
+            if (
+                incumbent_distance is None
+                and current_incumbent is not None
+                and current_incumbent is soft_incumbent
+                and getattr(device, "area_advert", None) is soft_incumbent
+                and getattr(device, "area_distance", None) is not None
+                and _within_evidence(current_incumbent)
+            ):
+                incumbent_distance = device.area_distance
+            challenger_scanner = challenger.scanner_device
+            if challenger_scanner is None:
+                tests.reason = "LOSS - challenger missing scanner metadata"
+                continue
+
+            incumbent_scanner = current_incumbent.scanner_device if current_incumbent else None
+            inc_floor_level = getattr(incumbent_scanner, "floor_level", None) if incumbent_scanner else None
+
+            # FIX: FEHLER 2 - Unified Floor Guard
+            inc_floor_id: str | None = None
+            if device.area_id is not None:
+                inc_floor_id = self._resolve_floor_id_for_area(device.area_id)
+            if inc_floor_id is None and current_incumbent is not None:
+                current_inc_area_id = getattr(current_incumbent, "area_id", None)
+                if current_inc_area_id is not None:
+                    inc_floor_id = self._resolve_floor_id_for_area(current_inc_area_id)
+            if inc_floor_id is None and incumbent_scanner is not None:
+                inc_floor_id = getattr(incumbent_scanner, "floor_id", None)
+
+            chal_floor_id = getattr(challenger_scanner, "floor_id", None)
+            chal_floor_level = getattr(challenger_scanner, "floor_level", None)
+            tests.floors = (inc_floor_id, chal_floor_id)
+            tests.floor_levels = (inc_floor_level, chal_floor_level)
+            cross_floor = inc_floor_id is not None and chal_floor_id is not None and inc_floor_id != chal_floor_id
+
+            # FIX: Weak Scanner Override Protection for Scannerless Rooms
+            if _protect_scannerless_area and current_incumbent is not None:
+                challenger_dist = _effective_distance(challenger)
+                if challenger_dist is not None and challenger_dist >= _scannerless_min_dist_override:
+                    if cross_floor:
+                        tests.reason = (
+                            f"LOSS - scannerless area protection (challenger at {challenger_dist:.1f}m "
+                            f">= {_scannerless_min_dist_override:.1f}m, cross-floor)"
+                        )
+                        if _LOGGER.isEnabledFor(logging.DEBUG):
+                            _LOGGER.debug(
+                                "Weak scanner override blocked for %s: scannerless area protected, "
+                                "challenger %s at %.1fm (min=%.1fm), cross-floor",
+                                device.name,
+                                challenger.name,
+                                challenger_dist,
+                                _scannerless_min_dist_override,
+                            )
+                        continue
+
+            if current_incumbent is None:
+                incumbent = challenger
+                soft_incumbent = None
+                if _superchatty:
+                    _LOGGER.debug(
+                        "%s IS closer to %s: Incumbent is invalid",
+                        device.name,
+                        challenger.name,
+                    )
+                continue
+
+            # Handle soft_incumbent case
+            if current_incumbent is soft_incumbent and not _is_distance_contender(soft_incumbent):
+                # ABSOLUTE PROFILE RESCUE
+                if current_incumbent.area_id is not None:
+                    current_area_id = current_incumbent.area_id
+                    if device.address in self.correlations and current_area_id in self.correlations[device.address]:
+                        profile = self.correlations[device.address][current_area_id]
+                        all_readings: dict[str, float] = {}
+                        for other_adv in device.adverts.values():
+                            if (
+                                _within_evidence(other_adv)
+                                and other_adv.rssi is not None
+                                and other_adv.scanner_address is not None
+                            ):
+                                all_readings[other_adv.scanner_address] = other_adv.rssi
+
+                        if profile.mature_absolute_count >= 2:
+                            z_scores = profile.get_absolute_z_scores(all_readings)
+                            if len(z_scores) >= 2:
+                                avg_z = sum(z for _, z in z_scores) / len(z_scores)
+                                if avg_z < 2.0:
+                                    tests.reason = (
+                                        f"LOSS - absolute profile match (z={avg_z:.2f}) protects current area"
+                                    )
+                                    if _superchatty:
+                                        _LOGGER.debug(
+                                            "%s: Absolute profile rescue - secondary readings match "
+                                            "%s profile (avg_z=%.2f, scanners=%d)",
+                                            device.name,
+                                            current_area_id,
+                                            avg_z,
+                                            len(z_scores),
+                                        )
+                                    continue
+                if cross_floor:
+                    challenger_hist = challenger.hist_distance_by_interval
+                    incumbent_hist = soft_incumbent.hist_distance_by_interval if soft_incumbent else []
+                    if len(challenger_hist) < CROSS_FLOOR_MIN_HISTORY:
+                        tests.reason = "LOSS - soft incumbent but cross-floor history too short"
+                        continue
+                    if len(incumbent_hist) >= CROSS_FLOOR_MIN_HISTORY * 2:
+                        if len(challenger_hist) < len(incumbent_hist) // 2:
+                            tests.reason = "LOSS - soft incumbent has substantial history, challenger needs more"
+                            continue
+                else:
+                    # FIX: Same-floor soft incumbent stabilization
+                    soft_inc_distance = device.area_distance if device.area_distance is not None else None
+                    soft_inc_was_within_range = soft_inc_distance is not None and soft_inc_distance <= _max_radius
+
+                    if soft_inc_was_within_range and soft_inc_distance is not None:
+                        challenger_hist = challenger.hist_distance_by_interval
+                        challenger_dist = _effective_distance(challenger)
+                        soft_inc_min_history = CROSS_FLOOR_MIN_HISTORY // SOFT_INC_MIN_HISTORY_DIVISOR
+                        soft_inc_min_distance_advantage = SOFT_INC_MIN_DISTANCE_ADVANTAGE
+
+                        has_significant_distance_advantage = (
+                            challenger_dist is not None
+                            and (soft_inc_distance - challenger_dist) >= soft_inc_min_distance_advantage
+                        )
+                        has_sufficient_history = len(challenger_hist) >= soft_inc_min_history
+
+                        if not has_significant_distance_advantage and not has_sufficient_history:
+                            dist_adv_str = (
+                                f"{soft_inc_distance - challenger_dist:.2f}" if challenger_dist is not None else "N/A"
+                            )
+                            tests.reason = (
+                                f"LOSS - soft incumbent same-floor protection "
+                                f"(dist adv: {dist_adv_str}m < {soft_inc_min_distance_advantage}m, "
+                                f"hist: {len(challenger_hist)} < {soft_inc_min_history})"
+                            )
+                            if _superchatty:
+                                _LOGGER.debug(
+                                    "%s: Soft incumbent same-floor protection - %s rejected "
+                                    "(distance advantage %.2fm < %.2fm, history %d < %d)",
+                                    device.name,
+                                    challenger.name,
+                                    (soft_inc_distance - challenger_dist) if challenger_dist else 0,
+                                    soft_inc_min_distance_advantage,
+                                    len(challenger_hist),
+                                    soft_inc_min_history,
+                                )
+                            continue
+
+                tests.reason = "WIN - soft incumbent failed distance contention"
+                incumbent = challenger
+                soft_incumbent = None
+                continue
+
+            if incumbent_scanner is None:
+                tests.reason = "LOSS - incumbent missing scanner metadata"
+                continue
+
+            if current_incumbent.area_id is None:
+                incumbent = challenger
+                soft_incumbent = None
+                continue
+
+            if incumbent_distance is None:
+                if cross_floor:
+                    challenger_hist = challenger.hist_distance_by_interval
+                    if len(challenger_hist) < CROSS_FLOOR_MIN_HISTORY:
+                        tests.reason = "LOSS - incumbent distance unavailable but cross-floor history too short"
+                        continue
+                tests.reason = "WIN - incumbent distance unavailable"
+                incumbent = challenger
+                soft_incumbent = None
+                continue
+
+            # Distance comparison checks
+            challenger_distance = _effective_distance(challenger)
+            if challenger_distance is None:
+                continue
+
+            # Physical RSSI Priority
+            challenger_rssi_advantage = 0.0
+            if _use_physical_rssi_priority:
+                challenger_median_rssi = challenger.median_rssi()
+                incumbent_median_rssi = current_incumbent.median_rssi()
+                if challenger_median_rssi is not None and incumbent_median_rssi is not None:
+                    challenger_rssi_advantage = challenger_median_rssi - incumbent_median_rssi
+
+            passed_via_rssi_override = False
+            if incumbent_distance < challenger_distance:
+                if _use_physical_rssi_priority and challenger_rssi_advantage > RSSI_CONSISTENCY_MARGIN_DB:
+                    passed_via_rssi_override = True
+                    if _superchatty:
+                        _LOGGER.debug(
+                            "RSSI priority override: %s allowed despite further distance "
+                            "(RSSI advantage %.1f dB > %.1f dB margin)",
+                            challenger.name,
+                            challenger_rssi_advantage,
+                            RSSI_CONSISTENCY_MARGIN_DB,
+                        )
+                else:
+                    continue
+
+            # STABILITY CHECK
+            if not passed_via_rssi_override:
+                distance_improvement = incumbent_distance - challenger_distance
+                if distance_improvement > 0:
+                    percent_improvement = distance_improvement / incumbent_distance if incumbent_distance > 0 else 0
+
+                    movement_state = device.get_movement_state(stamp_now=nowstamp)
+                    if movement_state == MOVEMENT_STATE_MOVING:
+                        required_percent = MARGIN_MOVING_PERCENT
+                        required_meters = INCUMBENT_MARGIN_METERS
+                    elif movement_state == MOVEMENT_STATE_SETTLING:
+                        required_percent = MARGIN_SETTLING_PERCENT
+                        required_meters = INCUMBENT_MARGIN_METERS
+                    else:  # STATIONARY
+                        required_percent = MARGIN_STATIONARY_PERCENT
+                        required_meters = MARGIN_STATIONARY_METERS
+
+                    meets_stability_margin = (
+                        percent_improvement >= required_percent or distance_improvement >= required_meters
+                    )
+                    if not meets_stability_margin:
+                        if _superchatty:
+                            _LOGGER.debug(
+                                "Stability margin (%s): %s rejected (%.2fm, %.1f%% < %.1f%% or %.2fm)",
+                                movement_state,
+                                challenger.name,
+                                distance_improvement,
+                                percent_improvement * 100,
+                                required_percent * 100,
+                                required_meters,
+                            )
+                        continue
+
+            # RSSI consistency check
+            if _use_physical_rssi_priority and challenger_rssi_advantage < -RSSI_CONSISTENCY_MARGIN_DB:
+                if _superchatty:
+                    _LOGGER.debug(
+                        "RSSI consistency check: %s rejected (RSSI disadvantage %.1f dB > %.1f dB margin)",
+                        challenger.name,
+                        -challenger_rssi_advantage,
+                        RSSI_CONSISTENCY_MARGIN_DB,
+                    )
+                continue
+
+            tests.reason = None
+            tests.same_area = current_incumbent.area_id == challenger.area_id
+            tests.areas = (current_incumbent.area_name or "", challenger.area_name or "")
+            tests.scannername = (current_incumbent.name, challenger.name)
+            tests.distance = (incumbent_distance, challenger_distance)
+
+            tests.last_ad_age = (
+                nowstamp - incumbent_scanner.last_seen,
+                nowstamp - challenger_scanner.last_seen,
+            )
+
+            tests.this_ad_age = (
+                nowstamp - current_incumbent.stamp,
+                nowstamp - challenger.stamp,
+            )
+
+            _pda = challenger_distance
+            _pdb = incumbent_distance
+            tests.pcnt_diff = abs(_pda - _pdb) / ((_pda + _pdb) / 2)
+            abs_diff = abs(_pda - _pdb)
+            avg_dist = (_pda + _pdb) / 2
+            cross_floor_margin = CROSS_FLOOR_MARGIN_BASE
+            cross_floor_escape = CROSS_FLOOR_ESCAPE_BASE
+            history_window = HISTORY_WINDOW
+            cross_floor_min_history = CROSS_FLOOR_MIN_HISTORY
+
+            # Same-Floor-Confirmation
+            if cross_floor and inc_floor_id is not None:
+                incumbent_floor_witnesses = 0
+                challenger_floor_witnesses = 0
+                challenger_floor_distances: list[float] = []
+                witness_floor_levels: set[int] = set()
+                for witness_adv in device.adverts.values():
+                    if not _is_distance_contender(witness_adv):
+                        continue
+                    witness_scanner = witness_adv.scanner_device
+                    if witness_scanner is None:
+                        continue
+                    witness_floor = getattr(witness_scanner, "floor_id", None)
+                    witness_level = getattr(witness_scanner, "floor_level", None)
+                    witness_dist = _effective_distance(witness_adv)
+                    if witness_floor == inc_floor_id:
+                        incumbent_floor_witnesses += 1
+                    if witness_floor == chal_floor_id:
+                        challenger_floor_witnesses += 1
+                        if witness_dist is not None:
+                            challenger_floor_distances.append(witness_dist)
+                    if isinstance(witness_level, int):
+                        witness_floor_levels.add(witness_level)
+
+                if incumbent_floor_witnesses >= 2:
+                    extra_margin = 0.10 * (incumbent_floor_witnesses - 1)
+                    cross_floor_margin = min(0.60, cross_floor_margin + extra_margin)
+                    cross_floor_escape = min(0.80, cross_floor_escape + extra_margin)
+
+                if challenger_floor_witnesses > incumbent_floor_witnesses:
+                    witness_imbalance = challenger_floor_witnesses - incumbent_floor_witnesses
+                    imbalance_margin = 0.15 * witness_imbalance
+                    cross_floor_margin = min(0.70, cross_floor_margin + imbalance_margin)
+                    cross_floor_escape = min(0.85, cross_floor_escape + imbalance_margin)
+
+                near_field_threshold = NEAR_FIELD_THRESHOLD
+                if incumbent_distance <= near_field_threshold and challenger_floor_distances:
+                    min_challenger_dist = min(challenger_floor_distances)
+                    if min_challenger_dist > incumbent_distance:
+                        distance_ratio = min_challenger_dist / incumbent_distance
+                        if distance_ratio >= 1.5:
+                            ratio_margin = 0.20 * (distance_ratio - 1.0)
+                            cross_floor_margin = min(0.80, cross_floor_margin + ratio_margin)
+                            cross_floor_escape = min(0.95, cross_floor_escape + ratio_margin)
+
+                if isinstance(inc_floor_level, int) and len(witness_floor_levels) >= 2:
+                    levels_below = [lvl for lvl in witness_floor_levels if lvl < inc_floor_level]
+                    levels_above = [lvl for lvl in witness_floor_levels if lvl > inc_floor_level]
+                    is_sandwiched = bool(levels_below) and bool(levels_above)
+
+                    if is_sandwiched:
+                        sandwich_floors = len(levels_below) + len(levels_above)
+                        sandwich_margin = 0.30 + 0.05 * (sandwich_floors - 2)
+                        cross_floor_margin = min(0.75, cross_floor_margin + sandwich_margin)
+                        cross_floor_escape = min(0.90, cross_floor_escape + sandwich_margin)
+
+                    if isinstance(chal_floor_level, int):
+                        floor_distance = abs(chal_floor_level - inc_floor_level)
+                        if floor_distance >= 2:
+                            skip_margin = 0.35 * (floor_distance - 1)
+                            cross_floor_margin = min(0.80, cross_floor_margin + skip_margin)
+                            cross_floor_escape = min(0.95, cross_floor_escape + skip_margin)
+
+            # Same area freshness check
+            if (
+                tests.same_area
+                and (tests.this_ad_age[0] > tests.this_ad_age[1] + 1)
+                and tests.distance[0] >= tests.distance[1]
+            ):
+                tests.reason = "WIN awarded for same area, newer, closer advert"
+                incumbent = challenger
+                continue
+
+            # Hysteresis checks
+            min_history = SAME_FLOOR_MIN_HISTORY
+            pdiff_outright = PDIFF_OUTRIGHT
+            pdiff_historical = PDIFF_HISTORICAL
+            incumbent_hist_all = current_incumbent.hist_distance_by_interval
+            challenger_hist_all = challenger.hist_distance_by_interval
+            if cross_floor:
+                if (
+                    len(challenger_hist_all) < cross_floor_min_history
+                    or len(incumbent_hist_all) < cross_floor_min_history
+                ):
+                    tests.reason = "LOSS - cross-floor history too short"
+                    continue
+            incumbent_history: list[float] = incumbent_hist_all[:history_window]
+            challenger_history: list[float] = challenger_hist_all[:history_window]
+            if len(challenger.hist_distance_by_interval) > min_history:
+                if incumbent_history and challenger_history:
+                    tests.hist_min_max = (
+                        min(incumbent_history),
+                        max(challenger_history),
+                    )
+                    hist_margin = cross_floor_margin if cross_floor else pdiff_historical
+                    if tests.hist_min_max[1] < tests.hist_min_max[0] and tests.pcnt_diff > hist_margin:
+                        tests.reason = "WIN on historical min/max"
+                        incumbent = challenger
+                        continue
+
+            near_field_cutoff = NEAR_FIELD_CUTOFF
+            abs_win_meters = NEAR_FIELD_ABS_WIN_METERS
+            near_field_win = avg_dist <= near_field_cutoff and abs_diff >= abs_win_meters
+            significant_improvement = tests.pcnt_diff >= pdiff_outright
+
+            if cross_floor:
+                challenger_history_ready = len(challenger_history) >= history_window
+                incumbent_history_ready = len(incumbent_history) >= history_window
+                sustained_cross_floor = (
+                    challenger_history_ready
+                    and incumbent_history_ready
+                    and tests.hist_min_max != (0, 0)
+                    and tests.hist_min_max[1] < tests.hist_min_max[0]
+                    and tests.pcnt_diff > cross_floor_margin
+                )
+                min_cross_floor_history = max(history_window, cross_floor_min_history // 2)
+                has_minimum_history = (
+                    len(challenger_history) >= min_cross_floor_history
+                    and len(incumbent_history) >= min_cross_floor_history
+                )
+                cross_floor_escape_strict = max(cross_floor_escape, 1.0)
+                escape_with_history = tests.pcnt_diff >= cross_floor_escape_strict and has_minimum_history
+                if not (sustained_cross_floor or escape_with_history):
+                    tests.reason = "LOSS - cross-floor evidence insufficient"
+                    continue
+
+            # RSSI-based wins
+            rssi_tiebreak_win = False
+            rssi_advantage_win = False
+            if _use_physical_rssi_priority:
+                challenger_median = challenger.median_rssi()
+                incumbent_median = current_incumbent.median_rssi()
+                if challenger_median is not None and incumbent_median is not None:
+                    rssi_advantage = challenger_median - incumbent_median
+                    if abs_diff < 0.01 and rssi_advantage > 0:
+                        rssi_tiebreak_win = True
+                    if rssi_advantage > RSSI_CONSISTENCY_MARGIN_DB:
+                        rssi_advantage_win = True
+
+            if (
+                len(challenger_hist_all) < SAME_FLOOR_MIN_HISTORY
+                and not near_field_win
+                and not significant_improvement
+                and not rssi_tiebreak_win
+                and not rssi_advantage_win
+            ):
+                tests.reason = "LOSS - same-floor history too short"
+                continue
+
+            if tests.pcnt_diff < pdiff_outright:
+                if not near_field_win:
+                    if rssi_advantage_win:
+                        tests.reason = "WIN on RSSI advantage (stronger physical signal)"
+                        incumbent = challenger
+                        continue
+                    if rssi_tiebreak_win:
+                        tests.reason = "WIN on RSSI tie-break (equal distance)"
+                        incumbent = challenger
+                        continue
+                    tests.reason = "LOSS - failed on percentage_difference"
+                    continue
+                tests.reason = "WIN on near-field absolute improvement"
+                incumbent = challenger
+                continue
+
+            tests.reason = "WIN by not losing!"
+            incumbent = challenger
+            soft_incumbent = None
+
+        if _superchatty and tests.reason is not None:
+            _LOGGER.debug(
+                "***************\n**************** %s *******************\n%s",
+                tests.reason,
+                tests,
+            )
+
+        rssi_fallback_margin = RSSI_FALLBACK_MARGIN
+        rssi_fallback_cross_floor_margin = RSSI_FALLBACK_CROSS_FLOOR_MARGIN
+        winner = incumbent or soft_incumbent
+
+        # Virtual Distance for Scannerless Rooms
+        virtual_winner_area_id: str | None = None
+        virtual_winner_distance: float | None = None
+
+        rssi_readings_for_virtual: dict[str, float] = {}
+        for adv in device.adverts.values():
+            if _within_evidence(adv) and adv.rssi is not None and adv.scanner_address is not None:
+                rssi_readings_for_virtual[adv.scanner_address] = adv.rssi
+
+        if rssi_readings_for_virtual:
+            virtual_distances = self._get_virtual_distances_for_scannerless_rooms(device, rssi_readings_for_virtual)
+
+            if virtual_distances:
+                best_virtual_area = min(
+                    virtual_distances.keys(),
+                    key=lambda area: virtual_distances[area],
+                )
+                best_virtual_dist = virtual_distances[best_virtual_area]
+
+                winner_distance = _effective_distance(winner) if winner else None
+
+                if winner is None or winner_distance is None:
+                    virtual_winner_area_id = best_virtual_area
+                    virtual_winner_distance = best_virtual_dist
+                    if _LOGGER.isEnabledFor(logging.DEBUG):
+                        _LOGGER.debug(
+                            "Virtual distance winner for %s: %s at %.2fm (no physical winner)",
+                            device.name,
+                            best_virtual_area,
+                            best_virtual_dist,
+                        )
+                elif best_virtual_dist < winner_distance:
+                    virtual_winner_area_id = best_virtual_area
+                    virtual_winner_distance = best_virtual_dist
+                    if _LOGGER.isEnabledFor(logging.DEBUG):
+                        _LOGGER.debug(
+                            "Virtual distance winner for %s: %s at %.2fm beats physical %.2fm",
+                            device.name,
+                            best_virtual_area,
+                            best_virtual_dist,
+                            winner_distance,
+                        )
+
+        # If a virtual room won, apply it directly and return
+        if virtual_winner_area_id is not None:
+            device.update_area_and_floor(virtual_winner_area_id)
+            device.area_distance = virtual_winner_distance
+            device.area_distance_stamp = nowstamp
+            device._ukf_scannerless_area = True  # noqa: SLF001
+            device.reset_pending_state()
+            tests.reason = f"WIN via virtual distance ({virtual_winner_distance:.2f}m) for scannerless room"
+            device.diag_area_switch = tests.sensortext()
+            if _LOGGER.isEnabledFor(logging.DEBUG):
+                _LOGGER.debug(
+                    "Applied virtual distance winner for %s: area=%s distance=%.2fm",
+                    device.name,
+                    virtual_winner_area_id,
+                    virtual_winner_distance if virtual_winner_distance else 0,
+                )
+            return
+
+        if not has_distance_contender:
+
+            def _evidence_ok(advert: BermudaAdvert | None) -> bool:
+                return _within_evidence(advert)
+
+            def _get_floor_id(advert: BermudaAdvert | None) -> str | None:
+                """Get floor_id from advert's scanner device."""
+                if advert is None or advert.scanner_device is None:
+                    return None
+                return getattr(advert.scanner_device, "floor_id", None)
+
+            fallback_candidates: list[BermudaAdvert] = []
+            for adv in device.adverts.values():
+                if not _area_candidate(adv) or not _evidence_ok(adv):
+                    continue
+                adv_effective = _effective_distance(adv)
+                if adv_effective is None or adv_effective <= _max_radius:
+                    fallback_candidates.append(adv)
+            if fallback_candidates:
+                best_by_rssi = max(
+                    fallback_candidates,
+                    key=lambda adv: (
+                        adv.rssi if adv.rssi is not None else float("-inf"),
+                        adv.stamp if adv.stamp is not None else 0,
+                    ),
+                )
+                incumbent_candidate = (
+                    device.area_advert
+                    if _area_candidate(device.area_advert) and _evidence_ok(device.area_advert)
+                    else None
+                )
+                best_rssi = best_by_rssi.rssi
+                incumbent_rssi = incumbent_candidate.rssi if incumbent_candidate is not None else None
+
+                rssi_is_cross_floor = False
+                if incumbent_candidate is not None and best_by_rssi is not incumbent_candidate:
+                    inc_floor = _get_floor_id(incumbent_candidate)
+                    best_floor = _get_floor_id(best_by_rssi)
+                    rssi_is_cross_floor = inc_floor is not None and best_floor is not None and inc_floor != best_floor
+
+                effective_rssi_margin = (
+                    rssi_fallback_cross_floor_margin if rssi_is_cross_floor else rssi_fallback_margin
+                )
+
+                if incumbent_candidate is None:
+                    winner = best_by_rssi
+                    tests.reason = "WIN via RSSI fallback (no incumbent within evidence)"
+                elif best_by_rssi is incumbent_candidate:
+                    winner = best_by_rssi
+                    tests.reason = "WIN via RSSI fallback (no distance contenders)"
+                elif best_rssi is not None and (
+                    incumbent_rssi is None or best_rssi >= incumbent_rssi + effective_rssi_margin
+                ):
+                    if rssi_is_cross_floor:
+                        winner = incumbent_candidate
+                        tests.reason = "HOLD via RSSI cross-floor protection (needs streak confirmation)"
+                    else:
+                        winner = best_by_rssi
+                        tests.reason = "WIN via RSSI fallback margin"
+                else:
+                    winner = incumbent_candidate
+                    tests.reason = "HOLD via RSSI fallback hysteresis"
+
+                # Populate diagnostic fields
+                winner_name = ""
+                winner_area = ""
+                winner_distance_val = 0.0
+                if winner is not None:
+                    winner_name = getattr(winner, "name", "") or ""
+                    winner_area = getattr(winner, "area_name", "") or ""
+                    winner_distance_val = _effective_distance(winner) or 0.0
+                incumbent_name = ""
+                incumbent_area = ""
+                incumbent_dist = 0.0
+                if incumbent_candidate is not None and incumbent_candidate is not winner:
+                    incumbent_name = getattr(incumbent_candidate, "name", "") or ""
+                    incumbent_area = getattr(incumbent_candidate, "area_name", "") or ""
+                    incumbent_dist = _effective_distance(incumbent_candidate) or 0.0
+                tests.scannername = (incumbent_name, winner_name)
+                tests.areas = (incumbent_area, winner_area)
+                tests.distance = (incumbent_dist, winner_distance_val)
+            else:
+                winner = None
+
+        if device.area_advert != winner and tests.reason is not None:
+            device.diag_area_switch = tests.sensortext()
+
+        # Apply the newly-found closest scanner
+        def _resolve_cross_floor(current: BermudaAdvert | None, candidate: BermudaAdvert | None) -> bool:
+            cur_floor = getattr(current.scanner_device, "floor_id", None) if current else None
+            cand_floor = getattr(candidate.scanner_device, "floor_id", None) if candidate else None
+            return cur_floor is not None and cand_floor is not None and cur_floor != cand_floor
+
+        def _get_visible_scanners() -> set[str]:
+            """Get addresses of all scanners currently seeing this device."""
+            visible = set()
+            for adv in device.adverts.values():
+                if _is_distance_contender(adv) and adv.scanner_device is not None:
+                    visible.add(adv.scanner_device.address)
+            return visible
+
+        def _get_all_known_scanners_for_area(area_id: str) -> set[str]:
+            """Get all scanner addresses that have ever seen this device in this area."""
+            if area_id not in device.co_visibility_stats:
+                return set()
+            return set(device.co_visibility_stats[area_id].keys())
+
+        def _apply_selection(advert: BermudaAdvert | None) -> None:
+            device.apply_scanner_selection(advert, nowstamp=nowstamp)
+
+            if advert is not None and advert.area_id is not None:
+                visible_scanners = _get_visible_scanners()
+                known_scanners = _get_all_known_scanners_for_area(advert.area_id)
+                all_candidate_scanners = known_scanners | visible_scanners
+                device.update_co_visibility(advert.area_id, visible_scanners, all_candidate_scanners)
+
+                if advert.rssi is not None:
+                    other_readings: dict[str, float] = {}
+                    for other_adv in device.adverts.values():
+                        if (
+                            other_adv is not advert
+                            and _within_evidence(other_adv)
+                            and other_adv.rssi is not None
+                            and other_adv.scanner_address is not None
+                        ):
+                            other_readings[other_adv.scanner_address] = other_adv.rssi
+
+                    if other_readings:
+                        if device.address not in self.correlations:
+                            self.correlations[device.address] = {}
+                        if advert.area_id not in self.correlations[device.address]:
+                            self.correlations[device.address][advert.area_id] = AreaProfile(
+                                area_id=advert.area_id,
+                            )
+                        self.correlations[device.address][advert.area_id].update(
+                            primary_rssi=advert.rssi,
+                            other_readings=other_readings,
+                            primary_scanner_addr=advert.scanner_address,
+                        )
+
+                        all_readings = dict(other_readings)
+                        if advert.scanner_address is not None:
+                            all_readings[advert.scanner_address] = advert.rssi
+                        if advert.area_id not in self.room_profiles:
+                            self.room_profiles[advert.area_id] = RoomProfile(area_id=advert.area_id)
+                        self.room_profiles[advert.area_id].update(all_readings)
+
+        if winner is None:
+            candidates: list[tuple[float, BermudaAdvert]] = []
+            for adv in device.adverts.values():
+                if not (_has_area(adv) and _within_evidence(adv)):
+                    continue
+                adv_effective = _effective_distance(adv)
+                if adv_effective is None or adv_effective > _max_radius:
+                    continue
+                candidates.append((adv_effective, adv))
+            if candidates:
+                if _use_physical_rssi_priority:
+
+                    def _rssi_sort_key(item: tuple[float, BermudaAdvert]) -> tuple[float, float]:
+                        rssi = item[1].median_rssi()
+                        return (item[0], -(rssi if rssi is not None else float("-inf")))
+
+                    winner = min(candidates, key=_rssi_sort_key)[1]
+                else:
+                    winner = min(
+                        candidates,
+                        key=lambda item: (item[0], item[1].stamp if item[1].stamp is not None else 0),
+                    )[1]
+                tests.reason = "WIN via rescue candidate"
+            if winner is not None:
+                _apply_selection(winner)
+                return
+
+            if _LOGGER.isEnabledFor(logging.DEBUG):
+                fresh_adverts = [adv for adv in device.adverts.values() if _within_evidence(adv)]
+                fresh_with_area = [adv for adv in fresh_adverts if _has_area(adv)]
+                with_effective = [adv for adv in fresh_with_area if _effective_distance(adv) is not None]
+                top_candidates = sorted(
+                    fresh_with_area,
+                    key=lambda adv: (
+                        adv.rssi if adv.rssi is not None else float("-inf"),
+                        adv.stamp if adv.stamp is not None else 0,
+                    ),
+                    reverse=True,
+                )[:3]
+                top_summary = [
+                    f"(age={nowstamp - adv.stamp:.1f}s area={adv.area_id} rssi={adv.rssi} "
+                    f"rssi_dist={adv.rssi_distance} hist_len={len(getattr(adv, 'hist_distance_by_interval', []))})"
+                    for adv in top_candidates
+                ]
+                last_log_age = nowstamp - getattr(device, "last_no_winner_log", 0)
+                if last_log_age > AREA_MAX_AD_AGE_DEFAULT:
+                    device.last_no_winner_log = nowstamp
+                    _LOGGER.debug(
+                        "Area selection cleared for %s: adverts=%d fresh=%d fresh_with_area=%d "
+                        "with_effective=%d max_radius=%.2f top=%s",
+                        device.name,
+                        len(device.adverts),
+                        len(fresh_adverts),
+                        len(fresh_with_area),
+                        len(with_effective),
+                        _max_radius,
+                        top_summary,
+                    )
+            device.reset_pending_state()
+            _apply_selection(None)
+            return
+
+        if device.area_advert is winner:
+            device.reset_pending_state()
+            _apply_selection(winner)
+            return
+
+        cross_floor_final = _resolve_cross_floor(device.area_advert, winner)
+        streak_target = CROSS_FLOOR_STREAK if cross_floor_final else SAME_FLOOR_STREAK
+
+        # Calculate confidence scores
+        winner_confidence = 1.0
+        incumbent_confidence = 1.0
+        winner_corr_confidence = 1.0
+        incumbent_corr_confidence = 1.0
+        low_confidence_winner = False
+
+        if winner is not None and winner.area_id is not None:
+            visible_scanners = _get_visible_scanners()
+            winner_confidence = device.get_co_visibility_confidence(winner.area_id, visible_scanners)
+
+            current_readings: dict[str, float] = {
+                adv.scanner_address: adv.rssi
+                for adv in device.adverts.values()
+                if _within_evidence(adv) and adv.rssi is not None and adv.scanner_address is not None
+            }
+            winner_corr_confidence = self._get_correlation_confidence(
+                device.address, winner.area_id, winner.rssi, current_readings
+            )
+
+            if device.area_advert is not None and device.area_advert.area_id is not None:
+                incumbent_confidence = device.get_co_visibility_confidence(device.area_advert.area_id, visible_scanners)
+                incumbent_corr_confidence = self._get_correlation_confidence(
+                    device.address, device.area_advert.area_id, device.area_advert.rssi, current_readings
+                )
+
+            if winner.area_id != (device.area_advert.area_id if device.area_advert else None):
+                if (
+                    winner_confidence < CONFIDENCE_WINNER_MIN
+                    and incumbent_confidence > winner_confidence + CONFIDENCE_WINNER_MARGIN
+                ):
+                    streak_target = max(streak_target, streak_target * 2)
+                    low_confidence_winner = True
+
+                if (
+                    winner_corr_confidence < CORR_CONFIDENCE_WINNER_MIN
+                    and incumbent_corr_confidence > winner_corr_confidence + CORR_CONFIDENCE_WINNER_MARGIN
+                ):
+                    streak_target = max(streak_target, streak_target * 2)
+                    low_confidence_winner = True
+
+        if device.area_advert is None and winner is not None:
+            device.reset_pending_state()
+            _apply_selection(winner)
+            return
+
+        # Bootstrap checks
+        area_advert_stale = False
+        significant_improvement_same_floor = False
+        significant_rssi_advantage = False
+        if device.area_advert is not None:
+            max_age = getattr(device.area_advert, "adaptive_timeout", None) or AREA_MAX_AD_AGE_DEFAULT
+            max_age = min(max_age, AREA_MAX_AD_AGE_LIMIT)
+            area_advert_stale = device.area_advert.stamp < nowstamp - max_age
+            if winner is not None:
+                streak_winner_dist = _effective_distance(winner)
+                streak_incumbent_dist = _effective_distance(device.area_advert)
+                is_cross_floor_check = _resolve_cross_floor(device.area_advert, winner)
+                if (
+                    streak_winner_dist is not None
+                    and streak_incumbent_dist is not None
+                    and streak_winner_dist < streak_incumbent_dist
+                    and not is_cross_floor_check
+                ):
+                    streak_avg = (streak_winner_dist + streak_incumbent_dist) / 2
+                    streak_pcnt = abs(streak_winner_dist - streak_incumbent_dist) / streak_avg if streak_avg > 0 else 0
+                    significant_improvement_same_floor = streak_pcnt >= 0.30
+
+                if _use_physical_rssi_priority and not is_cross_floor_check:
+                    winner_rssi = winner.median_rssi() if hasattr(winner, "median_rssi") else None
+                    incumbent_rssi_val = (
+                        device.area_advert.median_rssi() if hasattr(device.area_advert, "median_rssi") else None
+                    )
+                    if winner_rssi is not None and incumbent_rssi_val is not None:
+                        rssi_advantage_val = winner_rssi - incumbent_rssi_val
+                        if rssi_advantage_val > RSSI_CONSISTENCY_MARGIN_DB:
+                            significant_rssi_advantage = True
+
+        is_cross_floor_switch = _resolve_cross_floor(device.area_advert, winner)
+        incumbent_truly_invalid = not _is_distance_contender(device.area_advert) or area_advert_stale
+        same_floor_fast_track = not is_cross_floor_switch and (
+            significant_improvement_same_floor or significant_rssi_advantage
+        )
+
+        incumbent_completely_offline = (
+            device.area_advert is None
+            or device.area_advert.stamp is None
+            or device.area_advert.stamp < nowstamp - AREA_MAX_AD_AGE_LIMIT
+        )
+
+        allow_immediate_switch = winner is not None and (
+            (is_cross_floor_switch and incumbent_completely_offline)
+            or (not is_cross_floor_switch and (incumbent_truly_invalid or same_floor_fast_track))
+        )
+
+        if allow_immediate_switch:
+            device.reset_pending_state()
+            _apply_selection(winner)
+            return
+
+        # Streak logic
+        winner_floor_id = getattr(winner.scanner_device, "floor_id", None)
+
+        # BUG 20 FIX: Only count streak if we have NEW advertisement data
+        current_stamps = self._collect_current_stamps(device, nowstamp)
+        has_new_data = self._has_new_advert_data(current_stamps, device.pending_last_stamps)
+
+        if device.pending_area_id == winner.area_id and device.pending_floor_id == winner_floor_id:
+            if (low_confidence_winner and winner_confidence < 0.5) or not has_new_data:
+                pass
+            else:
+                device.pending_streak += 1
+                device.pending_last_stamps = dict(current_stamps)
+        elif device.pending_area_id is not None and device.pending_area_id != winner.area_id:
+            pending_advert = next(
+                (adv for adv in device.adverts.values() if adv.area_id == device.pending_area_id),
+                None,
+            )
+            pending_dist = _effective_distance(pending_advert) if pending_advert else None
+            winner_dist = _effective_distance(winner)
+
+            if pending_dist is not None and winner_dist is not None:
+                improvement = (pending_dist - winner_dist) / pending_dist if pending_dist > 0 else 0
+                if improvement > 0.20:
+                    device.pending_area_id = winner.area_id
+                    device.pending_floor_id = winner_floor_id
+                    device.pending_streak = 1
+                    device.pending_last_stamps = dict(current_stamps)
+            else:
+                device.pending_area_id = winner.area_id
+                device.pending_floor_id = winner_floor_id
+                device.pending_streak = 1
+                device.pending_last_stamps = dict(current_stamps)
+        else:
+            device.pending_area_id = winner.area_id
+            device.pending_floor_id = winner_floor_id
+            device.pending_streak = 1
+            device.pending_last_stamps = dict(current_stamps)
+
+        if device.pending_streak >= streak_target:
+            device.reset_pending_state()
+            _apply_selection(winner)
+        else:
+            device.diag_area_switch = tests.sensortext()
+            _apply_selection(device.area_advert)

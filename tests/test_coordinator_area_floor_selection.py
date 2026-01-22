@@ -15,6 +15,7 @@ from custom_components.bermuda.bermuda_advert import BermudaAdvert
 from custom_components.bermuda.fmdn import BermudaFmdnManager, FmdnIntegration
 from custom_components.bermuda.bermuda_irk import BermudaIrkManager
 from custom_components.bermuda.coordinator import BermudaDataUpdateCoordinator
+from custom_components.bermuda.area_selection import AreaSelectionHandler
 from custom_components.bermuda.const import (
     CONF_ATTENUATION,
     CONF_MAX_RADIUS,
@@ -49,6 +50,7 @@ def _make_coordinator(hass: HomeAssistant) -> BermudaDataUpdateCoordinator:
     coordinator.fr = fr.async_get(hass)
     coordinator.irk_manager = BermudaIrkManager()
     coordinator.fmdn = FmdnIntegration(coordinator)
+    coordinator.area_selection = AreaSelectionHandler(coordinator)
     return coordinator
 
 
@@ -104,7 +106,7 @@ def test_tracker_device_gets_area_and_floor(
     assert len(tracked.adverts) == 1
     tracked.calculate_data()
     assert advert.rssi_distance is not None
-    assert coordinator.effective_distance(advert, base_time) == advert.rssi_distance
+    assert coordinator.area_selection.effective_distance(advert, base_time) == advert.rssi_distance
     assert advert.rssi_distance <= coordinator.options[CONF_MAX_RADIUS]
 
     with caplog.at_level("DEBUG"):

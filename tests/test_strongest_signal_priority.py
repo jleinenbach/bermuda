@@ -101,6 +101,7 @@ class FakeDevice:
     pending_area_id: str | None = None
     pending_floor_id: str | None = None
     pending_streak: int = 0
+    pending_last_stamps: dict[str, float] = field(default_factory=dict)
     diag_area_switch: str = ""
     area_advert: FakeAdvert | None = None
     last_seen: float = 0.0
@@ -136,6 +137,13 @@ class FakeDevice:
     def get_movement_state(self) -> str:
         """Return movement state for tests."""
         return "STATIONARY"
+
+    def reset_pending_state(self) -> None:
+        """Reset pending area selection state."""
+        self.pending_area_id = None
+        self.pending_floor_id = None
+        self.pending_streak = 0
+        self.pending_last_stamps = {}
 
 
 def _create_scanner_devices() -> dict[str, FakeScannerDevice]:

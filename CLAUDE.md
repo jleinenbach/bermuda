@@ -51,13 +51,88 @@ python -m pytest --cov -q
 | Component | File | Purpose |
 |-----------|------|---------|
 | **Coordinator** | `coordinator.py` | Drives Bluetooth processing, subscribes to HA Bluetooth manager, tracks scanners, prunes stale devices |
+| **AreaSelectionHandler** | `area_selection.py` | All area/room selection algorithms (UKF, min-distance, virtual distance) |
+| **BermudaServiceHandler** | `services.py` | Service handlers (dump_devices) and MAC redaction for privacy |
+| **MetadeviceManager** | `metadevice_manager.py` | IRK resolution, iBeacon registration, Private BLE Device integration |
 | **BermudaDevice** | `bermuda_device.py` | Represents each Bluetooth address, normalizes MACs, classifies address types, caches area/floor metadata |
 | **Metadevices** | - | Group rotating identities (IRK, iBeacon) so changing MACs map to stable logical devices |
 | **Entities** | `sensor.py`, `device_tracker.py`, etc. | Read state from coordinator |
 
+### Coordinator Modularization (Refactoring)
+
+The coordinator was refactored to follow Home Assistant best practices (similar to ESPHome, ZHA, Bluetooth integrations). Large modules are extracted into separate handler classes:
+
+```
+coordinator.py (1487 lines, was 4274) - 65% reduction!
+├── self.service_handler = BermudaServiceHandler(self)     # services.py
+├── self.area_selection = AreaSelectionHandler(self)       # area_selection.py
+├── self.metadevice_manager = MetadeviceManager(self)      # metadevice_manager.py
+│
+│   Entry Points (delegation):
+├── _refresh_areas_by_min_distance()  ──► area_selection.refresh_areas_by_min_distance()
+├── _refresh_area_by_min_distance()   ──► area_selection._refresh_area_by_min_distance()
+├── service_dump_devices()            ──► service_handler.async_dump_devices()
+├── discover_private_ble_metadevices()──► metadevice_manager.discover_private_ble_metadevices()
+├── register_ibeacon_source()         ──► metadevice_manager.register_ibeacon_source()
+├── update_metadevices()              ──► metadevice_manager.update_metadevices()
+│
+│   Future extraction candidates (optional):
+└── scanner management + repairs           # ~116 lines - Scanner list, area repairs
+```
+
+**Phase 1-2 Complete:**
+- `services.py` - BermudaServiceHandler (~253 lines)
+  - `async_dump_devices()` - Device dump service
+  - `redact_data()` - MAC address redaction for privacy
+  - `redaction_list_update()` - Redaction cache management
+
+**Phase 3 Complete:**
+- `area_selection.py` - AreaSelectionHandler (initial ~1171 lines)
+  - `AreaTests` dataclass - Diagnostic info for area decisions
+  - Helper functions: `_calculate_virtual_distance()`, `_collect_current_stamps()`, `_has_new_advert_data()`
+  - Registry helpers: `_resolve_floor_id_for_area()`, `_area_has_scanner()`, `resolve_area_name()`, `effective_distance()`
+  - `_get_correlation_confidence()` - RSSI pattern matching
+  - `_get_virtual_distances_for_scannerless_rooms()` - UKF fingerprint to distance
+  - `refresh_areas_by_min_distance()` - Main entry point
+  - `_determine_area_for_device()` - Per-device area logic
+  - **`_refresh_area_by_ukf()`** (~500 lines) - UKF fingerprint matching ✅
+  - **`_apply_ukf_selection()`** (~95 lines) - Apply UKF decision to device ✅
+
+**Phase 4 Complete:**
+- `area_selection.py` - Extended with min-distance algorithm (~2100 lines total)
+  - **`_refresh_area_by_min_distance()`** (~1100 lines) - Min-distance heuristic ✅
+  - Cross-floor protection with streak logic and history requirements
+  - Soft incumbent stabilization
+  - Physical RSSI priority for offset-gaming detection
+  - Virtual distance calculation for scannerless rooms
+
+**Phase 5 Complete:**
+- `metadevice_manager.py` - MetadeviceManager (~400 lines)
+  - `discover_private_ble_metadevices()` (~95 lines) - Private BLE Device integration scan
+  - `register_ibeacon_source()` (~56 lines) - iBeacon meta-device creation/update
+  - `update_metadevices()` (~157 lines) - Aggregate source device data into meta-devices
+  - Property accessors for coordinator state (hass, er, dr, options, metadevices, etc.)
+
+**Future Phases (Optional):**
+- `scanner_manager.py` - Scanner list management, area repair issues (~116 lines)
+
+### Refactoring Statistics
+
+| Phase | File | Lines Added | Lines Removed | Net Change |
+|-------|------|-------------|---------------|------------|
+| 1-2 | services.py | +253 | - | +253 |
+| 1-2 | area_selection.py | +575 | - | +575 |
+| 3 | area_selection.py | +596 | - | +596 |
+| 3 | coordinator.py | - | -661 | -661 |
+| 4 | area_selection.py | +1000 | - | +1000 |
+| 4 | coordinator.py | - | -1600 | -1600 |
+| 5 | metadevice_manager.py | +400 | - | +400 |
+| 5 | coordinator.py | - | -310 | -310 |
+| **Total** | | **+2824** | **-2571** | **-65% coordinator** |
+
 ### Area Selection System
 
-The area selection logic in `coordinator.py` (`_refresh_area_by_min_distance`) determines which room a device is in:
+The area selection logic (in `area_selection.py` and `coordinator.py`) determines which room a device is in:
 
 1. **Distance contender check**: Adverts must have valid distance within max_radius
 2. **Stability margin**: Challenger must be significantly closer (8% or 0.2m) to compete
@@ -160,8 +235,9 @@ Training sample 10: RSSI = -79dB
 |----------|-------|---------|
 | `MAX_AUTO_RATIO` | 0.30 | Auto influence capped at 30% |
 | `MIN_VARIANCE` | 0.001 | Prevents division by zero |
-| `TRAINING_SAMPLE_COUNT` | 20 | Samples per training session (meets maturity threshold) |
-| `TRAINING_SAMPLE_DELAY` | 0.5s | Delay between samples for diverse RSSI readings |
+| `TRAINING_SAMPLE_COUNT` | 20 | Target UNIQUE samples per training session |
+| `TRAINING_MAX_TIME_SECONDS` | 120.0 | Maximum training duration timeout |
+| `TRAINING_POLL_INTERVAL` | 0.3s | Poll interval for checking new advertisement data |
 
 ### Calibration vs Fingerprints (Independence)
 
@@ -876,6 +952,45 @@ filtered_rssi = filter.update_adaptive(raw_rssi, ref_power=-55)
   | `TRAINING_POLL_INTERVAL` | 0.3s | How often to check for new data |
 - **User impact**: Training may take longer (depends on device's advertisement interval), but produces REAL diverse samples instead of duplicates
 - **Files**: `coordinator.py`, `button.py`
+
+### Scannerless Room Topological Sanity Check (BUG 21)
+- **Problem**: UKF picks wrong scannerless room 2 floors away
+  - Device is in "Lagerraum" (basement, scannerless)
+  - UKF picks "Bad OG" (bathroom, 2 floors up, scannerless) with score 0.83
+  - Distance shows ~0.1m (virtual distance from high UKF score)
+  - But NO scanner on the OG floor sees the device - only basement scanners do
+  - Result: Device shows wrong room despite being topologically impossible
+- **Root cause**: For scannerless rooms, sanity checks were bypassed, allowing UKF to
+  pick ANY scannerless room regardless of whether the device is actually on that floor
+- **Solution**: Add topological sanity check for scannerless rooms
+  - When UKF picks a scannerless room on floor X
+  - Check if ANY scanner on floor X sees the device (fresh advert)
+  - If NO scanner on the target floor sees the device → reject as topologically impossible
+- **Why topological instead of RSSI threshold?** Static RSSI thresholds (like -75 dBm)
+  don't account for varying scanner and tracker hardware strengths. A topological check
+  asks a simpler question: "Is there ANY evidence the device is on this floor?"
+- **Code change** (`coordinator.py:2240-2285`):
+  ```python
+  if scanner_less_room:
+      # BUG 21 FIX: TOPOLOGICAL SANITY CHECK FOR SCANNERLESS ROOMS
+      target_area_floor_id = self._resolve_floor_id_for_area(best_area_id)
+
+      if target_area_floor_id is not None:
+          scanner_on_target_floor_sees_device = False
+
+          for advert in device.adverts.values():
+              if (advert.stamp is not None
+                  and nowstamp - advert.stamp < EVIDENCE_WINDOW_SECONDS
+                  and advert.scanner_device is not None):
+                  scanner_floor_id = getattr(advert.scanner_device, "floor_id", None)
+                  if scanner_floor_id == target_area_floor_id:
+                      scanner_on_target_floor_sees_device = True
+                      break
+
+          if not scanner_on_target_floor_sees_device:
+              return False  # Fall back to min-distance
+  ```
+- **Files**: `coordinator.py`
 
 ## Manual Fingerprint Training System
 
