@@ -105,6 +105,7 @@ class FakeDevice:
         self.pending_area_id: str | None = None
         self.pending_floor_id: str | None = None
         self.pending_streak: int = 0
+        self.pending_last_stamps: dict[str, float] = {}  # BUG 20 FIX: Track timestamps for unique signal counting
         self.create_sensor = False
         self.area_id: str | None = incumbent.area_id
         self.area_name: str | None = incumbent.area_name
@@ -267,8 +268,12 @@ def test_cross_floor_historical_minmax_requires_stronger_history(monkeypatch: py
 
 def test_cross_floor_switch_allowed_with_long_history(monkeypatch: pytest.MonkeyPatch) -> None:
     """Cross-floor switches can proceed when history is long enough."""
-    now = 2000.0
-    monkeypatch.setattr("custom_components.bermuda.coordinator.monotonic_time_coarse", lambda: now)
+    now = [2000.0]  # Mutable to allow updates
+
+    def _fake_time() -> float:
+        return now[0]
+
+    monkeypatch.setattr("custom_components.bermuda.coordinator.monotonic_time_coarse", _fake_time)
 
     areas = [
         FakeArea(id="area_a", name="Room A", floor_id="floor_a"),
@@ -278,7 +283,7 @@ def test_cross_floor_switch_allowed_with_long_history(monkeypatch: pytest.Monkey
 
     scanner_floor_a = FakeScanner(
         name="Scanner A",
-        last_seen=now - 0.05,
+        last_seen=now[0] - 0.05,
         floor_id="floor_a",
         floor_name="Level A",
         area_id="area_a",
@@ -286,7 +291,7 @@ def test_cross_floor_switch_allowed_with_long_history(monkeypatch: pytest.Monkey
     )
     scanner_floor_b = FakeScanner(
         name="Scanner B",
-        last_seen=now - 0.04,
+        last_seen=now[0] - 0.04,
         floor_id="floor_b",
         floor_name="Level B",
         area_id="area_b",
@@ -300,7 +305,7 @@ def test_cross_floor_switch_allowed_with_long_history(monkeypatch: pytest.Monkey
         area_name=scanner_floor_a.area_name,
         rssi_distance=5.0,
         rssi=-90,
-        stamp=now - 0.05,
+        stamp=now[0] - 0.05,
         hist=[5.1, 5.0, 5.2, 5.3, 5.1, 5.2, 5.1, 5.0, 5.0, 5.1],
     )
     challenger = FakeAdvert(
@@ -310,7 +315,7 @@ def test_cross_floor_switch_allowed_with_long_history(monkeypatch: pytest.Monkey
         area_name=scanner_floor_b.area_name,
         rssi_distance=1.8,
         rssi=-82,
-        stamp=now - 0.04,
+        stamp=now[0] - 0.04,
         hist=[1.9, 1.8, 1.8, 1.9, 1.8, 1.8, 1.9, 1.8, 1.8, 1.8],
     )
 
@@ -320,7 +325,11 @@ def test_cross_floor_switch_allowed_with_long_history(monkeypatch: pytest.Monkey
         adverts={"a": incumbent, "b": challenger},
     )
 
-    for _ in range(CROSS_FLOOR_STREAK):
+    # BUG 20 FIX: Streak counting now requires unique signals (different timestamps)
+    for i in range(CROSS_FLOOR_STREAK):
+        now[0] += 1.0  # Advance time
+        incumbent.stamp = now[0] - 0.05
+        challenger.stamp = now[0] - 0.04
         BermudaDataUpdateCoordinator._refresh_area_by_min_distance(coord, device)  # type: ignore[arg-type]
 
     assert device.area_advert is challenger
@@ -583,8 +592,12 @@ def test_same_floor_confirmation_blocks_cross_floor_switch(monkeypatch: pytest.M
 def test_same_floor_confirmation_allows_strong_switch(monkeypatch: pytest.MonkeyPatch) -> None:
     """When a challenger has very strong evidence (>60% diff), it should still win
     even with same-floor witnesses."""
-    now = 6000.0
-    monkeypatch.setattr("custom_components.bermuda.coordinator.monotonic_time_coarse", lambda: now)
+    now = [6000.0]  # Mutable to allow updates
+
+    def _fake_time() -> float:
+        return now[0]
+
+    monkeypatch.setattr("custom_components.bermuda.coordinator.monotonic_time_coarse", _fake_time)
 
     areas = [
         FakeArea(id="area_a1", name="Room A1", floor_id="floor_a"),
@@ -596,7 +609,7 @@ def test_same_floor_confirmation_allows_strong_switch(monkeypatch: pytest.Monkey
     # Multiple scanners on floor A
     scanner_a1 = FakeScanner(
         name="Scanner A1",
-        last_seen=now - 0.01,
+        last_seen=now[0] - 0.01,
         floor_id="floor_a",
         floor_name="Level A",
         area_id="area_a1",
@@ -604,7 +617,7 @@ def test_same_floor_confirmation_allows_strong_switch(monkeypatch: pytest.Monkey
     )
     scanner_a2 = FakeScanner(
         name="Scanner A2",
-        last_seen=now - 0.02,
+        last_seen=now[0] - 0.02,
         floor_id="floor_a",
         floor_name="Level A",
         area_id="area_a2",
@@ -613,7 +626,7 @@ def test_same_floor_confirmation_allows_strong_switch(monkeypatch: pytest.Monkey
     # Scanner on floor B
     scanner_b = FakeScanner(
         name="Scanner B",
-        last_seen=now - 0.01,
+        last_seen=now[0] - 0.01,
         floor_id="floor_b",
         floor_name="Level B",
         area_id="area_b",
@@ -627,7 +640,7 @@ def test_same_floor_confirmation_allows_strong_switch(monkeypatch: pytest.Monkey
         area_name=scanner_a1.area_name,
         rssi_distance=5.0,
         rssi=-95,
-        stamp=now - 0.01,
+        stamp=now[0] - 0.01,
         hist=[5.0] * 10,
     )
     witness_a2 = FakeAdvert(
@@ -637,7 +650,7 @@ def test_same_floor_confirmation_allows_strong_switch(monkeypatch: pytest.Monkey
         area_name=scanner_a2.area_name,
         rssi_distance=6.0,
         rssi=-97,
-        stamp=now - 0.02,
+        stamp=now[0] - 0.02,
         hist=[6.0] * 10,
     )
     # Challenger with very strong evidence (>80% closer)
@@ -648,7 +661,7 @@ def test_same_floor_confirmation_allows_strong_switch(monkeypatch: pytest.Monkey
         area_name=scanner_b.area_name,
         rssi_distance=0.8,  # ~145% difference from 5.0
         rssi=-70,
-        stamp=now - 0.01,
+        stamp=now[0] - 0.01,
         hist=[0.8] * 10,
     )
 
@@ -658,8 +671,12 @@ def test_same_floor_confirmation_allows_strong_switch(monkeypatch: pytest.Monkey
         adverts={"a1": incumbent, "a2": witness_a2, "b": challenger},
     )
 
-    # Run selection CROSS_FLOOR_STREAK times
+    # BUG 20 FIX: Streak counting now requires unique signals (different timestamps)
     for _ in range(CROSS_FLOOR_STREAK):
+        now[0] += 1.0  # Advance time
+        incumbent.stamp = now[0] - 0.01
+        witness_a2.stamp = now[0] - 0.02
+        challenger.stamp = now[0] - 0.01
         BermudaDataUpdateCoordinator._refresh_area_by_min_distance(coord, device)  # type: ignore[arg-type]
 
     # Even with same-floor witnesses, such strong evidence should win

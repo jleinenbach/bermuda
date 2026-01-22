@@ -2353,6 +2353,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             device.pending_area_id = None
             device.pending_floor_id = None
             device.pending_streak = 0
+            device.pending_last_stamps = {}
             self._apply_ukf_selection(
                 device,
                 best_advert,
@@ -2369,6 +2370,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             device.pending_area_id = None
             device.pending_floor_id = None
             device.pending_streak = 0
+            device.pending_last_stamps = {}
             self._apply_ukf_selection(
                 device,
                 best_advert,
@@ -2382,26 +2384,50 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         # Determine streak target based on floor change
         streak_target = CROSS_FLOOR_STREAK if is_cross_floor else SAME_FLOOR_STREAK
 
-        # Update streak counter
+        # BUG 20 FIX: Only count streak if we have NEW advertisement data
+        # Similar to BUG 19 fix for training - prevents cached values from being
+        # counted multiple times. BLE devices advertise every 1-10s, but coordinator
+        # updates every ~1s. Without this check, the same cached RSSI would count
+        # as multiple "votes" for a room switch.
+        current_stamps: dict[str, float] = {}
+        for advert in device.adverts.values():
+            if (
+                advert.stamp is not None
+                and advert.scanner_address is not None
+                and nowstamp - advert.stamp < EVIDENCE_WINDOW_SECONDS
+            ):
+                current_stamps[advert.scanner_address] = advert.stamp
+
+        has_new_data = any(
+            current_stamps.get(scanner, 0) > device.pending_last_stamps.get(scanner, 0) for scanner in current_stamps
+        )
+
+        # Update streak counter - only if we have new data
         if device.pending_area_id == best_area_id and device.pending_floor_id == winner_floor_id:
-            # Same target as before - increment streak
-            device.pending_streak += 1
+            # Same target as before - only increment if new data
+            if has_new_data:
+                device.pending_streak += 1
+                device.pending_last_stamps = dict(current_stamps)
+            # If no new data, keep current streak count (don't increment)
         elif device.pending_area_id is not None and device.pending_area_id != best_area_id:
             # Different target - reset streak to new candidate
             device.pending_area_id = best_area_id
             device.pending_floor_id = winner_floor_id
             device.pending_streak = 1
+            device.pending_last_stamps = dict(current_stamps)
         else:
             # First pending or same floor different area
             device.pending_area_id = best_area_id
             device.pending_floor_id = winner_floor_id
             device.pending_streak = 1
+            device.pending_last_stamps = dict(current_stamps)
 
         # Check if streak meets threshold
         if device.pending_streak >= streak_target:
             device.pending_area_id = None
             device.pending_floor_id = None
             device.pending_streak = 0
+            device.pending_last_stamps = {}  # Clear stamps when streak completes
             self._apply_ukf_selection(
                 device,
                 best_advert,
@@ -3460,6 +3486,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             device.pending_area_id = None
             device.pending_floor_id = None
             device.pending_streak = 0
+            device.pending_last_stamps = {}
 
             tests.reason = f"WIN via virtual distance ({virtual_winner_distance:.2f}m) for scannerless room"
             device.diag_area_switch = tests.sensortext()
@@ -3699,6 +3726,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             device.pending_area_id = None
             device.pending_floor_id = None
             device.pending_streak = 0
+            device.pending_last_stamps = {}
             _apply_selection(None)
             return
 
@@ -3706,6 +3734,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             device.pending_area_id = None
             device.pending_floor_id = None
             device.pending_streak = 0
+            device.pending_last_stamps = {}
             _apply_selection(winner)
             return
 
@@ -3762,6 +3791,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             device.pending_area_id = None
             device.pending_floor_id = None
             device.pending_streak = 0
+            device.pending_last_stamps = {}
             _apply_selection(winner)
             return
 
@@ -3839,6 +3869,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             device.pending_area_id = None
             device.pending_floor_id = None
             device.pending_streak = 0
+            device.pending_last_stamps = {}
             _apply_selection(winner)
             return
 
@@ -3850,16 +3881,36 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         # If winner is a NEW third candidate, only reset if it's more promising.
         winner_floor_id = getattr(winner.scanner_device, "floor_id", None)
 
+        # BUG 20 FIX: Only count streak if we have NEW advertisement data
+        # Similar to BUG 19 fix for training and UKF streak above.
+        current_stamps: dict[str, float] = {}
+        for advert in device.adverts.values():
+            if (
+                advert.stamp is not None
+                and advert.scanner_address is not None
+                and nowstamp - advert.stamp < EVIDENCE_WINDOW_SECONDS
+            ):
+                current_stamps[advert.scanner_address] = advert.stamp
+
+        has_new_data = any(
+            current_stamps.get(scanner, 0) > device.pending_last_stamps.get(scanner, 0) for scanner in current_stamps
+        )
+
         if device.pending_area_id == winner.area_id and device.pending_floor_id == winner_floor_id:
             # Winner matches pending candidate - increment streak
             # Bug Fix: Only increment if winner has acceptable confidence.
             # If confidence is very low, don't count this cycle toward the streak.
             # This prevents accumulating streak during intermittent false readings.
+            # BUG 20 FIX: Also require new data to prevent counting cached values.
             if low_confidence_winner and winner_confidence < 0.5:
                 # Very low confidence - don't increment streak this cycle
                 pass
+            elif not has_new_data:
+                # No new advertisement data - don't increment streak
+                pass
             else:
                 device.pending_streak += 1
+                device.pending_last_stamps = dict(current_stamps)
         elif device.pending_area_id is not None and device.pending_area_id != winner.area_id:
             # A different candidate appeared - check if we should switch candidates
             # Only switch if the new candidate is significantly closer than our pending one
@@ -3879,22 +3930,26 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                     device.pending_area_id = winner.area_id
                     device.pending_floor_id = winner_floor_id
                     device.pending_streak = 1
+                    device.pending_last_stamps = dict(current_stamps)
                 # else: keep current pending candidate, don't increment streak
             else:
                 # No valid distance comparison - reset to new candidate
                 device.pending_area_id = winner.area_id
                 device.pending_floor_id = winner_floor_id
                 device.pending_streak = 1
+                device.pending_last_stamps = dict(current_stamps)
         else:
             # First pending candidate or same floor different area
             device.pending_area_id = winner.area_id
             device.pending_floor_id = winner_floor_id
             device.pending_streak = 1
+            device.pending_last_stamps = dict(current_stamps)
 
         if device.pending_streak >= streak_target:
             device.pending_area_id = None
             device.pending_floor_id = None
             device.pending_streak = 0
+            device.pending_last_stamps = {}  # Clear stamps when streak completes
             _apply_selection(winner)
         else:
             device.diag_area_switch = tests.sensortext()

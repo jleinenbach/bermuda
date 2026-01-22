@@ -113,7 +113,20 @@ def _patch_monotonic_time(monkeypatch: pytest.MonkeyPatch, current_time: list[fl
     monkeypatch.setattr("bluetooth_data_tools.monotonic_time_coarse", lambda: current_time[0])
     monkeypatch.setattr("custom_components.bermuda.coordinator.monotonic_time_coarse", lambda: current_time[0])
     monkeypatch.setattr("custom_components.bermuda.bermuda_device.monotonic_time_coarse", lambda: current_time[0])
+    # Also patch this test module's import so _make_advert uses the patched time
     monkeypatch.setattr("tests.test_area_selection.monotonic_time_coarse", lambda: current_time[0])
+
+
+def _update_advert_stamps(adverts: dict, new_stamp: float) -> None:
+    """Update the stamp attribute of all adverts to simulate new data arriving.
+
+    This is needed for BUG 20 fix: streak counting now requires unique signals
+    (different timestamps) to prevent cached values from being counted multiple times.
+    """
+    for advert in adverts.values():
+        advert.stamp = new_stamp
+        if hasattr(advert, "scanner_device") and advert.scanner_device is not None:
+            advert.scanner_device.last_seen = new_stamp
 
 
 @pytest.fixture
@@ -191,8 +204,13 @@ def test_out_of_radius_incumbent_without_valid_challenger_clears_selection(
     assert device.area_advert is None
 
 
-def test_near_field_absolute_improvement_wins(coordinator: BermudaDataUpdateCoordinator) -> None:
+def test_near_field_absolute_improvement_wins(
+    monkeypatch: pytest.MonkeyPatch, coordinator: BermudaDataUpdateCoordinator
+) -> None:
     """Allow meaningful absolute improvement in the near field to switch areas."""
+    current_time = [1000.0]
+    _patch_monotonic_time(monkeypatch, current_time)
+
     coordinator.options[CONF_MAX_RADIUS] = 10.0
     device = _configure_device(coordinator, "22:33:44:55:66:77")
 
@@ -202,7 +220,10 @@ def test_near_field_absolute_improvement_wins(coordinator: BermudaDataUpdateCoor
     device.area_advert = incumbent  # type: ignore[assignment]
     device.adverts = {"incumbent": incumbent, "challenger": challenger}  # type: ignore[dict-item]
 
-    for _ in range(CROSS_FLOOR_STREAK):
+    # BUG 20 FIX: Streak counting now requires unique signals (different timestamps)
+    for i in range(CROSS_FLOOR_STREAK):
+        current_time[0] += 1.0
+        _update_advert_stamps(device.adverts, current_time[0])
         coordinator._refresh_area_by_min_distance(device)
 
     assert device.area_advert is challenger  # type: ignore[comparison-overlap]
@@ -383,8 +404,13 @@ def test_distance_fallback_requires_fresh_advert(coordinator: BermudaDataUpdateC
     assert metadata["area_is_stale"] is True
 
 
-def test_legitimate_move_switches_to_better_challenger(coordinator: BermudaDataUpdateCoordinator) -> None:
+def test_legitimate_move_switches_to_better_challenger(
+    monkeypatch: pytest.MonkeyPatch, coordinator: BermudaDataUpdateCoordinator
+) -> None:
     """A meaningfully closer challenger should still win."""
+    current_time = [1000.0]
+    _patch_monotonic_time(monkeypatch, current_time)
+
     device = _configure_device(coordinator, "77:88:99:AA:BB:CC")
 
     incumbent = _make_advert("inc", "area-old", distance=6.0)
@@ -393,7 +419,10 @@ def test_legitimate_move_switches_to_better_challenger(coordinator: BermudaDataU
     device.area_advert = incumbent  # type: ignore[assignment]
     device.adverts = {"incumbent": incumbent, "challenger": challenger}  # type: ignore[dict-item]
 
-    for _ in range(CROSS_FLOOR_STREAK):
+    # BUG 20 FIX: Streak counting now requires unique signals (different timestamps)
+    for i in range(CROSS_FLOOR_STREAK):
+        current_time[0] += 1.0
+        _update_advert_stamps(device.adverts, current_time[0])
         coordinator._refresh_area_by_min_distance(device)
 
     assert device.area_advert is challenger  # type: ignore[comparison-overlap]
@@ -428,8 +457,13 @@ def test_jitter_and_gaps_do_not_oscillate_selection(coordinator: BermudaDataUpda
     assert device.area_advert is incumbent  # type: ignore[comparison-overlap]
 
 
-def test_same_floor_switch_behaviour_unaffected(coordinator: BermudaDataUpdateCoordinator) -> None:
+def test_same_floor_switch_behaviour_unaffected(
+    monkeypatch: pytest.MonkeyPatch, coordinator: BermudaDataUpdateCoordinator
+) -> None:
     """Switching on the same floor should behave as before."""
+    current_time = [1000.0]
+    _patch_monotonic_time(monkeypatch, current_time)
+
     device = _configure_device(coordinator, "99:AA:BB:CC:DD:EE")
 
     incumbent = _make_advert(
@@ -450,7 +484,10 @@ def test_same_floor_switch_behaviour_unaffected(coordinator: BermudaDataUpdateCo
     device.area_advert = incumbent  # type: ignore[assignment]
     device.adverts = {"incumbent": incumbent, "challenger": challenger}  # type: ignore[dict-item]
 
-    for _ in range(CROSS_FLOOR_STREAK):
+    # BUG 20 FIX: Streak counting now requires unique signals (different timestamps)
+    for i in range(CROSS_FLOOR_STREAK):
+        current_time[0] += 1.0
+        _update_advert_stamps(device.adverts, current_time[0])
         coordinator._refresh_area_by_min_distance(device)
 
     assert device.area_advert is challenger  # type: ignore[comparison-overlap]
@@ -483,8 +520,13 @@ def test_cross_floor_switch_blocked_without_history(coordinator: BermudaDataUpda
     assert device.area_advert is incumbent  # type: ignore[comparison-overlap]
 
 
-def test_cross_floor_switch_requires_sustained_advantage(coordinator: BermudaDataUpdateCoordinator) -> None:
+def test_cross_floor_switch_requires_sustained_advantage(
+    monkeypatch: pytest.MonkeyPatch, coordinator: BermudaDataUpdateCoordinator
+) -> None:
     """Cross-floor switches should happen only with sustained superiority."""
+    current_time = [1000.0]
+    _patch_monotonic_time(monkeypatch, current_time)
+
     device = _configure_device(coordinator, "BB:CC:DD:EE:FF:00")
 
     incumbent = _make_advert(
@@ -505,7 +547,10 @@ def test_cross_floor_switch_requires_sustained_advantage(coordinator: BermudaDat
     device.area_advert = incumbent  # type: ignore[assignment]
     device.adverts = {"incumbent": incumbent, "challenger": challenger}  # type: ignore[dict-item]
 
-    for _ in range(CROSS_FLOOR_STREAK):
+    # BUG 20 FIX: Streak counting now requires unique signals (different timestamps)
+    for i in range(CROSS_FLOOR_STREAK):
+        current_time[0] += 1.0
+        _update_advert_stamps(device.adverts, current_time[0])
         coordinator._refresh_area_by_min_distance(device)
 
     assert device.area_advert is challenger  # type: ignore[comparison-overlap]
