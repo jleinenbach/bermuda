@@ -53,6 +53,7 @@ python -m pytest --cov -q
 | **Coordinator** | `coordinator.py` | Drives Bluetooth processing, subscribes to HA Bluetooth manager, tracks scanners, prunes stale devices |
 | **AreaSelectionHandler** | `area_selection.py` | All area/room selection algorithms (UKF, min-distance, virtual distance) |
 | **BermudaServiceHandler** | `services.py` | Service handlers (dump_devices) and MAC redaction for privacy |
+| **MetadeviceManager** | `metadevice_manager.py` | IRK resolution, iBeacon registration, Private BLE Device integration |
 | **BermudaDevice** | `bermuda_device.py` | Represents each Bluetooth address, normalizes MACs, classifies address types, caches area/floor metadata |
 | **Metadevices** | - | Group rotating identities (IRK, iBeacon) so changing MACs map to stable logical devices |
 | **Entities** | `sensor.py`, `device_tracker.py`, etc. | Read state from coordinator |
@@ -62,20 +63,20 @@ python -m pytest --cov -q
 The coordinator was refactored to follow Home Assistant best practices (similar to ESPHome, ZHA, Bluetooth integrations). Large modules are extracted into separate handler classes:
 
 ```
-coordinator.py (3379 lines, was 4274)
+coordinator.py (1487 lines, was 4274) - 65% reduction!
 ├── self.service_handler = BermudaServiceHandler(self)     # services.py
 ├── self.area_selection = AreaSelectionHandler(self)       # area_selection.py
+├── self.metadevice_manager = MetadeviceManager(self)      # metadevice_manager.py
 │
 │   Entry Points (delegation):
 ├── _refresh_areas_by_min_distance()  ──► area_selection.refresh_areas_by_min_distance()
+├── _refresh_area_by_min_distance()   ──► area_selection._refresh_area_by_min_distance()
 ├── service_dump_devices()            ──► service_handler.async_dump_devices()
+├── discover_private_ble_metadevices()──► metadevice_manager.discover_private_ble_metadevices()
+├── register_ibeacon_source()         ──► metadevice_manager.register_ibeacon_source()
+├── update_metadevices()              ──► metadevice_manager.update_metadevices()
 │
-│   Still in coordinator (Phase 4 pending):
-├── _refresh_area_by_min_distance(device)  # ~1250 lines - proximity heuristic
-├── Helper methods (duplicates)            # To be removed after Phase 4
-│
-│   Future extraction candidates:
-├── metadevice methods                     # ~316 lines - IRK, iBeacon, Private BLE
+│   Future extraction candidates (optional):
 └── scanner management + repairs           # ~116 lines - Scanner list, area repairs
 ```
 
@@ -86,7 +87,7 @@ coordinator.py (3379 lines, was 4274)
   - `redaction_list_update()` - Redaction cache management
 
 **Phase 3 Complete:**
-- `area_selection.py` - AreaSelectionHandler (~1171 lines)
+- `area_selection.py` - AreaSelectionHandler (initial ~1171 lines)
   - `AreaTests` dataclass - Diagnostic info for area decisions
   - Helper functions: `_calculate_virtual_distance()`, `_collect_current_stamps()`, `_has_new_advert_data()`
   - Registry helpers: `_resolve_floor_id_for_area()`, `_area_has_scanner()`, `resolve_area_name()`, `effective_distance()`
@@ -97,12 +98,22 @@ coordinator.py (3379 lines, was 4274)
   - **`_refresh_area_by_ukf()`** (~500 lines) - UKF fingerprint matching ✅
   - **`_apply_ukf_selection()`** (~95 lines) - Apply UKF decision to device ✅
 
-**Phase 4 Pending:**
-- `_refresh_area_by_min_distance(device)` (~1250 lines) - Min-distance heuristic
-- Remove duplicate helper methods from coordinator (already in area_selection)
+**Phase 4 Complete:**
+- `area_selection.py` - Extended with min-distance algorithm (~2100 lines total)
+  - **`_refresh_area_by_min_distance()`** (~1100 lines) - Min-distance heuristic ✅
+  - Cross-floor protection with streak logic and history requirements
+  - Soft incumbent stabilization
+  - Physical RSSI priority for offset-gaming detection
+  - Virtual distance calculation for scannerless rooms
+
+**Phase 5 Complete:**
+- `metadevice_manager.py` - MetadeviceManager (~400 lines)
+  - `discover_private_ble_metadevices()` (~95 lines) - Private BLE Device integration scan
+  - `register_ibeacon_source()` (~56 lines) - iBeacon meta-device creation/update
+  - `update_metadevices()` (~157 lines) - Aggregate source device data into meta-devices
+  - Property accessors for coordinator state (hass, er, dr, options, metadevices, etc.)
 
 **Future Phases (Optional):**
-- `metadevice_manager.py` - IRK resolution, iBeacon, Private BLE Device (~316 lines)
 - `scanner_manager.py` - Scanner list management, area repair issues (~116 lines)
 
 ### Refactoring Statistics
@@ -113,7 +124,11 @@ coordinator.py (3379 lines, was 4274)
 | 1-2 | area_selection.py | +575 | - | +575 |
 | 3 | area_selection.py | +596 | - | +596 |
 | 3 | coordinator.py | - | -661 | -661 |
-| **Total** | | **+1424** | **-661** | **-21% coordinator** |
+| 4 | area_selection.py | +1000 | - | +1000 |
+| 4 | coordinator.py | - | -1600 | -1600 |
+| 5 | metadevice_manager.py | +400 | - | +400 |
+| 5 | coordinator.py | - | -310 | -310 |
+| **Total** | | **+2824** | **-2571** | **-65% coordinator** |
 
 ### Area Selection System
 
