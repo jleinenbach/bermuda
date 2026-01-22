@@ -1926,14 +1926,15 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
         for area_id, _d_squared, score in matches:
             # Only consider button-trained profiles (explicit user intent)
-            profile = device_profiles.get(area_id)
-            if profile is None or not profile.has_button_training:
+            # FIX: Use different variable name to avoid mypy no-redef error (line 1909 uses 'profile')
+            area_profile = device_profiles.get(area_id)
+            if area_profile is None or not area_profile.has_button_training:
                 if _LOGGER.isEnabledFor(logging.DEBUG):
                     _LOGGER.debug(
                         "  Skipping %s: no button training (profile=%s, has_btn=%s)",
                         area_id,
-                        profile is not None,
-                        profile.has_button_training if profile else "N/A",
+                        area_profile is not None,
+                        area_profile.has_button_training if area_profile else "N/A",
                     )
                 continue
 
