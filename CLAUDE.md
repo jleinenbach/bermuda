@@ -1219,6 +1219,54 @@ use_ukf_area_selection: false  # Default: disabled (experimental)
 - Probabilistic room assignment via Mahalanobis distance
 - Optimal fusion: UKF uncertainty + fingerprint variance combined
 
+### Variance Floor Fix (Hyper-Precision Paradox)
+
+**Problem:** When both the UKF state and the learned profile have converged after many
+samples, their variances become very small (2-5). This causes normal BLE fluctuations
+(3-5 dB) to appear as massive statistical deviations (2+ sigma), rejecting correct
+rooms in favor of poorly-trained alternatives.
+
+**The "Lagerraum" Bug:**
+```
+Lagerraum (well-trained):  Profile=-85dB, Current=-82dB, Variance=2.5
+  → Deviation: 3dB / sqrt(2.5) = 1.9 sigma
+  → D² ≈ 3.6, Score = exp(-3.6/4) ≈ 0.41  (should win but...)
+
+Praxis (poorly-trained):   Profile=-75dB, Current=-82dB, Variance=15.0
+  → Deviation: 7dB / sqrt(15) = 1.8 sigma
+  → D² ≈ 3.2, Score = exp(-3.2/4) ≈ 0.45  (wins incorrectly!)
+```
+
+**Solution:** `UKF_MIN_MATCHING_VARIANCE = 25.0` (sigma = 5 dB) as a floor for the
+diagonal elements of the combined covariance matrix in `match_fingerprints()`.
+
+```python
+# In ukf.py match_fingerprints():
+for k in range(n_sub):
+    combined_cov[k][k] = max(combined_cov[k][k], UKF_MIN_MATCHING_VARIANCE)
+```
+
+**Key Design Decisions:**
+
+1. **Value 25.0 (sigma = 5 dB)**: Upper end of typical BLE noise, ensures realistic tolerance
+2. **Separate from UKF_MEASUREMENT_NOISE (4.0)**: That's for per-sample Kalman updates;
+   this floor is for comparing momentary state vs long-term profile average
+3. **Uses `max()` not `+=`**: Prevents double-counting if variance is already high
+4. **Applied AFTER combining p_sub and fp_var**: Floor acts as safety net, not replacement
+
+**Effect:**
+
+| Deviation | Without Floor (var=5) | With Floor (var=25) |
+|-----------|----------------------|---------------------|
+| 3 dB | D²=1.8, Score=0.64 | D²=0.36, Score=0.91 |
+| 5 dB | D²=5.0, Score=0.29 | D²=1.0, Score=0.78 |
+| 10 dB | D²=20, Score=0.007 | D²=4.0, Score=0.37 |
+| 15 dB | D²=45, Score≈0 | D²=9.0, Score=0.11 |
+
+**Test Coverage:** See `tests/test_ukf.py`:
+- `TestVarianceFloorFix`: Unit tests for floor behavior
+- `TestLagerraumScenario`: Integration tests for the specific bug
+
 ### Next Steps (Future Work)
 
 1. **Field Testing**: Enable on test installations, compare with min-distance
@@ -2402,6 +2450,37 @@ return best_room
 **Key Insight**: Statistical/heuristic methods accumulate errors over time (bad training, environmental changes). Physical proximity (< 2m) is almost certain proof of location. Use proximity as a "reality check" for heuristic decisions.
 
 **Rule of Thumb**: When heuristic methods contradict strong physical evidence, trust the physics. Especially for cross-floor decisions where heuristic errors are most damaging.
+
+### 33. Converged Estimators Need Variance Floors for Matching
+
+When comparing two well-trained statistical estimators (e.g., UKF state vs profile mean),
+both may have very low variance after convergence. This creates a "hyper-precision paradox"
+where normal measurement noise causes statistical rejection.
+
+**Bug Pattern:**
+```python
+# BAD - Converged variances make normal noise look like outliers
+combined_cov = ukf_variance + profile_variance  # Both ≈ 2.5 after training
+# 3dB deviation: z = 3 / sqrt(5) = 1.3 sigma → looks borderline
+# But with many scanners: D² = n * z² = 3 * 1.7 = 5.1 → Score = 0.28 (rejected!)
+```
+
+**Fix Pattern:**
+```python
+# GOOD - Apply variance floor to ensure realistic tolerance
+MIN_MATCHING_VARIANCE = 25.0  # sigma = 5 dB (typical BLE noise)
+
+combined_cov = ukf_variance + profile_variance
+combined_cov = max(combined_cov, MIN_MATCHING_VARIANCE)  # Floor, not addition!
+# 3dB deviation: z = 3 / sqrt(25) = 0.6 sigma → D² = 1.1 → Score = 0.76 (accepted!)
+```
+
+**Key Insight**: Kalman filter variance measures estimation error, not measurement noise.
+After convergence, both approach zero, but the underlying signal still fluctuates.
+The floor represents this irreducible physical noise.
+
+**Rule of Thumb**: When comparing two estimators that can both converge to low variance,
+apply a variance floor representing the physical measurement noise of the underlying signal.
 
 ---
 

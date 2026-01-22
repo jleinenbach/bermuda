@@ -10,6 +10,7 @@ from custom_components.bermuda.correlation.area_profile import AreaProfile
 from custom_components.bermuda.filters.ukf import (
     DEFAULT_RSSI,
     MIN_VARIANCE,
+    UKF_MIN_MATCHING_VARIANCE,
     UnscentedKalmanFilter,
     _cholesky_decompose,
     _identity_matrix,
@@ -358,3 +359,271 @@ class TestUKFNumericalStability:
         # Should not crash and state should move toward new measurement
         state = ukf.state
         assert state[0] < -50.0  # Moved toward -90
+
+
+class TestVarianceFloorFix:
+    """Tests for the Hyper-Precision Paradox fix (UKF_MIN_MATCHING_VARIANCE).
+
+    The fix ensures that converged Kalman filters don't produce unrealistically
+    low combined covariance, which would cause normal BLE fluctuations (3-5 dB)
+    to be rejected as massive deviations.
+    """
+
+    def test_variance_floor_constant_value(self) -> None:
+        """Test that UKF_MIN_MATCHING_VARIANCE is correctly defined."""
+        # The floor should be 25.0 (σ ≈ 5 dB)
+        assert UKF_MIN_MATCHING_VARIANCE == 25.0
+        # It should be different from MIN_VARIANCE (numerical stability)
+        assert UKF_MIN_MATCHING_VARIANCE > MIN_VARIANCE
+
+    def test_score_with_normal_ble_fluctuation(self) -> None:
+        """Test that 3dB deviation produces good score with variance floor.
+
+        This is the core test for the Hyper-Precision Paradox fix.
+        With the floor, a 3dB deviation should produce a score > 0.8.
+        Without the floor, it would produce a score around 0.37 or lower.
+        """
+        ukf = UnscentedKalmanFilter(scanner_addresses=["AA:BB:CC:DD:EE:01", "AA:BB:CC:DD:EE:02"])
+
+        # Train UKF with stable measurements (many samples → converged variance)
+        for _ in range(50):
+            ukf.update_multi({"AA:BB:CC:DD:EE:01": -65.0, "AA:BB:CC:DD:EE:02": -75.0})
+
+        # Create profile with slightly different values (3dB deviation per scanner)
+        # This simulates normal BLE signal fluctuation
+        profile = AreaProfile(area_id="area_test")
+        for _ in range(50):  # Many samples → converged profile variance
+            profile.update(
+                primary_rssi=-68.0,  # 3dB different from UKF state (-65)
+                other_readings={"AA:BB:CC:DD:EE:02": -78.0},  # 3dB different (-75)
+                primary_scanner_addr="AA:BB:CC:DD:EE:01",
+            )
+
+        results = ukf.match_fingerprints({"area_test": profile})
+
+        # With variance floor, 3dB deviation should still produce good score
+        assert len(results) >= 1
+        _, d_squared, score = results[0]
+
+        # Key assertion: Score should be > 0.7 despite 3dB deviation
+        # Without fix, this would be around 0.37 or lower
+        assert score > 0.7, f"Score {score:.4f} too low for normal BLE fluctuation"
+
+        # D² should be reasonable (< 3) with the floor
+        assert d_squared < 3.0, f"D² {d_squared:.2f} too high with variance floor"
+
+    def test_score_with_large_deviation_still_rejects(self) -> None:
+        """Test that large deviations (15dB+) are still properly rejected.
+
+        The variance floor should not make matching too tolerant.
+        """
+        ukf = UnscentedKalmanFilter(scanner_addresses=["AA:BB:CC:DD:EE:01", "AA:BB:CC:DD:EE:02"])
+
+        # Train UKF
+        for _ in range(50):
+            ukf.update_multi({"AA:BB:CC:DD:EE:01": -65.0, "AA:BB:CC:DD:EE:02": -75.0})
+
+        # Create profile with very different values (15dB deviation)
+        wrong_profile = AreaProfile(area_id="area_wrong")
+        for _ in range(50):
+            wrong_profile.update(
+                primary_rssi=-80.0,  # 15dB different
+                other_readings={"AA:BB:CC:DD:EE:02": -60.0},  # 15dB different (opposite direction)
+                primary_scanner_addr="AA:BB:CC:DD:EE:01",
+            )
+
+        results = ukf.match_fingerprints({"area_wrong": wrong_profile})
+
+        assert len(results) >= 1
+        _, _, score = results[0]
+
+        # Large deviation should still produce low score
+        assert score < 0.3, f"Score {score:.4f} too high for 15dB deviation"
+
+    def test_score_improvement_with_floor(self) -> None:
+        """Test that the floor actually improves scores compared to theoretical no-floor.
+
+        We compute what the score WOULD be without the floor and verify
+        that our actual score is better.
+        """
+        ukf = UnscentedKalmanFilter(scanner_addresses=["AA:BB:CC:DD:EE:01", "AA:BB:CC:DD:EE:02"])
+
+        # Converge the UKF
+        for _ in range(100):
+            ukf.update_multi({"AA:BB:CC:DD:EE:01": -70.0, "AA:BB:CC:DD:EE:02": -70.0})
+
+        # Create profile with 5dB deviation (moderate BLE noise)
+        profile = AreaProfile(area_id="area_test")
+        for _ in range(100):
+            profile.update(
+                primary_rssi=-75.0,  # 5dB off
+                other_readings={"AA:BB:CC:DD:EE:02": -75.0},  # 5dB off
+                primary_scanner_addr="AA:BB:CC:DD:EE:01",
+            )
+
+        results = ukf.match_fingerprints({"area_test": profile})
+        assert len(results) >= 1
+        _, _, actual_score = results[0]
+
+        # Calculate theoretical score WITHOUT floor
+        # Assuming converged variance ≈ 2-4, combined ≈ 4-8
+        # With var=5: D² = (5²/5 + 5²/5) = 10, score = exp(-10/4) ≈ 0.08
+        # With floor=25: D² = (5²/25 + 5²/25) = 2, score = exp(-2/4) ≈ 0.61
+        theoretical_score_without_floor = math.exp(-10.0 / 4.0)  # ≈ 0.08
+
+        # Actual score should be significantly better than theoretical no-floor
+        assert actual_score > theoretical_score_without_floor * 5, (
+            f"Actual score {actual_score:.4f} not much better than "
+            f"theoretical no-floor {theoretical_score_without_floor:.4f}"
+        )
+
+
+class TestLagerraumScenario:
+    """Integration tests simulating the 'Lagerraum' (storage room) scenario.
+
+    This tests the specific bug where a well-trained room ('Lagerraum')
+    loses to a poorly-trained but closer room ('Praxis') because the
+    hyper-precision of the trained profile rejects normal BLE fluctuations.
+    """
+
+    def test_trained_room_beats_closer_scanner(self) -> None:
+        """Test that a well-trained profile wins over a nearby but wrong room.
+
+        Scenario:
+        - Device is physically in 'Lagerraum' (storage room)
+        - 'Lagerraum' has been carefully trained with button training
+        - 'Praxis' (practice room) is 2 floors up but has a nearby scanner
+        - Due to BLE noise, current readings deviate 3-4 dB from training
+
+        Without the fix: Lagerraum score ≈ 0.002 (hyper-precision rejection)
+                        Praxis score ≈ 0.2 (tolerant matching)
+                        → Praxis wins incorrectly
+
+        With the fix:    Lagerraum score > 0.7 (reasonable tolerance)
+                        Praxis score ≈ 0.2 (still tolerant but lower match)
+                        → Lagerraum wins correctly
+        """
+        ukf = UnscentedKalmanFilter(
+            scanner_addresses=[
+                "AA:BB:CC:DD:EE:01",  # Scanner in Lagerraum
+                "AA:BB:CC:DD:EE:02",  # Scanner in Praxis
+                "AA:BB:CC:DD:EE:03",  # Scanner elsewhere
+            ]
+        )
+
+        # Current device readings (device is in Lagerraum)
+        # Scanner 01 (Lagerraum): Strong signal -60 dB
+        # Scanner 02 (Praxis, 2 floors up): Weak signal -85 dB
+        # Scanner 03: Medium signal -72 dB
+        for _ in range(30):
+            ukf.update_multi({
+                "AA:BB:CC:DD:EE:01": -60.0,
+                "AA:BB:CC:DD:EE:02": -85.0,
+                "AA:BB:CC:DD:EE:03": -72.0,
+            })
+
+        # Lagerraum profile (well-trained, but with slight deviation due to BLE noise)
+        # Training captured -63, -88, -75 but current readings are -60, -85, -72
+        # This 3dB deviation is NORMAL for BLE
+        lagerraum = AreaProfile(area_id="lagerraum")
+        for _ in range(100):  # Well-trained
+            lagerraum.update(
+                primary_rssi=-63.0,  # 3dB different from current
+                other_readings={
+                    "AA:BB:CC:DD:EE:02": -88.0,  # 3dB different
+                    "AA:BB:CC:DD:EE:03": -75.0,  # 3dB different
+                },
+                primary_scanner_addr="AA:BB:CC:DD:EE:01",
+            )
+
+        # Praxis profile (different room, poorly matched to current readings)
+        praxis = AreaProfile(area_id="praxis")
+        for _ in range(30):  # Less well-trained
+            praxis.update(
+                primary_rssi=-85.0,  # Scanner 01 would be weak in Praxis
+                other_readings={
+                    "AA:BB:CC:DD:EE:02": -55.0,  # Scanner 02 would be strong in Praxis
+                    "AA:BB:CC:DD:EE:03": -78.0,
+                },
+                primary_scanner_addr="AA:BB:CC:DD:EE:01",
+            )
+
+        results = ukf.match_fingerprints({
+            "lagerraum": lagerraum,
+            "praxis": praxis,
+        })
+
+        # Extract scores
+        lagerraum_result = next(r for r in results if r[0] == "lagerraum")
+        praxis_result = next(r for r in results if r[0] == "praxis")
+
+        lagerraum_score = lagerraum_result[2]
+        praxis_score = praxis_result[2]
+
+        # Key assertion: Lagerraum should win
+        assert lagerraum_score > praxis_score, (
+            f"Lagerraum ({lagerraum_score:.4f}) should beat Praxis ({praxis_score:.4f})"
+        )
+
+        # Lagerraum should have a good score despite 3dB deviation
+        assert lagerraum_score > 0.6, (
+            f"Lagerraum score {lagerraum_score:.4f} too low for 3dB deviation"
+        )
+
+    def test_scannerless_room_detection(self) -> None:
+        """Test detection of rooms without their own scanner.
+
+        A 'scannerless room' has no scanner of its own but can be detected
+        via fingerprint matching of RSSI patterns from nearby scanners.
+        The variance floor is especially important here because:
+        1. No primary scanner means all readings are from 'far' scanners
+        2. Trained profiles may have converged to tight variance
+        3. Normal BLE fluctuation could reject the correct room
+        """
+        ukf = UnscentedKalmanFilter(
+            scanner_addresses=[
+                "AA:BB:CC:DD:EE:01",  # Scanner in adjacent room
+                "AA:BB:CC:DD:EE:02",  # Scanner on different floor
+            ]
+        )
+
+        # Current readings (device in scannerless room)
+        # Both scanners show moderate signal (neither is very close)
+        for _ in range(30):
+            ukf.update_multi({
+                "AA:BB:CC:DD:EE:01": -72.0,
+                "AA:BB:CC:DD:EE:02": -78.0,
+            })
+
+        # Scannerless room profile (trained with button)
+        # Small deviation (2dB) from current readings
+        scannerless = AreaProfile(area_id="scannerless_room")
+        for _ in range(50):
+            scannerless.update(
+                primary_rssi=-74.0,  # 2dB off
+                other_readings={"AA:BB:CC:DD:EE:02": -80.0},  # 2dB off
+                primary_scanner_addr="AA:BB:CC:DD:EE:01",
+            )
+
+        # Adjacent room (has scanner 01)
+        adjacent = AreaProfile(area_id="adjacent_room")
+        for _ in range(50):
+            adjacent.update(
+                primary_rssi=-55.0,  # Would be strong if actually in this room
+                other_readings={"AA:BB:CC:DD:EE:02": -85.0},
+                primary_scanner_addr="AA:BB:CC:DD:EE:01",
+            )
+
+        results = ukf.match_fingerprints({
+            "scannerless_room": scannerless,
+            "adjacent_room": adjacent,
+        })
+
+        scannerless_result = next(r for r in results if r[0] == "scannerless_room")
+        adjacent_result = next(r for r in results if r[0] == "adjacent_room")
+
+        # Scannerless room should match better (smaller deviation)
+        assert scannerless_result[2] > adjacent_result[2], (
+            f"Scannerless room ({scannerless_result[2]:.4f}) should beat "
+            f"adjacent room ({adjacent_result[2]:.4f})"
+        )
