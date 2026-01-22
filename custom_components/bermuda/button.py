@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import time
 from typing import TYPE_CHECKING
 
 from homeassistant.components.button import ButtonEntity
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
 from .const import _LOGGER, SIGNAL_DEVICE_NEW
@@ -40,7 +43,8 @@ async def async_setup_entry(
     """Load Button entities for a config entry."""
     coordinator: BermudaDataUpdateCoordinator = entry.runtime_data.coordinator
 
-    created_devices: list[str] = []
+    # FIX 5: Use set instead of list for O(1) lookup and no duplicates
+    created_devices: set[str] = set()
 
     @callback
     def device_new(address: str) -> None:
@@ -50,7 +54,7 @@ async def async_setup_entry(
             entities.append(BermudaTrainingButton(coordinator, entry, address))
             entities.append(BermudaResetTrainingButton(coordinator, entry, address))
             async_add_devices(entities, False)
-            created_devices.append(address)
+            created_devices.add(address)
 
     entry.async_on_unload(async_dispatcher_connect(hass, SIGNAL_DEVICE_NEW, device_new))
 
@@ -110,10 +114,12 @@ class BermudaTrainingButton(BermudaEntity, ButtonEntity):
         """Return True if button should be enabled (floor AND room selected, not training)."""
         # Check parent availability first
         if not super().available:
-            _LOGGER.debug(
-                "Training button unavailable for %s: coordinator not ready",
-                self._device.name,
-            )
+            # FIX 7: Guard debug logging with isEnabledFor to avoid string formatting overhead
+            if _LOGGER.isEnabledFor(logging.DEBUG):
+                _LOGGER.debug(
+                    "Training button unavailable for %s: coordinator not ready",
+                    self._device.name,
+                )
             return False
 
         # Disable button while training is in progress (prevent double-click)
@@ -127,7 +133,8 @@ class BermudaTrainingButton(BermudaEntity, ButtonEntity):
         area_ok = self._device.training_target_area_id is not None
         result = floor_ok and area_ok
 
-        if not result:
+        # FIX 7: Guard debug logging - available() is called frequently by UI
+        if not result and _LOGGER.isEnabledFor(logging.DEBUG):
             _LOGGER.debug(
                 "Training button unavailable for %s: floor=%s, area=%s (device id: %s)",
                 self._device.name,
@@ -141,31 +148,37 @@ class BermudaTrainingButton(BermudaEntity, ButtonEntity):
     @callback
     def _handle_coordinator_update(self) -> None:
         """Handle coordinator update - explicitly update availability."""
-        # Compute availability directly here and log for debugging
+        # FIX 3: Include _is_training in availability check to match available() property
         parent_available = self.coordinator.last_update_success
         floor_ok = self._device.training_target_floor_id is not None
         area_ok = self._device.training_target_area_id is not None
-        should_be_available = parent_available and floor_ok and area_ok
+        not_training = not self._is_training
+        should_be_available = parent_available and floor_ok and area_ok and not_training
 
-        _LOGGER.debug(
-            "Button coordinator update for %s: parent=%s, floor=%s, area=%s, available=%s (device id: %s)",
-            self._device.name,
-            parent_available,
-            self._device.training_target_floor_id,
-            self._device.training_target_area_id,
-            should_be_available,
-            id(self._device),
-        )
+        # FIX 7: Guard debug logging
+        if _LOGGER.isEnabledFor(logging.DEBUG):
+            _LOGGER.debug(
+                "Button coordinator update for %s: parent=%s, floor=%s, area=%s, "
+                "training=%s, available=%s (device id: %s)",
+                self._device.name,
+                parent_available,
+                self._device.training_target_floor_id,
+                self._device.training_target_area_id,
+                self._is_training,
+                should_be_available,
+                id(self._device),
+            )
         super()._handle_coordinator_update()
 
     async def async_press(self) -> None:
         """Handle the button press - trigger fingerprint training."""
         # Guard against double-click (training already in progress)
         if self._is_training:
-            _LOGGER.debug(
-                "Training button pressed but training already in progress for %s",
-                self._device.name,
-            )
+            if _LOGGER.isEnabledFor(logging.DEBUG):
+                _LOGGER.debug(
+                    "Training button pressed but training already in progress for %s",
+                    self._device.name,
+                )
             return
 
         # Double-check that a training room is selected
@@ -186,6 +199,17 @@ class BermudaTrainingButton(BermudaEntity, ButtonEntity):
 
         target_area_id = self._device.training_target_area_id
         target_area_name = self._device.area_locked_name or target_area_id
+
+        # FIX 6: Validate that area_id actually exists in Home Assistant
+        # This guards against stale or invalid area references
+        area_registry = ar.async_get(self.coordinator.hass)
+        if area_registry.async_get_area(target_area_id) is None:
+            _LOGGER.error(
+                "Training aborted for %s: area '%s' does not exist",
+                self._device.name,
+                target_area_id,
+            )
+            return
 
         # Show loading indicator
         self._is_training = True
@@ -210,11 +234,12 @@ class BermudaTrainingButton(BermudaEntity, ButtonEntity):
             # when at least one scanner has NEW data (stamp changed since last sample).
             successful_samples = 0
             last_stamps: dict[str, float] = {}
-            start_time = asyncio.get_event_loop().time()
+            # FIX 1: Use time.monotonic() instead of deprecated asyncio.get_event_loop().time()
+            start_time = time.monotonic()
 
             while successful_samples < TRAINING_SAMPLE_COUNT:
                 # Check timeout
-                elapsed = asyncio.get_event_loop().time() - start_time
+                elapsed = time.monotonic() - start_time
                 if elapsed >= TRAINING_MAX_TIME_SECONDS:
                     _LOGGER.warning(
                         "Training timeout for %s after %.0fs (%d/%d samples)",
@@ -225,23 +250,42 @@ class BermudaTrainingButton(BermudaEntity, ButtonEntity):
                     )
                     break
 
-                # Try to get a training sample with NEW data
-                success, current_stamps = await self.coordinator.async_train_fingerprint(
-                    device_address=self.address,
-                    target_area_id=target_area_id,
-                    last_stamps=last_stamps,
-                )
+                # FIX 2: Guard - verify coordinator and device are still valid
+                if self.coordinator is None or self._device is None:
+                    _LOGGER.warning(
+                        "Training aborted for %s: coordinator or device became unavailable",
+                        self._device.name if self._device else "unknown",
+                    )
+                    break
+
+                # FIX 2: Try to get a training sample with exception handling
+                try:
+                    success, current_stamps = await self.coordinator.async_train_fingerprint(
+                        device_address=self.address,
+                        target_area_id=target_area_id,
+                        last_stamps=last_stamps,
+                    )
+                except Exception:  # noqa: BLE001 - Intentional broad catch for training resilience
+                    _LOGGER.exception(
+                        "Training sample failed for %s (sample %d)",
+                        self._device.name,
+                        successful_samples + 1,
+                    )
+                    # Continue trying - don't abort on single sample failure
+                    success = False
+                    current_stamps = last_stamps
 
                 if success:
                     successful_samples += 1
                     last_stamps = current_stamps
-                    _LOGGER.debug(
-                        "Training sample %d/%d collected for %s (%.0fs elapsed)",
-                        successful_samples,
-                        TRAINING_SAMPLE_COUNT,
-                        self._device.name,
-                        elapsed,
-                    )
+                    if _LOGGER.isEnabledFor(logging.DEBUG):
+                        _LOGGER.debug(
+                            "Training sample %d/%d collected for %s (%.0fs elapsed)",
+                            successful_samples,
+                            TRAINING_SAMPLE_COUNT,
+                            self._device.name,
+                            elapsed,
+                        )
                 elif current_stamps:
                     # No new data yet - update stamps anyway for next comparison
                     # (in case device is offline, stamps stay empty and we keep waiting)
@@ -269,17 +313,27 @@ class BermudaTrainingButton(BermudaEntity, ButtonEntity):
                     "Fingerprint training failed for %s - no valid samples",
                     self._device.name,
                 )
+
+        # FIX 4: Handle CancelledError (e.g., Home Assistant shutdown during training)
+        except asyncio.CancelledError:
+            _LOGGER.info(
+                "Training cancelled for %s (shutdown or reload)",
+                self._device.name,
+            )
+            raise  # CancelledError must be re-raised per asyncio contract
         finally:
             # ALWAYS clear training state and fields, even if training fails or throws exception
             self._is_training = False
             self._attr_icon = self.ICON_IDLE
 
-            _LOGGER.debug(
-                "Clearing training fields for %s (floor=%s, area=%s)",
-                self._device.name,
-                self._device.training_target_floor_id,
-                self._device.training_target_area_id,
-            )
+            # FIX 7: Guard debug logging
+            if _LOGGER.isEnabledFor(logging.DEBUG):
+                _LOGGER.debug(
+                    "Clearing training fields for %s (floor=%s, area=%s)",
+                    self._device.name,
+                    self._device.training_target_floor_id,
+                    self._device.training_target_area_id,
+                )
             self._device.training_target_floor_id = None
             self._device.training_target_area_id = None
             # Also clear the area lock
