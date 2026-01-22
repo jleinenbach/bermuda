@@ -196,6 +196,85 @@ Matching sees:     A=-80dB, B=-72dB (same biases)
 
 **Implication**: When user changes calibration settings, learned fingerprint data remains valid. No need to re-train or invalidate stored correlations.
 
+### Indirect Feedback Loop (Button → Room Selection → Auto)
+
+**Important**: While the two Kalman filters (`_kalman_auto` and `_kalman_button`) don't directly share data, there IS an indirect feedback mechanism through room selection.
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    INDIRECT FEEDBACK LOOP                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  STEP 1: Room Selection (UKF Matching)                                   │
+│  ┌────────────────────────────────────────────────────────────────────┐ │
+│  │  ukf.match_fingerprints() reads:                                   │ │
+│  │  abs_profile.expected_rssi  ← This IS the Clamped Fusion!          │ │
+│  │                                                                     │ │
+│  │  Button: -85dB (70%) ─┬─→ Fusion: -84.5dB ─→ fp_mean for matching  │ │
+│  │  Auto:   -80dB (30%) ─┘                                            │ │
+│  │                                                                     │ │
+│  │  Current signal: -83dB → Difference: 1.5dB → Good match!           │ │
+│  │  Result: "Room A wins"                                              │ │
+│  └────────────────────────────────────────────────────────────────────┘ │
+│                               │                                          │
+│                               ▼                                          │
+│  STEP 2: Auto-Learning                                                   │
+│  ┌────────────────────────────────────────────────────────────────────┐ │
+│  │  coordinator calls:                                                 │ │
+│  │  profile.update(rssi=-83)  ← Learns: "In Room A I see -83dB"       │ │
+│  │         │                                                          │ │
+│  │         ▼                                                          │ │
+│  │  _kalman_auto.update(-83)                                          │ │
+│  │  Auto estimate moves: -80dB → -81dB (toward -83)                   │ │
+│  └────────────────────────────────────────────────────────────────────┘ │
+│                               │                                          │
+│                               ▼                                          │
+│  STEP 3: Next Cycle                                                      │
+│  ┌────────────────────────────────────────────────────────────────────┐ │
+│  │  expected_rssi recalculated:                                        │ │
+│  │  Button: -85dB (70%) ─┬─→ Fusion: -84.2dB (slightly adjusted!)     │ │
+│  │  Auto:   -81dB (30%) ─┘                                            │ │
+│  └────────────────────────────────────────────────────────────────────┘ │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+**The Mechanism:**
+
+| Step | Action | Filter Affected |
+|------|--------|-----------------|
+| 1 | UKF reads `expected_rssi` (fused value) | Neither (read-only) |
+| 2 | Room A wins based on fused fingerprint | Neither |
+| 3 | `profile.update()` called for Room A | `_kalman_auto` only |
+| 4 | Auto learns "-83dB = Room A" | `_kalman_auto` only |
+
+**Key Insight**: The button training indirectly influences WHAT the auto-filter learns by affecting WHICH room is selected. This creates contextual consistency:
+
+| Without Button Training | With Button Training |
+|------------------------|---------------------|
+| Auto decides alone: Room B wins | Button influences: Room A wins |
+| Auto learns: "-83dB = Room B" | Auto learns: "-83dB = Room A" |
+| Auto reinforces wrong decision | Auto reinforces correct decision |
+
+**Why This Is Beneficial:**
+
+1. **Consistent Learning**: Auto-filter learns data that matches the button-trained context
+2. **Refinement, Not Contradiction**: Auto "polishes" within the button's framework
+3. **Convergence**: Over time, button and auto estimates approach each other (within 30% limit)
+
+**Convergence Example Over Time:**
+```
+Day 1:   Button=-85dB, Auto=-80dB → Fusion=-83.5dB
+Day 7:   Button=-85dB, Auto=-82dB → Fusion=-84.1dB (Auto learned closer values)
+Day 30:  Button=-85dB, Auto=-84dB → Fusion=-84.7dB (Converging)
+Day 60:  Button=-85dB, Auto=-84.5dB → Fusion=-84.85dB (Stabilized)
+```
+
+**Code References:**
+- `ukf.py:550`: `fp_mean.append(abs_profile.expected_rssi)` - Uses fused value
+- `coordinator.py:2252`: `profile.update(...)` - Auto-learning after room selection
+- `scanner_absolute.py:134-179`: `expected_rssi` property - Clamped fusion logic
+
 ## Testing Standards
 
 ### Running Tests
