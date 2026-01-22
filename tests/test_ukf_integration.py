@@ -14,6 +14,7 @@ from custom_components.bermuda.const import (
     DEFAULT_USE_UKF_AREA_SELECTION,
     UKF_MIN_SCANNERS,
 )
+from custom_components.bermuda.area_selection import AreaSelectionHandler
 from custom_components.bermuda.coordinator import BermudaDataUpdateCoordinator
 from custom_components.bermuda.correlation import AreaProfile
 from custom_components.bermuda.correlation.room_profile import RoomProfile
@@ -163,6 +164,8 @@ def create_coordinator_mock() -> BermudaDataUpdateCoordinator:
     coordinator.AreaTests = BermudaDataUpdateCoordinator.AreaTests
     # FIX: Add mock area registry for floor resolution in _refresh_area_by_ukf
     coordinator.ar = MockAreaRegistry()
+    # FIX: Add area_selection handler for delegated area selection logic
+    coordinator.area_selection = AreaSelectionHandler(coordinator)
     return coordinator
 
 

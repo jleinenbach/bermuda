@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
-import re
 from collections.abc import Callable, Hashable, Mapping
-from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 
@@ -53,12 +51,12 @@ from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util.dt import get_age, now
 
+from .area_selection import AreaSelectionHandler, AreaTests
 from .bermuda_device import BermudaDevice
 from .bermuda_irk import BermudaIrkManager
 from .const import (
     _LOGGER,
     _LOGGER_SPAM_LESS,
-    ADDR_TYPE_PRIVATE_BLE_DEVICE,
     AREA_MAX_AD_AGE_DEFAULT,
     AREA_MAX_AD_AGE_LIMIT,
     BDADDR_TYPE_NOT_MAC48,
@@ -106,7 +104,6 @@ from .const import (
     PRUNE_TIME_FMDN,
     PRUNE_TIME_INTERVAL,
     PRUNE_TIME_KNOWN_IRK,
-    PRUNE_TIME_REDACTIONS,
     PRUNE_TIME_UNKNOWN_IRK,
     REPAIR_SCANNER_WITHOUT_AREA,
     RSSI_CONSISTENCY_MARGIN_DB,
@@ -130,10 +127,10 @@ from .correlation import AreaProfile, CorrelationStore, RoomProfile, z_scores_to
 from .filters import UnscentedKalmanFilter
 from .fmdn import FmdnIntegration
 from .scanner_calibration import ScannerCalibrationManager, update_scanner_calibration
-from .util import is_mac_address, mac_explode_formats, normalize_address, normalize_mac
+from .services import BermudaServiceHandler
+from .util import is_mac_address, normalize_address, normalize_mac
 
 Cancellable = Callable[[], None]
-DUMP_DEVICE_SOFT_LIMIT = 1200
 CORRELATION_SAVE_INTERVAL = 300  # Save learned correlations every 5 minutes
 
 
@@ -192,18 +189,11 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         # when habasescanner.discovered_device_timestamps became a public method.
         self.hass_version_min_2025_4 = _ha_maj > 2025 or (_ha_maj == 2025 and _ha_min >= 4)
 
-        # ##### Redaction Data ###
-        #
-        # match/replacement pairs for redacting addresses
-        self.redactions: dict[str, str] = {}
-        # Any remaining MAC addresses will be replaced with this. We define it here
-        # so we can compile it once. MAC addresses may have [:_-] separators.
-        self._redact_generic_re = re.compile(
-            r"(?P<start>[0-9A-Fa-f]{2})[:_-]([0-9A-Fa-f]{2}[:_-]){4}(?P<end>[0-9A-Fa-f]{2})"
-        )
-        self._redact_generic_sub = r"\g<start>:xx:xx:xx:xx:\g<end>"
+        # Service handler for dump_devices and redaction
+        self.service_handler = BermudaServiceHandler(self)
 
-        self.stamp_redactions_expiry: float | None = None
+        # Area selection handler for UKF and min-distance logic
+        self.area_selection = AreaSelectionHandler(self)
 
         self.update_in_progress: bool = False  # A lock to guard against huge backlogs / slow processing
         self.stamp_last_update: float = 0  # Last time we ran an update, from monotonic_time_coarse()
@@ -1211,11 +1201,12 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         stamp_fmdn = nowstamp - PRUNE_TIME_FMDN
         stamp_unknown_irk = nowstamp - PRUNE_TIME_UNKNOWN_IRK
 
-        # Prune redaction data
-        if self.stamp_redactions_expiry is not None and self.stamp_redactions_expiry < nowstamp:
-            _LOGGER.debug("Clearing redaction data (%d items)", len(self.redactions))
-            self.redactions.clear()
-            self.stamp_redactions_expiry = None
+        # Prune redaction data (stored in service_handler)
+        sh = self.service_handler
+        if sh.stamp_redactions_expiry is not None and sh.stamp_redactions_expiry < nowstamp:
+            _LOGGER.debug("Clearing redaction data (%d items)", len(sh.redactions))
+            sh.redactions.clear()
+            sh.stamp_redactions_expiry = None
 
         # Prune any IRK MACs that have expired
         self.irk_manager.async_prune()
@@ -2613,12 +2604,12 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                 self.room_profiles[best_area_id].update(all_readings)
 
     def _refresh_areas_by_min_distance(self) -> None:
-        """Set area for ALL devices based on UKF+RoomProfile or min-distance fallback."""
-        # Check if we have mature room profiles (at least 2 scanner-pairs with 30+ samples)
-        has_mature_profiles = any(profile.mature_pair_count >= 2 for profile in self.room_profiles.values())
+        """
+        Set area for ALL devices based on UKF+RoomProfile or min-distance fallback.
 
-        for device in self.devices.values():
-            self._determine_area_for_device(device, has_mature_profiles=has_mature_profiles)
+        Delegates to AreaSelectionHandler for the main loop and device processing.
+        """
+        self.area_selection.refresh_areas_by_min_distance()
 
     def _determine_area_for_device(self, device: BermudaDevice, *, has_mature_profiles: bool) -> None:
         """
@@ -2686,70 +2677,9 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             return
         self._refresh_area_by_min_distance(device)
 
-    @dataclass
-    class AreaTests:
-        """
-        Holds the results of Area-based tests.
-
-        Likely to become a stand-alone class for performing the whole area-selection
-        process.
-        """
-
-        device: str = ""
-        scannername: tuple[str, str] = ("", "")
-        areas: tuple[str, str] = ("", "")
-        pcnt_diff: float = 0  # distance percentage difference.
-        same_area: bool = False  # The old scanner is in the same area as us.
-        # last_detection: tuple[float, float] = (0, 0)  # bt manager's last_detection field. Compare with ours.
-        last_ad_age: tuple[float, float] = (0, 0)  # seconds since we last got *any* ad from scanner
-        this_ad_age: tuple[float, float] = (0, 0)  # how old the *current* advert is on this scanner
-        distance: tuple[float, float] = (0, 0)
-        hist_min_max: tuple[float, float] = (0, 0)  # min/max distance from history
-        floors: tuple[str | None, str | None] = (None, None)
-        floor_levels: tuple[str | int | None, str | int | None] = (None, None)
-        # velocity: tuple[float, float] = (0, 0)
-        # last_closer: tuple[float, float] = (0, 0)  # since old was closer and how long new has been closer
-        reason: str | None = None  # reason/result
-
-        def sensortext(self) -> str:
-            """Return a text summary suitable for use in a sensor entity."""
-            out = ""
-            for var, val in vars(self).items():
-                out += f"{var}|"
-                if isinstance(val, tuple):
-                    for v in val:
-                        if isinstance(v, float):
-                            out += f"{v:.2f}|"
-                        else:
-                            out += f"{v}"
-                    # out += "\n"
-                elif var == "pcnt_diff":
-                    out += f"{val:.3f}"
-                else:
-                    out += f"{val}"
-                out += "\n"
-            return out[:255]
-
-        def __str__(self) -> str:
-            """
-            Create string representation for easy debug logging/dumping
-            and potentially a sensor for logging Area decisions.
-            """
-            out = ""
-            for var, val in vars(self).items():
-                out += f"** {var:20} "
-                if isinstance(val, tuple):
-                    for v in val:
-                        if isinstance(v, float):
-                            out += f"{v:.2f} "
-                        else:
-                            out += f"{v} "
-                    out += "\n"
-                elif var == "pcnt_diff":
-                    out += f"{val:.3f}\n"
-                else:
-                    out += f"{val}\n"
-            return out
+    # AreaTests dataclass is now imported from area_selection module.
+    # Kept as class attribute for backward compatibility with tests.
+    AreaTests = AreaTests
 
     def _refresh_area_by_min_distance(self, device: BermudaDevice) -> None:  # noqa: C901
         """Very basic Area setting by finding closest proxy to a given device."""
@@ -2764,7 +2694,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         nowstamp = monotonic_time_coarse()
         evidence_cutoff = nowstamp - EVIDENCE_WINDOW_SECONDS
 
-        tests = self.AreaTests()
+        tests = AreaTests()
         tests.device = device.name
 
         _superchatty = False  # Set to true for very verbose logging about area wins
@@ -4107,168 +4037,10 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
     #         },
     #     )
 
-    async def service_dump_devices(self, call: ServiceCall) -> ServiceResponse:  # pylint: disable=unused-argument;
-        """Return a dump of beacon advertisements by receiver."""
-        out: dict[str, Any] = {}
-        addresses_input = call.data.get("addresses", "")
-        redact = call.data.get("redact", False)
-        configured_devices = call.data.get("configured_devices", False)
-        summary: dict[str, Any] | None = None
-
-        # Choose filter for device/address selection
-        addresses: list[str] = []
-        if addresses_input != "":
-            # Specific devices
-            addresses += addresses_input.upper().split()
-        if configured_devices:
-            # configured and scanners
-            addresses += self.scanner_list
-            configured_devices_option = self.options.get(CONF_DEVICES, [])
-            if isinstance(configured_devices_option, list):
-                addresses += [str(device) for device in configured_devices_option]
-            # known IRK/Private BLE Devices
-            addresses += list(self.pb_state_sources)
-
-        dump_all_devices = addresses_input == "" and not configured_devices
-        if dump_all_devices and len(self.devices) > DUMP_DEVICE_SOFT_LIMIT:
-            fallback_addresses: set[str] = set(self.scanner_list)
-            configured_devices_option = self.options.get(CONF_DEVICES, [])
-            if isinstance(configured_devices_option, list):
-                fallback_addresses.update(str(device) for device in configured_devices_option)
-            fallback_addresses.update(
-                str(source_address) for source_address in self.pb_state_sources.values() if source_address is not None
-            )
-            addresses = list(map(str.lower, fallback_addresses))
-            summary = {
-                "limited": True,
-                "reason": (
-                    f"Device dump limited to configured devices because total devices "
-                    f"({len(self.devices)}) exceeded soft cap ({DUMP_DEVICE_SOFT_LIMIT})."
-                ),
-                "requested_devices": len(self.devices),
-                "returned_devices": len(addresses),
-            }
-
-        # lowercase all the addresses for matching
-        addresses = list(map(str.lower, addresses))
-
-        # Build the dict of devices
-        for address, device in self.devices.items():
-            if len(addresses) == 0 or address.lower() in addresses:
-                out[address] = device.to_dict()
-
-        if summary is not None:
-            out = {"summary": summary, "devices": out}
-
-        if redact:
-            _stamp_redact = monotonic_time_coarse()
-            out_response = cast("ServiceResponse", self.redact_data(out))
-            _stamp_redact_elapsed = monotonic_time_coarse() - _stamp_redact
-            if _stamp_redact_elapsed > 3:  # It should be fast now.
-                _LOGGER.warning("Dump devices redaction took %2f seconds", _stamp_redact_elapsed)
-            else:
-                _LOGGER.debug("Dump devices redaction took %2f seconds", _stamp_redact_elapsed)
-            return out_response
-
-        return cast("ServiceResponse", out)
-
-    def redaction_list_update(self):
+    async def service_dump_devices(self, call: ServiceCall) -> ServiceResponse:
         """
-        Freshen or create the list of match/replace pairs that we use to
-        redact MAC addresses. This gives a set of helpful address replacements
-        that still allows identifying device entries without disclosing MAC
-        addresses.
+        Return a dump of beacon advertisements by receiver.
+
+        Delegates to the service handler for actual implementation.
         """
-        _stamp = monotonic_time_coarse()
-
-        # counter for incrementing replacement names (eg, SCANNER_n). The length
-        # of the existing redaction list is a decent enough starting point.
-        i = len(self.redactions)
-
-        # SCANNERS
-        for non_lower_address in self.scanner_list:
-            address = non_lower_address.lower()
-            if address not in self.redactions:
-                i += 1
-                for altmac in mac_explode_formats(address):
-                    self.redactions[altmac] = f"{address[:2]}::SCANNER_{i}::{address[-2:]}"
-        _LOGGER.debug("Redact scanners: %ss, %d items", monotonic_time_coarse() - _stamp, len(self.redactions))
-        # CONFIGURED DEVICES
-        for non_lower_address in self.options.get(CONF_DEVICES, []):
-            address = non_lower_address.lower()
-            if address not in self.redactions:
-                i += 1
-                if address.count("_") == 2:
-                    self.redactions[address] = f"{address[:4]}::CFG_iBea_{i}::{address[32:]}"
-                    # Raw uuid in advert
-                    self.redactions[address.split("_")[0]] = f"{address[:4]}::CFG_iBea_{i}_{address[32:]}::"
-                elif len(address) == 17:
-                    for altmac in mac_explode_formats(address):
-                        self.redactions[altmac] = f"{address[:2]}::CFG_MAC_{i}::{address[-2:]}"
-                else:
-                    # Don't know what it is, but not a mac.
-                    self.redactions[address] = f"CFG_OTHER_{1}_{address}"
-        _LOGGER.debug("Redact confdevs: %ss, %d items", monotonic_time_coarse() - _stamp, len(self.redactions))
-        # EVERYTHING ELSE
-        for non_lower_address, device in self.devices.items():
-            address = non_lower_address.lower()
-            if address not in self.redactions:
-                # Only add if they are not already there.
-                i += 1
-                if device.address_type == ADDR_TYPE_PRIVATE_BLE_DEVICE:
-                    self.redactions[address] = f"{address[:4]}::IRK_DEV_{i}"
-                elif address.count("_") == 2:
-                    self.redactions[address] = f"{address[:4]}::OTHER_iBea_{i}::{address[32:]}"
-                    # Raw uuid in advert
-                    self.redactions[address.split("_")[0]] = f"{address[:4]}::OTHER_iBea_{i}_{address[32:]}::"
-                elif len(address) == 17:  # a MAC
-                    for altmac in mac_explode_formats(address):
-                        self.redactions[altmac] = f"{address[:2]}::OTHER_MAC_{i}::{address[-2:]}"
-                else:
-                    # Don't know what it is.
-                    self.redactions[address] = f"OTHER_{i}_{address}"
-        _LOGGER.debug("Redact therest: %ss, %d items", monotonic_time_coarse() - _stamp, len(self.redactions))
-        _elapsed = monotonic_time_coarse() - _stamp
-        if _elapsed > 0.5:
-            _LOGGER.warning("Redaction list update took %.3f seconds, has %d items", _elapsed, len(self.redactions))
-        else:
-            _LOGGER.debug("Redaction list update took %.3f seconds, has %d items", _elapsed, len(self.redactions))
-        self.stamp_redactions_expiry = monotonic_time_coarse() + PRUNE_TIME_REDACTIONS
-
-    def redact_data(self, data: Any, first_recursion: bool = True) -> Any:  # noqa: FBT001
-        """
-        Wash any collection of data of any MAC addresses.
-
-        Uses the redaction list of substitutions if already created, then
-        washes any remaining mac-like addresses. This routine is recursive,
-        so if you're changing it bear that in mind!
-        """
-        if first_recursion:
-            # On first/outer call, refresh the redaction list to ensure
-            # we don't let any new addresses slip through. Might be expensive
-            # on first call, but will be much cheaper for subsequent calls.
-            self.redaction_list_update()
-            first_recursion = False
-
-        if isinstance(data, str):  # Base Case
-            datalower = data.lower()
-            # the end of the recursive wormhole, do the actual work:
-            if datalower in self.redactions:
-                # Full string match, a quick short-circuit
-                data = self.redactions[datalower]
-            else:
-                # Search for any of the redaction strings in the data.
-                items = tuple(self.redactions.items())
-                for find, fix in items:
-                    if find in datalower:
-                        data = datalower.replace(find, fix)
-                        # don't break out because there might be multiple fixes required.
-            # redactions done, now replace any remaining MAC addresses
-            # We are only looking for xx:xx:xx... format.
-            return self._redact_generic_re.sub(self._redact_generic_sub, data)
-        elif isinstance(data, dict):
-            return {self.redact_data(k, False): self.redact_data(v, False) for k, v in data.items()}
-        elif isinstance(data, list):
-            return [self.redact_data(v, False) for v in data]
-        else:  # Base Case
-            return data
+        return await self.service_handler.async_dump_devices(call)
