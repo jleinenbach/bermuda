@@ -176,6 +176,8 @@ def _build_coord(
     coord.room_profiles = {}  # Room-level scanner pair delta profiles
     coord._correlations_loaded = True  # Prevent async loading in tests
     coord.AreaTests = BermudaDataUpdateCoordinator.AreaTests
+    coord.device_ukfs = {}  # UKF state for fingerprint matching
+    coord._scanners = set()  # Physical scanners for virtual distance feature
 
     # FIX: Add mock area registry for floor resolution in _refresh_area_by_min_distance
     # The new floor guard logic uses device.area_id to resolve floor via area registry

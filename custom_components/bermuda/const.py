@@ -143,6 +143,15 @@ UKF_STICKINESS_BONUS: Final = 0.15  # 15% bonus added to current area's match sc
 # Minimum distance (meters) required for scanner-based room to override UKF-detected area
 UKF_WEAK_SCANNER_MIN_DISTANCE: Final = 3.0
 
+# Virtual Distance for Scannerless Rooms
+# When UKF score is below threshold, scannerless rooms can still compete in min-distance
+# by calculating a "virtual distance" based on their fingerprint match quality.
+# Formula: virtual_distance = max_radius * SCALE * (1 - score)²
+# The quadratic formula rewards medium scores (0.3-0.5) more aggressively than linear,
+# allowing scannerless rooms to compete against physical scanners through walls.
+VIRTUAL_DISTANCE_SCALE: Final = 0.7  # Scaling factor (0.7 = 30% shorter than pure quadratic)
+VIRTUAL_DISTANCE_MIN_SCORE: Final = 0.05  # Minimum score to consider (below = no virtual distance)
+
 # Beacon-handling constants. Source devices are tracked by MAC-address and are the
 # originators of beacon-like data. We then create a "meta-device" for the beacon's
 # uuid. Other non-static-mac protocols should use this method as well, by adding their

@@ -339,6 +339,21 @@ class AreaProfile:
         """Return number of correlations with enough samples to trust."""
         return sum(1 for c in self._correlations.values() if c.is_mature)
 
+    @property
+    def has_button_training(self) -> bool:
+        """
+        Check if this area profile has any button-trained data.
+
+        Returns True if ANY of the absolute profiles or correlations
+        have been button-trained by the user. This indicates explicit
+        user intent to place a device in this area.
+        """
+        # Check absolute profiles first
+        if any(profile.has_button_training for profile in self._absolute_profiles.values()):
+            return True
+        # Check delta correlations
+        return any(corr.has_button_training for corr in self._correlations.values())
+
     def to_dict(self) -> dict[str, Any]:
         """
         Serialize for persistent storage.
