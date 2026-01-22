@@ -772,13 +772,18 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             )
             return False
 
+        # BUG 17 FIX: Use device.address (normalized) instead of device_address (raw parameter)
+        # This ensures the correlations key matches the lookup key used elsewhere in the code.
+        # Auto-learning and virtual distance lookup both use device.address, so training must too.
+        normalized_address = device.address
+
         # Ensure device entry exists in correlations
-        if device_address not in self.correlations:
-            self.correlations[device_address] = {}
+        if normalized_address not in self.correlations:
+            self.correlations[normalized_address] = {}
 
         # Create or get the AreaProfile for this area
-        if target_area_id not in self.correlations[device_address]:
-            self.correlations[device_address][target_area_id] = AreaProfile(area_id=target_area_id)
+        if target_area_id not in self.correlations[normalized_address]:
+            self.correlations[normalized_address][target_area_id] = AreaProfile(area_id=target_area_id)
 
         # Build "other readings" (all except primary)
         other_readings = {addr: rssi for addr, rssi in rssi_readings.items() if addr != primary_scanner_addr}
@@ -786,7 +791,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         # Update the device-specific profile with BUTTON WEIGHT (stronger than automatic)
         # Button training uses update_button() which applies BUTTON_WEIGHT (2x) updates
         # to ensure manual corrections aren't overwhelmed by continuous automatic learning
-        self.correlations[device_address][target_area_id].update_button(
+        self.correlations[normalized_address][target_area_id].update_button(
             primary_rssi=primary_rssi,
             other_readings=other_readings,
             primary_scanner_addr=primary_scanner_addr,
@@ -798,17 +803,29 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             self.room_profiles[target_area_id] = RoomProfile(area_id=target_area_id)
         self.room_profiles[target_area_id].update_button(rssi_readings)
 
+        # BUG 17 DEBUG: Log button sample counts after training
+        trained_profile = self.correlations[normalized_address][target_area_id]
+        btn_counts = []
+        for scanner_addr, abs_prof in trained_profile._absolute_profiles.items():  # noqa: SLF001
+            btn_counts.append(f"{scanner_addr[-8:]}:{abs_prof.button_sample_count}")
         _LOGGER.info(
-            "Trained fingerprint (button) for %s in area %s with %d scanners "
-            "(device profile + room profile updated with stronger weight)",
+            "Trained fingerprint (button) for %s in area %s with %d scanners. "
+            "Button counts: [%s], has_button_training=%s",
             device.name,
             target_area_id,
             len(rssi_readings),
+            ", ".join(btn_counts),
+            trained_profile.has_button_training,
         )
 
         # Save correlations immediately after manual training
         await self.correlation_store.async_save(self.correlations, self.room_profiles)
         self._last_correlation_save = nowstamp
+        _LOGGER.debug(
+            "Saved correlations for %s after training. Total devices: %d",
+            device.name,
+            len(self.correlations),
+        )
 
         return True
 
@@ -966,6 +983,20 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                 len(self.correlations),
                 len(self.room_profiles),
             )
+            # BUG 17 DEBUG: Log button training status for all loaded profiles
+            for dev_addr, areas in self.correlations.items():
+                for area_id, profile in areas.items():
+                    if profile.has_button_training:
+                        btn_counts = []
+                        for scanner, abs_p in profile._absolute_profiles.items():  # noqa: SLF001
+                            if abs_p.button_sample_count > 0:
+                                btn_counts.append(f"{scanner[-8:]}:{abs_p.button_sample_count}")
+                        _LOGGER.info(
+                            "Loaded button-trained profile: device=%s area=%s btn_profiles=[%s]",
+                            dev_addr[-8:],
+                            area_id,
+                            ", ".join(btn_counts),
+                        )
 
         result = self._async_update_data_internal()
 
@@ -1849,13 +1880,19 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             for area_id, profile in device_profiles.items():
                 has_btn = profile.has_button_training
                 has_scanner = self._area_has_scanner(area_id)
-                abs_scanners = list(profile._absolute_profiles.keys()) if hasattr(profile, "_absolute_profiles") else []  # noqa: SLF001
+                # BUG 17 DEBUG: Show button sample counts for each absolute profile
+                abs_details = []
+                if hasattr(profile, "_absolute_profiles"):
+                    for scanner_addr, abs_prof in profile._absolute_profiles.items():  # noqa: SLF001
+                        abs_details.append(
+                            f"{scanner_addr[-8:]}:btn={abs_prof.button_sample_count}/auto={abs_prof.auto_sample_count}"
+                        )
                 _LOGGER.debug(
-                    "  Profile %s: has_button_training=%s, area_has_scanner=%s, abs_profile_scanners=%s",
+                    "  Profile %s: has_button_training=%s, area_has_scanner=%s, abs_profiles=[%s]",
                     area_id,
                     has_btn,
                     has_scanner,
-                    abs_scanners,
+                    ", ".join(abs_details) if abs_details else "none",
                 )
 
         for area_id, _d_squared, score in matches:

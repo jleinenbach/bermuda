@@ -789,6 +789,34 @@ filtered_rssi = filter.update_adaptive(raw_rssi, ref_power=-55)
 - **Key insight**: The UKF must be available for virtual distance calculation regardless of whether `_refresh_area_by_ukf()` succeeded
 - **File**: `coordinator.py`
 
+### Button Training Address Normalization Fix (BUG 17)
+- **Problem**: Button training appeared to succeed but `has_button_training=False` on lookup
+  - User trains device for "Lagerraum" → logs show 20/20 samples success
+  - Later profile check shows `has_button_training=False`
+  - Training data "lost" despite successful save
+- **Root cause**: Address key mismatch between training and lookup
+  - `async_train_fingerprint()` used raw `device_address` parameter as correlations key
+  - Auto-learning and lookup used `device.address` (normalized to lowercase)
+  - If entity passed uppercase address, training stored under different key than lookup
+  - Example:
+    - Training stores: `correlations["AA:BB:CC:DD:EE:FF"]["lagerraum"]`
+    - Lookup reads: `correlations.get("aa:bb:cc:dd:ee:ff", {})` → empty!
+- **Solution**: Use `device.address` (normalized) instead of raw `device_address` parameter
+- **Code change** (`coordinator.py:775-793`):
+  ```python
+  # BEFORE (BUG): Uses raw parameter - may be uppercase
+  if device_address not in self.correlations:
+      self.correlations[device_address] = {}
+
+  # AFTER (FIX): Uses normalized address from BermudaDevice
+  normalized_address = device.address
+  if normalized_address not in self.correlations:
+      self.correlations[normalized_address] = {}
+  ```
+- **Key insight**: All correlations dictionary access must use the same key format. `BermudaDevice.address` is the canonical source because it's normalized via `normalize_address()`.
+- **Files**: `coordinator.py`
+- **Test file**: `tests/test_button_training_persistence.py` (TestAddressNormalization class)
+
 ## Manual Fingerprint Training System
 
 ### Problem Statement
@@ -2888,6 +2916,36 @@ def fallback_path(device):
 ```
 
 **Rule of Thumb**: If Path A and Path B both need resource R, and Path B is a fallback when Path A fails, then Path B MUST be able to create R independently. Don't assume the "happy path" always runs first.
+
+### 37. Use Canonical Keys for Shared Dictionaries
+
+When multiple code paths access a shared dictionary (like `self.correlations`), all paths MUST use the same key format. Using different key formats (e.g., normalized vs raw address) causes data to be stored under one key but looked up under another.
+
+**Bug Pattern:**
+```python
+# BAD - Training uses raw parameter, lookup uses normalized attribute
+async def train(self, device_address: str):  # Raw parameter, might be uppercase
+    device = self.get_device(device_address)  # device.address is normalized
+    self.data[device_address] = {...}  # Stores under raw key!
+
+def lookup(self, device):
+    return self.data.get(device.address, {})  # Looks up with normalized key!
+    # If device_address was uppercase, this returns empty dict!
+```
+
+**Fix Pattern:**
+```python
+# GOOD - Both use normalized key from canonical source
+async def train(self, device_address: str):
+    device = self.get_device(device_address)
+    normalized_key = device.address  # Always use the canonical normalized form
+    self.data[normalized_key] = {...}
+
+def lookup(self, device):
+    return self.data.get(device.address, {})  # Same normalized key
+```
+
+**Rule of Thumb**: For dictionaries keyed by identifiers (addresses, IDs), always normalize the key at the point of access. Use a canonical source (`device.address`) rather than raw parameters. This prevents subtle key mismatches that cause "phantom data loss."
 
 ---
 
