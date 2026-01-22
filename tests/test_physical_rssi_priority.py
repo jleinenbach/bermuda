@@ -29,6 +29,27 @@ from custom_components.bermuda.bermuda_irk import BermudaIrkManager
 from custom_components.bermuda.util import rssi_to_metres
 
 
+def _patch_monotonic_time(monkeypatch: pytest.MonkeyPatch, current_time: list[float]) -> None:
+    """Patch monotonic_time_coarse across modules for deterministic timing."""
+    monkeypatch.setattr("bluetooth_data_tools.monotonic_time_coarse", lambda: current_time[0])
+    monkeypatch.setattr("custom_components.bermuda.coordinator.monotonic_time_coarse", lambda: current_time[0])
+    monkeypatch.setattr("custom_components.bermuda.bermuda_device.monotonic_time_coarse", lambda: current_time[0])
+    # Also patch this test module's import so _make_advert uses the patched time
+    monkeypatch.setattr("tests.test_physical_rssi_priority.monotonic_time_coarse", lambda: current_time[0])
+
+
+def _update_advert_stamps(adverts: dict, new_stamp: float) -> None:
+    """Update the stamp attribute of all adverts to simulate new data arriving.
+
+    This is needed for BUG 20 fix: streak counting now requires unique signals
+    (different timestamps) to prevent cached values from being counted multiple times.
+    """
+    for advert in adverts.values():
+        advert.stamp = new_stamp
+        if hasattr(advert, "scanner_device") and advert.scanner_device is not None:
+            advert.scanner_device.last_seen = new_stamp
+
+
 def _make_coordinator(hass: HomeAssistant, use_physical_rssi_priority: bool = False) -> BermudaDataUpdateCoordinator:
     """Build a lightweight coordinator for tests."""
     coordinator = BermudaDataUpdateCoordinator.__new__(BermudaDataUpdateCoordinator)
@@ -292,8 +313,13 @@ class TestRssiConsistencyCheck:
         # Incumbent should stay
         assert device.area_advert is incumbent
 
-    def test_small_rssi_difference_still_consistent(self, coordinator_with_rssi_priority: BermudaDataUpdateCoordinator):
+    def test_small_rssi_difference_still_consistent(
+        self, monkeypatch: pytest.MonkeyPatch, coordinator_with_rssi_priority: BermudaDataUpdateCoordinator
+    ):
         """Small RSSI disadvantage within margin is still considered consistent."""
+        current_time = [1000.0]
+        _patch_monotonic_time(monkeypatch, current_time)
+
         device = _configure_device(coordinator_with_rssi_priority, "AA:BB:CC:DD:EE:05")
 
         # Incumbent with slightly stronger signal (within 8dB margin)
@@ -318,7 +344,10 @@ class TestRssiConsistencyCheck:
 
         # Without significant RSSI advantage, streak logic requires SAME_FLOOR_STREAK (4)
         # consecutive wins before switching areas
-        for _ in range(4):
+        # BUG 20 FIX: Streak counting now requires unique signals (different timestamps)
+        for i in range(4):
+            current_time[0] += 1.0
+            _update_advert_stamps(device.adverts, current_time[0])
             coordinator_with_rssi_priority._refresh_area_by_min_distance(device)
 
         # 5dB is within 8dB margin, so ranking is considered consistent

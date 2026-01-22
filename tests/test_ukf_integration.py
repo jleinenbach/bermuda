@@ -20,6 +20,26 @@ from custom_components.bermuda.correlation.room_profile import RoomProfile
 from custom_components.bermuda.correlation.scanner_pair import ScannerPairCorrelation
 from custom_components.bermuda.filters import UnscentedKalmanFilter
 
+# Base timestamp used in test fixtures
+TEST_BASE_TIME = 1000.0
+
+
+@pytest.fixture
+def mock_monotonic_time(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Mock monotonic_time_coarse to return a value close to TEST_BASE_TIME.
+
+    This is needed because the coordinator checks if adverts are recent using:
+        nowstamp - advert.stamp < EVIDENCE_WINDOW_SECONDS
+
+    Without this mock, monotonic_time_coarse() returns system uptime which is
+    much larger than our test fixture stamps (1000.0), making all adverts appear stale.
+    """
+    # Return a time slightly after TEST_BASE_TIME so adverts with stamp=TEST_BASE_TIME are "recent"
+    monkeypatch.setattr(
+        "custom_components.bermuda.coordinator.monotonic_time_coarse",
+        lambda: TEST_BASE_TIME + 5.0,
+    )
+
 
 class FakeScanner:
     """Fake scanner for testing."""
@@ -170,7 +190,7 @@ class TestUKFIntegration:
         result = coordinator._refresh_area_by_ukf(device)
         assert result is False
 
-    def test_refresh_area_by_ukf_insufficient_scanners(self) -> None:
+    def test_refresh_area_by_ukf_insufficient_scanners(self, mock_monotonic_time: None) -> None:
         """Test UKF returns False when fewer than minimum scanners."""
         coordinator = create_coordinator_mock()
         device = FakeDevice("AA:BB:CC:DD:EE:01", "Test Device")
@@ -180,7 +200,7 @@ class TestUKFIntegration:
         advert = FakeAdvert(
             scanner_address=scanner.address,
             rssi=-65.0,
-            stamp=1000.0,
+            stamp=TEST_BASE_TIME,
             area_id="kitchen",
             scanner_device=scanner,
         )
@@ -190,7 +210,7 @@ class TestUKFIntegration:
         assert result is False
         assert UKF_MIN_SCANNERS >= 2  # Confirm we need at least 2
 
-    def test_refresh_area_by_ukf_creates_ukf_instance(self) -> None:
+    def test_refresh_area_by_ukf_creates_ukf_instance(self, mock_monotonic_time: None) -> None:
         """Test that UKF instance is created for device."""
         coordinator = create_coordinator_mock()
         device = FakeDevice("AA:BB:CC:DD:EE:01", "Test Device")
@@ -204,7 +224,7 @@ class TestUKFIntegration:
             advert = FakeAdvert(
                 scanner_address=scanner.address,
                 rssi=-65.0,
-                stamp=1000.0,
+                stamp=TEST_BASE_TIME,
                 area_id=scanner.area_id,
                 scanner_device=scanner,
             )
@@ -216,7 +236,7 @@ class TestUKFIntegration:
         assert device.address in coordinator.device_ukfs
         assert isinstance(coordinator.device_ukfs[device.address], UnscentedKalmanFilter)
 
-    def test_refresh_area_by_ukf_no_correlations(self) -> None:
+    def test_refresh_area_by_ukf_no_correlations(self, mock_monotonic_time: None) -> None:
         """Test UKF returns False when no correlation profiles exist."""
         coordinator = create_coordinator_mock()
         device = FakeDevice("AA:BB:CC:DD:EE:01", "Test Device")
@@ -230,7 +250,7 @@ class TestUKFIntegration:
             advert = FakeAdvert(
                 scanner_address=scanner.address,
                 rssi=-65.0,
-                stamp=1000.0,
+                stamp=TEST_BASE_TIME,
                 area_id=scanner.area_id,
                 scanner_device=scanner,
             )
@@ -239,7 +259,7 @@ class TestUKFIntegration:
         result = coordinator._refresh_area_by_ukf(device)
         assert result is False
 
-    def test_refresh_area_by_ukf_with_profiles(self) -> None:
+    def test_refresh_area_by_ukf_with_profiles(self, mock_monotonic_time: None) -> None:
         """Test UKF with learned area profiles."""
         coordinator = create_coordinator_mock()
         device = FakeDevice("AA:BB:CC:DD:EE:01", "Test Device")
@@ -251,14 +271,14 @@ class TestUKFIntegration:
         advert1 = FakeAdvert(
             scanner_address=scanner1.address,
             rssi=-65.0,
-            stamp=1000.0,
+            stamp=TEST_BASE_TIME,
             area_id="kitchen",
             scanner_device=scanner1,
         )
         advert2 = FakeAdvert(
             scanner_address=scanner2.address,
             rssi=-75.0,
-            stamp=1000.0,
+            stamp=TEST_BASE_TIME,
             area_id="living",
             scanner_device=scanner2,
         )
@@ -438,7 +458,7 @@ class TestUKFAreaSelectionWithPseudoData:
             )
         return profile
 
-    def test_ukf_selects_correct_room_kitchen(self) -> None:
+    def test_ukf_selects_correct_room_kitchen(self, mock_monotonic_time: None) -> None:
         """Test UKF selects kitchen when RSSI matches kitchen fingerprint."""
         coordinator = create_coordinator_mock()
         device = FakeDevice("AA:BB:CC:DD:EE:01", "Phone")
@@ -452,21 +472,21 @@ class TestUKFAreaSelectionWithPseudoData:
         advert_kitchen = FakeAdvert(
             scanner_address=scanner_kitchen.address,
             rssi=-55.0,
-            stamp=1000.0,
+            stamp=TEST_BASE_TIME,
             area_id="kitchen",
             scanner_device=scanner_kitchen,
         )
         advert_living = FakeAdvert(
             scanner_address=scanner_living.address,
             rssi=-80.0,
-            stamp=1000.0,
+            stamp=TEST_BASE_TIME,
             area_id="living",
             scanner_device=scanner_living,
         )
         advert_bedroom = FakeAdvert(
             scanner_address=scanner_bedroom.address,
             rssi=-90.0,
-            stamp=1000.0,
+            stamp=TEST_BASE_TIME,
             area_id="bedroom",
             scanner_device=scanner_bedroom,
         )
@@ -523,7 +543,7 @@ class TestUKFAreaSelectionWithPseudoData:
         # Device should be assigned to kitchen (best match for current readings)
         assert device.area_id == "kitchen"
 
-    def test_ukf_selects_correct_room_living(self) -> None:
+    def test_ukf_selects_correct_room_living(self, mock_monotonic_time: None) -> None:
         """Test UKF selects living room when RSSI matches living fingerprint."""
         coordinator = create_coordinator_mock()
         device = FakeDevice("AA:BB:CC:DD:EE:02", "Tablet")
@@ -536,21 +556,21 @@ class TestUKFAreaSelectionWithPseudoData:
         device.adverts[scanner_kitchen.address] = FakeAdvert(
             scanner_address=scanner_kitchen.address,
             rssi=-75.0,
-            stamp=1000.0,
+            stamp=TEST_BASE_TIME,
             area_id="kitchen",
             scanner_device=scanner_kitchen,
         )
         device.adverts[scanner_living.address] = FakeAdvert(
             scanner_address=scanner_living.address,
             rssi=-50.0,
-            stamp=1000.0,
+            stamp=TEST_BASE_TIME,
             area_id="living",
             scanner_device=scanner_living,
         )
         device.adverts[scanner_bedroom.address] = FakeAdvert(
             scanner_address=scanner_bedroom.address,
             rssi=-85.0,
-            stamp=1000.0,
+            stamp=TEST_BASE_TIME,
             area_id="bedroom",
             scanner_device=scanner_bedroom,
         )
@@ -595,7 +615,7 @@ class TestUKFAreaSelectionWithPseudoData:
         assert result is True
         assert device.area_id == "living"
 
-    def test_ukf_handles_scanner_dropout(self) -> None:
+    def test_ukf_handles_scanner_dropout(self, mock_monotonic_time: None) -> None:
         """Test UKF still works when one scanner goes offline."""
         coordinator = create_coordinator_mock()
         device = FakeDevice("AA:BB:CC:DD:EE:03", "Watch")
@@ -608,14 +628,14 @@ class TestUKFAreaSelectionWithPseudoData:
         device.adverts[scanner_kitchen.address] = FakeAdvert(
             scanner_address=scanner_kitchen.address,
             rssi=-55.0,
-            stamp=1000.0,
+            stamp=TEST_BASE_TIME,
             area_id="kitchen",
             scanner_device=scanner_kitchen,
         )
         device.adverts[scanner_living.address] = FakeAdvert(
             scanner_address=scanner_living.address,
             rssi=-80.0,
-            stamp=1000.0,
+            stamp=TEST_BASE_TIME,
             area_id="living",
             scanner_device=scanner_living,
         )
@@ -641,7 +661,7 @@ class TestUKFAreaSelectionWithPseudoData:
         assert device.address in coordinator.device_ukfs
         # May or may not make a decision depending on match quality
 
-    def test_ukf_reuses_existing_instance(self) -> None:
+    def test_ukf_reuses_existing_instance(self, mock_monotonic_time: None) -> None:
         """Test that UKF instance is reused across multiple calls."""
         coordinator = create_coordinator_mock()
         device = FakeDevice("AA:BB:CC:DD:EE:04", "Beacon")
@@ -652,14 +672,14 @@ class TestUKFAreaSelectionWithPseudoData:
         device.adverts[scanner1.address] = FakeAdvert(
             scanner_address=scanner1.address,
             rssi=-60.0,
-            stamp=1000.0,
+            stamp=TEST_BASE_TIME,
             area_id="office",
             scanner_device=scanner1,
         )
         device.adverts[scanner2.address] = FakeAdvert(
             scanner_address=scanner2.address,
             rssi=-70.0,
-            stamp=1000.0,
+            stamp=TEST_BASE_TIME,
             area_id="hallway",
             scanner_device=scanner2,
         )
@@ -675,7 +695,7 @@ class TestUKFAreaSelectionWithPseudoData:
 
         assert first_ukf is second_ukf
 
-    def test_ukf_convergence_over_multiple_updates(self) -> None:
+    def test_ukf_convergence_over_multiple_updates(self, mock_monotonic_time: None) -> None:
         """Test that UKF state converges with consistent readings."""
         coordinator = create_coordinator_mock()
         device = FakeDevice("AA:BB:CC:DD:EE:05", "Tracker")
@@ -697,14 +717,14 @@ class TestUKFAreaSelectionWithPseudoData:
             device.adverts[scanner1.address] = FakeAdvert(
                 scanner_address=scanner1.address,
                 rssi=-60.0,
-                stamp=1000.0 + i,
+                stamp=TEST_BASE_TIME + i,
                 area_id="garage",
                 scanner_device=scanner1,
             )
             device.adverts[scanner2.address] = FakeAdvert(
                 scanner_address=scanner2.address,
                 rssi=-75.0,
-                stamp=1000.0 + i,
+                stamp=TEST_BASE_TIME + i,
                 area_id="driveway",
                 scanner_device=scanner2,
             )
@@ -719,7 +739,7 @@ class TestUKFAreaSelectionWithPseudoData:
         # After 10 updates, variance should be reasonably low
         assert variance < 50.0  # Initial variance is higher
 
-    def test_ukf_distinguishes_similar_rooms(self) -> None:
+    def test_ukf_distinguishes_similar_rooms(self, mock_monotonic_time: None) -> None:
         """Test UKF can distinguish between rooms with similar but different patterns."""
         coordinator = create_coordinator_mock()
         device = FakeDevice("AA:BB:CC:DD:EE:06", "Speaker")
@@ -759,21 +779,21 @@ class TestUKFAreaSelectionWithPseudoData:
         device.adverts[scanner1.address] = FakeAdvert(
             scanner_address=scanner1.address,
             rssi=-50.0,
-            stamp=1000.0,
+            stamp=TEST_BASE_TIME,
             area_id="room_a",
             scanner_device=scanner1,
         )
         device.adverts[scanner2.address] = FakeAdvert(
             scanner_address=scanner2.address,
             rssi=-65.0,
-            stamp=1000.0,
+            stamp=TEST_BASE_TIME,
             area_id="room_b",
             scanner_device=scanner2,
         )
         device.adverts[scanner3.address] = FakeAdvert(
             scanner_address=scanner3.address,
             rssi=-80.0,
-            stamp=1000.0,
+            stamp=TEST_BASE_TIME,
             area_id="room_c",
             scanner_device=scanner3,
         )
@@ -783,7 +803,7 @@ class TestUKFAreaSelectionWithPseudoData:
         assert result is True
         assert device.area_id == "room_a"
 
-    def test_ukf_handles_stale_adverts(self) -> None:
+    def test_ukf_handles_stale_adverts(self, mock_monotonic_time: None) -> None:
         """Test UKF ignores stale adverts outside evidence window."""
         coordinator = create_coordinator_mock()
         device = FakeDevice("AA:BB:CC:DD:EE:07", "Tag")
@@ -795,7 +815,7 @@ class TestUKFAreaSelectionWithPseudoData:
         device.adverts[scanner1.address] = FakeAdvert(
             scanner_address=scanner1.address,
             rssi=-60.0,
-            stamp=1000.0,  # Current time
+            stamp=TEST_BASE_TIME,  # Current time
             area_id="area1",
             scanner_device=scanner1,
         )
@@ -817,7 +837,7 @@ class TestUKFAreaSelectionWithPseudoData:
 class TestUKFWithMultipleDevices:
     """Test UKF handling of multiple devices simultaneously."""
 
-    def test_separate_ukf_per_device(self) -> None:
+    def test_separate_ukf_per_device(self, mock_monotonic_time: None) -> None:
         """Test each device gets its own UKF instance."""
         coordinator = create_coordinator_mock()
 
@@ -832,14 +852,14 @@ class TestUKFWithMultipleDevices:
             device.adverts[scanner1.address] = FakeAdvert(
                 scanner_address=scanner1.address,
                 rssi=-60.0,
-                stamp=1000.0,
+                stamp=TEST_BASE_TIME,
                 area_id="area1",
                 scanner_device=scanner1,
             )
             device.adverts[scanner2.address] = FakeAdvert(
                 scanner_address=scanner2.address,
                 rssi=-70.0,
-                stamp=1000.0,
+                stamp=TEST_BASE_TIME,
                 area_id="area2",
                 scanner_device=scanner2,
             )
@@ -852,7 +872,7 @@ class TestUKFWithMultipleDevices:
         assert device2.address in coordinator.device_ukfs
         assert coordinator.device_ukfs[device1.address] is not coordinator.device_ukfs[device2.address]
 
-    def test_ukf_devices_independent_state(self) -> None:
+    def test_ukf_devices_independent_state(self, mock_monotonic_time: None) -> None:
         """Test UKF instances maintain independent state."""
         coordinator = create_coordinator_mock()
 
@@ -866,14 +886,14 @@ class TestUKFWithMultipleDevices:
         device1.adverts[scanner1.address] = FakeAdvert(
             scanner_address=scanner1.address,
             rssi=-50.0,
-            stamp=1000.0,
+            stamp=TEST_BASE_TIME,
             area_id="area1",
             scanner_device=scanner1,
         )
         device1.adverts[scanner2.address] = FakeAdvert(
             scanner_address=scanner2.address,
             rssi=-80.0,
-            stamp=1000.0,
+            stamp=TEST_BASE_TIME,
             area_id="area2",
             scanner_device=scanner2,
         )
@@ -882,14 +902,14 @@ class TestUKFWithMultipleDevices:
         device2.adverts[scanner1.address] = FakeAdvert(
             scanner_address=scanner1.address,
             rssi=-80.0,
-            stamp=1000.0,
+            stamp=TEST_BASE_TIME,
             area_id="area1",
             scanner_device=scanner1,
         )
         device2.adverts[scanner2.address] = FakeAdvert(
             scanner_address=scanner2.address,
             rssi=-50.0,
-            stamp=1000.0,
+            stamp=TEST_BASE_TIME,
             area_id="area2",
             scanner_device=scanner2,
         )

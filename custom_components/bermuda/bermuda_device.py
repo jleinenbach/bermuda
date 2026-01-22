@@ -181,6 +181,9 @@ class BermudaDevice(dict):
         self.pending_area_id: str | None = None
         self.pending_floor_id: str | None = None
         self.pending_streak: int = 0
+        # Track scanner timestamps for streak counting - only count unique signals
+        # Similar to BUG 19 fix for training: prevents cached values from being counted multiple times
+        self.pending_last_stamps: dict[str, float] = {}
 
         # Dwell time tracking - when did the device enter the current area?
         # Used to calculate movement state (MOVING -> SETTLING -> STATIONARY)
