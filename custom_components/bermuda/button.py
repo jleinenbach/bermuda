@@ -107,13 +107,17 @@ class BermudaTrainingButton(BermudaEntity, ButtonEntity):
 
     @property
     def available(self) -> bool:
-        """Return True if button should be enabled (floor AND room selected)."""
+        """Return True if button should be enabled (floor AND room selected, not training)."""
         # Check parent availability first
         if not super().available:
             _LOGGER.debug(
                 "Training button unavailable for %s: coordinator not ready",
                 self._device.name,
             )
+            return False
+
+        # Disable button while training is in progress (prevent double-click)
+        if self._is_training:
             return False
 
         # Button available when BOTH training floor AND room have been selected.
@@ -156,6 +160,14 @@ class BermudaTrainingButton(BermudaEntity, ButtonEntity):
 
     async def async_press(self) -> None:
         """Handle the button press - trigger fingerprint training."""
+        # Guard against double-click (training already in progress)
+        if self._is_training:
+            _LOGGER.debug(
+                "Training button pressed but training already in progress for %s",
+                self._device.name,
+            )
+            return
+
         # Double-check that a training room is selected
         if self._device.training_target_area_id is None:
             _LOGGER.warning(
