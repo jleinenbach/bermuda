@@ -1275,6 +1275,80 @@ for k in range(n_sub):
 4. **Hybrid Mode**: Combine UKF confidence with min-distance for tiebreaking
 5. **Performance**: Profile UKF overhead on large scanner networks
 
+### Rejected Alternative: Student-t Score Function (Phase 2)
+
+**Status:** ❌ Not implemented (variance floor is sufficient)
+
+A proposal was made to replace the Gaussian score function `exp(-D²/(2n))` with a
+Student-t kernel to handle "heavy-tailed" BLE RSSI distributions. After mathematical
+analysis, this was **rejected** because the variance floor (Phase 1) already solves
+the problem, and combining both would make matching too tolerant.
+
+**The Standard Multivariate Student-t Formula:**
+
+According to [Wikipedia](https://en.wikipedia.org/wiki/Multivariate_t-distribution):
+```
+f(x) ∝ (1 + D²/ν)^(-(ν+p)/2)
+```
+Where:
+- D² = Mahalanobis distance squared
+- ν = degrees of freedom (typically 4-5 for robust estimation)
+- p = dimension (number of scanners)
+
+**The Proposed (Ad-hoc) Formula:**
+```python
+avg_d_squared = d_squared / n_sub      # = D²/p
+base = 1.0 + (avg_d_squared / NU)      # = 1 + D²/(p·ν)
+exponent = -(NU + 1.0) / 2.0           # = -(ν+1)/2
+device_score = math.pow(base, exponent)
+```
+
+**Critical Differences:**
+
+| Aspect | Standard t | Proposed | Impact |
+|--------|------------|----------|--------|
+| Base denominator | ν | p·ν | p times smaller |
+| Exponent | -(ν+p)/2 | -(ν+1)/2 | Constant, not dimensional |
+
+**Example Calculation (p=3 scanners, D²=9, ν=4):**
+
+| Method | Formula | Score |
+|--------|---------|-------|
+| Standard t | (1 + 9/4)^(-(4+3)/2) | 0.017 |
+| Proposed | (1 + 9/12)^(-(4+1)/2) | 0.25 |
+| Current Gaussian | exp(-9/6) | 0.22 |
+
+The proposed formula is **15x more tolerant** than standard Student-t!
+
+**Risk: Over-Tolerance with Both Fixes**
+
+| Config | 5dB deviation score | 12dB deviation score |
+|--------|---------------------|----------------------|
+| Phase 1 alone | 0.61 | 0.38 |
+| Phase 1 + Phase 2 | 0.72 | 0.52 |
+
+With both fixes, a **wrong room** with 12dB deviation gets score 0.52 (should be < 0.3).
+
+**Why Variance Floor Alone is Sufficient:**
+
+1. The "hyper-precision paradox" is caused by converged Kalman variances, not by
+   the Gaussian score function itself
+2. The variance floor ensures D² stays reasonable (< 5 for normal BLE noise)
+3. With reasonable D², the Gaussian function works correctly
+4. Adding Student-t on top would reduce discrimination between correct/wrong rooms
+
+**If Student-t is Ever Needed (Extreme Multipath Environments):**
+
+1. Use the **correct** multivariate formula: `(1 + D²/ν)^(-(ν+n)/2)`
+2. **Reduce** the variance floor to 10-15 (not 25)
+3. Add tests for false-positive rate
+4. Verify discrimination ratio between correct and wrong rooms stays > 2.0
+
+**References:**
+- [Multivariate t-distribution - Wikipedia](https://en.wikipedia.org/wiki/Multivariate_t-distribution)
+- [Statlect: Multivariate Student's t](https://www.statlect.com/probability-distributions/multivariate-student-t-distribution)
+- [UWB/IMU Fusion with Mahalanobis Distance](https://pubmed.ncbi.nlm.nih.gov/30322106/)
+
 ## Correlation Confidence Architecture
 
 ### Problem: Delta-Only Matching Causes False Positives
