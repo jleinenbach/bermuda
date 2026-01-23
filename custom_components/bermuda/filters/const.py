@@ -81,6 +81,13 @@ CALIBRATION_MIN_PAIRS: Final = 1
 # Prevents oscillation due to noise around rounding boundaries.
 CALIBRATION_HYSTERESIS_DB: Final = 3
 
+# Scanner offline timeout for calibration (seconds).
+# After this duration without data, a scanner is considered offline and
+# its pairs are excluded from offset calculation. When the scanner comes
+# back online, it will be included again automatically.
+# 5 minutes balances stability vs responsiveness to scanner changes.
+CALIBRATION_SCANNER_TIMEOUT: Final = 300.0
+
 # =============================================================================
 # Adaptive Kalman Filter Parameters
 # =============================================================================

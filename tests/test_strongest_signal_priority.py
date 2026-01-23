@@ -117,6 +117,16 @@ class FakeDevice:
     # UKF tracking
     _ukf_scannerless_area: bool = False
 
+    @property
+    def ukf_scannerless_area(self) -> bool:
+        """Property accessor for scannerless area flag."""
+        return self._ukf_scannerless_area
+
+    @ukf_scannerless_area.setter
+    def ukf_scannerless_area(self, value: bool) -> None:
+        """Property setter for scannerless area flag."""
+        self._ukf_scannerless_area = value
+
     def update_area_and_floor(self, area_id: str) -> None:
         """Update area and floor for this device."""
         self.area_id = area_id

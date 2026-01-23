@@ -25,11 +25,14 @@ import statistics
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from bluetooth_data_tools import monotonic_time_coarse
+
 from .filters import (
     CALIBRATION_HYSTERESIS_DB,
     CALIBRATION_MAX_HISTORY,
     CALIBRATION_MIN_PAIRS,
     CALIBRATION_MIN_SAMPLES,
+    CALIBRATION_SCANNER_TIMEOUT,
     KalmanFilter,
 )
 
@@ -56,6 +59,9 @@ class ScannerPairData:
     # Raw RSSI history (kept for diagnostics only)
     rssi_history_ab: list[float] = field(default_factory=list)  # When A sees B
     rssi_history_ba: list[float] = field(default_factory=list)  # When B sees A
+    # Last update timestamps for each direction (for staleness tracking)
+    last_update_ab: float | None = None
+    last_update_ba: float | None = None
 
     @property
     def rssi_a_sees_b(self) -> float | None:
@@ -125,6 +131,9 @@ class ScannerCalibrationManager:
     # Track which scanners are active (have been seen recently)
     active_scanners: set[str] = field(default_factory=set)
 
+    # Track last timestamp each scanner provided data (for offline detection)
+    scanner_last_seen: dict[str, float] = field(default_factory=dict)
+
     def _get_pair_key(self, addr_a: str, addr_b: str) -> tuple[str, str]:
         """Get canonical key for scanner pair (always sorted)."""
         return (min(addr_a, addr_b), max(addr_a, addr_b))
@@ -136,62 +145,123 @@ class ScannerCalibrationManager:
             self.scanner_pairs[key] = ScannerPairData(scanner_a=key[0], scanner_b=key[1])
         return self.scanner_pairs[key]
 
+    def _is_scanner_online(self, scanner_addr: str, nowstamp: float) -> bool:
+        """
+        Check if a scanner is considered online (has provided data recently).
+
+        A scanner is online if it has been seen within CALIBRATION_SCANNER_TIMEOUT.
+        Offline scanners are excluded from offset calculations to prevent stale
+        data from affecting calibration when a scanner is moved or replaced.
+
+        Args:
+            scanner_addr: Address of the scanner to check.
+            nowstamp: Current monotonic timestamp.
+
+        Returns:
+            True if scanner has been seen within timeout, False otherwise.
+
+        """
+        last_seen = self.scanner_last_seen.get(scanner_addr)
+        if last_seen is None:
+            return False
+        return (nowstamp - last_seen) < CALIBRATION_SCANNER_TIMEOUT
+
     def update_cross_visibility(
         self,
         receiver_addr: str,
         sender_addr: str,
         rssi_raw: float,
+        timestamp: float | None = None,
     ) -> None:
         """
         Update cross-visibility data when a scanner sees another scanner.
 
-        Uses Kalman filter for optimal RSSI smoothing.
+        Uses Kalman filter for optimal RSSI smoothing with time-aware
+        process noise scaling.
 
         Args:
             receiver_addr: Address of the scanner that received the signal
             sender_addr: Address of the scanner that sent the signal (as iBeacon)
             rssi_raw: RAW RSSI value (NOT adjusted by rssi_offset!)
                      Using raw RSSI is critical to avoid circular calibration.
+            timestamp: Monotonic timestamp for time-aware Kalman filtering.
+                      If None, uses monotonic_time_coarse().
 
         """
+        ts = timestamp if timestamp is not None else monotonic_time_coarse()
         pair = self._get_or_create_pair(receiver_addr, sender_addr)
 
-        # Add to history and update Kalman filter
+        # Add to history and update Kalman filter with timestamp for dt calculation
         if receiver_addr == pair.scanner_a:
             # A sees B
             pair.rssi_history_ab.append(rssi_raw)
             if len(pair.rssi_history_ab) > CALIBRATION_MAX_HISTORY:
                 pair.rssi_history_ab.pop(0)
-            pair.kalman_ab.update(rssi_raw)
+            pair.kalman_ab.update(rssi_raw, timestamp=ts)
+            pair.last_update_ab = ts
         else:
             # B sees A
             pair.rssi_history_ba.append(rssi_raw)
             if len(pair.rssi_history_ba) > CALIBRATION_MAX_HISTORY:
                 pair.rssi_history_ba.pop(0)
-            pair.kalman_ba.update(rssi_raw)
+            pair.kalman_ba.update(rssi_raw, timestamp=ts)
+            pair.last_update_ba = ts
 
+        # Track scanner activity for staleness detection
+        self.scanner_last_seen[receiver_addr] = ts
+        self.scanner_last_seen[sender_addr] = ts
         self.active_scanners.add(receiver_addr)
         self.active_scanners.add(sender_addr)
 
-    def calculate_suggested_offsets(self) -> dict[str, float]:
+    def calculate_suggested_offsets(self, nowstamp: float | None = None) -> dict[str, float]:
         """
         Calculate suggested RSSI offsets from scanner cross-visibility.
 
         Algorithm:
         1. For each scanner pair with bidirectional data, calculate the RSSI difference
-        2. The difference / 2 gives the relative offset for each scanner
-        3. Average all pair-based offsets for each scanner
-        4. Round to integer dB values
+        2. Skip pairs where either scanner is offline (no data for > 5 minutes)
+        3. The difference / 2 gives the relative offset for each scanner
+        4. Average all pair-based offsets for each scanner
+        5. Round to integer dB values
+
+        Args:
+            nowstamp: Current timestamp for online checking. If None, uses
+                     monotonic_time_coarse(). Exposed for testing.
 
         Returns:
             Dictionary mapping scanner addresses to suggested RSSI offsets
 
         """
+        if nowstamp is None:
+            nowstamp = monotonic_time_coarse()
+
         # Collect offset contributions for each scanner
         offset_contributions: dict[str, list[float]] = {addr: [] for addr in self.active_scanners}
 
         bidirectional_pairs = 0
+        offline_pairs_skipped = 0
+
         for pair in self.scanner_pairs.values():
+            # Skip pairs where either scanner is offline
+            if not self._is_scanner_online(pair.scanner_a, nowstamp):
+                _LOGGER.debug(
+                    "Auto-cal pair %s <-> %s: skipped - scanner %s offline",
+                    pair.scanner_a,
+                    pair.scanner_b,
+                    pair.scanner_a,
+                )
+                offline_pairs_skipped += 1
+                continue
+            if not self._is_scanner_online(pair.scanner_b, nowstamp):
+                _LOGGER.debug(
+                    "Auto-cal pair %s <-> %s: skipped - scanner %s offline",
+                    pair.scanner_a,
+                    pair.scanner_b,
+                    pair.scanner_b,
+                )
+                offline_pairs_skipped += 1
+                continue
+
             diff = pair.rssi_difference
             if diff is None:
                 _LOGGER.debug(
@@ -217,6 +287,11 @@ class ScannerCalibrationManager:
             offset_contributions[pair.scanner_a].append(-diff / 2)
             offset_contributions[pair.scanner_b].append(diff / 2)
 
+        if offline_pairs_skipped > 0:
+            _LOGGER.debug(
+                "Auto-cal: Skipped %d pairs due to offline scanners",
+                offline_pairs_skipped,
+            )
         if bidirectional_pairs > 0:
             _LOGGER.debug("Auto-cal: Found %d bidirectional pairs", bidirectional_pairs)
 
@@ -287,14 +362,21 @@ class ScannerCalibrationManager:
 
         return self.suggested_offsets
 
-    def get_scanner_pair_info(self) -> list[dict[str, Any]]:
+    def get_scanner_pair_info(self, nowstamp: float | None = None) -> list[dict[str, Any]]:
         """
         Get human-readable info about scanner pairs for diagnostics.
 
+        Args:
+            nowstamp: Current timestamp for online checking. If None, uses
+                     monotonic_time_coarse(). Exposed for testing.
+
         Returns:
-            List of dictionaries with pair information including Kalman filter diagnostics.
+            List of dictionaries with pair information including Kalman filter
+            diagnostics and online status.
 
         """
+        if nowstamp is None:
+            nowstamp = monotonic_time_coarse()
         info: list[dict[str, Any]] = []
         for pair in self.scanner_pairs.values():
             pair_info = {
@@ -309,15 +391,21 @@ class ScannerCalibrationManager:
                 # Kalman filter diagnostics
                 "kalman_ab": pair.kalman_ab.get_diagnostics(),
                 "kalman_ba": pair.kalman_ba.get_diagnostics(),
+                # Online status and timestamps
+                "scanner_a_online": self._is_scanner_online(pair.scanner_a, nowstamp),
+                "scanner_b_online": self._is_scanner_online(pair.scanner_b, nowstamp),
+                "last_update_ab": pair.last_update_ab,
+                "last_update_ba": pair.last_update_ba,
             }
             info.append(pair_info)
         return info
 
     def clear(self) -> None:
-        """Clear all calibration data."""
+        """Clear all calibration data including staleness tracking."""
         self.scanner_pairs.clear()
         self.suggested_offsets.clear()
         self.active_scanners.clear()
+        self.scanner_last_seen.clear()
 
 
 def update_scanner_calibration(  # noqa: C901
@@ -340,6 +428,9 @@ def update_scanner_calibration(  # noqa: C901
         Dictionary of suggested RSSI offsets per scanner
 
     """
+    # Get timestamp once for consistent staleness tracking
+    nowstamp = monotonic_time_coarse()
+
     # Build a reverse lookup: any_scanner_mac -> canonical_scanner_address
     # Scanners may have multiple MAC addresses (WiFi, BLE, Ethernet) and the
     # iBeacon broadcasts come from the BLE MAC, which may differ from the
@@ -484,6 +575,7 @@ def update_scanner_calibration(  # noqa: C901
                 receiver_addr=scanner_addr,
                 sender_addr=other_addr,
                 rssi_raw=rssi_raw,
+                timestamp=nowstamp,
             )
 
     if visibility_found > 0 or visibility_not_found > 0:

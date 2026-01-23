@@ -120,6 +120,16 @@ class FakeDevice:
         # UKF scannerless area flag (stub for testing)
         self._ukf_scannerless_area: bool = False
 
+    @property
+    def ukf_scannerless_area(self) -> bool:
+        """Property accessor for scannerless area flag."""
+        return self._ukf_scannerless_area
+
+    @ukf_scannerless_area.setter
+    def ukf_scannerless_area(self, value: bool) -> None:
+        """Property setter for scannerless area flag."""
+        self._ukf_scannerless_area = value
+
     def get_movement_state(self, *, stamp_now: float | None = None) -> str:
         """Stub for movement state - returns stationary for tests (hardest to switch)."""
         return MOVEMENT_STATE_STATIONARY

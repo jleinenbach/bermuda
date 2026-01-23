@@ -186,6 +186,52 @@ CONFIDENCE_WINNER_MARGIN: Final = 0.2  # Incumbent must be this much better to d
 CORR_CONFIDENCE_WINNER_MIN: Final = 0.5  # Correlation confidence threshold
 CORR_CONFIDENCE_WINNER_MARGIN: Final = 0.3  # Correlation confidence margin
 
+# UKF sanity check constants
+UKF_RSSI_SIGMA_MULTIPLIER: Final = 3.0  # Standard deviations for RSSI variance check
+UKF_MIN_RSSI_VARIANCE: Final = 4.0  # Minimum variance floor for RSSI checks
+UKF_PROXIMITY_THRESHOLD_METERS: Final = 2.0  # Very close = almost certainly in that room
+UKF_HIGH_CONFIDENCE_OVERRIDE: Final = 0.85  # Score needed to override proximity check
+
+# Correlation z-score penalty constants
+CORRELATION_Z_PENALTY_BASE: Final = 0.5  # Base for exponential penalty calculation
+CORRELATION_Z_PENALTY_OFFSET: Final = 2.0  # Offset subtracted from z-score
+
+# Profile maturity thresholds
+MATURE_PROFILE_MIN_PAIRS: Final = 2  # Minimum scanner pairs for mature room profile
+MATURE_ABSOLUTE_MIN_COUNT: Final = 2  # Minimum absolute correlations for maturity check
+ABSOLUTE_Z_SCORE_MAX: Final = 2.0  # Max average z-score for absolute profile confidence
+
+# Sentinel values for distance/RSSI
+DISTANCE_INFINITE_SENTINEL: Final = 999.0  # Sentinel value for unknown/infinite distance
+RSSI_INVALID_SENTINEL: Final = -999.0  # Sentinel value for invalid/missing RSSI
+
+# Min-distance algorithm thresholds
+MINDIST_SIGNIFICANT_IMPROVEMENT: Final = 0.30  # 30% improvement for same-floor fast-track
+MINDIST_PENDING_IMPROVEMENT: Final = 0.20  # 20% improvement to reset pending area
+DISTANCE_TIE_THRESHOLD: Final = 0.01  # Threshold for distance equality (RSSI tiebreak)
+
+# Streak counting thresholds
+STREAK_LOW_CONFIDENCE_THRESHOLD: Final = 0.5  # Below this, don't count low-confidence toward streak
+
+# Dynamic cross-floor margin increments
+FLOOR_WITNESS_MARGIN_INCREMENT: Final = 0.10  # Additional margin per floor witness
+FLOOR_IMBALANCE_MARGIN: Final = 0.15  # Margin for witness count imbalance
+FLOOR_RATIO_MARGIN: Final = 0.20  # Margin based on distance ratio
+FLOOR_SANDWICH_MARGIN_BASE: Final = 0.30  # Base margin when incumbent sandwiched
+FLOOR_SANDWICH_MARGIN_INCREMENT: Final = 0.05  # Additional margin per sandwich floor
+FLOOR_SKIP_MARGIN: Final = 0.35  # Margin per skipped floor
+
+# Cross-floor margin caps (maximum values)
+FLOOR_MARGIN_CAP_60: Final = 0.60  # Cap for witness-based margin
+FLOOR_MARGIN_CAP_70: Final = 0.70  # Cap for imbalance-based margin
+FLOOR_MARGIN_CAP_75: Final = 0.75  # Cap for sandwich-based margin
+FLOOR_MARGIN_CAP_80: Final = 0.80  # Cap for ratio/skip-based margin
+FLOOR_ESCAPE_CAP_80: Final = 0.80  # Escape cap for witness-based
+FLOOR_ESCAPE_CAP_85: Final = 0.85  # Escape cap for imbalance-based
+FLOOR_ESCAPE_CAP_90: Final = 0.90  # Escape cap for sandwich-based
+FLOOR_ESCAPE_CAP_95: Final = 0.95  # Escape cap for ratio/skip-based
+FLOOR_DISTANCE_RATIO_THRESHOLD: Final = 1.5  # Distance ratio triggering extra margin
+
 # Beacon-handling constants. Source devices are tracked by MAC-address and are the
 # originators of beacon-like data. We then create a "meta-device" for the beacon's
 # uuid. Other non-static-mac protocols should use this method as well, by adding their
@@ -213,6 +259,7 @@ BDADDR_TYPE_OTHER: Final = "bd_addr_other"  # Default 48bit MAC
 BDADDR_TYPE_RANDOM_RESOLVABLE: Final = "bd_addr_random_resolvable"
 BDADDR_TYPE_RANDOM_UNRESOLVABLE: Final = "bd_addr_random_unresolvable"
 BDADDR_TYPE_RANDOM_STATIC: Final = "bd_addr_random_static"
+BDADDR_TYPE_RESERVED: Final = "bd_addr_reserved"  # Reserved address range (0x80-0xBF)
 BDADDR_TYPE_NOT_MAC48: Final = "bd_addr_not_mac48"
 # Non-bluetooth address types - for our metadevice entries
 ADDR_TYPE_IBEACON: Final = "addr_type_ibeacon"
