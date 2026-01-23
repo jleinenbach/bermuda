@@ -370,7 +370,7 @@ class FmdnIntegration:
         try:
             candidates = self.extract_eids(service_data)
         except Exception as ex:  # noqa: BLE001  # pylint: disable=broad-exception-caught
-            _LOGGER.debug("Error extracting FMDN EIDs from service data: %s", ex)
+            _LOGGER.warning("Error extracting FMDN EIDs from service data: %s", ex, exc_info=True)
             return
 
         if not candidates:
@@ -417,7 +417,12 @@ class FmdnIntegration:
                 if any_resolved:
                     break
             except Exception as ex:  # noqa: BLE001  # pylint: disable=broad-exception-caught
-                _LOGGER.debug("Error processing FMDN EID candidate for %s: %s", device.address, ex)
+                _LOGGER.warning(
+                    "Error processing FMDN EID candidate for %s: %s",
+                    device.address,
+                    ex,
+                    exc_info=True,
+                )
                 continue
 
         # If no candidates resolved, record the first one as unresolved for diagnostics
@@ -596,7 +601,7 @@ class FmdnIntegration:
                 DOMAIN_GOOGLEFINDMY, include_disabled=False
             )
         except (KeyError, AttributeError, TypeError) as ex:
-            _LOGGER.debug("Error accessing googlefindmy config entries: %s", ex)
+            _LOGGER.warning("Error accessing googlefindmy config entries: %s", ex, exc_info=True)
             return
 
         for fmdn_entry in fmdn_entries:
@@ -606,7 +611,7 @@ class FmdnIntegration:
                     continue
                 fmdn_entities = self.coordinator.er.entities.get_entries_for_config_entry_id(entry_id)
             except (KeyError, AttributeError, TypeError) as ex:
-                _LOGGER.debug("Error getting entities for googlefindmy entry: %s", ex)
+                _LOGGER.warning("Error getting entities for googlefindmy entry: %s", ex, exc_info=True)
                 continue
 
             for fmdn_entity in fmdn_entities:
