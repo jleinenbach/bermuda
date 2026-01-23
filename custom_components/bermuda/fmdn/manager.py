@@ -10,6 +10,7 @@ from typing import Any
 from bluetooth_data_tools import monotonic_time_coarse
 
 from custom_components.bermuda.const import _LOGGER, PRUNE_TIME_FMDN
+from custom_components.bermuda.util import is_mac_address
 
 
 class EidResolutionStatus(Enum):
@@ -94,6 +95,11 @@ class BermudaFmdnManager:
             canonical_id: Canonical identifier from resolver if available
 
         """
+        # Validate source_mac format to prevent storing malformed keys
+        if not is_mac_address(source_mac):
+            _LOGGER.debug("Invalid source_mac format rejected: %s", source_mac[:50])
+            return
+
         nowstamp = monotonic_time_coarse()
         eid_hex = eid.hex()
 
