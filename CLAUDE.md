@@ -599,16 +599,63 @@ ukf.update_multi({"scanner1": -70.0, "scanner2": -75.0}, timestamp=time.time())
 
 For installations with many scanners, the UKF uses optional NumPy acceleration:
 
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    UKF NumPy Acceleration Architecture                       │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  ukf.py                           ukf_numpy.py                               │
+│  ┌────────────────────────┐       ┌────────────────────────────────────┐    │
+│  │ _cholesky_decompose()  │──────►│ cholesky_numpy()                   │    │
+│  │ _matrix_inverse()      │──────►│ matrix_inverse_numpy()             │    │
+│  │ _matrix_multiply()     │──────►│ matrix_multiply_numpy()            │    │
+│  │ _compute_sigma_points()│──────►│ sigma_points_numpy()               │    │
+│  └────────────────────────┘       └────────────────────────────────────┘    │
+│           │                                    │                             │
+│           │ if n > 10                          │ _get_numpy()                │
+│           │ and NumPy available               ▼                             │
+│           │                        ┌─────────────────────────┐              │
+│           │                        │ Lazy NumPy Import       │              │
+│           │                        │ - Module-level caching  │              │
+│           │                        │ - Single import attempt │              │
+│           │                        │ - Returns None if N/A   │              │
+│           │                        └─────────────────────────┘              │
+│           │                                                                  │
+│           ▼ Fallback (n ≤ 10 or NumPy unavailable)                          │
+│  ┌────────────────────────────────────────────────────────────────────┐     │
+│  │ Pure Python Implementation                                          │     │
+│  │ - Cholesky-Banachiewicz algorithm                                  │     │
+│  │ - Gauss-Jordan elimination for inverse                             │     │
+│  │ - Explicit nested loops for matrix multiply                        │     │
+│  └────────────────────────────────────────────────────────────────────┘     │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
 **Automatic Selection:**
 - n ≤ 10 scanners: Pure Python (adequate performance)
 - n > 10 scanners + NumPy available: NumPy backend (10-100x faster)
 - n > 10 scanners + no NumPy: Pure Python with optimizations
+
+**Key Design Decisions:**
+1. **Threshold of 10**: NumPy overhead (~0.01ms) exceeds pure Python for small n
+2. **Lazy Import**: Avoids requiring NumPy as hard dependency
+3. **Graceful Fallback**: Always works, even without NumPy
+4. **Type Safety**: `cast()` used to satisfy mypy with numpy's `Any` returns
 
 **Sequential Update Alternative:**
 ```python
 # For partial observations, sequential update can be faster
 ukf.update_sequential(measurements, timestamp=time.time())
 ```
+
+**Complexity Analysis:**
+| Method | Full Obs (all n) | Partial Obs (m of n) |
+|--------|------------------|----------------------|
+| `update_multi()` | O(n³) | O(n³) |
+| `update_sequential()` | O(n × n²) = O(n³) | O(m × n²) |
+
+For m << n (sparse observations), sequential is significantly faster.
 
 **Performance Comparison (estimated):**
 | Method | n=5 | n=10 | n=20 | n=50 |
@@ -3744,3 +3791,236 @@ return profiles  # Contains all valid entries
 ```
 
 **Rule of Thumb**: When loading collections of independent items, wrap individual loads in try/except and log failures rather than aborting the entire operation.
+
+### 44. Lazy Importing for Optional Dependencies
+
+When a module provides optional acceleration (like NumPy for matrix operations), use lazy importing to avoid hard dependencies while enabling performance gains when available.
+
+**Bug Pattern:**
+```python
+# BAD - Hard dependency, fails if NumPy not installed
+import numpy as np
+
+def cholesky(matrix):
+    return np.linalg.cholesky(matrix)
+```
+
+**Fix Pattern:**
+```python
+# GOOD - Lazy import with graceful fallback
+_numpy: Any = None
+_numpy_checked: bool = False
+
+def _get_numpy() -> Any:
+    global _numpy, _numpy_checked  # noqa: PLW0603
+    if _numpy_checked:
+        return _numpy
+    try:
+        import numpy as np  # noqa: PLC0415
+        _numpy = np
+    except ImportError:
+        _numpy = None
+    _numpy_checked = True
+    return _numpy
+
+def cholesky(matrix):
+    np = _get_numpy()
+    if np is not None:
+        result = np.linalg.cholesky(matrix)
+        if result is not None:
+            return result
+    # Fall through to pure Python
+    return pure_python_cholesky(matrix)
+```
+
+**Key Patterns:**
+1. Module-level caching (`_numpy_checked`) prevents repeated import attempts
+2. Use `# noqa: PLW0603` for global statement (intentional for caching)
+3. Use `# noqa: PLC0415` for imports not at top level (intentional for lazy loading)
+4. Always provide pure Python fallback for portability
+
+**Rule of Thumb**: Optional performance dependencies should be lazy-loaded with caching. The fallback should always work, even if slower.
+
+### 45. Time-Aware Process Noise Scaling for Irregular Intervals
+
+Kalman filters assume regular time steps. For irregular BLE advertisements (1-10+ seconds), process noise must scale with actual time delta for mathematically correct uncertainty modeling.
+
+**Bug Pattern:**
+```python
+# BAD - Assumes fixed time step
+def update(self, measurement):
+    predicted_variance = self.variance + self.process_noise  # Always same noise!
+```
+
+**Fix Pattern:**
+```python
+# GOOD - Scale process noise by time delta
+def update(self, measurement, timestamp=None):
+    dt = DEFAULT_UPDATE_DT
+    if timestamp is not None and self._last_timestamp is not None:
+        raw_dt = timestamp - self._last_timestamp
+        dt = max(MIN_UPDATE_DT, min(raw_dt, MAX_UPDATE_DT))  # Clamp
+    self._last_timestamp = timestamp
+
+    # Process noise scales with time!
+    predicted_variance = self.variance + self.process_noise * dt
+```
+
+**Mathematical Basis:**
+- Process noise models "how much can the true state drift per unit time"
+- If dt=2s, twice as much drift is possible as dt=1s
+- Formula: `Q_effective = Q × dt`
+
+**Clamping Bounds:**
+| Constant | Value | Purpose |
+|----------|-------|---------|
+| `MIN_UPDATE_DT` | 0.01s | Prevent near-zero noise from rapid updates |
+| `MAX_UPDATE_DT` | 60.0s | Cap uncertainty growth after long gaps |
+
+**Rule of Thumb**: For time-series filters with irregular intervals, always scale process noise by actual time delta, with reasonable min/max bounds.
+
+### 46. Threshold-Based Algorithm Selection
+
+When multiple implementations exist for the same operation (e.g., pure Python vs NumPy), select based on problem size to optimize the common case.
+
+**Bug Pattern:**
+```python
+# BAD - Always use NumPy (overhead dominates for small n)
+def matrix_inverse(matrix):
+    return np.linalg.inv(matrix)  # 0.1ms setup cost even for 2x2!
+```
+
+**Fix Pattern:**
+```python
+# GOOD - Use NumPy only when benefit outweighs overhead
+NUMPY_THRESHOLD = 10  # Empirically determined
+
+def matrix_inverse(matrix):
+    n = len(matrix)
+    if n > NUMPY_THRESHOLD:
+        result = numpy_inverse(matrix)
+        if result is not None:
+            return result
+    return pure_python_inverse(matrix)
+```
+
+**Threshold Selection:**
+| Operation | Pure Python | NumPy Setup | Crossover Point |
+|-----------|-------------|-------------|-----------------|
+| Cholesky (n×n) | O(n³) | ~0.01ms | n ≈ 10 |
+| Matrix Inverse | O(n³) | ~0.01ms | n ≈ 10 |
+| Matrix Multiply | O(n³) | ~0.01ms | n ≈ 15 |
+
+**Rule of Thumb**: Profile both implementations across expected input sizes. The threshold should be where the accelerated version's overhead equals the baseline's compute time.
+
+### 47. Sequential vs Batch Updates for Partial Observations
+
+When only some observations are available (partial observations), sequential scalar updates can be more efficient than full matrix updates.
+
+**Bug Pattern:**
+```python
+# BAD - Full matrix update even for 2 observations out of 20
+def update(self, measurements):  # 2 of 20 scanners report
+    # Build full 20×20 matrices, invert, etc.  O(n³) = O(8000)
+```
+
+**Fix Pattern:**
+```python
+# GOOD - Sequential scalar updates: O(n²) per observation
+def update_sequential(self, measurements):
+    for scanner, rssi in measurements.items():
+        i = self.scanner_indices[scanner]
+        # Scalar Kalman update for observation i
+        s = self._p_cov[i][i] + self.measurement_noise  # Scalar
+        k = [self._p_cov[j][i] / s for j in range(n)]   # O(n)
+        innovation = rssi - self._x[i]
+        for j in range(n):
+            self._x[j] += k[j] * innovation             # O(n)
+        # Update covariance: O(n²)
+```
+
+**Complexity Comparison:**
+| Method | 2 of 20 obs | 20 of 20 obs |
+|--------|-------------|--------------|
+| Full Matrix | O(n³) = 8000 | O(n³) = 8000 |
+| Sequential | O(m×n²) = 800 | O(n×n²) = 8000 |
+
+**When to use each:**
+- **Full matrix**: All/most observations available, need cross-correlations
+- **Sequential**: Sparse observations, or when numerical stability is critical
+
+**Rule of Thumb**: For partial observations in high-dimensional state spaces, consider sequential scalar updates. They're mathematically equivalent but can be 10x faster.
+
+### 48. Serialization Must Include All Runtime State
+
+When serializing an object for persistence, include ALL state that affects future behavior, not just the "obvious" fields.
+
+**Bug Pattern:**
+```python
+# BAD - Missing runtime state
+def to_dict(self):
+    return {
+        "estimate": self.estimate,
+        "variance": self.variance,
+        "sample_count": self.sample_count,
+        # _last_timestamp forgotten! Time-aware filtering breaks after restore
+    }
+```
+
+**Fix Pattern:**
+```python
+# GOOD - Include all state affecting future behavior
+def to_dict(self):
+    return {
+        "estimate": self.estimate,
+        "variance": self.variance,
+        "sample_count": self.sample_count,
+        "last_timestamp": self._last_timestamp,  # Required for time-aware dt!
+    }
+
+@classmethod
+def from_dict(cls, data):
+    instance = cls(...)
+    instance._last_timestamp = data.get("last_timestamp")  # Restore it!
+    return instance
+```
+
+**Checklist for serialization:**
+1. List all instance attributes (including private `_` prefixed)
+2. For each attribute, ask: "Does this affect future method calls?"
+3. If yes, include in serialization
+4. Test with: serialize → deserialize → use → verify identical behavior
+
+**Rule of Thumb**: If two objects should behave identically, their serialized forms must be identical. Test by comparing `original.method()` vs `restored.method()` results.
+
+### 49. Division Guards Need Tolerance, Not Exact Zero Checks
+
+When guarding against division by zero in numerical algorithms, use tolerance-based checks rather than exact equality to handle floating-point edge cases.
+
+**Bug Pattern:**
+```python
+# BAD - Exact zero check misses near-zero values
+if lower[j][j] == 0:
+    lower[i][j] = 0.0
+else:
+    lower[i][j] = (matrix[i][j] - sum_k) / lower[j][j]  # Division by 1e-15!
+```
+
+**Fix Pattern:**
+```python
+# GOOD - Tolerance-based check
+MIN_VARIANCE = 0.01  # Or appropriate tolerance
+
+if abs(lower[j][j]) < MIN_VARIANCE:
+    # Near-zero diagonal: treat as zero to avoid numerical instability
+    lower[i][j] = 0.0
+else:
+    lower[i][j] = (matrix[i][j] - sum_k) / lower[j][j]
+```
+
+**Why tolerance matters:**
+- Floating-point operations can produce very small but non-zero values
+- `1e-15` passes `== 0` check but causes numerical instability
+- Tolerance should be based on the problem domain (e.g., variance in dB² for RSSI)
+
+**Rule of Thumb**: Never use `== 0` for floating-point division guards. Use `abs(x) < tolerance` where tolerance is meaningful for your domain.
