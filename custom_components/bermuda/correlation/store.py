@@ -177,7 +177,7 @@ class CorrelationStore:
             for area_id, profile_data in areas.items():
                 try:
                     device_profiles[device_addr][area_id] = AreaProfile.from_dict(profile_data)
-                except (KeyError, TypeError, ValueError) as e:
+                except (KeyError, TypeError, ValueError, AttributeError) as e:
                     _LOGGER.warning(
                         "Skipping corrupt device profile for %s/%s: %s",
                         device_addr,
@@ -190,7 +190,7 @@ class CorrelationStore:
         for area_id, profile_data in data.get("rooms", {}).items():
             try:
                 room_profiles[area_id] = RoomProfile.from_dict(profile_data)
-            except (KeyError, TypeError, ValueError) as e:
+            except (KeyError, TypeError, ValueError, AttributeError) as e:
                 _LOGGER.warning(
                     "Skipping corrupt room profile for %s: %s",
                     area_id,
