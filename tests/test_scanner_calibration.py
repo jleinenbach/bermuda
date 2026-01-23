@@ -7,6 +7,7 @@ import pytest
 from custom_components.bermuda.filters import (
     CALIBRATION_MIN_PAIRS,
     CALIBRATION_MIN_SAMPLES,
+    CALIBRATION_SCANNER_TIMEOUT,
 )
 from custom_components.bermuda.scanner_calibration import (
     ScannerCalibrationManager,
@@ -481,3 +482,167 @@ class TestEdgeCases:
 
         assert offsets.get("aa:aa:aa:aa:aa:aa") == 0
         assert offsets.get("bb:bb:bb:bb:bb:bb") == 0
+
+
+class TestKalmanTimestampIntegration:
+    """Test Kalman filter timestamp integration for scanner calibration."""
+
+    def test_kalman_receives_timestamp(self):
+        """Verify Kalman filter receives timestamp for dt calculation."""
+        manager = ScannerCalibrationManager()
+        ts1 = 1000.0
+        ts2 = 1005.0  # 5 seconds later
+
+        manager.update_cross_visibility(
+            receiver_addr="aa:aa:aa:aa:aa:aa",
+            sender_addr="bb:bb:bb:bb:bb:bb",
+            rssi_raw=-60.0,
+            timestamp=ts1,
+        )
+        manager.update_cross_visibility(
+            receiver_addr="aa:aa:aa:aa:aa:aa",
+            sender_addr="bb:bb:bb:bb:bb:bb",
+            rssi_raw=-62.0,
+            timestamp=ts2,
+        )
+
+        # Get the pair and verify Kalman filter has the timestamp
+        pair = manager.scanner_pairs[("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb")]
+        # The Kalman filter should have stored the last timestamp internally
+        assert pair.kalman_ab._last_timestamp == ts2
+        # Pair should also track last update time
+        assert pair.last_update_ab == ts2
+
+    def test_pair_tracks_update_timestamps(self):
+        """Verify ScannerPairData tracks timestamps for both directions."""
+        manager = ScannerCalibrationManager()
+        ts1 = 1000.0
+        ts2 = 1010.0
+
+        # A sees B
+        manager.update_cross_visibility("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb", -55.0, timestamp=ts1)
+        # B sees A
+        manager.update_cross_visibility("bb:bb:bb:bb:bb:bb", "aa:aa:aa:aa:aa:aa", -65.0, timestamp=ts2)
+
+        pair = manager.scanner_pairs[("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb")]
+        assert pair.last_update_ab == ts1  # A sees B
+        assert pair.last_update_ba == ts2  # B sees A
+
+
+class TestScannerOnlineDetection:
+    """Test scanner online/offline detection for calibration."""
+
+    def test_scanner_online_within_timeout(self):
+        """Verify scanner is considered online within timeout."""
+        manager = ScannerCalibrationManager()
+        nowstamp = 1000.0
+
+        # Update with timestamp
+        manager.update_cross_visibility("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb", -55.0, timestamp=nowstamp)
+
+        # Check immediately - should be online
+        assert manager._is_scanner_online("aa:aa:aa:aa:aa:aa", nowstamp)
+        assert manager._is_scanner_online("bb:bb:bb:bb:bb:bb", nowstamp)
+
+        # Check just before timeout - should still be online
+        check_time = nowstamp + CALIBRATION_SCANNER_TIMEOUT - 1
+        assert manager._is_scanner_online("aa:aa:aa:aa:aa:aa", check_time)
+
+    def test_scanner_offline_after_timeout(self):
+        """Verify scanner is considered offline after timeout."""
+        manager = ScannerCalibrationManager()
+        nowstamp = 1000.0
+
+        # Update with timestamp
+        manager.update_cross_visibility("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb", -55.0, timestamp=nowstamp)
+
+        # Check after timeout - should be offline
+        check_time = nowstamp + CALIBRATION_SCANNER_TIMEOUT + 1
+        assert not manager._is_scanner_online("aa:aa:aa:aa:aa:aa", check_time)
+        assert not manager._is_scanner_online("bb:bb:bb:bb:bb:bb", check_time)
+
+    def test_unknown_scanner_is_offline(self):
+        """Verify unknown scanner is considered offline."""
+        manager = ScannerCalibrationManager()
+        assert not manager._is_scanner_online("unknown:scanner", 1000.0)
+
+    def test_offline_scanner_excluded_from_offset(self):
+        """Verify offline scanners don't contribute to offset calculation."""
+        manager = ScannerCalibrationManager()
+        nowstamp = 1000.0
+
+        # Build calibration data
+        for i in range(CALIBRATION_MIN_SAMPLES):
+            manager.update_cross_visibility("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb", -55.0, timestamp=nowstamp + i)
+            manager.update_cross_visibility("bb:bb:bb:bb:bb:bb", "aa:aa:aa:aa:aa:aa", -65.0, timestamp=nowstamp + i)
+
+        # Current time just after last update - both scanners online
+        check_time = nowstamp + CALIBRATION_MIN_SAMPLES
+
+        # Verify offsets are calculated when online
+        offsets = manager.calculate_suggested_offsets(nowstamp=check_time)
+        assert "aa:aa:aa:aa:aa:aa" in offsets
+        assert "bb:bb:bb:bb:bb:bb" in offsets
+
+        # Simulate time passing beyond timeout (scanner A goes offline)
+        offline_check_time = nowstamp + CALIBRATION_MIN_SAMPLES + CALIBRATION_SCANNER_TIMEOUT + 100
+
+        # Clear existing offsets to force recalculation
+        manager.suggested_offsets.clear()
+
+        # Recalculate at offline time - pair should be skipped due to offline scanner
+        offsets = manager.calculate_suggested_offsets(nowstamp=offline_check_time)
+        # Neither scanner should get an offset since the pair is skipped
+        assert "aa:aa:aa:aa:aa:aa" not in offsets
+        assert "bb:bb:bb:bb:bb:bb" not in offsets
+
+    def test_scanner_comes_back_online(self):
+        """Verify scanner is included again after coming back online."""
+        manager = ScannerCalibrationManager()
+        nowstamp = 1000.0
+
+        # Initial calibration
+        for i in range(CALIBRATION_MIN_SAMPLES):
+            manager.update_cross_visibility("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb", -55.0, timestamp=nowstamp + i)
+            manager.update_cross_visibility("bb:bb:bb:bb:bb:bb", "aa:aa:aa:aa:aa:aa", -65.0, timestamp=nowstamp + i)
+
+        # Simulate scanner going offline
+        offline_time = nowstamp + CALIBRATION_SCANNER_TIMEOUT + 100
+        manager.scanner_last_seen["aa:aa:aa:aa:aa:aa"] = nowstamp  # Old timestamp
+        assert not manager._is_scanner_online("aa:aa:aa:aa:aa:aa", offline_time)
+
+        # Scanner comes back online
+        comeback_time = offline_time + 10
+        manager.update_cross_visibility("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb", -56.0, timestamp=comeback_time)
+        assert manager._is_scanner_online("aa:aa:aa:aa:aa:aa", comeback_time)
+
+    def test_get_scanner_pair_info_includes_online_status(self):
+        """Verify diagnostic info includes online status."""
+        manager = ScannerCalibrationManager()
+        nowstamp = 1000.0
+
+        manager.update_cross_visibility("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb", -55.0, timestamp=nowstamp)
+
+        # Pass nowstamp to ensure scanners appear online (they were just seen)
+        info = manager.get_scanner_pair_info(nowstamp=nowstamp)
+        assert len(info) == 1
+
+        pair_info = info[0]
+        assert "scanner_a_online" in pair_info
+        assert "scanner_b_online" in pair_info
+        assert "last_update_ab" in pair_info
+        assert "last_update_ba" in pair_info
+        assert pair_info["scanner_a_online"] is True
+        assert pair_info["scanner_b_online"] is True
+        assert pair_info["last_update_ab"] == nowstamp
+
+    def test_clear_also_clears_scanner_last_seen(self):
+        """Verify clear() also clears scanner_last_seen tracking."""
+        manager = ScannerCalibrationManager()
+        manager.update_cross_visibility("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb", -55.0, timestamp=1000.0)
+
+        assert len(manager.scanner_last_seen) > 0
+
+        manager.clear()
+
+        assert len(manager.scanner_last_seen) == 0
