@@ -42,8 +42,33 @@ class BermudaIrkManager:
         self._macs: dict[str, ResolvableMAC] = {}
         self._irk_callbacks: dict[bytes, list[BluetoothCallback]] = {}
 
+    # Expected length for a valid IRK (Identity Resolving Key)
+    IRK_LENGTH_BYTES: int = 16
+
     def add_irk(self, irk: bytes) -> list[str]:
-        """Adds an IRK to the internal list. Returns matching MACs, if any."""
+        """
+        Add an IRK to the internal list. Returns matching MACs, if any.
+
+        Args:
+            irk: The Identity Resolving Key as bytes. Must be exactly 16 bytes (128 bits).
+
+        Returns:
+            List of MAC addresses that match this IRK.
+
+        Raises:
+            ValueError: If the IRK is not exactly 16 bytes.
+
+        """
+        # Validate IRK length - must be exactly 16 bytes (128 bits)
+        if len(irk) != self.IRK_LENGTH_BYTES:
+            msg = (
+                f"Invalid IRK length: expected {self.IRK_LENGTH_BYTES} bytes, "
+                f"got {len(irk)} bytes (hex: {irk.hex()}). "
+                "This indicates a bug in IRK extraction - please report this issue."
+            )
+            _LOGGER.error(msg)
+            raise ValueError(msg)
+
         macs = []
         if irk not in self._irks:
             # Save new irk and cipher
@@ -59,7 +84,12 @@ class BermudaIrkManager:
                 )
             )
 
-            _LOGGER.debug("New IRK %s... matches %d of %d existing MACs", irk.hex()[:4], len(macs), len(self._macs))
+            _LOGGER.debug(
+                "New IRK added (full hex: %s) matches %d of %d existing MACs",
+                irk.hex(),
+                len(macs),
+                len(self._macs),
+            )
         return macs
 
     def known_macs(self, resolved=True) -> dict[str, ResolvableMAC]:
@@ -101,15 +131,27 @@ class BermudaIrkManager:
         return self._validate_mac(address)
 
     def add_macirk(self, address: str, irk: bytes) -> bytes:
-        """Insert a new IRK and MAC that have already been validated."""
-        self.add_irk(irk)
+        """
+        Insert a new IRK and MAC that have already been validated.
+
+        Args:
+            address: The MAC address to associate with the IRK.
+            irk: The Identity Resolving Key as bytes (must be 16 bytes).
+
+        Returns:
+            The IRK if resolution succeeded, or an IrkType value if not.
+
+        """
+        self.add_irk(irk)  # Will raise ValueError if IRK is invalid
         result = self.check_mac(address)
         if result in IrkTypes.unresolved():
             _LOGGER.warning(
-                "New Mac and IRK (%s, %s....) from add_macirk do not resolve, result %s",
+                "add_macirk: MAC %s and IRK (full hex: %s, length: %d bytes) do not resolve. "
+                "Result: %s. This may indicate an IRK mismatch or timing issue.",
                 address,
-                irk[:4].hex(),
-                result.hex()[:4],
+                irk.hex(),
+                len(irk),
+                result.hex(),
             )
         return result
 
