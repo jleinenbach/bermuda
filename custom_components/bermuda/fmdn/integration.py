@@ -56,8 +56,10 @@ class FmdnIntegration:
         """Initialize the FMDN integration."""
         self.coordinator = coordinator
         self.manager = BermudaFmdnManager()
-        # Cache for O(1) lookup of metadevice by fmdn_device_id
+        # Cache for O(1) lookup of metadevice by fmdn_device_id (HA Device Registry ID)
         self._fmdn_device_id_cache: dict[str, str] = {}
+        # Cache for O(1) lookup of metadevice by canonical_id (GoogleFindMy API ID)
+        self._fmdn_canonical_id_cache: dict[str, str] = {}
         # Lock to prevent race conditions during metadevice registration
         self._registration_lock = threading.Lock()
 
@@ -79,42 +81,55 @@ class FmdnIntegration:
 
     def format_metadevice_address(
         self,
-        device_id: str,
-        canonical_id: str | None,  # pylint: disable=unused-argument
+        device_id: str | None,
+        canonical_id: str | None,
     ) -> str:
         """
         Return the canonical key for an FMDN metadevice.
 
-        Always uses device_id (HA Device Registry ID) for stable addresses across restarts.
-        Previously, using canonical_id caused duplicate entities because:
-        1. _register_fmdn_source() gets canonical_id from EID resolver
-        2. discover_fmdn_metadevices() extracts it from Device Registry identifiers
-        3. These can have different formats depending on GoogleFindMy version/config
-        4. Whichever function runs first determines the address
-        5. After reboot, execution order can change → different address → different
-           unique_id → persisted entities with old unique_id + new entities = duplicates
+        Uses canonical_id (from GoogleFindMy API) as primary identifier because:
+        1. It's the native UUID from the external API (e.g., '68e69eca-0000-...')
+        2. It's always available when the API returns data
+        3. It's stable and independent of Home Assistant's internal state
 
-        The device_id (HA Device Registry ID) is stable and unique per device entry,
-        making the metadevice address deterministic regardless of execution order.
+        Falls back to device_id (HA Device Registry ID) only if canonical_id
+        is not available, which should be rare.
 
         Args:
-            device_id: HA Device Registry ID (always used for address generation)
-            canonical_id: Kept for API compatibility and future diagnostics (not used)
+            device_id: HA Device Registry ID (fallback only)
+            canonical_id: Native ID from GoogleFindMy API (primary)
 
         """
-        return normalize_identifier(f"fmdn:{device_id}")
+        # Prefer canonical_id - the stable identifier from the GoogleFindMy API
+        if canonical_id:
+            return normalize_identifier(f"fmdn:{canonical_id}")
+        # Fallback to device_id only if canonical_id is missing
+        if device_id:
+            _LOGGER.debug("Using device_id fallback for FMDN address (canonical_id unavailable)")
+            return normalize_identifier(f"fmdn:{device_id}")
+        # Should never happen, but handle gracefully
+        _LOGGER.warning("FMDN metadevice has neither canonical_id nor device_id")
+        return normalize_identifier("fmdn:unknown")
 
-    def _get_cached_metadevice(self, fmdn_device_id: str) -> BermudaDevice | None:
+    def _get_cached_metadevice(
+        self, fmdn_device_id: str | None = None, canonical_id: str | None = None
+    ) -> BermudaDevice | None:
         """
-        Look up a metadevice by fmdn_device_id using the O(1) cache.
+        Look up a metadevice by fmdn_device_id or canonical_id using O(1) cache.
 
+        Tries canonical_id first (primary identifier), then device_id (fallback).
         Returns the metadevice if found, None otherwise.
         """
-        if not fmdn_device_id:
-            return None
+        # Try canonical_id cache first (primary identifier)
+        if canonical_id and canonical_id in self._fmdn_canonical_id_cache:
+            cached_address = self._fmdn_canonical_id_cache[canonical_id]
+            if cached_address in self.coordinator.metadevices:
+                return self.coordinator.metadevices[cached_address]
+            # Cache entry is stale, remove it
+            del self._fmdn_canonical_id_cache[canonical_id]
 
-        # Check cache first (O(1) lookup)
-        if fmdn_device_id in self._fmdn_device_id_cache:
+        # Try device_id cache as fallback
+        if fmdn_device_id and fmdn_device_id in self._fmdn_device_id_cache:
             cached_address = self._fmdn_device_id_cache[fmdn_device_id]
             if cached_address in self.coordinator.metadevices:
                 return self.coordinator.metadevices[cached_address]
@@ -123,10 +138,17 @@ class FmdnIntegration:
 
         return None
 
-    def _update_cache(self, fmdn_device_id: str, metadevice_address: str) -> None:
-        """Update the fmdn_device_id → metadevice_address cache."""
+    def _update_cache(
+        self,
+        metadevice_address: str,
+        fmdn_device_id: str | None = None,
+        canonical_id: str | None = None,
+    ) -> None:
+        """Update the caches for metadevice lookup."""
         if fmdn_device_id:
             self._fmdn_device_id_cache[fmdn_device_id] = metadevice_address
+        if canonical_id:
+            self._fmdn_canonical_id_cache[canonical_id] = metadevice_address
 
     @staticmethod
     def normalize_eid_bytes(eid_data: bytes | bytearray | memoryview | str | None) -> bytes | None:
@@ -300,19 +322,21 @@ class FmdnIntegration:
         are processed concurrently, and a cache for O(1) metadevice lookup.
         """
         fmdn_device_id = getattr(match, "device_id", None)
+        canonical_id = getattr(match, "canonical_id", None)
 
         # Use lock to prevent race conditions during metadevice creation
         with self._registration_lock:
-            # IMPORTANT: Before creating a new metadevice, check if one already exists
-            # for this fmdn_device_id. Uses O(1) cache lookup instead of O(n) iteration.
-            existing_metadevice = self._get_cached_metadevice(fmdn_device_id) if fmdn_device_id else None
+            # IMPORTANT: Before creating a new metadevice, check if one already exists.
+            # Uses O(1) cache lookup with both canonical_id and device_id.
+            existing_metadevice = self._get_cached_metadevice(fmdn_device_id=fmdn_device_id, canonical_id=canonical_id)
 
             if existing_metadevice is not None:
                 metadevice = existing_metadevice
                 _LOGGER.debug(
-                    "Found cached FMDN metadevice %s for device_id %s",
+                    "Found cached FMDN metadevice %s for device_id %s / canonical_id %s",
                     existing_metadevice.address,
                     fmdn_device_id,
+                    canonical_id,
                 )
             else:
                 # pylint: disable-next=protected-access
@@ -321,9 +345,8 @@ class FmdnIntegration:
             metadevice.metadevice_type.add(METADEVICE_FMDN_DEVICE)
             metadevice.address_type = ADDR_TYPE_FMDN_DEVICE
             metadevice.fmdn_device_id = fmdn_device_id
-            # Update fmdn_canonical_id from the resolver if not already set
-            canonical_id = getattr(match, "canonical_id", None)
-            if canonical_id and (metadevice.fmdn_canonical_id is None):
+            # Update fmdn_canonical_id from the resolver
+            if canonical_id:
                 metadevice.fmdn_canonical_id = canonical_id
             # Since the googlefindmy integration discovered this device, we always
             # create sensors for them (like Private BLE Devices).
@@ -332,9 +355,12 @@ class FmdnIntegration:
             if metadevice.address not in self.coordinator.metadevices:
                 self.coordinator.metadevices[metadevice.address] = metadevice
 
-            # Update cache for future O(1) lookups
-            if fmdn_device_id:
-                self._update_cache(fmdn_device_id, metadevice.address)
+            # Update cache for future O(1) lookups (both device_id and canonical_id)
+            self._update_cache(
+                metadevice_address=metadevice.address,
+                fmdn_device_id=fmdn_device_id,
+                canonical_id=canonical_id,
+            )
 
         # These operations don't need the lock
         if metadevice.fmdn_device_id and (device_entry := self.coordinator.dr.async_get(metadevice.fmdn_device_id)):
@@ -422,30 +448,30 @@ class FmdnIntegration:
         """
         Extract the canonical device identifier from googlefindmy's identifiers.
 
-        Per docs/google_find_my_support.md, the EID resolver returns canonical_id
-        in the format "{entry_id}:{device_id}" (with one colon separator).
-        The googlefindmy integration uses multiple identifier formats:
+        GoogleFindMy-HA uses multiple identifier formats in the device registry:
         - (DOMAIN, "entry_id:subentry_id:device_id") - full format (2 colons)
         - (DOMAIN, "entry_id:device_id") - canonical format (1 colon)
         - (DOMAIN, "device_id") - simplest format (0 colons)
 
-        Returns the identifier matching the resolver's format, or None.
+        The EID resolver normalizes canonical_id to UUID-only by splitting on ":"
+        and taking the LAST segment. We must do the same to ensure consistency
+        between devices discovered via entity enumeration and EID resolution.
+
+        Returns the UUID-only device identifier, or None.
         """
-        canonical_id: str | None = None
         for identifier in fmdn_device.identifiers:
             if len(identifier) != 2 or identifier[0] != DOMAIN_GOOGLEFINDMY:
                 continue
             # Found a googlefindmy identifier
             id_value: str = str(identifier[1])
-            colon_count = id_value.count(":")
-            # Prefer the "entry_id:device_id" format (1 colon) as it matches
-            # what the EID resolver returns for canonical_id
-            if colon_count == 1:
-                return id_value
-            # Keep track of the simplest identifier as fallback
-            if colon_count == 0 and canonical_id is None:
-                canonical_id = id_value
-        return canonical_id
+            # Extract UUID-only portion (last segment after colons)
+            # This matches what GoogleFindMy-HA's EID resolver does:
+            # clean_canonical_id = identity.canonical_id.split(":")[-1]
+            if ":" in id_value:
+                return id_value.split(":")[-1]
+            # Already UUID-only format
+            return id_value
+        return None
 
     def _process_fmdn_entity(self, fmdn_entity: Any) -> None:
         """Process a single FMDN entity and create/update its metadevice."""
@@ -466,12 +492,17 @@ class FmdnIntegration:
         # Extract canonical_id, falling back to entity unique_id
         canonical_id = self._extract_canonical_id(fmdn_device) or fmdn_entity.unique_id
 
-        # Check if metadevice already exists (O(1) cache lookup)
-        existing_metadevice = self._get_cached_metadevice(fmdn_device.id)
+        # Check if metadevice already exists (O(1) cache lookup with both IDs)
+        existing_metadevice = self._get_cached_metadevice(fmdn_device_id=fmdn_device.id, canonical_id=canonical_id)
 
         if existing_metadevice is not None:
             metadevice = existing_metadevice
-            _LOGGER.debug("Found cached FMDN metadevice %s for device_id %s", metadevice.address, fmdn_device.id)
+            _LOGGER.debug(
+                "Found cached FMDN metadevice %s for device_id %s / canonical_id %s",
+                metadevice.address,
+                fmdn_device.id,
+                canonical_id,
+            )
         else:
             metadevice_address = self.format_metadevice_address(fmdn_device.id, canonical_id)
             # pylint: disable-next=protected-access
@@ -482,7 +513,7 @@ class FmdnIntegration:
         metadevice.metadevice_type.add(METADEVICE_FMDN_DEVICE)
         metadevice.address_type = ADDR_TYPE_FMDN_DEVICE
         metadevice.fmdn_device_id = fmdn_device.id
-        if metadevice.fmdn_canonical_id is None or canonical_id is not None:
+        if canonical_id:
             metadevice.fmdn_canonical_id = canonical_id
 
         # Set name from device registry
@@ -490,10 +521,14 @@ class FmdnIntegration:
         metadevice.name_devreg = fmdn_device.name
         metadevice.make_name()
 
-        # Register metadevice and update cache
+        # Register metadevice and update cache (both device_id and canonical_id)
         if metadevice.address not in self.coordinator.metadevices:
             self.coordinator.metadevices[metadevice.address] = metadevice
-        self._update_cache(fmdn_device.id, metadevice.address)
+        self._update_cache(
+            metadevice_address=metadevice.address,
+            fmdn_device_id=fmdn_device.id,
+            canonical_id=canonical_id,
+        )
 
         _LOGGER.debug("Registered FMDN metadevice %s for %s", metadevice.address, fmdn_device.name)
 

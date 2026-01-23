@@ -351,6 +351,198 @@ Day 60:  Button=-85dB, Auto=-84.5dB → Fusion=-84.85dB (Stabilized)
 - `coordinator.py:2252`: `profile.update(...)` - Auto-learning after room selection
 - `scanner_absolute.py:134-179`: `expected_rssi` property - Clamped fusion logic
 
+## FMDN / GoogleFindMy-HA Integration Architecture
+
+### Overview
+
+FMDN (Find My Device Network) support enables Bermuda to track Google Find My devices (Android phones, Pixel Buds, third-party trackers like Motorola Moto Tag, Pebblebee, Chipolo). This requires the [GoogleFindMy-HA](https://github.com/jleinenbach/GoogleFindMy-HA) integration to be installed.
+
+**Key Principle:** Bermuda entities appear in the SAME Home Assistant device as GoogleFindMy entities (device congealment), providing a unified view of location data.
+
+### Data Flow Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                    FMDN Device Discovery & Registration                          │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  PATH A: Entity Discovery (at startup/reload)                                    │
+│  ┌────────────────────────────────────────────────────────────────────────────┐ │
+│  │ discover_metadevices()                                                      │ │
+│  │     │                                                                       │ │
+│  │     ▼                                                                       │ │
+│  │ For each googlefindmy device_tracker entity:                                │ │
+│  │     │                                                                       │ │
+│  │     ├─► fmdn_device = dr.async_get(entity.device_id)                       │ │
+│  │     │   └─► HA Device Registry ID (e.g., "920aa0336e9c...")                │ │
+│  │     │                                                                       │ │
+│  │     ├─► canonical_id = _extract_canonical_id(fmdn_device)                  │ │
+│  │     │   └─► UUID-only from identifiers (e.g., "68419b51-0000-...")         │ │
+│  │     │       Uses: identifier.split(":")[-1] to match EID resolver format   │ │
+│  │     │                                                                       │ │
+│  │     └─► metadevice_address = format_metadevice_address(device_id, canonical)│ │
+│  │         └─► "fmdn:68419b51-0000-..." (uses canonical_id as PRIMARY)        │ │
+│  └────────────────────────────────────────────────────────────────────────────┘ │
+│                                                                                  │
+│  PATH B: EID Resolution (when BLE advertisement received)                        │
+│  ┌────────────────────────────────────────────────────────────────────────────┐ │
+│  │ handle_advertisement()                                                      │ │
+│  │     │                                                                       │ │
+│  │     ▼                                                                       │ │
+│  │ extract_eids(service_data) → EID bytes (20-22 bytes)                       │ │
+│  │     │                                                                       │ │
+│  │     ▼                                                                       │ │
+│  │ resolver.resolve_eid(eid_bytes) → EIDMatch                                 │ │
+│  │     │                                                                       │ │
+│  │     ├─► match.device_id = HA Device Registry ID                            │ │
+│  │     │   (GoogleFindMy-HA stores as work_item.registry_id)                  │ │
+│  │     │                                                                       │ │
+│  │     └─► match.canonical_id = UUID-only                                     │ │
+│  │         (GoogleFindMy-HA uses: canonical_id.split(":")[-1])                │ │
+│  │                                                                             │ │
+│  │     ▼                                                                       │ │
+│  │ metadevice_address = format_metadevice_address(device_id, canonical_id)    │ │
+│  │     └─► "fmdn:68419b51-0000-..." (SAME address as Path A!)                 │ │
+│  └────────────────────────────────────────────────────────────────────────────┘ │
+│                                                                                  │
+│  CRITICAL: Both paths MUST produce IDENTICAL metadevice addresses!              │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Device Congealment (Unified Device View)
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                    Device Congealment Mechanism                                  │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  GoogleFindMy-HA registers device with identifiers:                              │
+│  ┌────────────────────────────────────────────────────────────────────────────┐ │
+│  │ DeviceInfo(                                                                 │ │
+│  │     identifiers={                                                           │ │
+│  │         ("googlefindmy", "entry123:subentry:68419b51-0000-2131-873b-..."), │ │
+│  │         ("googlefindmy", "entry123:68419b51-0000-2131-873b-..."),          │ │
+│  │     }                                                                       │ │
+│  │ )                                                                           │ │
+│  └────────────────────────────────────────────────────────────────────────────┘ │
+│                                                                                  │
+│  Bermuda entity.py device_info property:                                         │
+│  ┌────────────────────────────────────────────────────────────────────────────┐ │
+│  │ if self._device.fmdn_device_id:                                            │ │
+│  │     fmdn_device_entry = dr.async_get(self._device.fmdn_device_id)          │ │
+│  │     return DeviceInfo(                                                      │ │
+│  │         identifiers=fmdn_device_entry.identifiers,  # ← COPIES identifiers │ │
+│  │         name=self._device.name,                                            │ │
+│  │     )                                                                       │ │
+│  └────────────────────────────────────────────────────────────────────────────┘ │
+│                                                                                  │
+│  Result: Home Assistant sees SAME identifiers → merges into ONE device          │
+│                                                                                  │
+│  ┌─────────────────────────────────────────┐                                    │
+│  │ moto tag                                │                                    │
+│  │ von Motorola                            │                                    │
+│  │ Seriennummer: 68419b51-0000-...         │                                    │
+│  ├─────────────────────────────────────────┤                                    │
+│  │ 🔍 Google Find My Device            →  │  ← GoogleFindMy entities           │
+│  │ 📍 Bermuda BLE Trilateration        →  │  ← Bermuda entities                │
+│  └─────────────────────────────────────────┘                                    │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Key Identifiers Explained
+
+| Identifier | Source | Format | Example | Purpose |
+|------------|--------|--------|---------|---------|
+| `canonical_id` | GoogleFindMy API | UUID-only | `68419b51-0000-2131-873b-fc411691d329` | Primary metadevice key |
+| `device_id` (EIDMatch) | HA Device Registry | Hash | `920aa0336e9c8bcf58b6dada3a9c68cb` | Links to HA device entry |
+| `fmdn_device_id` | Bermuda metadevice | Hash | `920aa0336e9c8bcf58b6dada3a9c68cb` | Stored for congealment |
+| `metadevice.address` | Bermuda | Prefixed | `fmdn:68419b51-0000-2131-873b-fc411691d329` | Internal device key |
+
+### Critical Implementation Rules
+
+**1. canonical_id Extraction MUST Use UUID-Only Format:**
+```python
+# GoogleFindMy-HA eid_resolver.py does this:
+clean_canonical_id = identity.canonical_id
+if ":" in clean_canonical_id:
+    clean_canonical_id = clean_canonical_id.split(":")[-1]  # UUID-only!
+
+# Bermuda _extract_canonical_id() MUST match:
+if ":" in id_value:
+    return id_value.split(":")[-1]  # Same logic!
+```
+
+**2. format_metadevice_address() Priority:**
+```python
+def format_metadevice_address(device_id, canonical_id):
+    # ALWAYS prefer canonical_id (stable across restarts)
+    if canonical_id:
+        return normalize_identifier(f"fmdn:{canonical_id}")
+    # Fallback to device_id only if canonical_id unavailable
+    if device_id:
+        return normalize_identifier(f"fmdn:{device_id}")
+```
+
+**3. fmdn_device_id MUST Be Set for Congealment:**
+```python
+metadevice.fmdn_device_id = match.device_id  # HA Registry ID
+# This is used in entity.py to look up GoogleFindMy's identifiers
+```
+
+### GoogleFindMy-HA API Contract (v1.7.0+)
+
+**EIDMatch NamedTuple (from eid_resolver.py):**
+```python
+class EIDMatch(NamedTuple):
+    device_id: str        # HA Device Registry ID (NOT Google ID!)
+    config_entry_id: str  # HA config entry ID
+    canonical_id: str     # UUID-only Google device ID
+    time_offset: int      # EID window offset in seconds
+    is_reversed: bool     # Whether EID bytes are reversed
+```
+
+**Device Registry Identifiers (from entity.py):**
+```python
+identifiers = {
+    (DOMAIN, f"{entry_id}:{subentry_id}:{device_id}"),  # Full format
+    (DOMAIN, f"{entry_id}:{device_id}"),                 # Canonical format
+}
+# Where device_id is the Google UUID (e.g., "68419b51-0000-...")
+```
+
+### Troubleshooting
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| Entities "Nicht verfügbar" | Coordinator crash (KeyError in prune) | Check for duplicate addresses in prune_list |
+| Duplicate devices | canonical_id format mismatch | Ensure UUID-only extraction (split on ":") |
+| No auto-discovery | Missing EID resolver | Verify GoogleFindMy-HA is installed and configured |
+| Entities not congealed | fmdn_device_id not set | Check register_source() sets device_id from match |
+
+### Files & Key Methods
+
+| File | Method | Purpose |
+|------|--------|---------|
+| `fmdn/integration.py` | `format_metadevice_address()` | Generate consistent metadevice keys |
+| `fmdn/integration.py` | `_extract_canonical_id()` | Extract UUID-only from device registry |
+| `fmdn/integration.py` | `register_source()` | Link rotating MAC to metadevice |
+| `fmdn/integration.py` | `_process_fmdn_entity()` | Process devices at startup |
+| `fmdn/integration.py` | `discover_metadevices()` | Enumerate all GoogleFindMy devices |
+| `entity.py` | `device_info` property | Enable device congealment |
+| `fmdn/manager.py` | `BermudaFmdnManager` | EID cache and statistics |
+
+### Lesson Learned: ID Format Consistency
+
+**BUG (Fixed 2026-01-23):** `_extract_canonical_id()` returned `entry_id:uuid` format, but
+EID resolver returned `uuid`-only. This caused:
+- Entity discovery: `fmdn:entry123:68419b51-...`
+- EID resolution: `fmdn:68419b51-...`
+- Result: Two separate metadevices for the same physical device!
+
+**FIX:** Both paths now use `canonical_id.split(":")[-1]` to extract UUID-only format.
+
 ## Testing Standards
 
 ### Running Tests
