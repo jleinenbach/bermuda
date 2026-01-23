@@ -181,6 +181,26 @@ class MetadeviceManager:
                         # the actual IRK, so handle either case by splitting it:
                         _irk = pb_entity.unique_id.split("_")[0]
 
+                        # Validate IRK format - must be exactly 32 hex characters (16 bytes)
+                        if len(_irk) != 32 or not all(c in "0123456789abcdefABCDEF" for c in _irk):
+                            _LOGGER.error(
+                                "Invalid IRK extracted from Private BLE Device %s: "
+                                "expected 32 hex characters, got '%s' (length: %d) from unique_id '%s'. "
+                                "This may indicate a change in Private BLE Device integration format.",
+                                pb_entity.entity_id,
+                                _irk,
+                                len(_irk),
+                                pb_entity.unique_id,
+                            )
+                            continue  # Skip this invalid device
+
+                        _LOGGER.debug(
+                            "Extracted valid IRK from Private BLE Device %s: %s (from unique_id: %s)",
+                            pb_entity.entity_id,
+                            _irk,
+                            pb_entity.unique_id,
+                        )
+
                         # Create our Meta-Device and tag it up...
                         metadevice = self._get_or_create_device(_irk)
                         # Since user has already configured the Private BLE Device, we
