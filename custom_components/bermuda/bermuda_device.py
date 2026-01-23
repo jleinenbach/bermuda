@@ -45,6 +45,7 @@ from .const import (
     BDADDR_TYPE_RANDOM_RESOLVABLE,
     BDADDR_TYPE_RANDOM_STATIC,
     BDADDR_TYPE_RANDOM_UNRESOLVABLE,
+    BDADDR_TYPE_RESERVED,
     BDADDR_TYPE_UNKNOWN,
     CONF_DEVICES,
     CONF_DEVTRACK_TIMEOUT,
@@ -78,7 +79,7 @@ if TYPE_CHECKING:
     from .coordinator import BermudaDataUpdateCoordinator
 
 
-class BermudaDevice(dict):
+class BermudaDevice:
     """
     This class is to represent a single bluetooth "device" tracked by Bermuda.
 
@@ -155,7 +156,7 @@ class BermudaDevice(dict):
         self._is_scanner: bool = False
         self._is_remote_scanner: bool | None = None
         self.stamps: dict[str, float] = {}
-        self.metadevice_type: set = set()
+        self.metadevice_type: set[str] = set()
         self.metadevice_sources: list[str] = []  # list of MAC addresses that have/should match this beacon
         self.beacon_unique_id: str | None = None  # combined uuid_major_minor for *really* unique id
         self.beacon_uuid: str | None = None
@@ -251,11 +252,18 @@ class BermudaDevice(dict):
                     # If we've been given a private BLE address, then the integration must be up.
                     # register to get callbacks for address changes.
                     _irk_bytes = binascii.unhexlify(self.address)
-                    _pble_coord = pble_coordinator.async_get_coordinator(self._coordinator.hass)
-                    self._coordinator.config_entry.async_on_unload(
-                        _pble_coord.async_track_service_info(self.async_handle_pble_callback, _irk_bytes)
-                    )
-                    _LOGGER.debug("Private BLE Callback registered for %s, %s", self.name, self.address)
+                    try:
+                        _pble_coord = pble_coordinator.async_get_coordinator(self._coordinator.hass)
+                        self._coordinator.config_entry.async_on_unload(
+                            _pble_coord.async_track_service_info(self.async_handle_pble_callback, _irk_bytes)
+                        )
+                        _LOGGER.debug("Private BLE Callback registered for %s, %s", self.name, self.address)
+                    except (KeyError, AttributeError) as ex:
+                        _LOGGER.debug(
+                            "Private BLE Device integration not available for %s: %s",
+                            self.name,
+                            ex,
+                        )
                     #
                     # Also register a callback with our own, which can fake the PBLE callbacks.
                     self._coordinator.config_entry.async_on_unload(
@@ -269,16 +277,18 @@ class BermudaDevice(dict):
             elif len(self.address) == 17:
                 top_bits = int(self.address[0:1], 16) >> 2
                 # The two MSBs of the first octet dictate the random type...
-                if top_bits & 0b00:  # First char will be in [0 1 2 3]
+                # BUG FIX: Use == instead of & for correct bitwise comparison
+                # & 0b00 is ALWAYS false, & 0b01 matches both 0b01 and 0b11, etc.
+                if top_bits == 0b00:  # First char will be in [0 1 2 3]
                     self.address_type = BDADDR_TYPE_RANDOM_UNRESOLVABLE
-                elif top_bits & 0b01:  # Addresses where the first char will be 4,5,6 or 7
+                elif top_bits == 0b01:  # Addresses where the first char will be 4,5,6 or 7
                     _LOGGER.debug("Identified Resolvable Private (potential IRK source) Address on %s", self.address)
                     self.address_type = BDADDR_TYPE_RANDOM_RESOLVABLE
                     self._coordinator.irk_manager.check_mac(self.address)
-                elif top_bits & 0b10:
-                    self.address_type = "reserved"
+                elif top_bits == 0b10:
+                    self.address_type = BDADDR_TYPE_RESERVED
                     _LOGGER.debug("Hey, got one of those reserved MACs, %s", self.address)
-                elif top_bits & 0b11:
+                elif top_bits == 0b11:
                     self.address_type = BDADDR_TYPE_RANDOM_STATIC
 
             else:
@@ -426,7 +436,7 @@ class BermudaDevice(dict):
             # two bt's and shelly/esphome, the second bt being the alternate
             # MAC address.
             _LOGGER_SPAM_LESS.warning(
-                f"multimatch_devreg_{self._hascanner.source}",
+                f"multimatch_devreg_{slugify(self._hascanner.source)}",
                 "Unexpectedly got %d device registry matches for %s: %s\n",
                 devreg_count,
                 self._hascanner.name,
@@ -656,7 +666,15 @@ class BermudaDevice(dict):
         and will be called each time that its co-ordinator sees a new MAC address
         for this IRK.
         """
-        address = normalize_mac(service_info.address)
+        try:
+            address = normalize_mac(service_info.address)
+        except ValueError:
+            _LOGGER.warning(
+                "Invalid address in PBLE callback for %s: %s",
+                self.name,
+                service_info.address,
+            )
+            return
         if address not in self.metadevice_sources:
             self.metadevice_sources.insert(0, address)
             _LOGGER.debug("Got %s callback for new IRK address on %s of %s", change, self.name, address)
@@ -878,6 +896,16 @@ class BermudaDevice(dict):
         if len(area_stats) > 20:
             sorted_scanners = sorted(area_stats.items(), key=lambda x: x[1]["total"], reverse=True)
             self.co_visibility_stats[area_id] = dict(sorted_scanners[:20])
+
+        # Limit memory: keep only top 50 areas by max sample count
+        max_areas = 50
+        if len(self.co_visibility_stats) > max_areas:
+            sorted_areas = sorted(
+                self.co_visibility_stats.items(),
+                key=lambda x: max((s["total"] for s in x[1].values()), default=0),
+                reverse=True,
+            )
+            self.co_visibility_stats = dict(sorted_areas[:max_areas])
 
     def get_co_visibility_confidence(self, area_id: str, visible_scanners: set[str]) -> float:
         """
@@ -1184,14 +1212,14 @@ class BermudaDevice(dict):
         This is required as the list of device.scanners is keyed by [address, scanner], and
         a device might switch back and forth between multiple addresses.
         """
-        _stamp = 0
+        _stamp: float = 0.0
         _found_scanner = None
         for advert in self.adverts.values():
             if advert.scanner_address == scanner_address:
                 # we have matched the scanner, but is it the most recent address?
-                if _stamp == 0 or (advert.stamp is not None and advert.stamp > _stamp):
+                if _stamp == 0.0 or (advert.stamp is not None and advert.stamp > _stamp):
                     _found_scanner = advert
-                    _stamp = _found_scanner.stamp or 0
+                    _stamp = _found_scanner.stamp if _found_scanner.stamp is not None else 0.0
 
         return _found_scanner
 
@@ -1384,19 +1412,21 @@ class BermudaDevice(dict):
                         self.make_name()
                         self._coordinator.register_ibeacon_source(self)
 
-    def to_dict(self):
+    def to_dict(self) -> dict[str, object]:
         """Convert class to serialisable dict for dump_devices."""
-        out = {}
+        out: dict[str, object] = {}
         for var, val in vars(self).items():
             if val is None:
                 # Catch the Nones first, as otherwise they might match some other objects below if
                 # they are None (like self._hascanner), which will prevent them showing at all.
                 out[var] = val
                 continue
-            if val in [self._coordinator, self.floor, self.area, self.ar, self.fr]:
-                # Objects to ignore completely.
+            # Use identity comparison (is) to avoid TypeError with unhashable types
+            if val is self._coordinator or val is self.floor or val is self.area or val is self.ar or val is self.fr:
+                # Registry and coordinator objects - ignore completely.
                 continue
-            if val in [self._hascanner, self.area, self.floor, self.ar, self.fr]:
+            if val is self._hascanner:
+                # Scanner object - include __repr__ for debugging.
                 if hasattr(val, "__repr__"):
                     out[var] = val.__repr__()
                 continue

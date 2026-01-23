@@ -259,6 +259,7 @@ BDADDR_TYPE_OTHER: Final = "bd_addr_other"  # Default 48bit MAC
 BDADDR_TYPE_RANDOM_RESOLVABLE: Final = "bd_addr_random_resolvable"
 BDADDR_TYPE_RANDOM_UNRESOLVABLE: Final = "bd_addr_random_unresolvable"
 BDADDR_TYPE_RANDOM_STATIC: Final = "bd_addr_random_static"
+BDADDR_TYPE_RESERVED: Final = "bd_addr_reserved"  # Reserved address range (0x80-0xBF)
 BDADDR_TYPE_NOT_MAC48: Final = "bd_addr_not_mac48"
 # Non-bluetooth address types - for our metadevice entries
 ADDR_TYPE_IBEACON: Final = "addr_type_ibeacon"

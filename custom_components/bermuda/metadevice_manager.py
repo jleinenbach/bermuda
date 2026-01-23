@@ -407,15 +407,15 @@ class MetadeviceManager:
 
                 # anything that isn't already set to something interesting, overwrite
                 # it with the new device's data.
-                for key, val in source_device.items():
+                for key, val in vars(source_device).items():
                     if val is any(
                         [
                             source_device.name_bt_local_name,
                             source_device.name_bt_serviceinfo,
                             source_device.manufacturer,
                         ]
-                    ) and metadevice[key] in [None, False]:
-                        metadevice[key] = val
+                    ) and getattr(metadevice, key, None) in [None, False]:
+                        setattr(metadevice, key, val)
                         _want_name_update = True
 
                 if _want_name_update:
@@ -423,7 +423,7 @@ class MetadeviceManager:
 
                 # Anything that's VERY interesting, overwrite it regardless of what's already there:
                 # INTERESTING:
-                for key, val in source_device.items():
+                for key, val in vars(source_device).items():
                     if val is any(
                         [
                             source_device.beacon_major,
@@ -433,7 +433,7 @@ class MetadeviceManager:
                             source_device.beacon_uuid,
                         ]
                     ):
-                        metadevice[key] = val
+                        setattr(metadevice, key, val)
                         # _want_name_update = True
 
             # Done iterating sources, remove any to be dropped

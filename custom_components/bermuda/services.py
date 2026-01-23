@@ -122,7 +122,7 @@ class BermudaServiceHandler:
         # Build the dict of devices
         for address, device in coord.devices.items():
             if len(addresses) == 0 or address.lower() in addresses:
-                out[address] = device.to_dict()  # type: ignore[no-untyped-call]
+                out[address] = device.to_dict()
 
         if summary is not None:
             out = {"summary": summary, "devices": out}
