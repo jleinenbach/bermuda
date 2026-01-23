@@ -680,6 +680,154 @@ state = kf.to_dict()
 kf_restored = KalmanFilter.from_dict(state)
 ```
 
+## Scanner Auto-Calibration System (`scanner_calibration.py`)
+
+Automatic RSSI offset calibration using scanner cross-visibility measurements.
+
+### Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    Scanner Auto-Calibration Flow                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  Scanner A ─────────────► Scanner B                                          │
+│     │         (iBeacon)      │                                               │
+│     │                        │                                               │
+│     ▼                        ▼                                               │
+│  Receives B's signal     Receives A's signal                                 │
+│  RSSI: -55 dB            RSSI: -65 dB                                        │
+│     │                        │                                               │
+│     └──────────┬─────────────┘                                               │
+│                │                                                             │
+│                ▼                                                             │
+│  ┌──────────────────────────────────────────────────────────────────────┐   │
+│  │ ScannerCalibrationManager                                             │   │
+│  │                                                                        │   │
+│  │ update_cross_visibility(receiver=A, sender=B, rssi=-55, timestamp)   │   │
+│  │ update_cross_visibility(receiver=B, sender=A, rssi=-65, timestamp)   │   │
+│  │                                                                        │   │
+│  │ ScannerPairData:                                                       │   │
+│  │   kalman_ab.update(-55, timestamp) → Smoothed RSSI A sees B           │   │
+│  │   kalman_ba.update(-65, timestamp) → Smoothed RSSI B sees A           │   │
+│  │   rssi_difference = (-55) - (-65) = +10 dB                            │   │
+│  │                                                                        │   │
+│  │ Interpretation: A receives 10 dB stronger than B                       │   │
+│  │   → A needs offset: -5 dB (reduce its readings)                        │   │
+│  │   → B needs offset: +5 dB (increase its readings)                      │   │
+│  └──────────────────────────────────────────────────────────────────────┘   │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Key Components
+
+| Component | Purpose |
+|-----------|---------|
+| `ScannerPairData` | Tracks bidirectional RSSI between two scanners with Kalman smoothing |
+| `ScannerCalibrationManager` | Manages all scanner pairs, calculates suggested offsets |
+| `update_scanner_calibration()` | Entry point called by coordinator each update cycle |
+
+### Time-Aware Kalman Integration
+
+The calibration system uses time-aware Kalman filtering for optimal RSSI smoothing:
+
+```python
+# Timestamp passed to Kalman for dt-scaled process noise
+manager.update_cross_visibility(
+    receiver_addr="scanner_a",
+    sender_addr="scanner_b",
+    rssi_raw=-55.0,
+    timestamp=monotonic_time_coarse(),  # Required for proper dt calculation
+)
+```
+
+**Benefits:**
+- Process noise scales with actual time delta between measurements
+- Longer gaps → more uncertainty → more trust in new measurements
+- Irregular BLE advertisement intervals handled correctly
+
+### Offline Scanner Detection
+
+Scanners that stop providing data are automatically excluded from calibration:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    Offline Scanner Detection                                 │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  Each update_cross_visibility() call:                                        │
+│    scanner_last_seen[receiver_addr] = timestamp                              │
+│    scanner_last_seen[sender_addr] = timestamp                                │
+│                                                                              │
+│  In calculate_suggested_offsets():                                           │
+│    nowstamp = monotonic_time_coarse()                                        │
+│    for each scanner_pair:                                                    │
+│      if nowstamp - scanner_last_seen[scanner_a] > TIMEOUT:                   │
+│        skip pair (scanner A offline)                                         │
+│      if nowstamp - scanner_last_seen[scanner_b] > TIMEOUT:                   │
+│        skip pair (scanner B offline)                                         │
+│                                                                              │
+│  CALIBRATION_SCANNER_TIMEOUT = 300.0 seconds (5 minutes)                     │
+│                                                                              │
+│  Effect: Stale data doesn't corrupt calibration. When scanner comes          │
+│          back online, it's automatically re-included.                        │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Constants
+
+| Constant | Value | Purpose |
+|----------|-------|---------|
+| `CALIBRATION_MIN_SAMPLES` | 50 | Minimum Kalman samples before trusting estimate |
+| `CALIBRATION_MIN_PAIRS` | 1 | Minimum bidirectional pairs for offset calculation |
+| `CALIBRATION_MAX_HISTORY` | 100 | Maximum raw RSSI history per direction |
+| `CALIBRATION_HYSTERESIS_DB` | 3 | Prevents oscillation around rounding boundaries |
+| `CALIBRATION_SCANNER_TIMEOUT` | 300.0s | 5 minutes - scanner offline threshold |
+
+### Design Decisions
+
+1. **No Persistence**: Calibration data is NOT persisted across reboots
+   - Rationale: Scanner hardware/position may change between restarts
+   - Fingerprinting compensates for any drift during re-calibration period
+   - Avoids storing potentially stale/incorrect calibration data
+
+2. **Raw RSSI Only**: Uses `rssi_raw`, NOT `rssi_filtered` or offset-adjusted values
+   - Prevents circular calibration (using offsets to calculate offsets)
+   - Ensures calibration is based on actual hardware measurements
+
+3. **Bidirectional Requirement**: Both directions must have sufficient samples
+   - Unidirectional visibility can't determine which scanner is "wrong"
+   - Symmetric measurement provides reliable relative offset
+
+4. **5-Minute Timeout**: Balance between stability and responsiveness
+   - Long enough: Temporary network issues don't trigger recalibration
+   - Short enough: Actual scanner failures detected within reasonable time
+
+### Diagnostic Info
+
+```python
+# Get detailed pair information for debugging
+info = manager.get_scanner_pair_info(nowstamp=current_time)
+# Returns: [
+#   {
+#     "scanner_a": "aa:bb:cc:dd:ee:01",
+#     "scanner_b": "aa:bb:cc:dd:ee:02",
+#     "rssi_a_sees_b": -55.2,
+#     "rssi_b_sees_a": -65.1,
+#     "samples_ab": 50,
+#     "samples_ba": 48,
+#     "bidirectional": True,
+#     "difference": 9.9,
+#     "scanner_a_online": True,
+#     "scanner_b_online": True,
+#     "last_update_ab": 1234567.89,
+#     "last_update_ba": 1234567.45,
+#   }
+# ]
+```
+
 ## Recent Changes (Session Notes)
 
 ### Room Flickering Fix
@@ -4056,3 +4204,53 @@ def matrix_inverse(matrix):
 - When you control all the test environments
 
 **Rule of Thumb**: Consistency trumps micro-optimization. A 0.01ms gain is never worth debugging "works for me" issues across different user environments.
+
+### 51. Time-Dependent Code Needs Injectable Timestamps
+
+When code internally calls time functions (like `monotonic_time_coarse()`), tests that manipulate state based on time will fail because the internal call returns real system time, not the test's artificial timestamps.
+
+**Bug Pattern:**
+```python
+# Production code
+def calculate_offsets(self) -> dict:
+    nowstamp = monotonic_time_coarse()  # Returns real time!
+    for scanner in scanners:
+        if nowstamp - self.last_seen[scanner] > TIMEOUT:
+            skip_scanner()
+
+# Test - FAILS because calculate_offsets uses real time
+def test_offline_scanner():
+    manager.last_seen["scanner_a"] = 1000.0  # Artificial timestamp
+    manager.last_seen["scanner_b"] = 1000.0
+    # Real monotonic time might be 12345678.0
+    # → Both scanners appear offline (12345678 - 1000 >> TIMEOUT)!
+    offsets = manager.calculate_offsets()  # Unexpected behavior
+```
+
+**Fix Pattern:**
+```python
+# Production code - make timestamp injectable
+def calculate_offsets(self, nowstamp: float | None = None) -> dict:
+    if nowstamp is None:
+        nowstamp = monotonic_time_coarse()  # Default: real time
+    # ... rest of logic uses nowstamp parameter
+
+# Test - WORKS because we control time
+def test_offline_scanner():
+    nowstamp = 1000.0
+    manager.update_visibility(..., timestamp=nowstamp)
+
+    # Test with controlled time
+    offsets = manager.calculate_offsets(nowstamp=nowstamp + 10)  # Online
+    assert "scanner_a" in offsets
+
+    offsets = manager.calculate_offsets(nowstamp=nowstamp + TIMEOUT + 100)  # Offline
+    assert "scanner_a" not in offsets
+```
+
+**Alternatives:**
+1. **Injectable parameter** (preferred): Add optional `nowstamp` parameter with default
+2. **Mock the time function**: Use `unittest.mock.patch` on `monotonic_time_coarse`
+3. **pytest-freezer**: Use freezer fixture for time control
+
+**Rule of Thumb**: Any method that checks "is data stale?" or "has timeout expired?" should accept an optional timestamp parameter for testability. The default should call the real time function.
