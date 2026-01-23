@@ -296,6 +296,16 @@ class BermudaDevice(dict):
     def is_remote_scanner(self):
         return self._is_remote_scanner
 
+    @property
+    def ukf_scannerless_area(self) -> bool:
+        """Whether this device is currently in a scannerless area (detected via UKF)."""
+        return self._ukf_scannerless_area
+
+    @ukf_scannerless_area.setter
+    def ukf_scannerless_area(self, value: bool) -> None:
+        """Set the scannerless area flag."""
+        self._ukf_scannerless_area = value
+
     def async_as_scanner_nolonger(self):
         """Call when this device is unregistered as a BaseHaScanner."""
         self._is_scanner = False
