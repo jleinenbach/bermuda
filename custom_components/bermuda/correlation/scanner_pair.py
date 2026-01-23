@@ -267,15 +267,21 @@ class ScannerPairCorrelation:
 
     def reset_training(self) -> None:
         """
-        Reset user training data (button filter only).
+        Reset ALL learned data (button AND auto filters).
 
-        This reverts the correlation to use automatic learning (Shadow Learning)
-        immediately. The auto-filter is preserved, providing a fallback.
+        This provides a clean slate for this correlation. After reset:
+        - Button filter: Cleared, ready for new training
+        - Auto filter: Cleared, will re-learn in correct context
 
-        Use this to undo incorrect manual training without losing the
-        automatically learned patterns.
+        Why reset both? The auto-learned data may be "poisoned" by incorrect
+        room selection. After new button training, auto-learning will start
+        fresh and learn patterns in the CORRECT context (via the indirect
+        feedback loop where room selection influences what auto learns).
+
+        Use this to completely undo incorrect training.
         """
         self._kalman_button.reset()
+        self._kalman_auto.reset()
 
     def z_score(self, observed_delta: float) -> float:
         """

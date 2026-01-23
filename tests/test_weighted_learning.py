@@ -431,8 +431,13 @@ class TestControlledEvolution:
             f"Anchor should not move all the way to auto value. Polished: {polished_estimate}"
         )
 
-    def test_reset_training_removes_button_anchor(self) -> None:
-        """reset_training() should remove button anchor, falling back to auto."""
+    def test_reset_training_clears_all_data(self) -> None:
+        """reset_training() should clear BOTH button AND auto filters for clean slate.
+
+        Why reset both? The auto-learned data may be "poisoned" by incorrect
+        room selection. After reset, new button training establishes correct
+        patterns, and auto-learning starts fresh in the correct context.
+        """
         corr = ScannerPairCorrelation(scanner_address="test_scanner")
 
         # Auto learns 10.0
@@ -445,13 +450,21 @@ class TestControlledEvolution:
         # Estimate is dominated by button
         assert corr.expected_delta > 30.0
 
-        # Reset training
+        # Reset training - should clear BOTH filters
         corr.reset_training()
 
-        # Now should fall back to auto (10.0)
-        assert abs(corr.expected_delta - 10.0) < 2.0, (
-            f"After reset, should fall back to auto estimate (~10.0). Got {corr.expected_delta}"
+        # Both filters should be cleared (clean slate)
+        assert corr.expected_delta == 0.0, (
+            f"After reset, both filters should be cleared. Got {corr.expected_delta}"
         )
+        assert not corr.has_button_training, "Button filter should be cleared"
+        assert corr.auto_sample_count == 0, "Auto filter should be cleared"
+        assert corr.button_sample_count == 0, "Button sample count should be 0"
+
+        # New training can now start fresh
+        corr.update_button(30.0)
+        assert corr.has_button_training, "New button training should work"
+        assert abs(corr.expected_delta - 30.0) < 1.0, "New training should set correct value"
 
 
 class TestHyperPrecisionParadoxFix:
