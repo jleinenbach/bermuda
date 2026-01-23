@@ -97,18 +97,21 @@ class BermudaNumber(BermudaEntity, RestoreNumber):
         await super().async_added_to_hass()
         self.restored_data = await self.async_get_last_number_data()
         if self.restored_data is not None and self.restored_data.native_value is not None:
-            self.coordinator.devices[self.address].set_ref_power(self.restored_data.native_value)
+            # Use cached self._device reference instead of dict lookup.
+            # The device may have been pruned from coordinator.devices if it uses
+            # a rotating RPA address, but the entity still holds a valid reference.
+            self._device.set_ref_power(self.restored_data.native_value)
 
     @property
     def native_value(self) -> float | None:
         """Return value of number."""
-        # if self.restored_data is not None and self.restored_data.native_value is not None:
-        #     return self.restored_data.native_value
-        return self.coordinator.devices[self.address].ref_power
+        # Use cached self._device reference - see async_added_to_hass docstring
+        return self._device.ref_power
 
     async def async_set_native_value(self, value: float) -> None:
         """Set value."""
-        self.coordinator.devices[self.address].set_ref_power(value)
+        # Use cached self._device reference - see async_added_to_hass docstring
+        self._device.set_ref_power(value)
         self.async_write_ha_state()
         # Beware that STATE_DUMP_INTERVAL for restore_state's dump_state
         # is 15 minutes, so if HA is killed instead of exiting cleanly,

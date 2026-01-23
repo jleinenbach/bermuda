@@ -1328,15 +1328,45 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                 if address in device.metadevice_sources:
                     device.metadevice_sources.remove(address)
 
-            # clean out the device/scanner advert pairs
+            # Clean out adverts that reference pruned devices.
+            # Adverts store two device addresses:
+            #   - device_address: The tracked device (tracker/beacon) that emitted the BLE advertisement
+            #   - scanner_address: The scanner (ESPHome proxy, BT adapter) that received it
+            # We must prune adverts if EITHER address is in the prune_list, otherwise
+            # code accessing devices[address] will raise KeyError.
             for advert_tuple in list(device.adverts.keys()):
-                if device.adverts[advert_tuple].device_address in prune_list:
+                advert = device.adverts[advert_tuple]
+                # Case 1: The tracked device (tracker) is being pruned
+                # This happens when a tracker with rotating RPA goes stale
+                if advert.device_address in prune_list:
                     _LOGGER.debug(
-                        "Pruning metadevice advert %s aged %ds",
+                        "Pruning advert for pruned tracker %s (device: %s, scanner: %s, age: %ds)",
                         advert_tuple,
-                        nowstamp - device.adverts[advert_tuple].stamp,
+                        advert.device_address,
+                        advert.scanner_address,
+                        nowstamp - advert.stamp,
                     )
                     del device.adverts[advert_tuple]
+                # Case 2: The scanner that received the advert is being pruned
+                # This is rare but can happen if a scanner is demoted and pruned
+                elif advert.scanner_address in prune_list:
+                    _LOGGER.debug(
+                        "Pruning advert for pruned scanner %s (device: %s, scanner: %s, age: %ds)",
+                        advert_tuple,
+                        advert.device_address,
+                        advert.scanner_address,
+                        nowstamp - advert.stamp,
+                    )
+                    del device.adverts[advert_tuple]
+                    # Clear area_advert if it points to the pruned scanner,
+                    # otherwise BermudaSensorScanner.native_value would fail
+                    if device.area_advert is advert:
+                        _LOGGER.debug(
+                            "Clearing area_advert for %s (referenced pruned scanner %s)",
+                            device.name,
+                            advert.scanner_address,
+                        )
+                        device.area_advert = None
 
     def discover_private_ble_metadevices(self) -> None:
         """Delegate to metadevice_manager for Private BLE device discovery."""

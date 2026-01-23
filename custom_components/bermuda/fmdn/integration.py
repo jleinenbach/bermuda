@@ -138,12 +138,6 @@ class FmdnIntegration:
             return bytes(eid_data)
 
         if isinstance(eid_data, str):
-            # Limit input length to prevent DoS via oversized strings
-            # 128 hex chars = 64 bytes, far exceeding any valid EID (20-32 bytes)
-            max_eid_hex_length = 128
-            if len(eid_data) > max_eid_hex_length:
-                _LOGGER.debug("EID hex string too long (%d chars), rejecting", len(eid_data))
-                return None
             cleaned = eid_data.replace("0x", "").replace(":", "").replace(" ", "")
             try:
                 return bytes.fromhex(cleaned)
@@ -359,20 +353,11 @@ class FmdnIntegration:
 
         For shared trackers (same physical device registered in multiple Google accounts),
         this method creates/updates sensors for ALL matching devices, not just the first one.
-
-        This method is defensively wrapped to prevent any unexpected error from crashing
-        the Bermuda update loop. All resolver calls are already wrapped in try/except,
-        but this outer wrapper catches any edge cases.
         """
         if not service_data:
             return
 
-        try:
-            candidates = self.extract_eids(service_data)
-        except Exception as ex:  # noqa: BLE001  # pylint: disable=broad-exception-caught
-            _LOGGER.debug("Error extracting FMDN EIDs from service data: %s", ex)
-            return
-
+        candidates = self.extract_eids(service_data)
         if not candidates:
             return
 
@@ -382,55 +367,43 @@ class FmdnIntegration:
         any_resolved = False
 
         for eid_bytes in candidates:
-            try:
-                # Use resolve_eid_all to get ALL matches (important for shared trackers)
-                matches, _resolution_status = self.process_resolution_all_with_status(eid_bytes, device.address)
+            # Use resolve_eid_all to get ALL matches (important for shared trackers)
+            matches, _resolution_status = self.process_resolution_all_with_status(eid_bytes, device.address)
 
-                if not matches:
-                    # EID was seen but not resolved - already tracked in process_resolution_all_with_status
+            if not matches:
+                # EID was seen but not resolved - already tracked in process_resolution_all_with_status
+                continue
+
+            # Process ALL matches to support shared trackers between multiple accounts
+            # Note: When resolve_eid_all returns multiple matches, it means the same
+            # physical tracker is registered in multiple Google accounts.
+            for match in matches:
+                resolved_device_id = getattr(match, "device_id", None)
+                canonical_id = getattr(match, "canonical_id", None)
+
+                if resolved_device_id is None:
+                    _LOGGER.debug("Resolver returned match without device_id for candidate length %d", len(eid_bytes))
                     continue
 
-                # Process ALL matches to support shared trackers between multiple accounts
-                # Note: When resolve_eid_all returns multiple matches, it means the same
-                # physical tracker is registered in multiple Google accounts.
-                for match in matches:
-                    resolved_device_id = getattr(match, "device_id", None)
-                    canonical_id = getattr(match, "canonical_id", None)
+                # Successfully resolved - record in FMDN manager
+                self.manager.record_resolution_success(eid_bytes, device.address, str(resolved_device_id), canonical_id)
+                any_resolved = True
 
-                    if resolved_device_id is None:
-                        _LOGGER.debug(
-                            "Resolver returned match without device_id for candidate length %d",
-                            len(eid_bytes),
-                        )
-                        continue
+                metadevice_address = self.format_metadevice_address(str(resolved_device_id), canonical_id)
+                self.register_source(device, metadevice_address, match)
 
-                    # Successfully resolved - record in FMDN manager
-                    self.manager.record_resolution_success(
-                        eid_bytes, device.address, str(resolved_device_id), canonical_id
-                    )
-                    any_resolved = True
-
-                    metadevice_address = self.format_metadevice_address(str(resolved_device_id), canonical_id)
-                    self.register_source(device, metadevice_address, match)
-
-                # Found matches for this EID candidate, no need to try other candidates
-                if any_resolved:
-                    break
-            except Exception as ex:  # noqa: BLE001  # pylint: disable=broad-exception-caught
-                _LOGGER.debug("Error processing FMDN EID candidate for %s: %s", device.address, ex)
-                continue
+            # Found matches for this EID candidate, no need to try other candidates
+            if any_resolved:
+                break
 
         # If no candidates resolved, record the first one as unresolved for diagnostics
         if not any_resolved and candidates:
-            try:
-                first_eid = next(iter(candidates))
-                # Only record if not already tracked by process_resolution_all_with_status
-                if self.manager.get_resolution_status(first_eid) is None:
-                    self.manager.record_resolution_failure(
-                        first_eid, device.address, EidResolutionStatus.NO_KNOWN_EID_MATCH
-                    )
-            except (StopIteration, TypeError) as ex:
-                _LOGGER.debug("Error recording unresolved EID for %s: %s", device.address, ex)
+            first_eid = next(iter(candidates))
+            # Only record if not already tracked by process_resolution_all_with_status
+            if self.manager.get_resolution_status(first_eid) is None:
+                self.manager.record_resolution_failure(
+                    first_eid, device.address, EidResolutionStatus.NO_KNOWN_EID_MATCH
+                )
 
     def prune_source(self, device: BermudaDevice, stamp_fmdn: float, prune_list: list[str]) -> bool:
         """Prune stale FMDN rotating MACs and return True if pruned."""
@@ -455,100 +428,50 @@ class FmdnIntegration:
         - (DOMAIN, "device_id") - simplest format (0 colons)
 
         Returns the identifier matching the resolver's format, or None.
-        Defensively handles missing or malformed identifiers attribute.
         """
         canonical_id: str | None = None
-        try:
-            identifiers = getattr(fmdn_device, "identifiers", None)
-            if identifiers is None:
-                return None
-        except (AttributeError, TypeError):
-            return None
-
-        try:
-            for identifier in identifiers:
-                try:
-                    if len(identifier) != 2 or identifier[0] != DOMAIN_GOOGLEFINDMY:
-                        continue
-                    # Found a googlefindmy identifier
-                    id_value: str = str(identifier[1])
-                    # Limit identifier length to prevent memory issues from malformed data
-                    # 256 chars is generous for "entry_id:device_id" format
-                    max_identifier_length = 256
-                    if len(id_value) > max_identifier_length:
-                        id_value = id_value[:max_identifier_length]
-                    colon_count = id_value.count(":")
-                    # Prefer the "entry_id:device_id" format (1 colon) as it matches
-                    # what the EID resolver returns for canonical_id
-                    if colon_count == 1:
-                        return id_value
-                    # Keep track of the simplest identifier as fallback
-                    if colon_count == 0 and canonical_id is None:
-                        canonical_id = id_value
-                except (TypeError, IndexError):
-                    # Malformed identifier tuple, skip it
-                    continue
-        except TypeError:
-            # identifiers is not iterable
-            return None
+        for identifier in fmdn_device.identifiers:
+            if len(identifier) != 2 or identifier[0] != DOMAIN_GOOGLEFINDMY:
+                continue
+            # Found a googlefindmy identifier
+            id_value: str = str(identifier[1])
+            colon_count = id_value.count(":")
+            # Prefer the "entry_id:device_id" format (1 colon) as it matches
+            # what the EID resolver returns for canonical_id
+            if colon_count == 1:
+                return id_value
+            # Keep track of the simplest identifier as fallback
+            if colon_count == 0 and canonical_id is None:
+                canonical_id = id_value
         return canonical_id
 
     def _process_fmdn_entity(self, fmdn_entity: Any) -> None:
-        """
-        Process a single FMDN entity and create/update its metadevice.
-
-        This method is defensive against API changes in the googlefindmy integration.
-        All attribute accesses are wrapped in try/except to prevent a single malformed
-        entity from crashing the entire Bermuda update loop.
-        """
-        # Defensive: Check domain attribute exists and matches
-        try:
-            entity_domain = getattr(fmdn_entity, "domain", None)
-            if entity_domain != Platform.DEVICE_TRACKER:
-                return
-            entity_id = getattr(fmdn_entity, "entity_id", "unknown")
-        except (AttributeError, TypeError) as ex:
-            _LOGGER.debug("FMDN entity missing expected attributes: %s", ex)
+        """Process a single FMDN entity and create/update its metadevice."""
+        if fmdn_entity.domain != Platform.DEVICE_TRACKER:
             return
 
-        _LOGGER.debug("Found a googlefindmy FMDN Device Tracker! %s", entity_id)
+        _LOGGER.debug("Found a googlefindmy FMDN Device Tracker! %s", fmdn_entity.entity_id)
 
         # Grab the device entry (for the name and device_id)
         fmdn_device = None
-        try:
-            device_id = getattr(fmdn_entity, "device_id", None)
-            if device_id is not None:
-                fmdn_device = self.coordinator.dr.async_get(device_id)
-        except (AttributeError, TypeError, KeyError) as ex:
-            _LOGGER.debug("Error getting device for FMDN entity %s: %s", entity_id, ex)
-            return
+        if fmdn_entity.device_id is not None:
+            fmdn_device = self.coordinator.dr.async_get(fmdn_entity.device_id)
 
         if fmdn_device is None:
-            _LOGGER.debug("No device registry entry for FMDN entity %s", entity_id)
+            _LOGGER.debug("No device registry entry for FMDN entity %s", fmdn_entity.entity_id)
             return
 
         # Extract canonical_id, falling back to entity unique_id
-        try:
-            canonical_id = self._extract_canonical_id(fmdn_device) or getattr(fmdn_entity, "unique_id", None)
-            fmdn_device_id = getattr(fmdn_device, "id", None)
-            fmdn_device_name = getattr(fmdn_device, "name", None)
-            fmdn_device_name_by_user = getattr(fmdn_device, "name_by_user", None)
-        except (AttributeError, TypeError) as ex:
-            _LOGGER.debug("Error extracting FMDN device attributes for %s: %s", entity_id, ex)
-            return
-
-        if fmdn_device_id is None:
-            _LOGGER.debug("FMDN device has no id for entity %s", entity_id)
-            return
+        canonical_id = self._extract_canonical_id(fmdn_device) or fmdn_entity.unique_id
 
         # Check if metadevice already exists (O(1) cache lookup)
-        existing_metadevice = self._get_cached_metadevice(fmdn_device_id)
+        existing_metadevice = self._get_cached_metadevice(fmdn_device.id)
 
         if existing_metadevice is not None:
             metadevice = existing_metadevice
-            _LOGGER.debug("Found cached FMDN metadevice %s for device_id %s", metadevice.address, fmdn_device_id)
+            _LOGGER.debug("Found cached FMDN metadevice %s for device_id %s", metadevice.address, fmdn_device.id)
         else:
-            metadevice_address = self.format_metadevice_address(fmdn_device_id, canonical_id)
+            metadevice_address = self.format_metadevice_address(fmdn_device.id, canonical_id)
             # pylint: disable-next=protected-access
             metadevice = self.coordinator._get_or_create_device(metadevice_address)  # noqa: SLF001
 
@@ -556,21 +479,21 @@ class FmdnIntegration:
         metadevice.create_sensor = True
         metadevice.metadevice_type.add(METADEVICE_FMDN_DEVICE)
         metadevice.address_type = ADDR_TYPE_FMDN_DEVICE
-        metadevice.fmdn_device_id = fmdn_device_id
+        metadevice.fmdn_device_id = fmdn_device.id
         if metadevice.fmdn_canonical_id is None or canonical_id is not None:
             metadevice.fmdn_canonical_id = canonical_id
 
         # Set name from device registry
-        metadevice.name_by_user = fmdn_device_name_by_user
-        metadevice.name_devreg = fmdn_device_name
+        metadevice.name_by_user = fmdn_device.name_by_user
+        metadevice.name_devreg = fmdn_device.name
         metadevice.make_name()
 
         # Register metadevice and update cache
         if metadevice.address not in self.coordinator.metadevices:
             self.coordinator.metadevices[metadevice.address] = metadevice
-        self._update_cache(fmdn_device_id, metadevice.address)
+        self._update_cache(fmdn_device.id, metadevice.address)
 
-        _LOGGER.debug("Registered FMDN metadevice %s for %s", metadevice.address, fmdn_device_name)
+        _LOGGER.debug("Registered FMDN metadevice %s for %s", metadevice.address, fmdn_device.name)
 
     def discover_metadevices(self) -> None:
         """
@@ -579,9 +502,6 @@ class FmdnIntegration:
         This function sets up the skeleton metadevice entry for FMDN (Google Find My Device)
         devices, ready for update_metadevices to manage. It works similarly to
         discover_private_ble_metadevices().
-
-        All operations are wrapped defensively to prevent googlefindmy API changes
-        from crashing the Bermuda update loop.
         """
         # pylint: disable=protected-access
         if not self.coordinator._do_fmdn_device_init:  # noqa: SLF001
@@ -591,32 +511,8 @@ class FmdnIntegration:
 
         _LOGGER.debug("Refreshing FMDN Device list from googlefindmy integration")
 
-        try:
-            fmdn_entries = self.coordinator.hass.config_entries.async_entries(
-                DOMAIN_GOOGLEFINDMY, include_disabled=False
-            )
-        except (KeyError, AttributeError, TypeError) as ex:
-            _LOGGER.debug("Error accessing googlefindmy config entries: %s", ex)
-            return
-
+        fmdn_entries = self.coordinator.hass.config_entries.async_entries(DOMAIN_GOOGLEFINDMY, include_disabled=False)
         for fmdn_entry in fmdn_entries:
-            try:
-                entry_id = getattr(fmdn_entry, "entry_id", None)
-                if entry_id is None:
-                    continue
-                fmdn_entities = self.coordinator.er.entities.get_entries_for_config_entry_id(entry_id)
-            except (KeyError, AttributeError, TypeError) as ex:
-                _LOGGER.debug("Error getting entities for googlefindmy entry: %s", ex)
-                continue
-
+            fmdn_entities = self.coordinator.er.entities.get_entries_for_config_entry_id(fmdn_entry.entry_id)
             for fmdn_entity in fmdn_entities:
-                try:
-                    self._process_fmdn_entity(fmdn_entity)
-                except Exception as ex:  # noqa: BLE001  # pylint: disable=broad-exception-caught
-                    # Catch-all to prevent a single malformed entity from breaking the loop
-                    entity_id = getattr(fmdn_entity, "entity_id", "unknown")
-                    _LOGGER.warning(
-                        "Unexpected error processing FMDN entity %s: %s",
-                        entity_id,
-                        ex,
-                    )
+                self._process_fmdn_entity(fmdn_entity)
