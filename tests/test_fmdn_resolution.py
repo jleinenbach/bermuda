@@ -56,20 +56,24 @@ def coordinator(hass: HomeAssistant) -> BermudaDataUpdateCoordinator:
 
 
 def test_format_fmdn_metadevice_key_stable(coordinator: BermudaDataUpdateCoordinator) -> None:
-    """Ensure FMDN metadevice keys use device_id for stability.
+    """Ensure FMDN metadevice keys prefer canonical_id for stability.
 
-    Previously used canonical_id which caused duplicate entities after reboots
-    when execution order changed between register_source() and
-    fmdn.discover_metadevices(). Now always uses device_id (HA Device Registry ID).
+    canonical_id (the native UUID from GoogleFindMy API) is the primary identifier
+    because it's stable and independent of HA's internal state. device_id (HA Device
+    Registry ID) is only used as a fallback when canonical_id is unavailable.
     """
-    # device_id is always used, canonical_id is ignored for address generation
+    # canonical_id is preferred when available
     key = coordinator.fmdn.format_metadevice_address("DEVICE-ID", "CANONICAL-01")
-    assert key == "fmdn:device-id"
+    assert key == "fmdn:canonical-01"
     assert key.startswith("fmdn:")
 
-    # Even without canonical_id, the device_id is used
+    # Fallback to device_id when canonical_id is unavailable
     fallback_key = coordinator.fmdn.format_metadevice_address("Device-Only", None)
     assert fallback_key == "fmdn:device-only"
+
+    # canonical_id takes priority even when device_id is more "readable"
+    priority_key = coordinator.fmdn.format_metadevice_address("simple-id", "68e69eca-0000-1111-2222-333344445555")
+    assert priority_key == "fmdn:68e69eca-0000-1111-2222-333344445555"
 
 
 def test_fmdn_resolution_registers_metadevice(hass: HomeAssistant, coordinator: BermudaDataUpdateCoordinator) -> None:
