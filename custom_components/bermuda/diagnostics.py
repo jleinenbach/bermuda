@@ -32,7 +32,7 @@ async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: Bermuda
             coordinator.irk_manager.async_diagnostics_no_redactions()
         ),
         "fmdn_manager": coordinator.service_handler.redact_data(
-            coordinator.fmdn.manager.async_diagnostics_no_redactions()
+            coordinator.fmdn.manager.get_diagnostics_no_redactions()
         ),
         "devices": await coordinator.service_dump_devices(call),
         "bt_manager": coordinator.service_handler.redact_data(bt_diags),

@@ -383,8 +383,10 @@ def extract_fmdn_eid(service_data: Mapping[str | int, Any], mode: str | None = N
     Legacy helper returning the first extracted EID candidate, if any.
 
     Prefer :func:`extract_fmdn_eids` for multi-candidate extraction.
+
+    Returns the lexicographically smallest candidate for deterministic behavior.
     """
     candidates = extract_fmdn_eids(service_data, mode=mode)
     if not candidates:
         return None
-    return next(iter(candidates))
+    return min(candidates)

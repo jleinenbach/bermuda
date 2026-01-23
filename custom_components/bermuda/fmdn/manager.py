@@ -121,15 +121,14 @@ class BermudaFmdnManager:
                 canonical_id=canonical_id,
             )
             self._stats.total_eids_seen += 1
+            # Update resolution statistics only for NEW EIDs to avoid double-counting
+            self._update_stats(resolution_status)
 
         # Track MAC -> EID mapping
         if source_mac not in self._mac_to_eids:
             self._mac_to_eids[source_mac] = []
         if eid_hex not in self._mac_to_eids[source_mac]:
             self._mac_to_eids[source_mac].append(eid_hex)
-
-        # Update statistics based on resolution status
-        self._update_stats(resolution_status)
 
     def _update_stats(self, resolution_status: EidResolutionStatus | str) -> None:
         """Update resolution statistics based on status."""
@@ -209,7 +208,7 @@ class BermudaFmdnManager:
             return seen.resolution_status
         return None
 
-    def async_diagnostics_no_redactions(self) -> dict[str, Any]:
+    def get_diagnostics_no_redactions(self) -> dict[str, Any]:
         """
         Return diagnostic info for FMDN resolution.
 
