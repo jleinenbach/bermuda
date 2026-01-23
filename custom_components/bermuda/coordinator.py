@@ -1203,7 +1203,8 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                             # The source has been seen within the spec's limits, keep it.
                             metadevice_source_keepers.add(address)
                             _first = False
-                        else:
+                        # FIX: Prevent duplicates - device may appear in multiple metadevices
+                        elif address not in prune_list:
                             # It's too old to be an IRK, and otherwise we'll auto-detect it,
                             # so let's be rid of it.
                             prune_list.append(address)
@@ -1301,6 +1302,10 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         # ###############################################
         # Prune_list is now ready to action. It contains no keepers, and is already
         # expanded if necessary to meet quota, as much as we can.
+
+        # FIX: Safety deduplication - devices may appear in multiple metadevices' sources
+        # which could cause the same address to be added multiple times
+        prune_list = list(dict.fromkeys(prune_list))  # Preserves order, removes duplicates
 
         # Prune the source devices
         for device_address in prune_list:
