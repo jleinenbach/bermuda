@@ -148,13 +148,17 @@ class AreaProfile:
 
     def reset_training(self) -> None:
         """
-        Reset all user training data for this area.
+        Reset ALL learned data for this area (button AND auto).
 
-        Clears button filter data from all correlations and absolute profiles,
-        reverting to automatic learning (Shadow Learning) only.
+        Clears both button and auto filter data from all correlations
+        and absolute profiles. This provides a clean slate.
 
-        Use this to undo incorrect manual training for a specific room
-        without losing the automatically learned patterns.
+        Why reset both? The auto-learned data may be "poisoned" by incorrect
+        room selection. After new button training, auto-learning will start
+        fresh and learn patterns in the CORRECT context (via the indirect
+        feedback loop where room selection influences what auto learns).
+
+        Use this to completely undo incorrect training for a specific room.
         """
         for corr in self._correlations.values():
             corr.reset_training()
@@ -162,21 +166,31 @@ class AreaProfile:
             profile.reset_training()
 
     def _enforce_memory_limit(self) -> None:
-        """Evict least-sampled correlations if over memory limit."""
+        """
+        Evict least-important correlations if over memory limit.
+
+        Sort priority (descending):
+        1. has_button_training=True (NEVER evict user-trained profiles)
+        2. sample_count (higher = more established)
+
+        This ensures button-trained profiles for scannerless rooms are preserved
+        even when auto-learned profiles accumulate more samples over time.
+        """
         # Enforce limit for delta correlations
         if len(self._correlations) > MAX_CORRELATIONS_PER_AREA:
             sorted_corrs = sorted(
                 self._correlations.items(),
-                key=lambda x: x[1].sample_count,
+                # Tuple sort: (True, 500) > (True, 100) > (False, 9999)
+                key=lambda x: (x[1].has_button_training, x[1].sample_count),
                 reverse=True,
             )
             self._correlations = dict(sorted_corrs[:MAX_CORRELATIONS_PER_AREA])
 
-        # Enforce limit for absolute profiles (same limit)
+        # Enforce limit for absolute profiles (same logic)
         if len(self._absolute_profiles) > MAX_CORRELATIONS_PER_AREA:
             sorted_profiles = sorted(
                 self._absolute_profiles.items(),
-                key=lambda x: x[1].sample_count,
+                key=lambda x: (x[1].has_button_training, x[1].sample_count),
                 reverse=True,
             )
             self._absolute_profiles = dict(sorted_profiles[:MAX_CORRELATIONS_PER_AREA])
