@@ -227,7 +227,7 @@ class BermudaIrkManager:
 
         return _unsubscribe
 
-    def async_diagnostics_no_redactions(self) -> dict[str, Any]:
+    def get_diagnostics_no_redactions(self) -> dict[str, Any]:
         """Return diagnostic info. Make sure to run redactions over the results."""
         nowstamp = monotonic_time_coarse()
         macs = {}

@@ -138,6 +138,12 @@ class FmdnIntegration:
             return bytes(eid_data)
 
         if isinstance(eid_data, str):
+            # Limit input length to prevent DoS via oversized strings
+            # 128 hex chars = 64 bytes, far exceeding any valid EID (20-32 bytes)
+            max_eid_hex_length = 128
+            if len(eid_data) > max_eid_hex_length:
+                _LOGGER.debug("EID hex string too long (%d chars), rejecting", len(eid_data))
+                return None
             cleaned = eid_data.replace("0x", "").replace(":", "").replace(" ", "")
             try:
                 return bytes.fromhex(cleaned)
@@ -435,6 +441,11 @@ class FmdnIntegration:
                 continue
             # Found a googlefindmy identifier
             id_value: str = str(identifier[1])
+            # Limit identifier length to prevent memory issues from malformed data
+            # 256 chars is generous for "entry_id:device_id" format
+            max_identifier_length = 256
+            if len(id_value) > max_identifier_length:
+                id_value = id_value[:max_identifier_length]
             colon_count = id_value.count(":")
             # Prefer the "entry_id:device_id" format (1 colon) as it matches
             # what the EID resolver returns for canonical_id

@@ -10,6 +10,7 @@ from typing import Any
 from bluetooth_data_tools import monotonic_time_coarse
 
 from custom_components.bermuda.const import _LOGGER, PRUNE_TIME_FMDN
+from custom_components.bermuda.util import is_mac_address
 
 
 class EidResolutionStatus(Enum):
@@ -94,6 +95,11 @@ class BermudaFmdnManager:
             canonical_id: Canonical identifier from resolver if available
 
         """
+        # Validate source_mac format to prevent storing malformed keys
+        if not is_mac_address(source_mac):
+            _LOGGER.debug("Invalid source_mac format rejected: %s", source_mac[:50])
+            return
+
         nowstamp = monotonic_time_coarse()
         eid_hex = eid.hex()
 
@@ -121,15 +127,14 @@ class BermudaFmdnManager:
                 canonical_id=canonical_id,
             )
             self._stats.total_eids_seen += 1
+            # Update resolution statistics only for NEW EIDs to avoid double-counting
+            self._update_stats(resolution_status)
 
         # Track MAC -> EID mapping
         if source_mac not in self._mac_to_eids:
             self._mac_to_eids[source_mac] = []
         if eid_hex not in self._mac_to_eids[source_mac]:
             self._mac_to_eids[source_mac].append(eid_hex)
-
-        # Update statistics based on resolution status
-        self._update_stats(resolution_status)
 
     def _update_stats(self, resolution_status: EidResolutionStatus | str) -> None:
         """Update resolution statistics based on status."""
@@ -209,7 +214,7 @@ class BermudaFmdnManager:
             return seen.resolution_status
         return None
 
-    def async_diagnostics_no_redactions(self) -> dict[str, Any]:
+    def get_diagnostics_no_redactions(self) -> dict[str, Any]:
         """
         Return diagnostic info for FMDN resolution.
 

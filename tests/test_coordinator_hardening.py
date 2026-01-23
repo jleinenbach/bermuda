@@ -14,6 +14,7 @@ from homeassistant.helpers import floor_registry as fr
 
 from custom_components.bermuda import coordinator as coordinator_mod
 from custom_components.bermuda import services as services_mod
+from custom_components.bermuda import area_selection as area_selection_mod
 from custom_components.bermuda.bermuda_device import BermudaDevice
 from custom_components.bermuda.fmdn import BermudaFmdnManager, FmdnIntegration
 from custom_components.bermuda.bermuda_irk import BermudaIrkManager
@@ -105,6 +106,7 @@ def test_refresh_area_by_min_distance_handles_empty_incumbent_history(
 ) -> None:
     """A challenger with history should not fail when incumbent has none."""
     monkeypatch.setattr(coordinator_mod, "monotonic_time_coarse", lambda: 1000.0)
+    monkeypatch.setattr(area_selection_mod, "monotonic_time_coarse", lambda: 1000.0)
     coordinator = _make_coordinator(hass)
     device = _configure_device(coordinator, "AA:BB:CC:11:22:33")
 

@@ -39,7 +39,19 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from .base import SignalFilter
-from .const import KALMAN_MEASUREMENT_NOISE
+from .const import (
+    DEFAULT_UPDATE_DT,
+    KALMAN_MEASUREMENT_NOISE,
+    MAX_UPDATE_DT,
+    MIN_UPDATE_DT,
+)
+from .ukf_numpy import (
+    cholesky_numpy,
+    is_numpy_available,
+    matrix_inverse_numpy,
+    matrix_multiply_numpy,
+    sigma_points_numpy,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -70,6 +82,19 @@ MIN_VARIANCE: float = 0.01
 # Default RSSI for unobserved scanners (very weak signal)
 DEFAULT_RSSI: float = -100.0
 
+# NumPy acceleration: Use NumPy for ALL matrix operations if available.
+# This ensures consistent numerical behavior across all installations.
+#
+# Previous design used a threshold (n > 10), but this caused:
+# - Inconsistent results between users with different scanner counts
+# - Hard-to-debug "works for me" issues due to floating-point differences
+# - Unnecessary complexity for minimal performance gain (0.1ms vs 0.01ms)
+#
+# New design: If NumPy is available, use it. Period.
+# This gives consistent behavior: all NumPy users get identical results,
+# all pure-Python users get identical results.
+USE_NUMPY_IF_AVAILABLE: bool = True
+
 # Minimum variance floor for fingerprint matching.
 # Prevents "hyper-precision paradox" where converged Kalman filters
 # have very low variance (2-5), causing normal BLE fluctuations (3-5 dB)
@@ -91,10 +116,29 @@ def _cholesky_decompose(matrix: list[list[float]]) -> list[list[float]]:
     """
     Compute Cholesky decomposition L such that matrix = L @ L.T.
 
-    Uses the Cholesky-Banachiewicz algorithm. Returns lower triangular matrix.
-    Raises ValueError if matrix is not positive definite.
+    Uses NumPy acceleration if available for consistent numerical behavior
+    across all installations. Falls back to Cholesky-Banachiewicz algorithm.
+
+    Args:
+        matrix: Symmetric positive-definite matrix.
+
+    Returns:
+        Lower triangular matrix L.
+
+    Note:
+        Small regularization is automatically added for numerical stability.
+
     """
+    # Try NumPy if available (consistent behavior for all users with NumPy)
+    if USE_NUMPY_IF_AVAILABLE and is_numpy_available():
+        result = cholesky_numpy(matrix)
+        if result is not None:
+            return result
+        # Fall through to pure Python if NumPy fails
+
     n = len(matrix)
+
+    # Pure Python implementation (Cholesky-Banachiewicz)
     lower = [[0.0] * n for _ in range(n)]
 
     for i in range(n):
@@ -107,7 +151,9 @@ def _cholesky_decompose(matrix: list[list[float]]) -> list[list[float]]:
                     # Matrix not positive definite - add small regularization
                     val = MIN_VARIANCE
                 lower[i][j] = math.sqrt(val)
-            elif lower[j][j] == 0:
+            elif abs(lower[j][j]) < MIN_VARIANCE:
+                # Near-zero diagonal: treat as zero to avoid numerical instability
+                # Using tolerance check instead of exact equality (lower[j][j] == 0)
                 lower[i][j] = 0.0
             else:
                 lower[i][j] = (matrix[i][j] - sum_k) / lower[j][j]
@@ -122,7 +168,18 @@ def _matrix_add(a: list[list[float]], b: list[list[float]], scale_b: float = 1.0
 
 
 def _matrix_multiply(a: list[list[float]], b: list[list[float]]) -> list[list[float]]:
-    """Multiply two matrices."""
+    """
+    Multiply two matrices.
+
+    Uses NumPy acceleration if available for consistent behavior.
+    """
+    # Try NumPy if available
+    if USE_NUMPY_IF_AVAILABLE and is_numpy_available():
+        result = matrix_multiply_numpy(a, b)
+        if result is not None:
+            return result
+
+    # Pure Python implementation
     n = len(a)
     m = len(b[0])
     k = len(b)
@@ -138,11 +195,31 @@ def _matrix_transpose(a: list[list[float]]) -> list[list[float]]:
 
 def _matrix_inverse(matrix: list[list[float]]) -> list[list[float]]:
     """
-    Compute matrix inverse using Gauss-Jordan elimination.
+    Compute matrix inverse.
 
-    For small matrices (typical BLE scanner count 3-10), this is efficient.
+    Uses NumPy acceleration if available for consistent numerical behavior,
+    otherwise uses Gauss-Jordan elimination.
+
+    Args:
+        matrix: Square matrix.
+
+    Returns:
+        Inverse matrix.
+
+    Note:
+        Small regularization is automatically added for numerical stability.
+
     """
+    # Try NumPy if available
+    if USE_NUMPY_IF_AVAILABLE and is_numpy_available():
+        result = matrix_inverse_numpy(matrix)
+        if result is not None:
+            return result
+        # Fall through to pure Python if NumPy fails
+
     n = len(matrix)
+
+    # Pure Python implementation (Gauss-Jordan elimination)
     # Create augmented matrix [A | I]
     aug = [row[:] + [1.0 if i == j else 0.0 for j in range(n)] for i, row in enumerate(matrix)]
 
@@ -233,6 +310,9 @@ class UnscentedKalmanFilter(SignalFilter):
     sample_count: int = 0
     _initialized: bool = False
 
+    # Time-aware filtering: track last timestamp for dt calculation
+    _last_timestamp: float | None = field(default=None, repr=False)
+
     def __post_init__(self) -> None:
         """Initialize state vector and covariance if scanners provided."""
         if self.scanner_addresses and not self._initialized:
@@ -302,6 +382,8 @@ class UnscentedKalmanFilter(SignalFilter):
         """
         Compute sigma points for the UKF.
 
+        Uses NumPy acceleration for large scanner networks if available.
+
         Returns:
             Tuple of (sigma_points, weights_mean, weights_cov)
             - sigma_points: 2n+1 points, each of dimension n
@@ -325,6 +407,14 @@ class UnscentedKalmanFilter(SignalFilter):
         weights_mean = [w0_mean] + [wi] * (2 * n)
         weights_cov = [w0_cov] + [wi] * (2 * n)
 
+        # Try NumPy if available (consistent behavior for all users)
+        if USE_NUMPY_IF_AVAILABLE and is_numpy_available():
+            sigma_points_np = sigma_points_numpy(self._x, self._p_cov, gamma)
+            if sigma_points_np is not None:
+                return sigma_points_np, weights_mean, weights_cov
+            # Fall through to pure Python if NumPy fails
+
+        # Pure Python implementation
         # Compute sqrt(P) using Cholesky decomposition
         try:
             sqrt_cov = _cholesky_decompose(self._p_cov)
@@ -391,15 +481,26 @@ class UnscentedKalmanFilter(SignalFilter):
         self.sample_count += 1
         return measurement
 
-    def update_multi(self, measurements: dict[str, float]) -> list[float]:
+    def update_multi(
+        self,
+        measurements: dict[str, float],
+        timestamp: float | None = None,
+    ) -> list[float]:
         """
         Update with multi-scanner RSSI measurements.
 
         Handles partial observations: if some scanners don't see the device,
         their state uncertainty grows but the overall estimate remains valid.
 
+        Time-Aware Filtering:
+            When timestamps are provided, automatically runs predict() with
+            the calculated dt before the update step. This models uncertainty
+            growth during the time between measurements.
+
         Args:
             measurements: Dict of scanner_address -> RSSI value
+            timestamp: Optional timestamp (seconds). When provided, enables
+                       time-aware filtering with automatic predict() call.
 
         Returns:
             Updated state vector
@@ -408,6 +509,14 @@ class UnscentedKalmanFilter(SignalFilter):
         if not measurements:
             return self._x.copy()
 
+        # Calculate dt for time-aware predict
+        dt = DEFAULT_UPDATE_DT
+        if timestamp is not None:
+            if self._last_timestamp is not None:
+                raw_dt = timestamp - self._last_timestamp
+                dt = max(MIN_UPDATE_DT, min(raw_dt, MAX_UPDATE_DT))
+            self._last_timestamp = timestamp
+
         # Ensure all scanners are tracked
         for addr in measurements:
             if addr not in self.scanner_addresses:
@@ -415,9 +524,15 @@ class UnscentedKalmanFilter(SignalFilter):
 
         if not self._initialized:
             self._initialize_state()
+            if timestamp is not None:
+                self._last_timestamp = timestamp
 
         n = self.n_scanners
         self.sample_count += 1
+
+        # Time-aware predict: grow uncertainty based on time since last update
+        # This models the fact that longer gaps = more uncertainty
+        self.predict(dt=dt)
 
         # Build measurement vector and observation matrix
         # Only include scanners that provided measurements
@@ -492,6 +607,94 @@ class UnscentedKalmanFilter(SignalFilter):
         self._p_cov = _matrix_add(self._p_cov, k_pzz_k_t, scale_b=-1.0)
 
         # Ensure P remains positive semi-definite (numerical stability)
+        for i in range(n):
+            self._p_cov[i][i] = max(self._p_cov[i][i], MIN_VARIANCE)
+
+        return self._x.copy()
+
+    def update_sequential(
+        self,
+        measurements: dict[str, float],
+        timestamp: float | None = None,
+    ) -> list[float]:
+        """
+        Update with multi-scanner RSSI measurements using sequential scalar updates.
+
+        This is an alternative to update_multi() that processes observations
+        one at a time using scalar Kalman equations. Benefits:
+        - O(n²) per observation vs O(n³) for full matrix approach
+        - Better for partial observations (only some scanners see device)
+        - Numerically more stable for ill-conditioned covariance matrices
+
+        The result is mathematically equivalent to update_multi() but may have
+        small numerical differences due to floating point operations.
+
+        Args:
+            measurements: Dict of scanner_address -> RSSI value
+            timestamp: Optional timestamp for time-aware filtering.
+
+        Returns:
+            Updated state vector
+
+        """
+        if not measurements:
+            return self._x.copy()
+
+        # Calculate dt for time-aware predict
+        dt = DEFAULT_UPDATE_DT
+        if timestamp is not None:
+            if self._last_timestamp is not None:
+                raw_dt = timestamp - self._last_timestamp
+                dt = max(MIN_UPDATE_DT, min(raw_dt, MAX_UPDATE_DT))
+            self._last_timestamp = timestamp
+
+        # Ensure all scanners are tracked
+        for addr in measurements:
+            if addr not in self.scanner_addresses:
+                self.add_scanner(addr)
+
+        if not self._initialized:
+            self._initialize_state()
+            if timestamp is not None:
+                self._last_timestamp = timestamp
+
+        n = self.n_scanners
+        self.sample_count += 1
+
+        # Time-aware predict
+        self.predict(dt=dt)
+
+        # Process each observation sequentially using scalar Kalman equations
+        for addr, rssi in measurements.items():
+            i = self.scanner_addresses.index(addr)
+
+            # Extract row i of covariance (P[i, :])
+            p_row = self._p_cov[i]
+
+            # Innovation variance (scalar): S = P[i,i] + R
+            s = p_row[i] + self.measurement_noise
+
+            # Avoid division by zero
+            s = max(s, MIN_VARIANCE)
+
+            # Kalman gain (vector): K = P[:, i] / S
+            # Note: For symmetric P, P[:, i] = P[i, :] = p_row
+            k = [p_row[j] / s for j in range(n)]
+
+            # Innovation (scalar): y = z - x[i]
+            innovation = rssi - self._x[i]
+
+            # Update state: x = x + K * y
+            for j in range(n):
+                self._x[j] += k[j] * innovation
+
+            # Update covariance: P = P - K @ K.T * S
+            # This is equivalent to P = (I - K @ H) @ P for scalar observation
+            for row in range(n):
+                for col in range(n):
+                    self._p_cov[row][col] -= k[row] * k[col] * s
+
+        # Ensure P remains positive semi-definite
         for i in range(n):
             self._p_cov[i][i] = max(self._p_cov[i][i], MIN_VARIANCE)
 
@@ -640,6 +843,7 @@ class UnscentedKalmanFilter(SignalFilter):
         self.scanner_addresses = []
         self.sample_count = 0
         self._initialized = False
+        self._last_timestamp = None
 
     def get_diagnostics(self) -> dict[str, Any]:
         """Return diagnostic information for debugging."""

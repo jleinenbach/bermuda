@@ -454,9 +454,7 @@ class TestControlledEvolution:
         corr.reset_training()
 
         # Both filters should be cleared (clean slate)
-        assert corr.expected_delta == 0.0, (
-            f"After reset, both filters should be cleared. Got {corr.expected_delta}"
-        )
+        assert corr.expected_delta == 0.0, f"After reset, both filters should be cleared. Got {corr.expected_delta}"
         assert not corr.has_button_training, "Button filter should be cleared"
         assert corr.auto_sample_count == 0, "Auto filter should be cleared"
         assert corr.button_sample_count == 0, "Button sample count should be 0"
