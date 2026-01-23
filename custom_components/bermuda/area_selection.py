@@ -99,6 +99,8 @@ from .correlation import AreaProfile, RoomProfile, z_scores_to_confidence
 from .filters import UnscentedKalmanFilter
 
 if TYPE_CHECKING:
+    from homeassistant.helpers.area_registry import AreaRegistry
+
     from .bermuda_advert import BermudaAdvert
     from .bermuda_device import BermudaDevice
     from .coordinator import BermudaDataUpdateCoordinator
@@ -200,27 +202,27 @@ class AreaSelectionHandler:
         return self.coordinator.options
 
     @property
-    def correlations(self) -> dict[str, dict[str, Any]]:
+    def correlations(self) -> dict[str, dict[str, AreaProfile]]:
         """Access device-specific correlation profiles."""
         return self.coordinator.correlations
 
     @property
-    def room_profiles(self) -> dict[str, Any]:
+    def room_profiles(self) -> dict[str, RoomProfile]:
         """Access device-independent room profiles."""
         return self.coordinator.room_profiles
 
     @property
-    def device_ukfs(self) -> dict[str, Any]:
+    def device_ukfs(self) -> dict[str, UnscentedKalmanFilter]:
         """Access per-device UKF states."""
         return self.coordinator.device_ukfs
 
     @property
-    def _scanners(self) -> set[Any]:
+    def _scanners(self) -> set[BermudaDevice]:
         """Access scanner set."""
         return self.coordinator._scanners  # noqa: SLF001
 
     @property
-    def ar(self) -> Any:
+    def ar(self) -> AreaRegistry | None:
         """Access Home Assistant area registry."""
         return self.coordinator.ar
 
@@ -309,7 +311,7 @@ class AreaSelectionHandler:
         This is essential for scannerless rooms where we can't get floor_id from
         a scanner_device - we must look up the area directly.
         """
-        if area_id is None:
+        if area_id is None or self.ar is None:
             return None
         area = self.ar.async_get_area(area_id)
         if area is not None:
@@ -336,7 +338,7 @@ class AreaSelectionHandler:
         Will return None if the area id does *not* resolve to a single
         known area name.
         """
-        if area_id is None:
+        if area_id is None or self.ar is None:
             return None
 
         areas = self.ar.async_get_area(area_id)

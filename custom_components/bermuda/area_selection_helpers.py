@@ -6,13 +6,91 @@ Extracted from area_selection.py for improved testability and reduced complexity
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from .bermuda_advert import BermudaAdvert
     from .bermuda_device import BermudaDevice
+
+
+@runtime_checkable
+class AdvertAnalyzerProtocol(Protocol):
+    """
+    Protocol for AdvertAnalyzer to enable dependency injection in tests.
+
+    This allows tests to create mock implementations without depending on
+    the full BermudaDevice/BermudaAdvert class hierarchy.
+    """
+
+    @property
+    def device(self) -> BermudaDevice:
+        """The device being analyzed."""
+        ...
+
+    @property
+    def nowstamp(self) -> float:
+        """Current monotonic timestamp."""
+        ...
+
+    @property
+    def evidence_cutoff(self) -> float:
+        """Timestamp cutoff for valid evidence."""
+        ...
+
+    @property
+    def max_radius(self) -> float:
+        """Maximum distance radius for consideration."""
+        ...
+
+    def effective_distance(self, advert: BermudaAdvert | None) -> float | None:
+        """Get the cached effective distance for an advert."""
+        ...
+
+    def belongs(self, advert: BermudaAdvert | None) -> bool:
+        """Check if advert belongs to this device's advertisement collection."""
+        ...
+
+    def within_evidence(self, advert: BermudaAdvert | None) -> bool:
+        """Check if advert timestamp is within the evidence window."""
+        ...
+
+    def has_area(self, advert: BermudaAdvert | None) -> bool:
+        """Check if advert has a valid area assignment."""
+        ...
+
+    def area_candidate(self, advert: BermudaAdvert | None) -> bool:
+        """Check if advert can be considered for area selection."""
+        ...
+
+    def is_distance_contender(self, advert: BermudaAdvert | None) -> bool:
+        """Check if advert qualifies as a distance contender."""
+        ...
+
+    def has_distance_contender(self) -> bool:
+        """Check if any advert for this device is a distance contender."""
+        ...
+
+    def get_floor_id(self, advert: BermudaAdvert | None) -> str | None:
+        """Get floor_id from advert's scanner device."""
+        ...
+
+    def is_cross_floor(
+        self,
+        current: BermudaAdvert | None,
+        candidate: BermudaAdvert | None,
+    ) -> bool:
+        """Check if switching from current to candidate would cross floors."""
+        ...
+
+    def get_visible_scanner_addresses(self) -> set[str]:
+        """Get addresses of all scanners currently seeing this device."""
+        ...
+
+    def get_all_known_scanners_for_area(self, area_id: str) -> set[str]:
+        """Get all scanner addresses that have ever seen this device in this area."""
+        ...
 
 
 class AdvertAnalyzer:
