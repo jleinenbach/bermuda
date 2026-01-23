@@ -88,10 +88,12 @@ class TestMatrixOperations:
         # lower @ lower.T should equal a
         lower_t = _matrix_transpose(lower)
         reconstructed = _matrix_multiply(lower, lower_t)
-        assert abs(reconstructed[0][0] - 4.0) < 1e-6
-        assert abs(reconstructed[0][1] - 2.0) < 1e-6
-        assert abs(reconstructed[1][0] - 2.0) < 1e-6
-        assert abs(reconstructed[1][1] - 5.0) < 1e-6
+        # Note: NumPy backend adds 1e-6 regularization for numerical stability,
+        # so we use 1e-5 tolerance to accommodate both backends
+        assert abs(reconstructed[0][0] - 4.0) < 1e-5
+        assert abs(reconstructed[0][1] - 2.0) < 1e-5
+        assert abs(reconstructed[1][0] - 2.0) < 1e-5
+        assert abs(reconstructed[1][1] - 5.0) < 1e-5
 
 
 class TestUKFInitialization:

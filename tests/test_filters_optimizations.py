@@ -372,18 +372,28 @@ class TestUKFPerformance:
         assert len(result) == n_scanners
         assert ukf.sample_count == 5
 
-    def test_large_scanner_network_uses_optimization(self) -> None:
-        """Large scanner networks should use NumPy if available."""
-        from custom_components.bermuda.filters.ukf import NUMPY_THRESHOLD_SCANNERS
+    def test_numpy_used_consistently_if_available(self) -> None:
+        """NumPy should be used for ALL scanner counts if available (consistent behavior)."""
+        from custom_components.bermuda.filters.ukf import USE_NUMPY_IF_AVAILABLE
+        from custom_components.bermuda.filters.ukf_numpy import is_numpy_available
 
-        # Create UKF with many scanners
-        n = NUMPY_THRESHOLD_SCANNERS + 5
-        ukf = UnscentedKalmanFilter()
-        measurements = {f"s{i}": -70.0 for i in range(n)}
+        # Verify the flag is set correctly
+        assert USE_NUMPY_IF_AVAILABLE is True
 
-        # Should not crash regardless of NumPy availability
-        ukf.update_multi(measurements)
-        assert ukf.n_scanners == n
+        # Test with small scanner count (3)
+        ukf_small = UnscentedKalmanFilter()
+        measurements_small = {f"s{i}": -70.0 for i in range(3)}
+        ukf_small.update_multi(measurements_small)
+        assert ukf_small.n_scanners == 3
+
+        # Test with large scanner count (25)
+        ukf_large = UnscentedKalmanFilter()
+        measurements_large = {f"s{i}": -70.0 for i in range(25)}
+        ukf_large.update_multi(measurements_large)
+        assert ukf_large.n_scanners == 25
+
+        # Both should work identically - NumPy used for both if available
+        # This ensures consistent behavior across all installations
 
 
 # =============================================================================

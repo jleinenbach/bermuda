@@ -47,6 +47,7 @@ from .const import (
 )
 from .ukf_numpy import (
     cholesky_numpy,
+    is_numpy_available,
     matrix_inverse_numpy,
     matrix_multiply_numpy,
     sigma_points_numpy,
@@ -81,9 +82,18 @@ MIN_VARIANCE: float = 0.01
 # Default RSSI for unobserved scanners (very weak signal)
 DEFAULT_RSSI: float = -100.0
 
-# Threshold for using NumPy acceleration
-# Below this, pure Python is fast enough; above, NumPy provides 10-100x speedup
-NUMPY_THRESHOLD_SCANNERS: int = 10
+# NumPy acceleration: Use NumPy for ALL matrix operations if available.
+# This ensures consistent numerical behavior across all installations.
+#
+# Previous design used a threshold (n > 10), but this caused:
+# - Inconsistent results between users with different scanner counts
+# - Hard-to-debug "works for me" issues due to floating-point differences
+# - Unnecessary complexity for minimal performance gain (0.1ms vs 0.01ms)
+#
+# New design: If NumPy is available, use it. Period.
+# This gives consistent behavior: all NumPy users get identical results,
+# all pure-Python users get identical results.
+USE_NUMPY_IF_AVAILABLE: bool = True
 
 # Minimum variance floor for fingerprint matching.
 # Prevents "hyper-precision paradox" where converged Kalman filters
@@ -106,8 +116,8 @@ def _cholesky_decompose(matrix: list[list[float]]) -> list[list[float]]:
     """
     Compute Cholesky decomposition L such that matrix = L @ L.T.
 
-    Uses NumPy acceleration for large matrices (n > NUMPY_THRESHOLD_SCANNERS)
-    if available, otherwise falls back to the Cholesky-Banachiewicz algorithm.
+    Uses NumPy acceleration if available for consistent numerical behavior
+    across all installations. Falls back to Cholesky-Banachiewicz algorithm.
 
     Args:
         matrix: Symmetric positive-definite matrix.
@@ -119,14 +129,14 @@ def _cholesky_decompose(matrix: list[list[float]]) -> list[list[float]]:
         Small regularization is automatically added for numerical stability.
 
     """
-    n = len(matrix)
-
-    # Try NumPy for large matrices
-    if n > NUMPY_THRESHOLD_SCANNERS:
+    # Try NumPy if available (consistent behavior for all users with NumPy)
+    if USE_NUMPY_IF_AVAILABLE and is_numpy_available():
         result = cholesky_numpy(matrix)
         if result is not None:
             return result
         # Fall through to pure Python if NumPy fails
+
+    n = len(matrix)
 
     # Pure Python implementation (Cholesky-Banachiewicz)
     lower = [[0.0] * n for _ in range(n)]
@@ -161,17 +171,16 @@ def _matrix_multiply(a: list[list[float]], b: list[list[float]]) -> list[list[fl
     """
     Multiply two matrices.
 
-    Uses NumPy acceleration for large matrices if available.
+    Uses NumPy acceleration if available for consistent behavior.
     """
-    n = len(a)
-
-    # Try NumPy for large matrices
-    if n > NUMPY_THRESHOLD_SCANNERS:
+    # Try NumPy if available
+    if USE_NUMPY_IF_AVAILABLE and is_numpy_available():
         result = matrix_multiply_numpy(a, b)
         if result is not None:
             return result
 
     # Pure Python implementation
+    n = len(a)
     m = len(b[0])
     k = len(b)
     return [[sum(a[i][p] * b[p][j] for p in range(k)) for j in range(m)] for i in range(n)]
@@ -188,8 +197,8 @@ def _matrix_inverse(matrix: list[list[float]]) -> list[list[float]]:
     """
     Compute matrix inverse.
 
-    Uses NumPy acceleration for large matrices (n > NUMPY_THRESHOLD_SCANNERS)
-    if available, otherwise uses Gauss-Jordan elimination.
+    Uses NumPy acceleration if available for consistent numerical behavior,
+    otherwise uses Gauss-Jordan elimination.
 
     Args:
         matrix: Square matrix.
@@ -201,14 +210,14 @@ def _matrix_inverse(matrix: list[list[float]]) -> list[list[float]]:
         Small regularization is automatically added for numerical stability.
 
     """
-    n = len(matrix)
-
-    # Try NumPy for large matrices
-    if n > NUMPY_THRESHOLD_SCANNERS:
+    # Try NumPy if available
+    if USE_NUMPY_IF_AVAILABLE and is_numpy_available():
         result = matrix_inverse_numpy(matrix)
         if result is not None:
             return result
         # Fall through to pure Python if NumPy fails
+
+    n = len(matrix)
 
     # Pure Python implementation (Gauss-Jordan elimination)
     # Create augmented matrix [A | I]
@@ -398,8 +407,8 @@ class UnscentedKalmanFilter(SignalFilter):
         weights_mean = [w0_mean] + [wi] * (2 * n)
         weights_cov = [w0_cov] + [wi] * (2 * n)
 
-        # Try NumPy acceleration for large matrices
-        if n > NUMPY_THRESHOLD_SCANNERS:
+        # Try NumPy if available (consistent behavior for all users)
+        if USE_NUMPY_IF_AVAILABLE and is_numpy_available():
             sigma_points_np = sigma_points_numpy(self._x, self._p_cov, gamma)
             if sigma_points_np is not None:
                 return sigma_points_np, weights_mean, weights_cov

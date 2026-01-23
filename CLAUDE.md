@@ -597,7 +597,7 @@ ukf.update_multi({"scanner1": -70.0, "scanner2": -75.0}, timestamp=time.time())
 
 ### UKF Performance Optimization (20+ Scanners)
 
-For installations with many scanners, the UKF uses optional NumPy acceleration:
+For installations with NumPy available, the UKF uses optional NumPy acceleration:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -612,8 +612,8 @@ For installations with many scanners, the UKF uses optional NumPy acceleration:
 │  │ _compute_sigma_points()│──────►│ sigma_points_numpy()               │    │
 │  └────────────────────────┘       └────────────────────────────────────┘    │
 │           │                                    │                             │
-│           │ if n > 10                          │ _get_numpy()                │
-│           │ and NumPy available               ▼                             │
+│           │ USE_NUMPY_IF_AVAILABLE             │ _get_numpy()                │
+│           │ and is_numpy_available()          ▼                             │
 │           │                        ┌─────────────────────────┐              │
 │           │                        │ Lazy NumPy Import       │              │
 │           │                        │ - Module-level caching  │              │
@@ -621,7 +621,7 @@ For installations with many scanners, the UKF uses optional NumPy acceleration:
 │           │                        │ - Returns None if N/A   │              │
 │           │                        └─────────────────────────┘              │
 │           │                                                                  │
-│           ▼ Fallback (n ≤ 10 or NumPy unavailable)                          │
+│           ▼ Fallback (NumPy unavailable or returns None)                    │
 │  ┌────────────────────────────────────────────────────────────────────┐     │
 │  │ Pure Python Implementation                                          │     │
 │  │ - Cholesky-Banachiewicz algorithm                                  │     │
@@ -632,13 +632,18 @@ For installations with many scanners, the UKF uses optional NumPy acceleration:
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Automatic Selection:**
-- n ≤ 10 scanners: Pure Python (adequate performance)
-- n > 10 scanners + NumPy available: NumPy backend (10-100x faster)
-- n > 10 scanners + no NumPy: Pure Python with optimizations
+**Consistent Backend Selection:**
+- NumPy available: NumPy backend for ALL scanner counts (consistent results)
+- NumPy unavailable: Pure Python for ALL scanner counts (consistent results)
+
+**Why NOT threshold-based (see Lesson 50):**
+The original design used `n > 10` threshold, but this created debugging nightmares:
+- User A (8 scanners) → pure Python → result X
+- User B (12 scanners) → NumPy → result Y (slightly different)
+- "Works on my machine" bugs are not worth 0.01ms optimization
 
 **Key Design Decisions:**
-1. **Threshold of 10**: NumPy overhead (~0.01ms) exceeds pure Python for small n
+1. **Consistent Behavior**: Same code path for all users with same NumPy availability
 2. **Lazy Import**: Avoids requiring NumPy as hard dependency
 3. **Graceful Fallback**: Always works, even without NumPy
 4. **Type Safety**: `cast()` used to satisfy mypy with numpy's `Any` returns
@@ -3879,39 +3884,15 @@ def update(self, measurement, timestamp=None):
 
 **Rule of Thumb**: For time-series filters with irregular intervals, always scale process noise by actual time delta, with reasonable min/max bounds.
 
-### 46. Threshold-Based Algorithm Selection
+### 46. ~~Threshold-Based Algorithm Selection~~ → See Lesson 50
 
-When multiple implementations exist for the same operation (e.g., pure Python vs NumPy), select based on problem size to optimize the common case.
+**SUPERSEDED**: This lesson originally recommended selecting algorithms based on input size (e.g., use NumPy only for n > 10). This was **wrong** because it creates inconsistent behavior:
 
-**Bug Pattern:**
-```python
-# BAD - Always use NumPy (overhead dominates for small n)
-def matrix_inverse(matrix):
-    return np.linalg.inv(matrix)  # 0.1ms setup cost even for 2x2!
-```
+- User A with 8 scanners → pure Python → results X
+- User B with 12 scanners → NumPy → results Y (slightly different due to numerical precision)
+- Debugging "works for me" scenarios becomes a nightmare
 
-**Fix Pattern:**
-```python
-# GOOD - Use NumPy only when benefit outweighs overhead
-NUMPY_THRESHOLD = 10  # Empirically determined
-
-def matrix_inverse(matrix):
-    n = len(matrix)
-    if n > NUMPY_THRESHOLD:
-        result = numpy_inverse(matrix)
-        if result is not None:
-            return result
-    return pure_python_inverse(matrix)
-```
-
-**Threshold Selection:**
-| Operation | Pure Python | NumPy Setup | Crossover Point |
-|-----------|-------------|-------------|-----------------|
-| Cholesky (n×n) | O(n³) | ~0.01ms | n ≈ 10 |
-| Matrix Inverse | O(n³) | ~0.01ms | n ≈ 10 |
-| Matrix Multiply | O(n³) | ~0.01ms | n ≈ 15 |
-
-**Rule of Thumb**: Profile both implementations across expected input sizes. The threshold should be where the accelerated version's overhead equals the baseline's compute time.
+**See Lesson 50** for the correct approach: Consistent Behavior Over Micro-Optimization.
 
 ### 47. Sequential vs Batch Updates for Partial Observations
 
@@ -4024,3 +4005,54 @@ else:
 - Tolerance should be based on the problem domain (e.g., variance in dB² for RSSI)
 
 **Rule of Thumb**: Never use `== 0` for floating-point division guards. Use `abs(x) < tolerance` where tolerance is meaningful for your domain.
+
+### 50. Consistent Behavior Over Micro-Optimization
+
+When optimizing with alternative implementations (pure Python vs NumPy, different algorithms), **never** switch implementations based on input size. This creates subtle behavioral differences that are impossible to debug.
+
+**Bug Pattern:**
+```python
+# BAD - Different users get different code paths!
+NUMPY_THRESHOLD = 10
+
+def matrix_inverse(matrix):
+    n = len(matrix)
+    if n > NUMPY_THRESHOLD:  # User A: 8 scanners → pure Python
+        return numpy_inverse(matrix)  # User B: 12 scanners → NumPy
+    return pure_python_inverse(matrix)
+# Result: Slight numerical differences, "works for me" bugs
+```
+
+**The Problem:**
+| User | Scanner Count | Code Path | Numerical Result |
+|------|---------------|-----------|------------------|
+| Alice | 8 | Pure Python | 5.00000000 |
+| Bob | 12 | NumPy (+1e-6 regularization) | 5.00000100 |
+
+When Alice reports a bug and Bob can't reproduce it, debugging becomes a nightmare. The 0.01ms "optimization" isn't worth the support burden.
+
+**Fix Pattern:**
+```python
+# GOOD - Consistent behavior for ALL users
+USE_NUMPY_IF_AVAILABLE = True
+
+def matrix_inverse(matrix):
+    if USE_NUMPY_IF_AVAILABLE and is_numpy_available():
+        result = numpy_inverse(matrix)
+        if result is not None:
+            return result
+    return pure_python_inverse(matrix)
+# All NumPy users get identical results, all pure-Python users get identical results
+```
+
+**When This Matters:**
+- Integration-level code (not micro-benchmarks)
+- Multi-user systems where "works on my machine" bugs are costly
+- Numerical algorithms where small differences can propagate
+
+**When Threshold-Based Selection is OK:**
+- Library/framework code with well-defined contracts
+- Performance-critical inner loops with measurable impact (> 10% runtime)
+- When you control all the test environments
+
+**Rule of Thumb**: Consistency trumps micro-optimization. A 0.01ms gain is never worth debugging "works for me" issues across different user environments.

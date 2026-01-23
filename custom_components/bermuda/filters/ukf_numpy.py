@@ -114,7 +114,7 @@ def cholesky_numpy(matrix: list[list[float]]) -> list[list[float]] | None:
         arr += np.eye(n) * 1e-6
 
         lower = np.linalg.cholesky(arr)
-        return cast(list[list[float]], lower.tolist())
+        return cast("list[list[float]]", lower.tolist())
 
     except np.linalg.LinAlgError:
         _LOGGER.debug("Cholesky decomposition failed (matrix not positive definite)")
@@ -149,7 +149,7 @@ def matrix_inverse_numpy(matrix: list[list[float]]) -> list[list[float]] | None:
         arr += np.eye(n) * 1e-6
 
         inv = np.linalg.inv(arr)
-        return cast(list[list[float]], inv.tolist())
+        return cast("list[list[float]]", inv.tolist())
 
     except np.linalg.LinAlgError:
         _LOGGER.debug("Matrix inversion failed (singular matrix)")
@@ -206,7 +206,7 @@ def matrix_multiply_numpy(
     a_arr = np.array(a, dtype=np.float64)
     b_arr = np.array(b, dtype=np.float64)
 
-    return cast(list[list[float]], (a_arr @ b_arr).tolist())
+    return cast("list[list[float]]", (a_arr @ b_arr).tolist())
 
 
 def outer_product_numpy(
@@ -231,7 +231,7 @@ def outer_product_numpy(
     a_arr = np.array(a, dtype=np.float64)
     b_arr = np.array(b, dtype=np.float64)
 
-    return cast(list[list[float]], np.outer(a_arr, b_arr).tolist())
+    return cast("list[list[float]]", np.outer(a_arr, b_arr).tolist())
 
 
 def sigma_points_numpy(
