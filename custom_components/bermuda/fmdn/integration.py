@@ -412,7 +412,9 @@ class FmdnIntegration:
         if device.last_seen >= stamp_fmdn:
             return False
 
-        prune_list.append(device.address)
+        # FIX: Prevent duplicate entries - device may appear in multiple metadevices' sources
+        if device.address not in prune_list:
+            prune_list.append(device.address)
         return True
 
     @staticmethod
