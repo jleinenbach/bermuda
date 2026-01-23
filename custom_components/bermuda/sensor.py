@@ -258,7 +258,19 @@ class BermudaSensorFloor(BermudaSensor):
 
 
 class BermudaSensorScanner(BermudaSensor):
-    """Sensor for name of nearest detected scanner."""
+    """
+    Sensor for name of nearest detected scanner.
+
+    This sensor reports the name of the scanner that currently has the
+    strongest signal to the tracked device (area_advert.scanner_address).
+
+    Note: We use .get() for the scanner lookup because the scanner device
+    may have been pruned from coordinator.devices in edge cases:
+    - Scanner was demoted (is_scanner=False) and then pruned
+    - Unusual configurations where scanners have rotating addresses
+    In these cases, the advert still references the old scanner_address
+    but the device entry no longer exists. Returning None is safe here.
+    """
 
     @property
     def unique_id(self) -> str:
@@ -270,9 +282,14 @@ class BermudaSensorScanner(BermudaSensor):
 
     @property
     def native_value(self) -> str | None:
-        # Don't use area_scanner.name because it comes from the advert
-        # entry. Instead refer to the BermudaDevice, which takes trouble
-        # to use user-given names etc.
+        """
+        Return the name of the nearest scanner.
+
+        Uses .get() for defensive lookup - the scanner device may have been
+        pruned from coordinator.devices while area_advert still references it.
+        This can happen when a scanner is demoted and pruned, or in unusual
+        configurations. Returns None if scanner not found.
+        """
         if self._device.area_advert is not None:
             scanner_address = self._device.area_advert.scanner_address
             scanner_device = self.coordinator.devices.get(scanner_address)
