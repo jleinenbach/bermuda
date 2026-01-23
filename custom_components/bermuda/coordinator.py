@@ -1145,11 +1145,25 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                     # BlueZ is pushing bogus adverts for paired but absent devices.
                     continue
 
+                # ============================================================
+                # RESOLUTION FIRST: Identity resolvers run BEFORE any filtering
+                # ============================================================
+                # Extract service_data early so resolvers can inspect it before
+                # any logic might discard or filter the device.
+                # Note: SERVICE_UUID_FMDN detection happens inside handle_advertisement,
+                # and RPA detection (first char in 4567) happens inside check_mac.
+                service_data_raw = advertisementdata.service_data or {}
+                service_data = cast("Mapping[str | int, Any]", service_data_raw)
+
+                # Create/get the device - this always succeeds, never filters
                 device = self._get_or_create_device(bledevice.address)
                 device.process_advertisement(scanner_device, advertisementdata)
 
-                service_data_raw = advertisementdata.service_data or {}
-                service_data = cast("Mapping[str | int, Any]", service_data_raw)
+                # Google FMDN Resolution: Must run on EVERY advertisement.
+                # This is critical for rotating MAC addresses - the resolver must have
+                # a chance to "claim" the device and link it to a metadevice.
+                # handle_advertisement checks for FMDN service data (UUID 0xFEAA)
+                # internally and returns early if not present.
                 self.fmdn.handle_advertisement(device, service_data)
 
                 # Apple IRK Resolution: Check if this MAC matches any known IRKs.
