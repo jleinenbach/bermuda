@@ -16,6 +16,7 @@ Typical parameters for BLE RSSI:
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -24,9 +25,14 @@ from .const import (
     ADAPTIVE_MIN_NOISE_MULTIPLIER,
     ADAPTIVE_NOISE_SCALE_PER_10DB,
     ADAPTIVE_RSSI_OFFSET_FROM_REF,
+    DEFAULT_UPDATE_DT,
     KALMAN_MEASUREMENT_NOISE,
     KALMAN_PROCESS_NOISE,
+    MAX_UPDATE_DT,
+    MIN_UPDATE_DT,
 )
+
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass
@@ -62,17 +68,31 @@ class KalmanFilter(SignalFilter):
     # Track if filter is initialized
     _initialized: bool = False
 
+    # Time-aware filtering: track last timestamp for dt calculation
+    _last_timestamp: float | None = field(default=None, repr=False)
+
     def update(self, measurement: float, timestamp: float | None = None) -> float:
         """
         Process a new RSSI measurement using Kalman filter equations.
 
         The Kalman filter update consists of two steps:
-        1. Predict: Project state and covariance ahead
+        1. Predict: Project state and covariance ahead (with dt-scaled process noise)
         2. Update: Incorporate new measurement
+
+        Time-Aware Filtering:
+            When timestamps are provided, the process noise is scaled by the time
+            delta (dt) since the last measurement. This is mathematically more
+            correct for irregular BLE advertisement intervals:
+            - Longer gaps = more uncertainty = more trust in new measurements
+            - Scanner outages properly increase state uncertainty
+
+            Formula: P_predicted = P + Q * dt (instead of P + Q)
 
         Args:
             measurement: Raw RSSI value in dBm
-            timestamp: Optional (unused in basic Kalman, but part of interface)
+            timestamp: Optional timestamp (seconds). When provided, enables
+                       time-aware filtering with dt-scaled process noise.
+                       When None, uses DEFAULT_UPDATE_DT (1.0s).
 
         Returns:
             Filtered RSSI estimate
@@ -80,17 +100,29 @@ class KalmanFilter(SignalFilter):
         """
         self.sample_count += 1
 
+        # Calculate dt for time-aware process noise scaling
+        dt = DEFAULT_UPDATE_DT
+        if timestamp is not None:
+            if self._last_timestamp is not None:
+                # Clamp dt to reasonable bounds
+                raw_dt = timestamp - self._last_timestamp
+                dt = max(MIN_UPDATE_DT, min(raw_dt, MAX_UPDATE_DT))
+            self._last_timestamp = timestamp
+
         if not self._initialized:
             # First measurement - initialize state
             self.estimate = measurement
             self.variance = self.measurement_noise
             self._initialized = True
+            if timestamp is not None:
+                self._last_timestamp = timestamp
             return self.estimate
 
         # Predict step
         # For static model: predicted state = current state
-        # Predicted variance increases by process noise
-        predicted_variance = self.variance + self.process_noise
+        # Predicted variance increases by process noise SCALED BY dt
+        # This models: longer time = more uncertainty about current state
+        predicted_variance = self.variance + self.process_noise * dt
 
         # Update step
         # Kalman gain: K = P / (P + Q)
@@ -150,6 +182,15 @@ class KalmanFilter(SignalFilter):
             - PMC5461075: "An Improved BLE Indoor Localization with Kalman-Based Fusion"
 
         """
+        # Validate ref_power (typical BLE range: -100 to 0 dBm)
+        # Invalid values can cause incorrect noise scaling
+        if not (-100 <= ref_power <= 0):
+            _LOGGER.warning(
+                "Invalid ref_power %.1f dBm (expected -100 to 0), using default -55",
+                ref_power,
+            )
+            ref_power = -55.0  # Safe default for most BLE devices
+
         # Calculate device-relative threshold
         # Signals within OFFSET dB of ref_power are considered "strong"
         threshold = ref_power - ADAPTIVE_RSSI_OFFSET_FROM_REF
@@ -198,6 +239,7 @@ class KalmanFilter(SignalFilter):
         self.variance = self.measurement_noise
         self.sample_count = 0
         self._initialized = False
+        self._last_timestamp = None
 
     def reset_to_value(
         self,
@@ -280,3 +322,56 @@ class KalmanFilter(SignalFilter):
             measurement_noise=config.measurement_noise,
             variance=config.initial_variance,
         )
+
+    def to_dict(self) -> dict[str, Any]:
+        """
+        Serialize filter state for persistence.
+
+        Returns:
+            Dictionary containing all state needed to restore the filter.
+            Can be passed to from_dict() for deserialization.
+
+        Example:
+            >>> kf = KalmanFilter()
+            >>> kf.update(-70.0)
+            >>> state = kf.to_dict()
+            >>> # Later...
+            >>> kf_restored = KalmanFilter.from_dict(state)
+
+        """
+        return {
+            "estimate": self.estimate,
+            "variance": self.variance,
+            "sample_count": self.sample_count,
+            "process_noise": self.process_noise,
+            "measurement_noise": self.measurement_noise,
+            "last_timestamp": self._last_timestamp,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> KalmanFilter:
+        """
+        Deserialize filter from dictionary.
+
+        Args:
+            data: Dictionary from to_dict() containing filter state.
+
+        Returns:
+            Restored KalmanFilter with previous state.
+
+        Raises:
+            KeyError: If required fields are missing from data.
+
+        """
+        filter_instance = cls(
+            process_noise=data.get("process_noise", KALMAN_PROCESS_NOISE),
+            measurement_noise=data.get("measurement_noise", KALMAN_MEASUREMENT_NOISE),
+        )
+        filter_instance.restore_state(
+            estimate=data.get("estimate", 0.0),
+            variance=data.get("variance", KALMAN_MEASUREMENT_NOISE),
+            sample_count=data.get("sample_count", 0),
+        )
+        # Restore timestamp for time-aware filtering
+        filter_instance._last_timestamp = data.get("last_timestamp")
+        return filter_instance

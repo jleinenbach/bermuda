@@ -21,6 +21,7 @@ Available Implementations:
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -124,3 +125,55 @@ class FilterConfig:
     # EMA alpha for adaptive filters (0 < alpha < 1)
     # Lower = slower adaptation, Higher = faster
     ema_alpha: float = 0.1
+
+
+def create_filter(
+    filter_type: str = "kalman",
+    config: FilterConfig | None = None,
+) -> SignalFilter:
+    """
+    Factory method for creating signal filters.
+
+    This provides a convenient way to instantiate filters by name,
+    useful for configuration-driven filter selection.
+
+    Args:
+        filter_type: Type of filter to create. One of:
+            - "kalman": 1D Kalman filter (default, best for most cases)
+            - "adaptive": EMA with CUSUM changepoint detection
+            - "ukf": Unscented Kalman Filter for multi-scanner fusion
+        config: Optional configuration. Uses sensible defaults if None.
+
+    Returns:
+        Configured SignalFilter instance.
+
+    Raises:
+        ValueError: If filter_type is not recognized.
+
+    Example:
+        >>> filter = create_filter("kalman")
+        >>> filtered = filter.update(-70.0)
+
+        >>> config = FilterConfig(process_noise=0.01)
+        >>> filter = create_filter("kalman", config)
+
+    """
+    # Lazy imports to avoid circular dependencies
+    from .adaptive import AdaptiveRobustFilter  # noqa: PLC0415
+    from .kalman import KalmanFilter  # noqa: PLC0415
+    from .ukf import UnscentedKalmanFilter  # noqa: PLC0415
+
+    config = config or FilterConfig()
+
+    factories: dict[str, Callable[[], SignalFilter]] = {
+        "kalman": lambda: KalmanFilter.from_config(config),
+        "adaptive": lambda: AdaptiveRobustFilter.from_config(config),
+        "ukf": lambda: UnscentedKalmanFilter(),
+    }
+
+    if filter_type not in factories:
+        valid_types = ", ".join(sorted(factories.keys()))
+        msg = f"Unknown filter type: '{filter_type}'. Valid types: {valid_types}"
+        raise ValueError(msg)
+
+    return factories[filter_type]()

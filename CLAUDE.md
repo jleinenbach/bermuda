@@ -525,6 +525,7 @@ Modular filter system for BLE RSSI signal processing:
 | `KalmanFilter` | `kalman.py` | ✅ | 1D linear Kalman for RSSI smoothing |
 | `AdaptiveRobustFilter` | `adaptive.py` | ✅ | EMA + CUSUM changepoint detection |
 | `UnscentedKalmanFilter` | `ukf.py` | ✅ | Multi-scanner fusion with fingerprints (experimental) |
+| `ukf_numpy.py` | `ukf_numpy.py` | ✅ | Optional NumPy acceleration for UKF |
 
 ### Filter Interface
 
@@ -534,6 +535,21 @@ class SignalFilter(ABC):
     def get_estimate(self) -> float: ...
     def get_variance(self) -> float: ...
     def reset(self) -> None: ...
+```
+
+### Filter Factory (Recommended)
+
+```python
+from custom_components.bermuda.filters import create_filter, FilterConfig
+
+# Create with defaults
+kf = create_filter("kalman")
+
+# Create with custom config
+config = FilterConfig(process_noise=0.01, measurement_noise=10.0)
+kf = create_filter("kalman", config)
+
+# Available types: "kalman", "adaptive", "ukf"
 ```
 
 ### Kalman Filter Usage
@@ -546,6 +562,70 @@ filtered_rssi = filter.update(raw_rssi)
 
 # Adaptive variant (adjusts noise based on signal strength)
 filtered_rssi = filter.update_adaptive(raw_rssi, ref_power=-55)
+```
+
+### Time-Aware Filtering
+
+The filters support time-aware filtering where process noise scales with the time
+delta between measurements. This is mathematically more correct for irregular BLE
+advertisement intervals (1-10+ seconds).
+
+```python
+# Time-aware Kalman filter
+kf = KalmanFilter()
+kf.update(-70.0, timestamp=time.time())  # First measurement
+# ... some time passes ...
+kf.update(-72.0, timestamp=time.time())  # Longer gap = more uncertainty
+
+# Time-aware UKF
+ukf = UnscentedKalmanFilter()
+ukf.update_multi({"scanner1": -70.0, "scanner2": -75.0}, timestamp=time.time())
+```
+
+**How it works:**
+- `P_predicted = P + Q * dt` instead of `P + Q`
+- Longer gaps = more uncertainty = more trust in new measurements
+- Scanner outages properly increase state uncertainty
+- Better tracking of devices with irregular advertisement intervals
+
+**Constants:**
+| Constant | Value | Purpose |
+|----------|-------|---------|
+| `DEFAULT_UPDATE_DT` | 1.0s | Default time delta when no timestamp provided |
+| `MIN_UPDATE_DT` | 0.01s | Minimum dt to prevent numerical issues |
+| `MAX_UPDATE_DT` | 60.0s | Cap to prevent extreme uncertainty growth |
+
+### UKF Performance Optimization (20+ Scanners)
+
+For installations with many scanners, the UKF uses optional NumPy acceleration:
+
+**Automatic Selection:**
+- n ≤ 10 scanners: Pure Python (adequate performance)
+- n > 10 scanners + NumPy available: NumPy backend (10-100x faster)
+- n > 10 scanners + no NumPy: Pure Python with optimizations
+
+**Sequential Update Alternative:**
+```python
+# For partial observations, sequential update can be faster
+ukf.update_sequential(measurements, timestamp=time.time())
+```
+
+**Performance Comparison (estimated):**
+| Method | n=5 | n=10 | n=20 | n=50 |
+|--------|-----|------|------|------|
+| Pure Python | 0.1ms | 0.5ms | 3ms | 30ms |
+| NumPy Backend | 0.01ms | 0.02ms | 0.05ms | 0.2ms |
+
+### KalmanFilter Serialization
+
+```python
+# Save filter state
+kf = KalmanFilter()
+kf.update(-70.0)
+state = kf.to_dict()
+
+# Restore filter state
+kf_restored = KalmanFilter.from_dict(state)
 ```
 
 ## Recent Changes (Session Notes)

@@ -108,3 +108,30 @@ ADAPTIVE_NOISE_SCALE_PER_10DB: Final = 1.5
 # Prevents over-trusting very strong signals (which can still have noise).
 # 0.5 means even very strong signals use at least 50% of base noise.
 ADAPTIVE_MIN_NOISE_MULTIPLIER: Final = 0.5
+
+# =============================================================================
+# Time-Aware Filtering Parameters
+# =============================================================================
+# BLE advertisements arrive at irregular intervals (1-10+ seconds).
+# Time-aware filtering scales process noise by dt (time delta) for
+# mathematically correct uncertainty modeling.
+#
+# P_predicted = P + Q * dt (instead of P + Q)
+#
+# Benefits:
+# - Longer gaps = more uncertainty = more trust in new measurements
+# - Scanner outages properly increase state uncertainty
+# - Better tracking of moving devices with irregular advertisements
+
+# Default time delta (seconds) when no timestamp provided.
+# 1.0s corresponds to typical BLE update rate.
+DEFAULT_UPDATE_DT: Final = 1.0
+
+# Minimum time delta to prevent numerical issues (seconds).
+# Timestamps very close together could cause near-zero process noise.
+MIN_UPDATE_DT: Final = 0.01
+
+# Maximum time delta to cap uncertainty growth (seconds).
+# Prevents extreme variance after very long gaps (e.g., device offline).
+# After 60s, additional time doesn't meaningfully add more uncertainty.
+MAX_UPDATE_DT: Final = 60.0
