@@ -1152,6 +1152,13 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                 service_data = cast("Mapping[str | int, Any]", service_data_raw)
                 self.fmdn.handle_advertisement(device, service_data)
 
+                # Apple IRK Resolution: Check if this MAC matches any known IRKs.
+                # This is called on every advertisement to catch cases where:
+                # 1. The IRK was learned after the device was first seen
+                # 2. The MAC rotated to a new address that now matches a known IRK
+                # The check is cheap because irk_manager caches results.
+                self.irk_manager.check_mac(bledevice.address)
+
         # end of for ha_scanner loop
         return True
 

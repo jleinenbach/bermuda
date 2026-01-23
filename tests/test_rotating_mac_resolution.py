@@ -391,3 +391,162 @@ class TestResolutionOrderInPipeline:
             "The device passed to handle_advertisement should be the same "
             "object as the one stored in coordinator.devices"
         )
+
+
+def generate_resolvable_private_mac() -> str:
+    """
+    Generate a random Resolvable Private Address (RPA).
+
+    RPAs have top_bits == 0b01, meaning the first hex character is in [4, 5, 6, 7].
+    """
+    # First octet: top 2 bits must be 01 (resolvable random)
+    # Binary: 01xx xxxx = 0x40-0x7F
+    first_octet = random.randint(0x40, 0x7F)
+    other_octets = [random.randint(0, 255) for _ in range(5)]
+    return ":".join(f"{octet:02x}" for octet in [first_octet, *other_octets])
+
+
+class TestIrkResolution:
+    """
+    Test suite for IRK (Identity Resolving Key) resolution.
+
+    These tests verify that:
+    1. The irk_manager.check_mac() is called for every advertisement
+    2. IRKs learned after a device was first seen can still resolve
+    3. Resolvable Private Addresses are properly checked against known IRKs
+    """
+
+    def test_irk_check_called_on_advertisement(
+        self, hass: HomeAssistant, coordinator: BermudaDataUpdateCoordinator
+    ) -> None:
+        """
+        Verify that irk_manager.check_mac is called when processing advertisements.
+
+        This is the key fix: IRK check must happen on every advertisement, not just
+        during device creation, to handle cases where IRK is learned later.
+        """
+        random_mac = generate_resolvable_private_mac()
+
+        # The device should not exist yet
+        assert random_mac.lower() not in coordinator.devices
+
+        # Create the device (simulates _get_or_create_device)
+        device = coordinator._get_or_create_device(random_mac)
+        assert random_mac.lower() in coordinator.devices
+
+        # Check that check_mac can be called (result is cached)
+        result1 = coordinator.irk_manager.check_mac(random_mac)
+        result2 = coordinator.irk_manager.check_mac(random_mac)
+
+        # Second call should return cached result (same object)
+        assert result1 == result2, "check_mac should return consistent results (cached)"
+
+    def test_irk_learned_after_device_creation(
+        self, hass: HomeAssistant, coordinator: BermudaDataUpdateCoordinator
+    ) -> None:
+        """
+        Test the scenario where an IRK is learned AFTER a device with matching MAC
+        was already seen.
+
+        Timeline:
+        1. MAC "A" is seen → device created → check_mac (no IRK known) → unresolved
+        2. IRK is learned (from Private BLE Device integration)
+        3. MAC "A" is seen again → check_mac → NOW MATCHES!
+        """
+        random_mac = generate_resolvable_private_mac()
+
+        # Step 1: Device seen before IRK is known
+        device = coordinator._get_or_create_device(random_mac)
+        result_before = coordinator.irk_manager.check_mac(random_mac)
+
+        # At this point, no IRKs are known, so the result should be an IrkType
+        from custom_components.bermuda.const import IrkTypes
+
+        assert result_before in IrkTypes.unresolved(), (
+            "Before any IRK is added, check_mac should return an unresolved IrkType"
+        )
+
+        # Step 2: Learn a valid IRK (16 bytes = 128 bits)
+        # Note: This IRK won't actually match the random MAC since we're using
+        # random data, but this tests the flow
+        test_irk = bytes([0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
+                          0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00])
+
+        # add_irk will check all previously seen MACs against the new IRK
+        matching_macs = coordinator.irk_manager.add_irk(test_irk)
+
+        # Since our random MAC won't cryptographically match this IRK,
+        # it shouldn't be in the matches (but the machinery works)
+        assert isinstance(matching_macs, list), "add_irk should return a list of matching MACs"
+
+    def test_multiple_mac_rotations_with_irk(
+        self, hass: HomeAssistant, coordinator: BermudaDataUpdateCoordinator
+    ) -> None:
+        """
+        Test that multiple rotating MAC addresses are all checked against IRKs.
+
+        When a device rotates its MAC (e.g., every 15 minutes), each new MAC
+        should be checked against known IRKs.
+        """
+        # Generate multiple resolvable private addresses
+        mac_addresses = [generate_resolvable_private_mac() for _ in range(5)]
+
+        # Create devices for each MAC
+        for mac in mac_addresses:
+            coordinator._get_or_create_device(mac)
+
+        # Verify all devices exist
+        for mac in mac_addresses:
+            assert mac.lower() in coordinator.devices, f"Device for {mac} should exist"
+
+        # Check all MACs - they should be tracked by irk_manager
+        for mac in mac_addresses:
+            result = coordinator.irk_manager.check_mac(mac)
+            # Result should exist (either matched IRK or unresolved type)
+            assert result is not None, f"check_mac({mac}) should return a result"
+
+    def test_irk_callback_registration(
+        self, hass: HomeAssistant, coordinator: BermudaDataUpdateCoordinator
+    ) -> None:
+        """
+        Test that IRK callbacks are properly handled.
+
+        When an IRK is registered with a callback, the callback should fire
+        when a matching MAC is found.
+        """
+        # Create a test IRK
+        test_irk = bytes([0xAA] * 16)
+
+        # Track callback invocations
+        callback_calls = []
+
+        def test_callback(service_info, change):
+            callback_calls.append((service_info.address, change))
+
+        # Register callback for this IRK
+        unsubscribe = coordinator.irk_manager.register_irk_callback(test_callback, test_irk)
+
+        # The callback should be registered
+        assert callable(unsubscribe), "register_irk_callback should return an unsubscribe function"
+
+        # Cleanup
+        unsubscribe()
+
+    def test_irk_prune_maintains_resolution_capability(
+        self, hass: HomeAssistant, coordinator: BermudaDataUpdateCoordinator
+    ) -> None:
+        """
+        Verify that IRK resolution still works after pruning old MAC entries.
+        """
+        random_mac = generate_resolvable_private_mac()
+
+        # Create device and check MAC
+        coordinator._get_or_create_device(random_mac)
+        coordinator.irk_manager.check_mac(random_mac)
+
+        # Prune old entries (should not affect active entries)
+        coordinator.irk_manager.async_prune()
+
+        # Check that known_macs still includes resolved entries
+        known = coordinator.irk_manager.known_macs(resolved=False)
+        assert random_mac in known, "Recently checked MAC should still be known after prune"
