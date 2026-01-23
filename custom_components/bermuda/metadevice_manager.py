@@ -37,7 +37,7 @@ if TYPE_CHECKING:
 
     from .bermuda_device import BermudaDevice
     from .coordinator import BermudaDataUpdateCoordinator
-    from .fmdn import BermudaFmdnManager
+    from .fmdn import FmdnIntegration
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -101,8 +101,8 @@ class MetadeviceManager:
         return self.coordinator.pb_state_sources
 
     @property
-    def fmdn(self) -> BermudaFmdnManager:
-        """Access FMDN manager."""
+    def fmdn(self) -> FmdnIntegration:
+        """Access FMDN integration."""
         return self.coordinator.fmdn
 
     @property
