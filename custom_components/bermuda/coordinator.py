@@ -1330,13 +1330,27 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
             # clean out the device/scanner advert pairs
             for advert_tuple in list(device.adverts.keys()):
-                if device.adverts[advert_tuple].device_address in prune_list:
+                advert = device.adverts[advert_tuple]
+                # Prune adverts where the tracked device is being pruned
+                if advert.device_address in prune_list:
                     _LOGGER.debug(
                         "Pruning metadevice advert %s aged %ds",
                         advert_tuple,
-                        nowstamp - device.adverts[advert_tuple].stamp,
+                        nowstamp - advert.stamp,
                     )
                     del device.adverts[advert_tuple]
+                # Also prune adverts where the scanner is being pruned
+                # This prevents KeyError when accessing devices[scanner_address]
+                elif advert.scanner_address in prune_list:
+                    _LOGGER.debug(
+                        "Pruning advert with pruned scanner %s aged %ds",
+                        advert_tuple,
+                        nowstamp - advert.stamp,
+                    )
+                    del device.adverts[advert_tuple]
+                    # Clear area_advert if it points to the pruned scanner
+                    if device.area_advert is advert:
+                        device.area_advert = None
 
     def discover_private_ble_metadevices(self) -> None:
         """Delegate to metadevice_manager for Private BLE device discovery."""
