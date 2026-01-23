@@ -3498,3 +3498,169 @@ Changes made based on peer review (2026-01-21):
 2. **`async_reset_device_training()` Error Handling**: Added try/except around `correlation_store.async_save()`. On failure, logs warning but still returns True (in-memory reset succeeded).
 
 3. **`KalmanFilter.restore_state()`**: New method for clean deserialization. Replaces direct `_initialized` access from external code. Used by `ScannerAbsoluteRssi.from_dict()` and `ScannerPairCorrelation.from_dict()`.
+
+---
+
+## Peer Review Session (2026-01-23)
+
+Changes made based on correlation module peer review:
+
+### Memory-Eviction Bug Fix
+
+**Problem**: Button-trained profiles could be deleted when auto-learning accumulated more samples.
+
+```python
+# BUG - Only sorts by sample_count, ignores button training!
+sorted_corrs = sorted(
+    self._correlations.items(),
+    key=lambda x: x[1].sample_count,
+    reverse=True,
+)
+# Button-trained profile with 10 samples gets evicted
+# when auto-learned profile has 50 samples!
+```
+
+**Fix**: Sort by tuple `(has_button_training, sample_count)` to NEVER evict button-trained profiles:
+
+```python
+# FIX - Button-trained profiles have priority
+sorted_corrs = sorted(
+    self._correlations.items(),
+    # Tuple sort: (True, 500) > (True, 100) > (False, 9999)
+    key=lambda x: (x[1].has_button_training, x[1].sample_count),
+    reverse=True,
+)
+```
+
+**Files changed**: `area_profile.py`, `room_profile.py`
+
+### Reset Training Strategy
+
+**Problem**: Should `reset_training()` clear only button data or both button AND auto data?
+
+**Decision**: Reset BOTH filters together.
+
+**Rationale**:
+1. **Simpler UX**: One button, complete reset
+2. **No "poisoned" data**: Auto-learning may have learned incorrect patterns based on wrong room selection
+3. **Indirect feedback loop**: After reset, new button training influences room selection, which then influences what auto-learning learns in the correct context
+
+```python
+def reset_training(self) -> None:
+    """Reset ALL learned data (button AND auto filters)."""
+    self._kalman_button.reset()  # Clear user anchor
+    self._kalman_auto.reset()    # Clear potentially poisoned auto data
+```
+
+**Files changed**: `scanner_pair.py`, `scanner_absolute.py`, `area_profile.py`, `room_profile.py`
+
+### Store Deserialization Error Handling
+
+**Problem**: Corrupt profile data in storage could crash entire load operation.
+
+**Fix**: Added per-profile try/except with warning logging:
+
+```python
+for device_addr, areas in data.get("devices", {}).items():
+    device_profiles[device_addr] = {}
+    for area_id, profile_data in areas.items():
+        try:
+            device_profiles[device_addr][area_id] = AreaProfile.from_dict(profile_data)
+        except (KeyError, TypeError, ValueError) as e:
+            _LOGGER.warning(
+                "Skipping corrupt device profile for %s/%s: %s",
+                device_addr, area_id, e,
+            )
+```
+
+**Files changed**: `store.py`
+
+### RoomProfile Completeness
+
+**Problem**: `RoomProfile` was missing `has_button_training` property and `reset_training()` method that sibling classes had.
+
+**Fix**: Added both methods for feature parity with `AreaProfile`.
+
+**Files changed**: `room_profile.py`
+
+---
+
+### Lesson Learned
+
+### 41. Memory-Eviction Sorting Must Respect User Intent
+
+When enforcing memory limits by evicting "least important" entries, ensure user-provided data is NEVER evicted in favor of auto-collected data, regardless of sample count.
+
+**Bug Pattern:**
+```python
+# BAD - Only considers sample count
+sorted_items = sorted(items, key=lambda x: x.sample_count, reverse=True)
+kept = sorted_items[:MAX_ITEMS]
+# Button-trained item with 10 samples evicted for auto-learned with 1000!
+```
+
+**Fix Pattern:**
+```python
+# GOOD - User intent takes priority
+sorted_items = sorted(
+    items,
+    # Tuple sort: (True, 10) > (False, 1000)
+    key=lambda x: (x.has_button_training, x.sample_count),
+    reverse=True,
+)
+kept = sorted_items[:MAX_ITEMS]
+```
+
+**Rule of Thumb**: In any eviction/pruning logic, user-provided data should have a "protected" tier that sample count alone cannot override.
+
+### 42. Reset Operations Should Clear Related State Completely
+
+When providing a "reset" or "undo" mechanism, consider whether related derived state should also be cleared. Partial resets can leave the system in an inconsistent state.
+
+**Bug Pattern:**
+```python
+# BAD - Only resets primary state
+def reset_training(self):
+    self._button_filter.reset()  # Cleared
+    # self._auto_filter still contains data learned in WRONG context!
+```
+
+**Fix Pattern:**
+```python
+# GOOD - Resets all related state
+def reset_training(self):
+    self._button_filter.reset()  # Clear user anchor
+    self._auto_filter.reset()     # Clear derived/related state too
+    # Both start fresh - auto will re-learn in correct context
+```
+
+**Key Insight**: When state A influences what state B learns (indirect feedback loop), resetting A without resetting B can leave B "poisoned" with old context.
+
+**Rule of Thumb**: Ask "What else was influenced by the state I'm resetting?" and consider resetting that too.
+
+### 43. Deserialization Should Be Resilient to Partial Corruption
+
+When loading persisted data with multiple independent entries, a single corrupt entry should not prevent loading all other valid entries.
+
+**Bug Pattern:**
+```python
+# BAD - One corrupt entry crashes entire load
+profiles = {}
+for area_id, data in stored_data.items():
+    profiles[area_id] = Profile.from_dict(data)  # Raises on corrupt data!
+return profiles  # Never reached if ANY entry is corrupt
+```
+
+**Fix Pattern:**
+```python
+# GOOD - Skip corrupt entries, load everything else
+profiles = {}
+for area_id, data in stored_data.items():
+    try:
+        profiles[area_id] = Profile.from_dict(data)
+    except (KeyError, TypeError, ValueError) as e:
+        _LOGGER.warning("Skipping corrupt profile for %s: %s", area_id, e)
+return profiles  # Contains all valid entries
+```
+
+**Rule of Thumb**: When loading collections of independent items, wrap individual loads in try/except and log failures rather than aborting the entire operation.

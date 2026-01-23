@@ -11,10 +11,13 @@ Storage structure:
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 from .area_profile import AreaProfile
 from .room_profile import RoomProfile
+
+_LOGGER = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
@@ -150,49 +153,51 @@ class CorrelationStore:
         data: dict[str, Any],
     ) -> CorrelationData:
         """
-        Convert from stored JSON format.
+        Convert from stored JSON format with graceful error handling.
 
-        Handles migration from version 1 (devices only) to version 2
-        (devices + rooms).
+        Handles backward compatibility via data.get() defaults for optional
+        fields (e.g., "rooms" key may not exist in older storage files).
+
+        If individual profiles are corrupt, they are skipped with a warning
+        rather than failing the entire load. This prevents data loss when
+        only a single profile is damaged (e.g., from power loss during write).
 
         Args:
             data: Dictionary from storage.
 
         Returns:
             CorrelationData with device and room profiles.
+            Corrupt profiles are skipped (logged as warnings).
 
         """
-        # Deserialize device profiles
+        # Deserialize device profiles with error handling
         device_profiles: dict[str, dict[str, AreaProfile]] = {}
         for device_addr, areas in data.get("devices", {}).items():
             device_profiles[device_addr] = {}
             for area_id, profile_data in areas.items():
-                device_profiles[device_addr][area_id] = AreaProfile.from_dict(profile_data)
+                try:
+                    device_profiles[device_addr][area_id] = AreaProfile.from_dict(profile_data)
+                except (KeyError, TypeError, ValueError) as e:
+                    _LOGGER.warning(
+                        "Skipping corrupt device profile for %s/%s: %s",
+                        device_addr,
+                        area_id,
+                        e,
+                    )
 
-        # Deserialize room profiles (new in version 2)
+        # Deserialize room profiles with error handling
         room_profiles: dict[str, RoomProfile] = {}
         for area_id, profile_data in data.get("rooms", {}).items():
-            room_profiles[area_id] = RoomProfile.from_dict(profile_data)
+            try:
+                room_profiles[area_id] = RoomProfile.from_dict(profile_data)
+            except (KeyError, TypeError, ValueError) as e:
+                _LOGGER.warning(
+                    "Skipping corrupt room profile for %s: %s",
+                    area_id,
+                    e,
+                )
 
         return CorrelationData(
             device_profiles=device_profiles,
             room_profiles=room_profiles,
         )
-
-    def _deserialize(
-        self,
-        data: dict[str, Any],
-    ) -> dict[str, dict[str, AreaProfile]]:
-        """
-        Convert from stored JSON format (device profiles only).
-
-        For backward compatibility.
-
-        Args:
-            data: Dictionary from storage.
-
-        Returns:
-            Nested dict of device -> area -> AreaProfile.
-
-        """
-        return self._deserialize_all(data).device_profiles

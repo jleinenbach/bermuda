@@ -29,6 +29,13 @@ from .scanner_pair import ScannerPairCorrelation
 # Memory limit: keep only the most useful scanner pairs.
 MAX_SCANNER_PAIRS_PER_ROOM: int = 20
 
+# Z-score threshold for match score calculation.
+# At this z-score, confidence drops to 0.5 (uncertain).
+# Uses 2.0 (stricter than confidence.py's 2.5) because room-level
+# matching with multiple scanner pairs can tolerate tighter bounds -
+# the averaging across pairs reduces noise compared to single-pair matching.
+MATCH_SCORE_Z_THRESHOLD: float = 2.0
+
 
 def _make_pair_key(scanner_a: str, scanner_b: str) -> str:
     """
@@ -191,10 +198,10 @@ class RoomProfile:
         if not z_scores:
             return 0.5  # No data, neutral
 
-        # Weighted average z-score → confidence
+        # Weighted average z-score → confidence using Cauchy-like sigmoid
         total_weight = sum(weights)
         weighted_z = sum(z * w for z, w in zip(z_scores, weights, strict=True)) / total_weight
-        return 1.0 / (1.0 + (weighted_z / 2.0) ** 2)
+        return 1.0 / (1.0 + (weighted_z / MATCH_SCORE_Z_THRESHOLD) ** 2)
 
     @property
     def total_samples(self) -> int:
