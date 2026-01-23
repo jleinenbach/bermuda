@@ -4254,3 +4254,241 @@ def test_offline_scanner():
 3. **pytest-freezer**: Use freezer fixture for time control
 
 **Rule of Thumb**: Any method that checks "is data stale?" or "has timeout expired?" should accept an optional timestamp parameter for testability. The default should call the real time function.
+
+---
+
+## Peer Review Session: bermuda_device.py (2026-01-23)
+
+Comprehensive peer review and security review of `bermuda_device.py` with focus on guards and logic.
+
+### Critical Bug: Bitwise Logic Error in Address Type Detection
+
+**Problem**: BLE address type detection used bitwise AND (`&`) instead of equality (`==`), causing incorrect classification.
+
+```python
+# BUG - Bitwise AND is ALWAYS wrong for this use case!
+top_bits = int(first_char, 16) >> 2
+
+if top_bits & 0b00:      # ALWAYS FALSE! (0 & anything = 0)
+    self.address_type = BDADDR_TYPE_RANDOM_UNRESOLVABLE
+elif top_bits & 0b01:    # Matches 0b01 AND 0b11!
+    self.address_type = BDADDR_TYPE_RANDOM_RESOLVABLE
+elif top_bits & 0b11:    # Matches 0b11 only
+    self.address_type = BDADDR_TYPE_RANDOM_STATIC
+```
+
+**Why this is wrong:**
+| top_bits | `& 0b00` | `& 0b01` | `& 0b11` | Result |
+|----------|----------|----------|----------|--------|
+| 0b00 | 0 (False) | 0 (False) | 0 (False) | **UNCLASSIFIED!** |
+| 0b01 | 0 (False) | 1 (True) | 1 (True) | Resolvable ✓ |
+| 0b10 | 0 (False) | 0 (False) | 2 (True) | **Static (wrong!)** |
+| 0b11 | 0 (False) | 1 (True) | 3 (True) | **Resolvable (wrong!)** |
+
+**Fix**: Use equality comparison:
+```python
+if top_bits == 0b00:    # First char in [0,1,2,3]
+    self.address_type = BDADDR_TYPE_RANDOM_UNRESOLVABLE
+elif top_bits == 0b01:  # First char in [4,5,6,7]
+    self.address_type = BDADDR_TYPE_RANDOM_RESOLVABLE
+elif top_bits == 0b10:  # First char in [8,9,A,B] - RESERVED RANGE
+    self.address_type = BDADDR_TYPE_RESERVED
+elif top_bits == 0b11:  # First char in [C,D,E,F]
+    self.address_type = BDADDR_TYPE_RANDOM_STATIC
+```
+
+**Files changed**: `bermuda_device.py:272-286`, `const.py` (added `BDADDR_TYPE_RESERVED`)
+
+### Exception Handling for External Integrations
+
+**Problem**: Private BLE Device (PBLE) integration calls could raise exceptions if the integration is not installed or misconfigured.
+
+**Fix 1** - Coordinator access (`bermuda_device.py:320-332`):
+```python
+try:
+    _pble_coord = pble_coordinator.async_get_coordinator(self._coordinator.hass)
+    self._coordinator.config_entry.async_on_unload(
+        _pble_coord.async_track_service_info(self.async_handle_pble_callback, _irk_bytes)
+    )
+except (KeyError, AttributeError) as ex:
+    _LOGGER.debug("Private BLE Device integration not available for %s: %s", self.name, ex)
+```
+
+**Fix 2** - Callback address validation (`bermuda_device.py:351-359`):
+```python
+try:
+    address = normalize_mac(service_info.address)
+except ValueError:
+    _LOGGER.warning("Invalid address in PBLE callback for %s: %s", self.name, service_info.address)
+    return
+```
+
+### Memory Management: Bounded Data Structures
+
+**Problem**: `co_visibility_stats` could grow unbounded as devices move through many areas.
+
+**Fix**: Add memory limits (`bermuda_device.py:1217-1235`):
+```python
+# Limit scanners per area to 20
+max_scanners_per_area = 20
+if len(self.co_visibility_stats[area_id]) > max_scanners_per_area:
+    sorted_scanners = sorted(
+        self.co_visibility_stats[area_id].items(),
+        key=lambda x: x[1]["total"],
+        reverse=True,
+    )
+    self.co_visibility_stats[area_id] = dict(sorted_scanners[:max_scanners_per_area])
+
+# Limit total areas to 50
+max_areas = 50
+if len(self.co_visibility_stats) > max_areas:
+    sorted_areas = sorted(
+        self.co_visibility_stats.items(),
+        key=lambda x: max((s["total"] for s in x[1].values()), default=0),
+        reverse=True,
+    )
+    self.co_visibility_stats = dict(sorted_areas[:max_areas])
+```
+
+### Code Quality Improvements
+
+| Issue | Problem | Fix |
+|-------|---------|-----|
+| dict inheritance | `class BermudaDevice(dict)` but never used dict features | Removed inheritance, updated `metadevice_manager.py` to use `vars()`/`setattr()` |
+| Falsy timestamp | `stamp or 0` treats 0 as falsy | Use `stamp if stamp is not None else 0` |
+| Redundant checks | `to_dict()` had overlapping object filters | Consolidated with identity comparison (`is`) |
+| Log key safety | `f"key_{source}"` could contain problematic chars | Use `slugify(source)` |
+| Type annotation | `metadevice_type: set` too generic | Changed to `set[str]` |
+
+### Impact of Removing dict Inheritance
+
+Removing `class BermudaDevice(dict)` required updating `metadevice_manager.py`:
+
+```python
+# BEFORE - dict-style access (never actually worked!)
+for key, val in source_device.items():
+    if metadevice[key] in [None, False]:
+        metadevice[key] = val
+
+# AFTER - proper attribute access
+for key, val in vars(source_device).items():
+    if getattr(metadevice, key, None) in [None, False]:
+        setattr(metadevice, key, val)
+```
+
+**Note**: The original dict-style code was likely non-functional since `BermudaDevice` never populated dict entries (only used attribute assignment). The fix makes the code work as originally intended.
+
+---
+
+### Lesson Learned
+
+### 52. Bitwise AND vs Equality for Bit Pattern Matching
+
+When checking if a value matches a specific bit pattern, use equality (`==`), not bitwise AND (`&`). Bitwise AND tests if specific bits are SET, not if the value EQUALS a pattern.
+
+**Bug Pattern:**
+```python
+# BAD - Bitwise AND doesn't work for pattern matching!
+if value & 0b00:  # ALWAYS FALSE! (0 & anything = 0)
+    handle_zero_pattern()
+elif value & 0b01:  # Matches 0b01 AND 0b11!
+    handle_one_pattern()
+```
+
+**Fix Pattern:**
+```python
+# GOOD - Equality checks exact pattern
+if value == 0b00:
+    handle_zero_pattern()
+elif value == 0b01:
+    handle_one_pattern()
+elif value == 0b10:
+    handle_two_pattern()
+elif value == 0b11:
+    handle_three_pattern()
+```
+
+**When to use which:**
+| Operation | Use Case | Example |
+|-----------|----------|---------|
+| `&` (AND) | Check if bit(s) are SET | `if flags & FLAG_ENABLED:` |
+| `==` | Check exact bit pattern | `if address_type == TYPE_STATIC:` |
+| `\|` (OR) | Set bit(s) | `flags \|= FLAG_ENABLED` |
+| `^` (XOR) | Toggle bit(s) | `flags ^= FLAG_ENABLED` |
+
+**Rule of Thumb**: Use `==` when you care about the ENTIRE value. Use `&` when you only care if SPECIFIC BITS are set (and don't care about other bits).
+
+### 53. External Integration Calls Need Defensive Exception Handling
+
+When calling external integrations (other HA components, third-party libraries), always wrap in try/except. The external code may not be installed, may be misconfigured, or may have breaking API changes.
+
+**Bug Pattern:**
+```python
+# BAD - Assumes external integration is always available
+external_coordinator = external_module.get_coordinator(hass)
+external_coordinator.register_callback(my_callback)
+# Crashes if integration not installed!
+```
+
+**Fix Pattern:**
+```python
+# GOOD - Defensive handling
+try:
+    external_coordinator = external_module.get_coordinator(hass)
+    external_coordinator.register_callback(my_callback)
+    _LOGGER.debug("Successfully registered with external integration")
+except (KeyError, AttributeError, ImportError) as ex:
+    _LOGGER.debug("External integration not available: %s", ex)
+    # Gracefully degrade - feature disabled but app continues
+```
+
+**Exception Types to Catch:**
+| Exception | When It Occurs |
+|-----------|----------------|
+| `ImportError` | Module not installed |
+| `KeyError` | Data/config key missing |
+| `AttributeError` | API changed, method doesn't exist |
+| `TypeError` | API signature changed |
+
+**Rule of Thumb**: Every call to external/optional integrations should have a try/except with graceful degradation. Log at DEBUG level (not ERROR) since missing optional integrations are expected.
+
+### 54. Unused Inheritance is a Code Smell
+
+When a class inherits from a base class but never uses the inherited functionality, it's likely:
+1. Legacy code that was never cleaned up
+2. A misunderstanding of the original design
+3. Code that appears to work but doesn't actually do what it seems
+
+**Bug Pattern:**
+```python
+# BAD - Inherits from dict but only uses attributes
+class MyDevice(dict):
+    def __init__(self):
+        self.name = "foo"      # Attribute, not dict entry
+        self.value = 42        # Attribute, not dict entry
+
+    def process(self):
+        for key, val in self.items():  # Returns EMPTY dict!
+            do_something(key, val)      # Never executes
+```
+
+**Fix Pattern:**
+```python
+# GOOD - No misleading inheritance
+class MyDevice:
+    def __init__(self):
+        self.name = "foo"
+        self.value = 42
+
+    def process(self):
+        for key, val in vars(self).items():  # Returns actual attributes
+            do_something(key, val)            # Works correctly
+```
+
+**Detection Checklist:**
+1. Does the class call `super().__init__()` with dict entries?
+2. Does it use `self["key"] = value` anywhere?
+3. Are `items()`, `keys()`, `values()`, `get()` ever called?
+4. If NO to all → inheritance is likely unused
+
+**Rule of Thumb**: If you inherit from a container type (dict, list, set) but only use attribute access (`self.foo`), you probably don't need the inheritance. Remove it and update any code that incorrectly assumed container behavior.
