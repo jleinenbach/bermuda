@@ -448,30 +448,30 @@ class FmdnIntegration:
         """
         Extract the canonical device identifier from googlefindmy's identifiers.
 
-        Per docs/google_find_my_support.md, the EID resolver returns canonical_id
-        in the format "{entry_id}:{device_id}" (with one colon separator).
-        The googlefindmy integration uses multiple identifier formats:
+        GoogleFindMy-HA uses multiple identifier formats in the device registry:
         - (DOMAIN, "entry_id:subentry_id:device_id") - full format (2 colons)
         - (DOMAIN, "entry_id:device_id") - canonical format (1 colon)
         - (DOMAIN, "device_id") - simplest format (0 colons)
 
-        Returns the identifier matching the resolver's format, or None.
+        The EID resolver normalizes canonical_id to UUID-only by splitting on ":"
+        and taking the LAST segment. We must do the same to ensure consistency
+        between devices discovered via entity enumeration and EID resolution.
+
+        Returns the UUID-only device identifier, or None.
         """
-        canonical_id: str | None = None
         for identifier in fmdn_device.identifiers:
             if len(identifier) != 2 or identifier[0] != DOMAIN_GOOGLEFINDMY:
                 continue
             # Found a googlefindmy identifier
             id_value: str = str(identifier[1])
-            colon_count = id_value.count(":")
-            # Prefer the "entry_id:device_id" format (1 colon) as it matches
-            # what the EID resolver returns for canonical_id
-            if colon_count == 1:
-                return id_value
-            # Keep track of the simplest identifier as fallback
-            if colon_count == 0 and canonical_id is None:
-                canonical_id = id_value
-        return canonical_id
+            # Extract UUID-only portion (last segment after colons)
+            # This matches what GoogleFindMy-HA's EID resolver does:
+            # clean_canonical_id = identity.canonical_id.split(":")[-1]
+            if ":" in id_value:
+                return id_value.split(":")[-1]
+            # Already UUID-only format
+            return id_value
+        return None
 
     def _process_fmdn_entity(self, fmdn_entity: Any) -> None:
         """Process a single FMDN entity and create/update its metadevice."""
