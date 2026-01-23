@@ -336,28 +336,60 @@ class ScannerPairCorrelation:
         Returns:
             Restored ScannerPairCorrelation instance.
 
+        Raises:
+            TypeError: If scanner address is not a string.
+            ValueError: If data contains invalid values (negative variance, etc.)
+            KeyError: If required fields are missing.
+
         """
-        corr = cls(scanner_address=data["scanner"])
+        scanner_addr = data["scanner"]
+        if not isinstance(scanner_addr, str):
+            msg = f"scanner must be str, got {type(scanner_addr).__name__}"
+            raise TypeError(msg)
+
+        corr = cls(scanner_address=scanner_addr)
 
         # Check for new dual-filter format
         if "auto_estimate" in data:
-            # New format - use restore_state() for clean deserialization
+            # New format - validate and restore
+            auto_var = float(data["auto_variance"])
+            auto_samples = int(data["auto_samples"])
+            btn_var = float(data["button_variance"])
+            btn_samples = int(data["button_samples"])
+
+            if auto_var < 0 or btn_var < 0:
+                msg = "variance must be non-negative"
+                raise ValueError(msg)
+            if auto_samples < 0 or btn_samples < 0:
+                msg = "sample_count must be non-negative"
+                raise ValueError(msg)
+
             corr._kalman_auto.restore_state(
-                estimate=data["auto_estimate"],
-                variance=data["auto_variance"],
-                sample_count=data["auto_samples"],
+                estimate=float(data["auto_estimate"]),
+                variance=auto_var,
+                sample_count=auto_samples,
             )
             corr._kalman_button.restore_state(
-                estimate=data["button_estimate"],
-                variance=data["button_variance"],
-                sample_count=data["button_samples"],
+                estimate=float(data["button_estimate"]),
+                variance=btn_var,
+                sample_count=btn_samples,
             )
         else:
-            # Old format: migrate to auto filter only
+            # Old format: validate and migrate to auto filter only
+            variance = float(data["variance"])
+            samples = int(data["samples"])
+
+            if variance < 0:
+                msg = "variance must be non-negative"
+                raise ValueError(msg)
+            if samples < 0:
+                msg = "sample_count must be non-negative"
+                raise ValueError(msg)
+
             corr._kalman_auto.restore_state(
-                estimate=data["estimate"],
-                variance=data["variance"],
-                sample_count=data["samples"],
+                estimate=float(data["estimate"]),
+                variance=variance,
+                sample_count=samples,
             )
             # Button filter stays uninitialized
 
