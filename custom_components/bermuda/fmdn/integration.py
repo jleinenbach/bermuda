@@ -87,26 +87,36 @@ class FmdnIntegration:
         """
         Return the canonical key for an FMDN metadevice.
 
-        Uses canonical_id (from GoogleFindMy API) as primary identifier because:
-        1. It's the native UUID from the external API (e.g., '68e69eca-0000-...')
-        2. It's always available when the API returns data
-        3. It's stable and independent of Home Assistant's internal state
+        IMPORTANT: Uses device_id (HA Device Registry ID) as PRIMARY identifier.
 
-        Falls back to device_id (HA Device Registry ID) only if canonical_id
-        is not available, which should be rare.
+        This is critical for shared trackers: When a physical tracker (e.g., Moto Tag)
+        is shared between multiple Google accounts, GoogleFindMy-HA creates separate
+        HA device entries for each account. All these devices share the SAME canonical_id
+        (the Google UUID), but have DIFFERENT device_ids.
+
+        If we used canonical_id as primary:
+        - Account A: format_metadevice_address("ha_id_A", "UUID") → "fmdn:UUID"
+        - Account B: format_metadevice_address("ha_id_B", "UUID") → "fmdn:UUID" (COLLISION!)
+        - Result: Only ONE metadevice, wrong device entry!
+
+        By using device_id as primary:
+        - Account A: format_metadevice_address("ha_id_A", "UUID") → "fmdn:ha_id_A"
+        - Account B: format_metadevice_address("ha_id_B", "UUID") → "fmdn:ha_id_B"
+        - Result: SEPARATE metadevices, correct device congealment!
 
         Args:
-            device_id: HA Device Registry ID (fallback only)
-            canonical_id: Native ID from GoogleFindMy API (primary)
+            device_id: HA Device Registry ID (PRIMARY - unique per account)
+            canonical_id: Native ID from GoogleFindMy API (fallback - shared across accounts)
 
         """
-        # Prefer canonical_id - the stable identifier from the GoogleFindMy API
-        if canonical_id:
-            return normalize_identifier(f"fmdn:{canonical_id}")
-        # Fallback to device_id only if canonical_id is missing
+        # Use device_id as primary identifier - it's unique per HA device entry,
+        # allowing shared trackers to have separate metadevices for each account.
         if device_id:
-            _LOGGER.debug("Using device_id fallback for FMDN address (canonical_id unavailable)")
             return normalize_identifier(f"fmdn:{device_id}")
+        # Fallback to canonical_id only if device_id is missing (rare edge case)
+        if canonical_id:
+            _LOGGER.debug("Using canonical_id fallback for FMDN address (device_id unavailable)")
+            return normalize_identifier(f"fmdn:{canonical_id}")
         # Should never happen, but handle gracefully
         _LOGGER.warning("FMDN metadevice has neither canonical_id nor device_id")
         return normalize_identifier("fmdn:unknown")
@@ -117,24 +127,31 @@ class FmdnIntegration:
         """
         Look up a metadevice by fmdn_device_id or canonical_id using O(1) cache.
 
-        Tries canonical_id first (primary identifier), then device_id (fallback).
+        IMPORTANT: Tries device_id FIRST (primary identifier), then canonical_id (fallback).
+        This order MUST match format_metadevice_address() to prevent shared tracker collisions.
+
+        For shared trackers (same physical device in multiple accounts):
+        - device_id is UNIQUE per account → correct cache hit
+        - canonical_id is SHARED across accounts → would cause wrong cache hit!
+
         Returns the metadevice if found, None otherwise.
         """
-        # Try canonical_id cache first (primary identifier)
-        if canonical_id and canonical_id in self._fmdn_canonical_id_cache:
-            cached_address = self._fmdn_canonical_id_cache[canonical_id]
-            if cached_address in self.coordinator.metadevices:
-                return self.coordinator.metadevices[cached_address]
-            # Cache entry is stale, remove it
-            del self._fmdn_canonical_id_cache[canonical_id]
-
-        # Try device_id cache as fallback
+        # Try device_id cache FIRST (primary identifier - unique per account)
+        # This prevents shared tracker collisions where multiple accounts have the same canonical_id
         if fmdn_device_id and fmdn_device_id in self._fmdn_device_id_cache:
             cached_address = self._fmdn_device_id_cache[fmdn_device_id]
             if cached_address in self.coordinator.metadevices:
                 return self.coordinator.metadevices[cached_address]
             # Cache entry is stale, remove it
             del self._fmdn_device_id_cache[fmdn_device_id]
+
+        # Try canonical_id cache as fallback (only used when device_id is unavailable)
+        if canonical_id and canonical_id in self._fmdn_canonical_id_cache:
+            cached_address = self._fmdn_canonical_id_cache[canonical_id]
+            if cached_address in self.coordinator.metadevices:
+                return self.coordinator.metadevices[cached_address]
+            # Cache entry is stale, remove it
+            del self._fmdn_canonical_id_cache[canonical_id]
 
         return None
 

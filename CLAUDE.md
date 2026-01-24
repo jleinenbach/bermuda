@@ -5362,3 +5362,132 @@ The new logic ensures that an auto-tracked metadevice is always active after eac
 Both fixes together ensure that FMDN and IRK metadevices:
 1. Are always present in `coordinator.devices` (for Config Flow visibility)
 2. Are never pruned (protected by `create_sensor=True`)
+
+---
+
+## FMDN Shared Tracker Collision Bug (Multi-Account)
+
+### Problem Statement
+
+When a physical FMDN tracker (e.g., Moto Tag, Chipolo) is shared between multiple Google accounts, GoogleFindMy-HA creates separate HA device entries for each account. However, Bermuda incorrectly collapsed these into a single metadevice, causing one account's device to be invisible in the UI.
+
+### Root Cause: Identifier Priority Inversion
+
+The `format_metadevice_address()` function prioritized `canonical_id` (Google UUID) over `device_id` (HA Device Registry ID):
+
+```python
+# BUG: canonical_id is SHARED across accounts!
+def format_metadevice_address(device_id, canonical_id):
+    if canonical_id:  # Always true for FMDN devices
+        return f"fmdn:{canonical_id}"  # COLLISION for shared trackers!
+```
+
+### Collision Scenario
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                    Shared Tracker Collision (BEFORE FIX)                         │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  Physical Tracker: Moto Tag (Google UUID: "ABC-123")                            │
+│                                                                                  │
+│  Account A (User's personal):                                                    │
+│    - HA device_id: "ha_id_A"                                                    │
+│    - canonical_id: "ABC-123"                                                    │
+│    - Metadevice address: fmdn:ABC-123  ← COLLISION!                             │
+│                                                                                  │
+│  Account B (Family shared):                                                      │
+│    - HA device_id: "ha_id_B"                                                    │
+│    - canonical_id: "ABC-123"  (SAME as Account A!)                              │
+│    - Metadevice address: fmdn:ABC-123  ← COLLISION!                             │
+│                                                                                  │
+│  Result:                                                                         │
+│    - Only ONE metadevice created                                                │
+│    - Account B's device_id overwrites Account A's                               │
+│    - Account A's sensors linked to wrong HA device                              │
+│    - Config Flow shows only one device                                          │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### The Fix
+
+Invert the priority: use `device_id` (unique per HA device) before `canonical_id` (shared across accounts):
+
+```python
+# FIX: device_id is UNIQUE per account!
+def format_metadevice_address(device_id, canonical_id):
+    if device_id:  # HA Registry ID - unique per account
+        return f"fmdn:{device_id}"
+    if canonical_id:  # Fallback only
+        return f"fmdn:{canonical_id}"
+```
+
+### Files Changed
+
+| File | Change |
+|------|--------|
+| `fmdn/integration.py` | `format_metadevice_address()`: Priority inverted |
+| `fmdn/integration.py` | `_get_cached_metadevice()`: Cache lookup priority inverted |
+
+### After Fix
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                    Shared Tracker (AFTER FIX)                                    │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  Account A:                                                                      │
+│    - Metadevice address: fmdn:ha_id_A  ← UNIQUE                                 │
+│    - fmdn_device_id: "ha_id_A"                                                  │
+│    - Device congealment: Correct!                                               │
+│                                                                                  │
+│  Account B:                                                                      │
+│    - Metadevice address: fmdn:ha_id_B  ← UNIQUE                                 │
+│    - fmdn_device_id: "ha_id_B"                                                  │
+│    - Device congealment: Correct!                                               │
+│                                                                                  │
+│  Both devices visible in Config Flow ✅                                         │
+│  Both devices have correct sensors ✅                                           │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Test Coverage
+
+See `tests/test_fmdn_shared_tracker.py` for comprehensive tests covering:
+- `test_format_metadevice_address_prioritizes_device_id`
+- `test_shared_tracker_produces_different_addresses`
+- `test_cache_lookup_prioritizes_device_id`
+- `test_both_shared_trackers_in_coordinator_devices`
+- `test_resolve_eid_all_creates_multiple_metadevices`
+
+### Lesson Learned
+
+### 61. Shared Resources Need Account-Scoped Keys
+
+When external integrations allow resource sharing across accounts (shared trackers, shared calendars, etc.), always use account-scoped identifiers as the primary key, not the shared resource identifier.
+
+**Bug Pattern:**
+```python
+# BAD - Uses resource ID (shared across accounts)
+def get_key(device_id, resource_uuid):
+    if resource_uuid:  # Same for all accounts sharing this resource!
+        return f"prefix:{resource_uuid}"
+```
+
+**Fix Pattern:**
+```python
+# GOOD - Uses account-scoped ID (unique per account)
+def get_key(device_id, resource_uuid):
+    if device_id:  # Unique per HA device entry (account-scoped)
+        return f"prefix:{device_id}"
+    if resource_uuid:  # Fallback only
+        return f"prefix:{resource_uuid}"
+```
+
+**Key Insight**: External APIs often return both:
+- `resource_id` / `canonical_id` - The external system's ID for the physical resource (shared across accounts)
+- `device_id` / `account_entry_id` - The HA or local system's ID for THIS account's view of the resource (unique)
+
+Always prefer the account-scoped ID for internal keying to prevent collisions when resources are shared.
