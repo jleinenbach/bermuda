@@ -56,24 +56,25 @@ def coordinator(hass: HomeAssistant) -> BermudaDataUpdateCoordinator:
 
 
 def test_format_fmdn_metadevice_key_stable(coordinator: BermudaDataUpdateCoordinator) -> None:
-    """Ensure FMDN metadevice keys prefer canonical_id for stability.
+    """Ensure FMDN metadevice keys prefer device_id for account uniqueness.
 
-    canonical_id (the native UUID from GoogleFindMy API) is the primary identifier
-    because it's stable and independent of HA's internal state. device_id (HA Device
-    Registry ID) is only used as a fallback when canonical_id is unavailable.
+    Per Lesson #61: device_id (HA Device Registry ID) is now the primary identifier
+    because it's unique per account. canonical_id (shared across accounts) is only
+    used as a fallback when device_id is unavailable. This prevents shared tracker
+    collisions when the same physical tracker is shared between multiple Google accounts.
     """
-    # canonical_id is preferred when available
-    key = coordinator.fmdn.format_metadevice_address("DEVICE-ID", "CANONICAL-01")
-    assert key == "fmdn:canonical-01"
+    # device_id is preferred when available (per Lesson #61)
+    key = coordinator.fmdn.format_metadevice_address("device-id", "CANONICAL-01")
+    assert key == "fmdn:device-id"
     assert key.startswith("fmdn:")
 
-    # Fallback to device_id when canonical_id is unavailable
-    fallback_key = coordinator.fmdn.format_metadevice_address("Device-Only", None)
-    assert fallback_key == "fmdn:device-only"
+    # Fallback to canonical_id when device_id is unavailable
+    fallback_key = coordinator.fmdn.format_metadevice_address(None, "Canonical-Only")
+    assert fallback_key == "fmdn:canonical-only"
 
-    # canonical_id takes priority even when device_id is more "readable"
+    # device_id takes priority even when canonical_id looks like a proper UUID
     priority_key = coordinator.fmdn.format_metadevice_address("simple-id", "68e69eca-0000-1111-2222-333344445555")
-    assert priority_key == "fmdn:68e69eca-0000-1111-2222-333344445555"
+    assert priority_key == "fmdn:simple-id"
 
 
 def test_fmdn_resolution_registers_metadevice(hass: HomeAssistant, coordinator: BermudaDataUpdateCoordinator) -> None:

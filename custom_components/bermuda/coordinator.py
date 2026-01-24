@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import aiofiles
 import voluptuous as vol
@@ -633,6 +633,10 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         removed_count = 0
         duplicate_count = 0
 
+        # Guard: config_entry must be set
+        if self.config_entry is None:
+            return
+
         # Get all Bermuda entities
         bermuda_entities = er.async_entries_for_config_entry(registry, self.config_entry.entry_id)
 
@@ -785,6 +789,10 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         if device is None:
             return None
 
+        # Guard: config_entry must be set
+        if self.config_entry is None:
+            return None
+
         # Get all Bermuda entities
         bermuda_entities = er.async_entries_for_config_entry(self.er, self.config_entry.entry_id)
 
@@ -857,6 +865,10 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             Number of entities removed
 
         """
+        # Guard: config_entry must be set
+        if self.config_entry is None:
+            return 0
+
         removed_count = 0
         bermuda_entities = er.async_entries_for_config_entry(self.er, self.config_entry.entry_id)
 
@@ -1478,7 +1490,11 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                 # whether the service data contains FMDN payloads.
                 # Pass service_data DIRECTLY to ensure no transformation loses data.
                 if self.fmdn:
-                    self.fmdn.handle_advertisement(device, advertisementdata.service_data or {})
+                    service_data = cast(
+                        "Mapping[str | int, Any]",
+                        advertisementdata.service_data or {},
+                    )
+                    self.fmdn.handle_advertisement(device, service_data)
 
                 # 3. Standard Processing (RSSI, Scanner info, etc.)
                 # ONLY NOW do we process the physical advertisement data,
