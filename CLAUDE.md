@@ -5310,3 +5310,55 @@ class TestFmdnMetadeviceInDevices:
             "so FMDN devices will NOT appear in the Select Devices list."
         )
 ```
+
+---
+
+## Auto-Tracked Metadevice `create_sensor` Bug (IRK + FMDN)
+
+### Shared Root Cause
+
+The `calculate_data()` method in `bermuda_device.py` preserved the `create_sensor` value when a device was recognized as auto-tracked. The problem: if `create_sensor` was previously set to `False` (e.g., after removing a device registry entry), it remained permanently `False` - the auto-tracking path never reset it to `True`.
+
+This blocked both IRK (Private BLE Device) and FMDN (Google Find My) metadevices, even though they were correctly recognized.
+
+### Why Both Device Types Are Affected
+
+| Device Type | Metadevice Type Constant | Uses Auto-Tracking Path |
+|-------------|--------------------------|------------------------|
+| IRK (Private BLE) | `METADEVICE_PRIVATE_BLE_DEVICE` | ✅ Yes |
+| FMDN (Google Find My) | `METADEVICE_FMDN_DEVICE` | ✅ Yes |
+
+Both types are marked as metadevices and use the identical auto-tracking code path. The previous "preserve-only" logic blocked both as soon as `create_sensor` was `False` once.
+
+### Code Change
+
+```python
+# OLD (Problem) - bermuda_device.py:
+if is_auto_tracked_metadevice:
+    # Only "preserve" -> can remain False permanently
+    pass
+else:
+    self.create_sensor = self.address in configured_devices
+
+# NEW (Fix) - bermuda_device.py:
+if is_auto_tracked_metadevice:
+    # Auto-tracked metadevices must always be re-enabled
+    self.create_sensor = True
+else:
+    self.create_sensor = self.address in configured_devices
+```
+
+### Effect of the Fix
+
+The new logic ensures that an auto-tracked metadevice is always active after each update cycle when it's recognized - regardless of whether it was previously deleted or deactivated in the Device Registry.
+
+### Complete Fix Summary (Both Issues)
+
+| Issue | File | Root Cause | Fix |
+|-------|------|------------|-----|
+| **Cache skips `devices` dict** | `fmdn/integration.py`, `metadevice_manager.py` | Cache hit returns from `metadevices` without adding to `devices` | Explicitly add to BOTH dictionaries |
+| **`create_sensor` stays False** | `bermuda_device.py` | "preserve-only" logic never resets `create_sensor=True` | Force `create_sensor=True` for auto-tracked metadevices |
+
+Both fixes together ensure that FMDN and IRK metadevices:
+1. Are always present in `coordinator.devices` (for Config Flow visibility)
+2. Are never pruned (protected by `create_sensor=True`)
