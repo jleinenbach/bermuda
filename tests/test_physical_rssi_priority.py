@@ -216,9 +216,7 @@ class TestMinimumDistance:
 class TestFeatureFlagBehavior:
     """Tests for feature flag on/off behavior."""
 
-    def test_feature_flag_off_uses_timestamp_tiebreak(
-        self, coordinator: BermudaDataUpdateCoordinator
-    ) -> None:
+    def test_feature_flag_off_uses_timestamp_tiebreak(self, coordinator: BermudaDataUpdateCoordinator) -> None:
         """When feature is off, timestamp-based tie-breaking is used."""
         device = _configure_device(coordinator, "AA:BB:CC:DD:EE:01")
 
@@ -408,9 +406,7 @@ class TestPhysicalSignalPriority:
         # Physically close should stay - the "closer" distance is not credible
         assert device.area_advert is physically_close  # type: ignore[comparison-overlap]
 
-    def test_extreme_offset_scenario(
-        self, coordinator_with_rssi_priority: BermudaDataUpdateCoordinator
-    ) -> None:
+    def test_extreme_offset_scenario(self, coordinator_with_rssi_priority: BermudaDataUpdateCoordinator) -> None:
         """
         Extreme case: Sensor B appears at 0.4m through absurd offset,
         but Sensor A at 0.46m has much stronger physical signal.
@@ -494,9 +490,7 @@ class TestMedianRssi:
 class TestEdgeCases:
     """Edge cases and robustness tests."""
 
-    def test_none_rssi_handled_gracefully(
-        self, coordinator_with_rssi_priority: BermudaDataUpdateCoordinator
-    ) -> None:
+    def test_none_rssi_handled_gracefully(self, coordinator_with_rssi_priority: BermudaDataUpdateCoordinator) -> None:
         """Missing RSSI values should be handled without crashing."""
         device = _configure_device(coordinator_with_rssi_priority, "AA:BB:CC:DD:EE:08")
 
@@ -512,9 +506,7 @@ class TestEdgeCases:
         # Some outcome should be selected
         assert device.area_advert is not None
 
-    def test_both_rssi_none_uses_distance(
-        self, coordinator_with_rssi_priority: BermudaDataUpdateCoordinator
-    ) -> None:
+    def test_both_rssi_none_uses_distance(self, coordinator_with_rssi_priority: BermudaDataUpdateCoordinator) -> None:
         """When both have no RSSI, pure distance comparison should work."""
         device = _configure_device(coordinator_with_rssi_priority, "AA:BB:CC:DD:EE:09")
 
