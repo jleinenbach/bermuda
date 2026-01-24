@@ -543,6 +543,196 @@ EID resolver returned `uuid`-only. This caused:
 
 **FIX:** Both paths now use `canonical_id.split(":")[-1]` to extract UUID-only format.
 
+## MetaDevice Architecture (IRK, iBeacon, FMDN)
+
+### Overview
+
+MetaDevices are virtual devices that aggregate data from multiple physical BLE addresses. They solve the problem of privacy-preserving BLE devices that rotate their MAC addresses every 15-60 minutes.
+
+**MetaDevice Types:**
+
+| Type | Address Format | Source Detection | Use Case |
+|------|---------------|------------------|----------|
+| **Private BLE (IRK)** | `<32-char-irk>` | IRK mathematical check | Apple devices, iOS apps |
+| **iBeacon** | `<uuid>_<major>_<minor>` | iBeacon advertisement | Proximity beacons |
+| **FMDN** | `fmdn:<canonical-uuid>` | EID cryptographic resolution | Google Find My, Android |
+
+### Data Flow Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                    MetaDevice Lifecycle                                          │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  PHASE 1: DISCOVERY (Advertisement Received)                                    │
+│  ┌────────────────────────────────────────────────────────────────────────────┐ │
+│  │ BLE Advertisement: MAC = AA:BB:CC:DD:EE:FF                                 │ │
+│  │     │                                                                       │ │
+│  │     ├─► IRK Resolution: irk_manager.scan_device(address)                   │ │
+│  │     │   └─► If RPA (first char in 4-7): check against known IRKs          │ │
+│  │     │       └─► Match? → Link to Private BLE metadevice                    │ │
+│  │     │                                                                       │ │
+│  │     └─► FMDN Resolution: fmdn.handle_advertisement(device, service_data)   │ │
+│  │         └─► If SERVICE_UUID_FMDN in service_data:                          │ │
+│  │             └─► Extract EID → resolver.resolve_eid() → Link to metadevice  │ │
+│  └────────────────────────────────────────────────────────────────────────────┘ │
+│                                                                                  │
+│  PHASE 2: REGISTRATION (Linking Source → MetaDevice)                            │
+│  ┌────────────────────────────────────────────────────────────────────────────┐ │
+│  │ register_source() / register_ibeacon_source():                             │ │
+│  │     │                                                                       │ │
+│  │     ├─► Get/Create metadevice with stable address (IRK/UUID/canonical_id)  │ │
+│  │     ├─► source_device.metadevice_type.add(TYPE_*_SOURCE)                   │ │
+│  │     └─► metadevice.metadevice_sources.insert(0, source_address)            │ │
+│  └────────────────────────────────────────────────────────────────────────────┘ │
+│                                                                                  │
+│  PHASE 3: UPDATE (Data Aggregation)                                             │
+│  ┌────────────────────────────────────────────────────────────────────────────┐ │
+│  │ update_metadevices() - runs every coordinator cycle:                        │ │
+│  │     │                                                                       │ │
+│  │     ├─► For each metadevice:                                               │ │
+│  │     │   └─► For each source in metadevice_sources:                         │ │
+│  │     │       └─► Copy adverts from source → metadevice                      │ │
+│  │     │       └─► Update last_seen, ref_power, name fields                   │ │
+│  │     │                                                                       │ │
+│  │     └─► Result: MetaDevice has unified view of ALL rotating MACs           │ │
+│  └────────────────────────────────────────────────────────────────────────────┘ │
+│                                                                                  │
+│  PHASE 4: PRUNING (Cleanup Stale Sources)                                       │
+│  ┌────────────────────────────────────────────────────────────────────────────┐ │
+│  │ prune_devices():                                                            │ │
+│  │     │                                                                       │ │
+│  │     ├─► CRITICAL: Collect ALL metadevice_sources FIRST                     │ │
+│  │     │   └─► These are PROTECTED from pruning!                              │ │
+│  │     │                                                                       │ │
+│  │     ├─► FMDN-specific pruning: Remove truly stale EID sources              │ │
+│  │     │                                                                       │ │
+│  │     └─► Only prune sources that are BOTH:                                  │ │
+│  │         - Older than PRUNE_TIME threshold                                   │ │
+│  │         - NOT in metadevice_source_keepers set                             │ │
+│  └────────────────────────────────────────────────────────────────────────────┘ │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Resolution First Pattern
+
+**Critical Principle:** Identity resolvers MUST run BEFORE any filtering logic could discard an unknown device.
+
+```python
+# In _async_gather_advert_data() - Resolution First Hook
+device = self._get_or_create_device(bledevice.address)
+
+# RESOLUTION FIRST: These hooks MUST run before any filtering!
+if self.irk_manager:
+    self.irk_manager.scan_device(bledevice.address)
+if self.fmdn:
+    self.fmdn.handle_advertisement(device, advertisementdata.service_data or {})
+
+# NOW processing can continue - device may have been linked to a metadevice
+```
+
+**Why this matters:**
+- Rotating MAC addresses appear as "unknown" devices
+- Without Resolution First, they could be discarded before linking
+- The resolver "claims" the packet and links it to a stable identity
+
+### Source Protection Mechanism
+
+**The Problem (Fixed in 2026-01):**
+
+Old code set `create_sensor = True` on source devices, protecting them from pruning. New metadevice architecture only sets this on the metadevice itself, not sources. This caused sources to be pruned while still linked to metadevices.
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                    Source Protection Fix                                         │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  BEFORE (Broken):                                                                │
+│  ┌────────────────────────────────────────────────────────────────────────────┐ │
+│  │ prune_devices():                                                            │ │
+│  │   for device in devices:                                                    │ │
+│  │     if not device.create_sensor:  # Sources don't have this!               │ │
+│  │       if device.last_seen < threshold:                                      │ │
+│  │         prune(device)  # ← WRONG! Source still linked to metadevice!       │ │
+│  └────────────────────────────────────────────────────────────────────────────┘ │
+│                                                                                  │
+│  AFTER (Fixed):                                                                  │
+│  ┌────────────────────────────────────────────────────────────────────────────┐ │
+│  │ prune_devices():                                                            │ │
+│  │   # STEP 1: Collect ALL protected sources FIRST                            │ │
+│  │   protected_sources = set()                                                 │ │
+│  │   for metadevice in metadevices.values():                                  │ │
+│  │     protected_sources.update(metadevice.metadevice_sources)                │ │
+│  │                                                                             │ │
+│  │   # STEP 2: Only prune if NOT protected                                    │ │
+│  │   for device in devices:                                                    │ │
+│  │     if device.address in protected_sources:                                 │ │
+│  │       continue  # PROTECTED - do not prune!                                 │ │
+│  └────────────────────────────────────────────────────────────────────────────┘ │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Key Files and Methods
+
+| File | Class/Method | Purpose |
+|------|--------------|---------|
+| `metadevice_manager.py` | `MetadeviceManager` | Handler for all metadevice operations |
+| `metadevice_manager.py` | `discover_private_ble_metadevices()` | Find IRK devices from Private BLE integration |
+| `metadevice_manager.py` | `register_ibeacon_source()` | Link iBeacon source to metadevice |
+| `metadevice_manager.py` | `update_metadevices()` | Aggregate source data into metadevices |
+| `bermuda_irk.py` | `BermudaIrkManager` | IRK resolution and MAC matching |
+| `bermuda_irk.py` | `scan_device()` | Check MAC against known IRKs |
+| `bermuda_irk.py` | `check_mac()` | Mathematical IRK verification |
+| `fmdn/integration.py` | `FmdnIntegration` | FMDN/Google Find My integration |
+| `fmdn/integration.py` | `handle_advertisement()` | Process FMDN service data |
+| `fmdn/integration.py` | `register_source()` | Link EID source to metadevice |
+| `coordinator.py` | `prune_devices()` | Remove stale devices (respects source protection) |
+
+### IRK Resolution Details
+
+**Resolvable Private Address (RPA) Detection:**
+
+BLE addresses with top 2 bits = `0b01` are RPAs. First hex character in `[4,5,6,7]`.
+
+```python
+def is_rpa(address: str) -> bool:
+    first_char = address[0:1].upper()
+    return first_char in "4567"  # Top 2 bits = 0b01
+```
+
+**IRK Matching Algorithm:**
+
+```python
+# Simplified - actual uses Siphash24
+def check_irk_match(address: bytes, irk: bytes) -> bool:
+    prand = address[3:6]  # Random part
+    expected_hash = siphash24(irk, prand)
+    actual_hash = address[0:3]  # Hash part
+    return expected_hash == actual_hash
+```
+
+### Metadevice Data Inheritance
+
+When `update_metadevices()` runs, data flows from sources to metadevice:
+
+| Attribute | Aggregation Rule |
+|-----------|-----------------|
+| `adverts` | Copy all adverts from all sources (keyed by scanner) |
+| `last_seen` | Maximum of all source `last_seen` timestamps |
+| `ref_power` | First non-zero value (dual-stack guard prevents conflicts) |
+| `name_*` | First non-empty value from sources |
+| `beacon_*` | Always overwritten with latest source values |
+
+### Constants
+
+| Constant | Value | Purpose |
+|----------|-------|---------|
+| `PRUNE_TIME_FMDN` | 1800s | 30 min - FMDN source staleness threshold |
+| `PRUNE_TIME_UNKNOWN_IRK` | 600s | 10 min - Unknown IRK staleness threshold |
+| `PRUNE_TIME_INTERVAL` | 60s | Minimum interval between prune runs |
+
 ## Testing Standards
 
 ### Running Tests
@@ -4684,3 +4874,136 @@ class MyDevice:
 4. If NO to all → inheritance is likely unused
 
 **Rule of Thumb**: If you inherit from a container type (dict, list, set) but only use attribute access (`self.foo`), you probably don't need the inheritance. Remove it and update any code that incorrectly assumed container behavior.
+
+### 55. Resolution First: Identity Hooks Must Run Before Filtering
+
+When processing data from external sources (BLE advertisements, network packets), identity resolution hooks MUST run BEFORE any logic that could discard the data as "unknown".
+
+**Bug Pattern:**
+```python
+# BAD - Filter runs before resolution
+def process_advertisement(address, data):
+    device = get_or_create_device(address)
+
+    if not device.is_known:
+        return  # WRONG! Identity resolver never got a chance!
+
+    # Resolution hooks are too late here
+    irk_manager.scan_device(address)
+```
+
+**Fix Pattern:**
+```python
+# GOOD - Resolution First
+def process_advertisement(address, data):
+    device = get_or_create_device(address)
+
+    # RESOLUTION FIRST: These hooks MUST run before any filtering!
+    if irk_manager:
+        irk_manager.scan_device(address)  # May link to known identity
+    if fmdn:
+        fmdn.handle_advertisement(device, data)  # May link via EID
+
+    # NOW filtering can happen - device may have been "claimed"
+    if not device.is_known:
+        return  # Safe now - resolvers had their chance
+```
+
+**Why Resolution First Matters:**
+- Privacy-preserving devices use rotating addresses
+- Each new address appears "unknown" initially
+- Resolvers can mathematically/cryptographically prove identity
+- If discarded before resolution, the device becomes unreachable
+
+**Rule of Thumb**: In any data pipeline with identity resolution, the resolution step MUST be one of the first operations, before any filtering or discarding logic.
+
+### 56. Linked Resources Must Be Protected During Lifecycle
+
+When resource A (metadevice) depends on resource B (source device), B must be protected from cleanup/pruning as long as A references it. Changing how A protects B can silently break the system.
+
+**Bug Pattern:**
+```python
+# OLD CODE - Protection via flag on source
+def register_source(source_device, metadevice):
+    source_device.protected = True  # Source protects itself
+    metadevice.sources.append(source_device.address)
+
+def prune_devices():
+    for device in devices:
+        if not device.protected:  # Works with old code
+            delete(device)
+```
+
+```python
+# NEW CODE - Flag moved to metadevice, sources broken!
+def register_source(source_device, metadevice):
+    metadevice.protected = True  # Protection moved to parent!
+    metadevice.sources.append(source_device.address)
+
+def prune_devices():
+    for device in devices:
+        if not device.protected:  # Sources have NO protection now!
+            delete(device)  # ← Deletes sources still in use!
+```
+
+**Fix Pattern:**
+```python
+# GOOD - Explicit protection for linked resources
+def prune_devices():
+    # STEP 1: Collect ALL protected addresses from relationships
+    protected = set()
+    for metadevice in metadevices.values():
+        protected.update(metadevice.sources)  # Protect by relationship
+
+    # STEP 2: Only prune if not protected by ANY relationship
+    for device in devices:
+        if device.address in protected:
+            continue  # Protected by being referenced
+        delete(device)
+```
+
+**Rule of Thumb**: When refactoring protection mechanisms, trace ALL places where the old protection was checked. Ensure the new mechanism covers all the same cases.
+
+### 57. Collect Protected Resources Before Iteration
+
+When pruning/deleting resources, collect ALL protected identifiers FIRST before iterating. Mixing protection checks with deletion can cause race conditions or missed protections.
+
+**Bug Pattern:**
+```python
+# BAD - Check protection during iteration
+def prune_devices():
+    for device in devices:
+        # Check if protected by any metadevice
+        is_protected = False
+        for metadevice in metadevices.values():
+            if device.address in metadevice.sources:
+                is_protected = True
+                break
+
+        if not is_protected:
+            delete(device)  # Risk: metadevice iteration may have bugs!
+```
+
+**Fix Pattern:**
+```python
+# GOOD - Collect ALL protected addresses FIRST
+def prune_devices():
+    # PHASE 1: Build complete protection set
+    protected_addresses: set[str] = set()
+    for metadevice in metadevices.values():
+        protected_addresses.update(metadevice.sources)
+
+    # PHASE 2: Iterate and prune (simple lookup)
+    for device in devices:
+        if device.address in protected_addresses:
+            continue  # O(1) lookup, no nested iteration
+        delete(device)
+```
+
+**Benefits of Collect-First Pattern:**
+1. **Performance**: O(1) set lookup vs O(n) nested iteration
+2. **Correctness**: No risk of modifying during iteration
+3. **Debuggability**: Protected set can be logged/inspected
+4. **Maintainability**: Clear separation of concerns
+
+**Rule of Thumb**: In any prune/delete operation, first collect ALL protected identifiers into a set, then iterate and check membership. Never mix protection collection with deletion in the same loop.
