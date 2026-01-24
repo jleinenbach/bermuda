@@ -352,8 +352,14 @@ class FmdnIntegration:
             # create sensors for them (like Private BLE Devices).
             metadevice.create_sensor = True
 
+            # Register metadevice in BOTH metadevices AND devices dictionaries.
+            # The config_flow.py iterates over coordinator.devices (line 293),
+            # so metadevices MUST be in coordinator.devices to appear in the UI.
             if metadevice.address not in self.coordinator.metadevices:
                 self.coordinator.metadevices[metadevice.address] = metadevice
+            # FIX: Ensure metadevice is also in coordinator.devices for config flow visibility
+            if metadevice.address not in self.coordinator.devices:
+                self.coordinator.devices[metadevice.address] = metadevice
 
             # Update cache for future O(1) lookups (both device_id and canonical_id)
             self._update_cache(
@@ -521,9 +527,14 @@ class FmdnIntegration:
         metadevice.name_devreg = fmdn_device.name
         metadevice.make_name()
 
-        # Register metadevice and update cache (both device_id and canonical_id)
+        # Register metadevice in BOTH metadevices AND devices dictionaries.
+        # The config_flow.py iterates over coordinator.devices (line 293),
+        # so metadevices MUST be in coordinator.devices to appear in the UI.
         if metadevice.address not in self.coordinator.metadevices:
             self.coordinator.metadevices[metadevice.address] = metadevice
+        # FIX: Ensure metadevice is also in coordinator.devices for config flow visibility
+        if metadevice.address not in self.coordinator.devices:
+            self.coordinator.devices[metadevice.address] = metadevice
         self._update_cache(
             metadevice_address=metadevice.address,
             fmdn_device_id=fmdn_device.id,

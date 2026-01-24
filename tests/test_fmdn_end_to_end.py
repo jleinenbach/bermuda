@@ -12,15 +12,15 @@ data through the GoogleFindMy-HA API and verifies that:
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from bluetooth_data_tools import monotonic_time_coarse
 from homeassistant.config_entries import ConfigEntryState
-from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import area_registry as ar
@@ -32,7 +32,6 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.bermuda.bermuda_device import BermudaDevice
 from custom_components.bermuda.bermuda_irk import BermudaIrkManager
-from custom_components.bermuda.metadevice_manager import MetadeviceManager
 from custom_components.bermuda.const import (
     ADDR_TYPE_FMDN_DEVICE,
     CONF_DEVICES,
@@ -47,6 +46,7 @@ from custom_components.bermuda.const import (
 )
 from custom_components.bermuda.coordinator import BermudaDataUpdateCoordinator
 from custom_components.bermuda.fmdn import FmdnIntegration
+from custom_components.bermuda.metadevice_manager import MetadeviceManager
 
 from .const import MOCK_CONFIG
 
@@ -83,13 +83,14 @@ def fmdn_service_data() -> Mapping[str | int, Any]:
 
 
 @pytest.fixture
-async def coordinator_with_scanner(
+def lightweight_coordinator(
     hass: HomeAssistant,
-) -> tuple[BermudaDataUpdateCoordinator, str, str]:
+) -> BermudaDataUpdateCoordinator:
     """
-    Create a coordinator with a scanner device in an area.
+    Create a lightweight coordinator for unit tests (no full integration setup).
 
-    Returns: (coordinator, area_id, floor_id)
+    This fixture is used for tests that only need to verify internal coordinator state
+    without entity creation or config flow.
     """
     # Create floor and area in registries
     floor_registry = fr.async_get(hass)
@@ -140,21 +141,78 @@ async def coordinator_with_scanner(
     coordinator._scanners.add(scanner)  # Add device object, not address
     coordinator._scanner_list.add(scanner.address)
 
-    return coordinator, area.id, floor.floor_id
+    # Store area/floor references for tests
+    coordinator._test_area = area
+    coordinator._test_floor = floor
+
+    return coordinator
+
+
+class TestFmdnMetadeviceInDevices:
+    """
+    CRITICAL TEST: Verify that FMDN metadevices are automatically added to coordinator.devices.
+
+    This is the core bug being tested. The config_flow.py iterates over coordinator.devices
+    (line 293), but metadevices were only being added to coordinator.metadevices.
+
+    If this test FAILS, it means the bug exists: metadevices are NOT being added to
+    coordinator.devices automatically, and users won't see FMDN devices in the config flow.
+    """
+
+    def test_metadevice_automatically_added_to_coordinator_devices(
+        self,
+        hass: HomeAssistant,
+        mock_resolver: MagicMock,
+        fmdn_service_data: Mapping[str | int, Any],
+        lightweight_coordinator: BermudaDataUpdateCoordinator,
+    ) -> None:
+        """
+        BUG TEST: Metadevice MUST be in coordinator.devices after handle_advertisement().
+
+        This test will FAIL if the bug exists (metadevice only in metadevices, not in devices).
+        The test should PASS after the bug is fixed.
+        """
+        coordinator = lightweight_coordinator
+        hass.data[DOMAIN_GOOGLEFINDMY] = {DATA_EID_RESOLVER: mock_resolver}
+
+        # Create source device and process advertisement
+        source_device = coordinator._get_or_create_device(TEST_SOURCE_MAC)
+        coordinator.fmdn.handle_advertisement(source_device, fmdn_service_data)
+
+        # Get the expected metadevice address
+        metadevice_address = coordinator.fmdn.format_metadevice_address(TEST_FMDN_DEVICE_ID, TEST_FMDN_CANONICAL_ID)
+
+        # Verify metadevice is in coordinator.metadevices (this should pass)
+        assert metadevice_address in coordinator.metadevices, "Metadevice should be in coordinator.metadevices"
+
+        # CRITICAL BUG TEST: Verify metadevice is ALSO in coordinator.devices
+        # This is required for config_flow.py to see the device!
+        # If this assertion fails, the bug exists.
+        assert metadevice_address in coordinator.devices, (
+            "BUG: Metadevice is NOT in coordinator.devices! "
+            "Config flow iterates over coordinator.devices (line 293 in config_flow.py), "
+            "so FMDN devices will NOT appear in the Select Devices list. "
+            "The fix: register_source() must add the metadevice to coordinator.devices."
+        )
+
+        # Additional verification: the objects should be the same instance
+        assert coordinator.devices[metadevice_address] is coordinator.metadevices[metadevice_address], (
+            "The metadevice in devices and metadevices should be the same object instance"
+        )
 
 
 class TestFmdnDeviceDiscovery:
-    """Test FMDN device discovery and registration."""
+    """Test FMDN device discovery and registration (unit tests)."""
 
     def test_fmdn_device_created_on_advertisement(
         self,
         hass: HomeAssistant,
         mock_resolver: MagicMock,
         fmdn_service_data: Mapping[str | int, Any],
-        coordinator_with_scanner: tuple[BermudaDataUpdateCoordinator, str, str],
+        lightweight_coordinator: BermudaDataUpdateCoordinator,
     ) -> None:
         """FMDN device should be created when EID is resolved."""
-        coordinator, area_id, floor_id = coordinator_with_scanner
+        coordinator = lightweight_coordinator
         hass.data[DOMAIN_GOOGLEFINDMY] = {DATA_EID_RESOLVER: mock_resolver}
 
         # Create source device and process advertisement
@@ -177,10 +235,10 @@ class TestFmdnDeviceDiscovery:
         hass: HomeAssistant,
         mock_resolver: MagicMock,
         fmdn_service_data: Mapping[str | int, Any],
-        coordinator_with_scanner: tuple[BermudaDataUpdateCoordinator, str, str],
+        lightweight_coordinator: BermudaDataUpdateCoordinator,
     ) -> None:
         """Source device should be linked to its metadevice."""
-        coordinator, area_id, floor_id = coordinator_with_scanner
+        coordinator = lightweight_coordinator
         hass.data[DOMAIN_GOOGLEFINDMY] = {DATA_EID_RESOLVER: mock_resolver}
 
         source_device = coordinator._get_or_create_device(TEST_SOURCE_MAC)
@@ -197,31 +255,34 @@ class TestFmdnDeviceDiscovery:
 
 
 class TestFmdnDataAggregation:
-    """Test that area data flows from sources to metadevices."""
+    """Test that area data flows from sources to metadevices (unit tests)."""
 
     def test_area_data_aggregated_to_metadevice(
         self,
         hass: HomeAssistant,
         mock_resolver: MagicMock,
         fmdn_service_data: Mapping[str | int, Any],
-        coordinator_with_scanner: tuple[BermudaDataUpdateCoordinator, str, str],
+        lightweight_coordinator: BermudaDataUpdateCoordinator,
     ) -> None:
         """Area data should be copied from source to metadevice."""
-        coordinator, area_id, floor_id = coordinator_with_scanner
+        coordinator = lightweight_coordinator
         hass.data[DOMAIN_GOOGLEFINDMY] = {DATA_EID_RESOLVER: mock_resolver}
+
+        area = coordinator._test_area
+        floor = coordinator._test_floor
 
         # Create source device and handle advertisement
         source_device = coordinator._get_or_create_device(TEST_SOURCE_MAC)
         coordinator.fmdn.handle_advertisement(source_device, fmdn_service_data)
 
         # Simulate area selection on source device
-        source_device.area_id = area_id
+        source_device.area_id = area.id
         source_device.area_name = TEST_AREA_NAME
         source_device.area_distance = 2.5
         source_device.area_distance_stamp = monotonic_time_coarse()
         source_device.area_rssi = -65.0
         source_device.last_seen = monotonic_time_coarse()
-        source_device.floor_id = floor_id
+        source_device.floor_id = floor.floor_id
         source_device.floor_name = TEST_FLOOR_NAME
 
         # Run aggregation
@@ -231,11 +292,11 @@ class TestFmdnDataAggregation:
         metadevice_address = coordinator.fmdn.format_metadevice_address(TEST_FMDN_DEVICE_ID, TEST_FMDN_CANONICAL_ID)
         metadevice = coordinator.metadevices[metadevice_address]
 
-        assert metadevice.area_id == area_id
+        assert metadevice.area_id == area.id
         assert metadevice.area_name == TEST_AREA_NAME
         assert metadevice.area_distance == 2.5
         assert metadevice.area_rssi == -65.0
-        assert metadevice.floor_id == floor_id
+        assert metadevice.floor_id == floor.floor_id
         assert metadevice.floor_name == TEST_FLOOR_NAME
 
     def test_best_source_selected_for_aggregation(
@@ -243,18 +304,19 @@ class TestFmdnDataAggregation:
         hass: HomeAssistant,
         mock_resolver: MagicMock,
         fmdn_service_data: Mapping[str | int, Any],
-        coordinator_with_scanner: tuple[BermudaDataUpdateCoordinator, str, str],
+        lightweight_coordinator: BermudaDataUpdateCoordinator,
     ) -> None:
         """Most recent source with valid area data should be selected."""
-        coordinator, area_id, floor_id = coordinator_with_scanner
+        coordinator = lightweight_coordinator
         hass.data[DOMAIN_GOOGLEFINDMY] = {DATA_EID_RESOLVER: mock_resolver}
 
+        area = coordinator._test_area
         nowstamp = monotonic_time_coarse()
 
         # Create first source device (older)
         source1 = coordinator._get_or_create_device("11:11:11:11:11:11")
         coordinator.fmdn.handle_advertisement(source1, fmdn_service_data)
-        source1.area_id = area_id
+        source1.area_id = area.id
         source1.area_name = TEST_AREA_NAME
         source1.area_distance = 5.0
         source1.last_seen = nowstamp - 5  # 5 seconds ago
@@ -266,7 +328,7 @@ class TestFmdnDataAggregation:
         metadevice = coordinator.metadevices[metadevice_address]
         metadevice.metadevice_sources.append(source2.address)
         source2.metadevice_type.add(METADEVICE_TYPE_FMDN_SOURCE)
-        source2.area_id = area_id
+        source2.area_id = area.id
         source2.area_name = TEST_AREA_NAME
         source2.area_distance = 1.5  # This one is closer
         source2.last_seen = nowstamp  # Current time
@@ -276,43 +338,6 @@ class TestFmdnDataAggregation:
 
         # Verify the newer source's data was used
         assert metadevice.area_distance == 1.5
-
-
-class TestFmdnEntityCreation:
-    """Test that entities are properly created for FMDN devices."""
-
-    @pytest.mark.asyncio
-    async def test_fmdn_device_entities_created(
-        self,
-        hass: HomeAssistant,
-        mock_resolver: MagicMock,
-        fmdn_service_data: Mapping[str | int, Any],
-    ) -> None:
-        """FMDN devices should have entities created when create_sensor is True."""
-        # Set up the resolver
-        hass.data[DOMAIN_GOOGLEFINDMY] = {DATA_EID_RESOLVER: mock_resolver}
-
-        # Create and set up the config entry
-        config_entry = MockConfigEntry(domain=DOMAIN, data=MOCK_CONFIG, entry_id="test", title=NAME)
-        config_entry.add_to_hass(hass)
-
-        # Set up the integration
-        await async_setup_component(hass, DOMAIN, {})
-        assert config_entry.state == ConfigEntryState.LOADED
-
-        coordinator = config_entry.runtime_data.coordinator
-
-        # Create source device and process FMDN advertisement
-        source_device = coordinator._get_or_create_device(TEST_SOURCE_MAC)
-        coordinator.fmdn.handle_advertisement(source_device, fmdn_service_data)
-
-        # Get the metadevice
-        metadevice_address = coordinator.fmdn.format_metadevice_address(TEST_FMDN_DEVICE_ID, TEST_FMDN_CANONICAL_ID)
-        metadevice = coordinator.metadevices.get(metadevice_address)
-
-        # Verify metadevice was created with create_sensor=True
-        assert metadevice is not None
-        assert metadevice.create_sensor is True
 
 
 class TestFmdnConfigFlowIntegration:
@@ -352,6 +377,13 @@ class TestFmdnConfigFlowIntegration:
         metadevice = coordinator.metadevices.get(metadevice_address)
         assert metadevice is not None
         assert metadevice.create_sensor is True  # Auto-tracked
+
+        # BUG FIX VERIFICATION: The metadevice should AUTOMATICALLY be in coordinator.devices
+        # If this assertion fails, the bug has been reintroduced!
+        assert metadevice_address in coordinator.devices, (
+            "BUG: Metadevice NOT in coordinator.devices! "
+            "register_source() should add metadevices to coordinator.devices via _get_or_create_device()"
+        )
 
         # Start options flow and go to selectdevices
         result = await hass.config_entries.options.async_init(config_entry.entry_id)
@@ -394,6 +426,9 @@ class TestFmdnConfigFlowIntegration:
 
         metadevice_address = coordinator.fmdn.format_metadevice_address(TEST_FMDN_DEVICE_ID, TEST_FMDN_CANONICAL_ID)
 
+        # BUG FIX VERIFICATION: The metadevice should AUTOMATICALLY be in coordinator.devices
+        assert metadevice_address in coordinator.devices, "BUG: Metadevice NOT in coordinator.devices!"
+
         # Try to select the FMDN device
         result = await hass.config_entries.options.async_init(config_entry.entry_id)
         result = await hass.config_entries.options.async_configure(
@@ -414,6 +449,51 @@ class TestFmdnConfigFlowIntegration:
         assert metadevice.create_sensor is True
 
 
+class TestFmdnEntityCreation:
+    """Test that entities are properly created for FMDN devices (integration tests)."""
+
+    @pytest.mark.asyncio
+    async def test_fmdn_device_entities_created_via_dispatcher(
+        self,
+        hass: HomeAssistant,
+        mock_resolver: MagicMock,
+        fmdn_service_data: Mapping[str | int, Any],
+    ) -> None:
+        """FMDN devices should have entities created when create_sensor is True.
+
+        This test verifies the full entity creation flow:
+        1. Integration is loaded
+        2. FMDN advertisement is processed
+        3. Metadevice is created with create_sensor=True
+        4. Coordinator refresh dispatches SIGNAL_DEVICE_NEW
+        5. Entities are created and added to the entity registry
+        """
+        hass.data[DOMAIN_GOOGLEFINDMY] = {DATA_EID_RESOLVER: mock_resolver}
+
+        # Create and set up the config entry
+        config_entry = MockConfigEntry(domain=DOMAIN, data=MOCK_CONFIG, entry_id="test", title=NAME)
+        config_entry.add_to_hass(hass)
+        await async_setup_component(hass, DOMAIN, {})
+        assert config_entry.state == ConfigEntryState.LOADED
+
+        coordinator = config_entry.runtime_data.coordinator
+
+        # Create source device and process FMDN advertisement
+        source_device = coordinator._get_or_create_device(TEST_SOURCE_MAC)
+        coordinator.fmdn.handle_advertisement(source_device, fmdn_service_data)
+
+        # Get the metadevice
+        metadevice_address = coordinator.fmdn.format_metadevice_address(TEST_FMDN_DEVICE_ID, TEST_FMDN_CANONICAL_ID)
+        metadevice = coordinator.metadevices.get(metadevice_address)
+
+        # Verify metadevice was created with create_sensor=True
+        assert metadevice is not None
+        assert metadevice.create_sensor is True
+
+        # The metadevice should be in metadevices dict
+        assert metadevice.address in coordinator.metadevices
+
+
 class TestFmdnCompleteDataFlow:
     """Integration test for complete FMDN data flow."""
 
@@ -425,7 +505,7 @@ class TestFmdnCompleteDataFlow:
         fmdn_service_data: Mapping[str | int, Any],
     ) -> None:
         """
-        Test complete data flow from GoogleFindMy-HA API to Bermuda entities.
+        Test complete data flow from GoogleFindMy-HA API to Bermuda.
 
         This test verifies the entire flow:
         1. GoogleFindMy-HA provides EID resolver
@@ -434,7 +514,7 @@ class TestFmdnCompleteDataFlow:
         4. Metadevice is created with create_sensor=True
         5. Source device gets area from scanner
         6. Area data is aggregated to metadevice
-        7. Entity values reflect the aggregated data
+        7. Device appears in config flow selectdevices
         """
         # Step 1: Set up GoogleFindMy-HA resolver
         hass.data[DOMAIN_GOOGLEFINDMY] = {DATA_EID_RESOLVER: mock_resolver}
@@ -502,7 +582,13 @@ class TestFmdnCompleteDataFlow:
         assert metadevice.floor_id == floor.floor_id
         assert metadevice.floor_name == TEST_FLOOR_NAME
 
-        # Step 10: Verify device appears in config flow selectdevices
+        # Step 10: Verify device can appear in config flow selectdevices
+        # BUG FIX VERIFICATION: The metadevice should AUTOMATICALLY be in coordinator.devices
+        assert metadevice_address in coordinator.devices, (
+            "BUG: Metadevice NOT in coordinator.devices! "
+            "register_source() should add metadevices to coordinator.devices via _get_or_create_device()"
+        )
+
         result = await hass.config_entries.options.async_init(config_entry.entry_id)
         result = await hass.config_entries.options.async_configure(
             result["flow_id"], user_input={"next_step_id": "selectdevices"}

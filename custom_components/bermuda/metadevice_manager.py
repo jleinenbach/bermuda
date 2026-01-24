@@ -219,9 +219,14 @@ class MetadeviceManager:
                         if pb_entity.entity_id not in self.pb_state_sources:
                             self.pb_state_sources[pb_entity.entity_id] = None  # FIXME: why none?
 
-                        # Add metadevice to list so it gets included in update_metadevices
+                        # Register metadevice in BOTH metadevices AND devices dictionaries.
+                        # The config_flow.py iterates over coordinator.devices (line 293),
+                        # so metadevices MUST be in coordinator.devices to appear in the UI.
                         if metadevice.address not in self.metadevices:
                             self.metadevices[metadevice.address] = metadevice
+                        # Ensure metadevice is also in coordinator.devices for config flow visibility
+                        if metadevice.address not in self.coordinator.devices:
+                            self.coordinator.devices[metadevice.address] = metadevice
 
                         if pb_source_address is not None:
                             # We've got a source MAC address!
@@ -277,8 +282,14 @@ class MetadeviceManager:
             if len(metadevice.metadevice_sources) == 0:
                 # #### NEW METADEVICE #####
                 # (do one-off init stuff here)
+                # Register metadevice in BOTH metadevices AND devices dictionaries.
+                # The config_flow.py iterates over coordinator.devices (line 293),
+                # so metadevices MUST be in coordinator.devices to appear in the UI.
                 if metadevice.address not in self.metadevices:
                     self.metadevices[metadevice.address] = metadevice
+                # Ensure metadevice is also in coordinator.devices for config flow visibility
+                if metadevice.address not in self.coordinator.devices:
+                    self.coordinator.devices[metadevice.address] = metadevice
 
                 # Copy over the beacon attributes
                 metadevice.name_bt_serviceinfo = source_device.name_bt_serviceinfo

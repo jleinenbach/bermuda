@@ -5007,3 +5007,306 @@ def prune_devices():
 4. **Maintainability**: Clear separation of concerns
 
 **Rule of Thumb**: In any prune/delete operation, first collect ALL protected identifiers into a set, then iterate and check membership. Never mix protection collection with deletion in the same loop.
+
+### 58. Dual Dictionary Invariant: Metadevices Must Exist in Both Dictionaries
+
+When a system has two dictionaries that serve different purposes but should contain overlapping entries, ALL code paths that add entries must maintain the invariant that entries exist in BOTH dictionaries.
+
+**Bug Pattern (Config Flow Invisibility Bug):**
+```python
+# BAD - Cache lookup skips the dictionary that adds to coordinator.devices
+existing = self._get_cached_metadevice(...)  # Returns from metadevices dict
+
+if existing is not None:
+    metadevice = existing  # ← CACHE HIT: Skips _get_or_create_device()!
+else:
+    metadevice = coordinator._get_or_create_device(...)  # ← Only adds to devices on cache miss!
+
+# Only adds to metadevices, NOT devices:
+if metadevice.address not in coordinator.metadevices:
+    coordinator.metadevices[metadevice.address] = metadevice
+# ← Missing: coordinator.devices[metadevice.address] = metadevice
+```
+
+**Fix Pattern:**
+```python
+# GOOD - Explicitly ensure entry exists in BOTH dictionaries
+if metadevice.address not in coordinator.metadevices:
+    coordinator.metadevices[metadevice.address] = metadevice
+# FIX: Also add to devices for config flow visibility
+if metadevice.address not in coordinator.devices:
+    coordinator.devices[metadevice.address] = metadevice
+```
+
+**Why This Matters:**
+- `coordinator.devices`: Used by config_flow.py to build UI selection lists
+- `coordinator.metadevices`: Used for metadevice-specific operations (aggregation, etc.)
+- If an entry is in `metadevices` but not `devices`, it's invisible in the UI!
+
+**Rule of Thumb**: When maintaining parallel data structures, document which code paths read from each, and ensure ALL write paths update ALL structures that need the data.
+
+### 59. Cache Optimizations Can Break Invariants
+
+Cache lookups that return early can skip code that maintains system invariants. When adding caching, verify that ALL side effects of the non-cached path are preserved.
+
+**Bug Pattern:**
+```python
+# Original code (no cache) - maintains invariants
+def register(item):
+    obj = get_or_create(item)  # Side effect: adds to dict_a
+    dict_b[obj.id] = obj       # Maintains invariant: obj in both dicts
+    return obj
+
+# After adding cache - BREAKS invariant!
+def register(item):
+    cached = cache.get(item)
+    if cached:
+        return cached  # ← SKIPS dict_a addition AND dict_b addition!
+
+    obj = get_or_create(item)  # Side effect: adds to dict_a
+    dict_b[obj.id] = obj
+    cache[item] = obj
+    return obj
+```
+
+**Fix Pattern:**
+```python
+# GOOD - Cache returns early but invariants are maintained after
+def register(item):
+    cached = cache.get(item)
+    if cached:
+        obj = cached
+    else:
+        obj = get_or_create(item)
+        cache[item] = obj
+
+    # ALWAYS ensure invariants, regardless of cache hit/miss
+    if obj.id not in dict_a:
+        dict_a[obj.id] = obj
+    if obj.id not in dict_b:
+        dict_b[obj.id] = obj
+    return obj
+```
+
+**Rule of Thumb**: When adding caching, list ALL side effects of the original code path. Ensure the cached path either preserves those side effects or explicitly documents why they're not needed.
+
+### 60. UI Data Sources vs Business Logic Data Sources
+
+Different parts of a system may read from different data sources. When a UI component reads from Source A, but business logic populates Source B, the UI will show stale or empty data.
+
+**Bug Pattern:**
+```python
+# Business logic populates metadevices
+def on_device_discovered(device):
+    metadevice = create_metadevice(device)
+    coordinator.metadevices[metadevice.id] = metadevice  # ← Business logic source
+
+# UI reads from devices
+def build_selection_list():
+    options = []
+    for device in coordinator.devices.values():  # ← UI source (DIFFERENT!)
+        options.append(device.name)
+    return options  # ← metadevices never appear!
+```
+
+**Fix Pattern:**
+```python
+# Option 1: Ensure business logic populates BOTH sources
+def on_device_discovered(device):
+    metadevice = create_metadevice(device)
+    coordinator.metadevices[metadevice.id] = metadevice
+    coordinator.devices[metadevice.id] = metadevice  # ← Also populate UI source
+
+# Option 2: UI reads from correct source (or both)
+def build_selection_list():
+    options = []
+    for device in coordinator.devices.values():
+        options.append(device.name)
+    for metadevice in coordinator.metadevices.values():  # ← Also check metadevices
+        if metadevice.id not in coordinator.devices:
+            options.append(metadevice.name)
+    return options
+```
+
+**Diagnostic Approach:**
+1. Find where UI reads data (grep for UI component's data access)
+2. Find where business logic writes data
+3. Verify they use the same data source
+4. If not, either unify the sources or update UI to read from correct source
+
+**Rule of Thumb**: Trace data flow from business logic to UI. If they use different data sources, either unify the sources or ensure the UI reads from all relevant sources.
+
+---
+
+## Dual Dictionary Architecture: `coordinator.devices` vs `coordinator.metadevices`
+
+### Overview
+
+Bermuda maintains two parallel dictionaries for device tracking:
+
+| Dictionary | Purpose | Used By |
+|------------|---------|---------|
+| `coordinator.devices` | ALL devices (physical + meta) | Config Flow UI, Entity creation, Pruning |
+| `coordinator.metadevices` | Only metadevices | Metadevice aggregation, Source linking |
+
+**Critical Invariant**: Every metadevice MUST exist in BOTH dictionaries.
+
+### Information Flow Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                    Metadevice Registration Flow (Fixed)                          │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  PATH A: First Registration (Cache Miss)                                         │
+│  ┌────────────────────────────────────────────────────────────────────────────┐ │
+│  │ BLE Advertisement with FMDN Service Data                                    │ │
+│  │     │                                                                       │ │
+│  │     ▼                                                                       │ │
+│  │ fmdn.handle_advertisement()                                                 │ │
+│  │     │                                                                       │ │
+│  │     ▼                                                                       │ │
+│  │ register_source()                                                           │ │
+│  │     │                                                                       │ │
+│  │     ├─► _get_cached_metadevice() → Returns None (cache miss)               │ │
+│  │     │                                                                       │ │
+│  │     ├─► coordinator._get_or_create_device(address)                         │ │
+│  │     │       │                                                               │ │
+│  │     │       └─► coordinator.devices[address] = new_device  ✅              │ │
+│  │     │                                                                       │ │
+│  │     ├─► coordinator.metadevices[address] = metadevice      ✅              │ │
+│  │     │                                                                       │ │
+│  │     └─► coordinator.devices[address] = metadevice          ✅ (FIX)        │ │
+│  │                                                                             │ │
+│  │     Result: Metadevice in BOTH dictionaries                                │ │
+│  └────────────────────────────────────────────────────────────────────────────┘ │
+│                                                                                  │
+│  PATH B: Subsequent Registration (Cache Hit) - THE BUG PATH                      │
+│  ┌────────────────────────────────────────────────────────────────────────────┐ │
+│  │ BLE Advertisement (same device, new rotating MAC)                          │ │
+│  │     │                                                                       │ │
+│  │     ▼                                                                       │ │
+│  │ register_source()                                                           │ │
+│  │     │                                                                       │ │
+│  │     ├─► _get_cached_metadevice() → Returns existing metadevice             │ │
+│  │     │                                                                       │ │
+│  │     ├─► SKIPS coordinator._get_or_create_device()  ⚠️ (cache optimization) │ │
+│  │     │                                                                       │ │
+│  │     ├─► coordinator.metadevices[address] = metadevice      ✅ (already)    │ │
+│  │     │                                                                       │ │
+│  │     └─► coordinator.devices[address] = metadevice          ✅ (FIX added)  │ │
+│  │                                                                             │ │
+│  │     BEFORE FIX: Metadevice only in metadevices, NOT in devices!            │ │
+│  │     AFTER FIX:  Metadevice in BOTH dictionaries                            │ │
+│  └────────────────────────────────────────────────────────────────────────────┘ │
+│                                                                                  │
+│  PATH C: Config Flow UI (Reads from devices only)                               │
+│  ┌────────────────────────────────────────────────────────────────────────────┐ │
+│  │ async_step_selectdevices()                                                  │ │
+│  │     │                                                                       │ │
+│  │     ├─► self.devices = coordinator.devices  ← UI data source               │ │
+│  │     │                                                                       │ │
+│  │     └─► for device in self.devices.values():  ← Only sees devices dict!    │ │
+│  │             build_option(device)                                            │ │
+│  │                                                                             │ │
+│  │     BEFORE FIX: FMDN metadevices invisible (not in devices dict)           │ │
+│  │     AFTER FIX:  FMDN metadevices visible (in devices dict)                 │ │
+│  └────────────────────────────────────────────────────────────────────────────┘ │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### All Metadevice Registration Points (Must Maintain Invariant)
+
+| File | Method | Device Type | Fix Applied |
+|------|--------|-------------|-------------|
+| `fmdn/integration.py` | `register_source()` | FMDN | ✅ |
+| `fmdn/integration.py` | `_process_fmdn_entity()` | FMDN | ✅ |
+| `metadevice_manager.py` | `discover_private_ble_metadevices()` | Private BLE/IRK | ✅ |
+| `metadevice_manager.py` | `register_ibeacon_source()` | iBeacon | ✅ |
+
+### Bug Timeline
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                    Bug Manifestation Timeline                                    │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  T0: Home Assistant starts                                                       │
+│      └─► Bermuda coordinator initializes                                         │
+│          └─► devices = {}, metadevices = {}                                     │
+│                                                                                  │
+│  T1: First FMDN advertisement received                                           │
+│      └─► register_source() called (cache miss)                                   │
+│          └─► _get_or_create_device() called                                     │
+│              └─► devices["fmdn:uuid"] = metadevice  ✅                          │
+│          └─► metadevices["fmdn:uuid"] = metadevice  ✅                          │
+│      └─► Device visible in UI ✅                                                │
+│                                                                                  │
+│  T2: Pruning runs (or HA restart without persistence issue)                     │
+│      └─► Metadevice somehow removed from devices (edge case)                    │
+│          └─► devices = {}                                                        │
+│          └─► metadevices["fmdn:uuid"] = metadevice (still there)               │
+│                                                                                  │
+│  T3: Second FMDN advertisement received                                          │
+│      └─► register_source() called (cache HIT!)                                   │
+│          └─► _get_cached_metadevice() returns existing                          │
+│          └─► SKIPS _get_or_create_device()  ⚠️                                  │
+│          └─► metadevices["fmdn:uuid"] = metadevice (already there)             │
+│          └─► devices["fmdn:uuid"] NOT SET!  ❌ (BUG!)                           │
+│      └─► Device INVISIBLE in UI ❌                                              │
+│                                                                                  │
+│  T4: User opens Config Flow                                                      │
+│      └─► async_step_selectdevices() iterates coordinator.devices               │
+│          └─► FMDN device not found ❌                                           │
+│      └─► User sees empty list, confused                                          │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Diagnostic Checklist for Similar Bugs
+
+When metadevices don't appear in the UI:
+
+1. **Check which dictionary the UI reads from**
+   ```bash
+   grep -n "coordinator.devices" custom_components/bermuda/config_flow.py
+   ```
+
+2. **Check which dictionary business logic writes to**
+   ```bash
+   grep -n "metadevices\[" custom_components/bermuda/
+   grep -n "devices\[" custom_components/bermuda/
+   ```
+
+3. **Check for cache optimizations that skip dictionary updates**
+   ```bash
+   grep -n "_get_cached" custom_components/bermuda/
+   ```
+
+4. **Verify the invariant is maintained in ALL code paths**
+   - Look for early returns after cache hits
+   - Look for conditional dictionary updates
+
+### Test Coverage for This Bug
+
+The following test explicitly verifies the fix:
+
+```python
+# tests/test_fmdn_end_to_end.py
+class TestFmdnMetadeviceInDevices:
+    def test_metadevice_automatically_added_to_coordinator_devices(self):
+        """
+        BUG TEST: Metadevice MUST be in coordinator.devices after handle_advertisement().
+        This test will FAIL if the bug is reintroduced.
+        """
+        # ... setup ...
+
+        # CRITICAL: Verify metadevice is in BOTH dictionaries
+        assert metadevice_address in coordinator.metadevices
+        assert metadevice_address in coordinator.devices, (
+            "BUG: Metadevice is NOT in coordinator.devices! "
+            "Config flow iterates over coordinator.devices, "
+            "so FMDN devices will NOT appear in the Select Devices list."
+        )
+```
