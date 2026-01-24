@@ -341,8 +341,10 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         async_dispatcher_send(self.hass, SIGNAL_SCANNERS_CHANGED)
 
     def scanner_list_del(self, scanner_device: BermudaDevice) -> None:
-        self._scanner_list.remove(scanner_device.address)
-        self._scanners.remove(scanner_device)
+        # Use discard() instead of remove() to avoid KeyError if scanner
+        # was never added to the list (e.g., during purge of removed scanners)
+        self._scanner_list.discard(scanner_device.address)
+        self._scanners.discard(scanner_device)
         async_dispatcher_send(self.hass, SIGNAL_SCANNERS_CHANGED)
 
     def reload_options(self) -> None:
