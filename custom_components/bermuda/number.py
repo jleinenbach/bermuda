@@ -45,6 +45,11 @@ async def async_setup_entry(
         Make sure you have a full list of scanners ready before calling this.
         """
         if address not in created_devices:
+            # Check for duplicate entities with old address formats before creating new ones
+            old_address = coordinator.check_for_duplicate_entities(address)
+            if old_address:
+                coordinator.cleanup_old_entities_for_device(old_address, address)
+
             entities = []
             entities.append(BermudaNumber(coordinator, entry, address))
             # We set update before add to False because we are being

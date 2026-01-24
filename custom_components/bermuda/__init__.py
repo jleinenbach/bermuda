@@ -52,6 +52,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: BermudaConfigEntry) -> b
 
     await coordinator.async_cleanup_device_registry_connections()
 
+    # Clean up orphaned entities from previous sessions
+    # This handles cases where devices were re-discovered with different address formats
+    # (e.g., FMDN device_id vs canonical_id changes) or entities weren't properly removed
+    await coordinator.async_cleanup_orphaned_entities()
+
     try:
         await coordinator.async_refresh()
     except (ValueError, TypeError, AttributeError, KeyError) as ex:

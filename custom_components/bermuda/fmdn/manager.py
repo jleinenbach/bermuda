@@ -169,6 +169,7 @@ class BermudaFmdnManager:
         device_id: str,
         canonical_id: str | None = None,
         time_offset: int | None = None,
+        *,
         is_reversed: bool | None = None,
     ) -> None:
         """Record a successful EID resolution with optional diagnostic fields."""

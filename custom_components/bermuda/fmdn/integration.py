@@ -67,6 +67,7 @@ def _convert_to_eid_match(raw_match: Any) -> EIDMatch | None:
 
     Returns:
         EIDMatch if conversion succeeds, None if the match is invalid.
+
     """
     if raw_match is None:
         return None
@@ -345,9 +346,7 @@ class FmdnIntegration:
                 raw_matches = resolve_all(normalized_eid)  # pylint: disable=not-callable
                 if raw_matches:
                     # Convert all matches to typed EIDMatch
-                    typed_matches = [
-                        m for raw in raw_matches if (m := _convert_to_eid_match(raw)) is not None
-                    ]
+                    typed_matches = [m for raw in raw_matches if (m := _convert_to_eid_match(raw)) is not None]
                     if typed_matches:
                         # Diagnostic logging for first match
                         first = typed_matches[0]
