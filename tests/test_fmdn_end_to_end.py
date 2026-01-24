@@ -167,9 +167,7 @@ class TestFmdnDeviceDiscovery:
         coordinator.fmdn.handle_advertisement(source_device, fmdn_service_data)
 
         # Verify metadevice was created
-        metadevice_address = coordinator.fmdn.format_metadevice_address(
-            TEST_FMDN_DEVICE_ID, TEST_FMDN_CANONICAL_ID
-        )
+        metadevice_address = coordinator.fmdn.format_metadevice_address(TEST_FMDN_DEVICE_ID, TEST_FMDN_CANONICAL_ID)
         assert metadevice_address in coordinator.metadevices
 
         metadevice = coordinator.metadevices[metadevice_address]
@@ -193,9 +191,7 @@ class TestFmdnDeviceDiscovery:
         source_device = coordinator._get_or_create_device(TEST_SOURCE_MAC)
         coordinator.fmdn.handle_advertisement(source_device, fmdn_service_data)
 
-        metadevice_address = coordinator.fmdn.format_metadevice_address(
-            TEST_FMDN_DEVICE_ID, TEST_FMDN_CANONICAL_ID
-        )
+        metadevice_address = coordinator.fmdn.format_metadevice_address(TEST_FMDN_DEVICE_ID, TEST_FMDN_CANONICAL_ID)
         metadevice = coordinator.metadevices[metadevice_address]
 
         # Source should be marked as FMDN source
@@ -240,9 +236,7 @@ class TestFmdnDataAggregation:
         coordinator.metadevice_manager.aggregate_source_data_to_metadevices()
 
         # Verify metadevice has aggregated data
-        metadevice_address = coordinator.fmdn.format_metadevice_address(
-            TEST_FMDN_DEVICE_ID, TEST_FMDN_CANONICAL_ID
-        )
+        metadevice_address = coordinator.fmdn.format_metadevice_address(TEST_FMDN_DEVICE_ID, TEST_FMDN_CANONICAL_ID)
         metadevice = coordinator.metadevices[metadevice_address]
 
         assert metadevice.area_id == area.id
@@ -277,9 +271,7 @@ class TestFmdnDataAggregation:
         # Create second source device (newer)
         source2 = coordinator._get_or_create_device("22:22:22:22:22:22")
         # Manually link to metadevice since same EID would overwrite
-        metadevice_address = coordinator.fmdn.format_metadevice_address(
-            TEST_FMDN_DEVICE_ID, TEST_FMDN_CANONICAL_ID
-        )
+        metadevice_address = coordinator.fmdn.format_metadevice_address(TEST_FMDN_DEVICE_ID, TEST_FMDN_CANONICAL_ID)
         metadevice = coordinator.metadevices[metadevice_address]
         metadevice.metadevice_sources.append(source2.address)
         source2.metadevice_type.add(METADEVICE_TYPE_FMDN_SOURCE)
@@ -314,9 +306,7 @@ class TestFmdnConfigFlowIntegration:
         hass.data[DOMAIN_GOOGLEFINDMY] = {DATA_EID_RESOLVER: mock_resolver}
 
         # Create and set up the config entry
-        config_entry = MockConfigEntry(
-            domain=DOMAIN, data=MOCK_CONFIG, entry_id="test", title=NAME
-        )
+        config_entry = MockConfigEntry(domain=DOMAIN, data=MOCK_CONFIG, entry_id="test", title=NAME)
         config_entry.add_to_hass(hass)
         await async_setup_component(hass, DOMAIN, {})
         assert config_entry.state == ConfigEntryState.LOADED
@@ -328,9 +318,7 @@ class TestFmdnConfigFlowIntegration:
         coordinator.fmdn.handle_advertisement(source_device, fmdn_service_data)
 
         # Get metadevice address
-        metadevice_address = coordinator.fmdn.format_metadevice_address(
-            TEST_FMDN_DEVICE_ID, TEST_FMDN_CANONICAL_ID
-        )
+        metadevice_address = coordinator.fmdn.format_metadevice_address(TEST_FMDN_DEVICE_ID, TEST_FMDN_CANONICAL_ID)
 
         # Verify metadevice was created with auto-tracking enabled
         metadevice = coordinator.metadevices.get(metadevice_address)
@@ -357,9 +345,7 @@ class TestFmdnConfigFlowIntegration:
         assert schema is not None
 
         # Complete the flow (even without selecting, flow should complete)
-        result = await hass.config_entries.options.async_configure(
-            result["flow_id"], user_input={CONF_DEVICES: []}
-        )
+        result = await hass.config_entries.options.async_configure(result["flow_id"], user_input={CONF_DEVICES: []})
 
         # Verify flow completed successfully
         assert result.get("type") == FlowResultType.CREATE_ENTRY
@@ -374,9 +360,7 @@ class TestFmdnConfigFlowIntegration:
         """FMDN device should be filtered out from CONF_DEVICES (auto-configured)."""
         hass.data[DOMAIN_GOOGLEFINDMY] = {DATA_EID_RESOLVER: mock_resolver}
 
-        config_entry = MockConfigEntry(
-            domain=DOMAIN, data=MOCK_CONFIG, entry_id="test", title=NAME
-        )
+        config_entry = MockConfigEntry(domain=DOMAIN, data=MOCK_CONFIG, entry_id="test", title=NAME)
         config_entry.add_to_hass(hass)
         await async_setup_component(hass, DOMAIN, {})
 
@@ -384,9 +368,7 @@ class TestFmdnConfigFlowIntegration:
         source_device = coordinator._get_or_create_device(TEST_SOURCE_MAC)
         coordinator.fmdn.handle_advertisement(source_device, fmdn_service_data)
 
-        metadevice_address = coordinator.fmdn.format_metadevice_address(
-            TEST_FMDN_DEVICE_ID, TEST_FMDN_CANONICAL_ID
-        )
+        metadevice_address = coordinator.fmdn.format_metadevice_address(TEST_FMDN_DEVICE_ID, TEST_FMDN_CANONICAL_ID)
 
         # Add metadevice to coordinator.devices
         metadevice = coordinator.metadevices.get(metadevice_address)
@@ -434,9 +416,7 @@ class TestFmdnEntityCreation:
         hass.data[DOMAIN_GOOGLEFINDMY] = {DATA_EID_RESOLVER: mock_resolver}
 
         # Create and set up the config entry
-        config_entry = MockConfigEntry(
-            domain=DOMAIN, data=MOCK_CONFIG, entry_id="test", title=NAME
-        )
+        config_entry = MockConfigEntry(domain=DOMAIN, data=MOCK_CONFIG, entry_id="test", title=NAME)
         config_entry.add_to_hass(hass)
         await async_setup_component(hass, DOMAIN, {})
         assert config_entry.state == ConfigEntryState.LOADED
@@ -448,9 +428,7 @@ class TestFmdnEntityCreation:
         coordinator.fmdn.handle_advertisement(source_device, fmdn_service_data)
 
         # Get the metadevice
-        metadevice_address = coordinator.fmdn.format_metadevice_address(
-            TEST_FMDN_DEVICE_ID, TEST_FMDN_CANONICAL_ID
-        )
+        metadevice_address = coordinator.fmdn.format_metadevice_address(TEST_FMDN_DEVICE_ID, TEST_FMDN_CANONICAL_ID)
         metadevice = coordinator.metadevices.get(metadevice_address)
 
         # Verify metadevice was created with create_sensor=True
@@ -494,9 +472,7 @@ class TestFmdnCompleteDataFlow:
         area_registry.async_update(area.id, floor_id=floor.floor_id)
 
         # Step 3: Set up Bermuda integration
-        config_entry = MockConfigEntry(
-            domain=DOMAIN, data=MOCK_CONFIG, entry_id="test", title=NAME
-        )
+        config_entry = MockConfigEntry(domain=DOMAIN, data=MOCK_CONFIG, entry_id="test", title=NAME)
         config_entry.add_to_hass(hass)
         await async_setup_component(hass, DOMAIN, {})
         assert config_entry.state == ConfigEntryState.LOADED
@@ -521,9 +497,7 @@ class TestFmdnCompleteDataFlow:
         coordinator.fmdn.handle_advertisement(source_device, fmdn_service_data)
 
         # Step 6: Verify metadevice created
-        metadevice_address = coordinator.fmdn.format_metadevice_address(
-            TEST_FMDN_DEVICE_ID, TEST_FMDN_CANONICAL_ID
-        )
+        metadevice_address = coordinator.fmdn.format_metadevice_address(TEST_FMDN_DEVICE_ID, TEST_FMDN_CANONICAL_ID)
         metadevice = coordinator.metadevices.get(metadevice_address)
         assert metadevice is not None
         assert metadevice.create_sensor is True
@@ -565,9 +539,7 @@ class TestFmdnCompleteDataFlow:
 
         # Complete the flow - FMDN devices are auto-configured and filtered
         # out from CONF_DEVICES, but they are still tracked (create_sensor=True)
-        result = await hass.config_entries.options.async_configure(
-            result["flow_id"], user_input={CONF_DEVICES: []}
-        )
+        result = await hass.config_entries.options.async_configure(result["flow_id"], user_input={CONF_DEVICES: []})
         assert result.get("type") == FlowResultType.CREATE_ENTRY
 
         # FMDN devices are NOT saved to CONF_DEVICES (auto-configured)
