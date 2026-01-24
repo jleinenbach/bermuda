@@ -512,6 +512,127 @@ identifiers = {
 # Where device_id is the Google UUID (e.g., "68419b51-0000-...")
 ```
 
+### GoogleFindMy-HA EID Resolver API Reference (v1.7.0-3)
+
+This section documents the complete EID Resolver API from GoogleFindMy-HA and how Bermuda uses it.
+
+#### EIDMatch Field Usage in Bermuda
+
+| Field | Type | Description | Bermuda Usage |
+|-------|------|-------------|---------------|
+| `device_id` | `str` | HA Device Registry ID | ✅ **PRIMARY** - Used for metadevice address, unique per account |
+| `config_entry_id` | `str` | HA Config Entry ID | ❌ Currently unused |
+| `canonical_id` | `str` | Google UUID | ✅ Used for cache fallback (shared across accounts) |
+| `time_offset` | `int` | EID window offset (seconds) | ✅ Logged for diagnostics (non-zero may indicate stale match) |
+| `is_reversed` | `bool` | EID byte order flag | ✅ Logged for diagnostics (indicates byte order issues) |
+
+**Important:** `device_id` is unique per HA device entry (account-scoped), while `canonical_id`
+is the Google UUID shared across all accounts. For shared trackers, always use `device_id` as
+the primary identifier to avoid collisions (see Lesson #61).
+
+#### Method Signatures
+
+**resolve_eid(eid_bytes: bytes) -> EIDMatch | None**
+```python
+def resolve_eid(self, eid_bytes: bytes) -> EIDMatch | None:
+    """Resolve a scanned payload to a Home Assistant device registry ID.
+
+    For shared devices (same tracker across multiple accounts), this returns
+    the match with the smallest time_offset (best match).
+    Use resolve_eid_all() to get all matches.
+    """
+```
+- Returns the single BEST match (smallest `time_offset`)
+- Use for simple single-account scenarios
+- Returns `None` if no match found
+
+**resolve_eid_all(eid_bytes: bytes) -> list[EIDMatch]**
+```python
+def resolve_eid_all(self, eid_bytes: bytes) -> list[EIDMatch]:
+    """Resolve a scanned payload to all matching Home Assistant device registry IDs.
+
+    This method supports shared devices: when the same physical tracker
+    is shared between accounts, all accounts' matches are returned.
+
+    Returns:
+        List of EIDMatch entries for all accounts that share this device.
+        Empty list if no match found.
+    """
+```
+- Returns ALL matches (important for shared trackers)
+- Each match represents a different HA device entry
+- Returns empty list if no match found
+- **Bermuda uses this as primary method** with fallback to `resolve_eid`
+
+#### Resolver Access Pattern
+
+```python
+# Constants (in Bermuda's const.py)
+DOMAIN_GOOGLEFINDMY = "googlefindmy"
+DATA_EID_RESOLVER = "eid_resolver"
+
+# Access pattern (in FmdnIntegration.get_resolver())
+bucket = hass.data.get(DOMAIN_GOOGLEFINDMY)
+if isinstance(bucket, dict):
+    resolver = bucket.get(DATA_EID_RESOLVER)
+    if resolver and callable(getattr(resolver, "resolve_eid", None)):
+        # Ready to use
+```
+
+#### Bermuda's Local EIDMatch Type
+
+Bermuda defines a local `EIDMatch` NamedTuple in `fmdn/integration.py` that mirrors
+GoogleFindMy-HA's structure. This provides type safety without creating a hard dependency:
+
+```python
+class EIDMatch(NamedTuple):
+    """Local type definition matching GoogleFindMy-HA's EIDMatch structure."""
+    device_id: str
+    config_entry_id: str
+    canonical_id: str
+    time_offset: int
+    is_reversed: bool
+```
+
+External resolver results are converted to this local type via `_convert_to_eid_match()`,
+which handles missing fields gracefully with defaults.
+
+#### Error Handling
+
+The resolver can raise various exceptions during resolution:
+
+| Exception | When It Occurs | Bermuda Handling |
+|-----------|----------------|------------------|
+| `ValueError` | Invalid EID format | Logged at DEBUG, returns None |
+| `TypeError` | Wrong parameter type | Logged at DEBUG, returns None |
+| `AttributeError` | Internal resolver error | Logged at DEBUG, returns None |
+| `KeyError` | Missing data | Logged at DEBUG, returns None |
+| Other exceptions | Unexpected errors | Logged at WARNING with traceback |
+
+All resolver calls are wrapped in try/except with appropriate status tracking
+via `BermudaFmdnManager`.
+
+#### Diagnostic Fields in Manager
+
+The `BermudaFmdnManager` stores diagnostic fields (`time_offset`, `is_reversed`)
+for each resolved EID. These appear in the diagnostics output:
+
+```python
+# In get_diagnostics_no_redactions() output
+{
+    "resolved_eids": {
+        "abc123...": {
+            "status": "RESOLVED",
+            "device_id": "ha_device_id",
+            "canonical_id": "google_uuid",
+            "time_offset": 0,      # Non-zero indicates stale match
+            "is_reversed": false,  # True indicates byte order issues
+            ...
+        }
+    }
+}
+```
+
 ### Troubleshooting
 
 | Symptom | Cause | Fix |

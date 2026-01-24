@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import threading
-from typing import TYPE_CHECKING, Any, Protocol, cast
+from typing import TYPE_CHECKING, Any, NamedTuple, Protocol, cast
 
 from homeassistant.const import Platform
 
@@ -30,13 +30,67 @@ if TYPE_CHECKING:
     from custom_components.bermuda.coordinator import BermudaDataUpdateCoordinator
 
 
+class EIDMatch(NamedTuple):
+    """
+    Local type definition matching GoogleFindMy-HA's EIDMatch structure.
+
+    This provides type safety for Bermuda's EID resolution code without
+    creating a hard dependency on GoogleFindMy-HA's internal types.
+
+    See: https://github.com/jleinenbach/GoogleFindMy-HA/blob/1.7.0-3/
+         custom_components/googlefindmy/eid_resolver.py
+
+    Fields:
+        device_id: HA Device Registry ID - unique per account, PRIMARY identifier.
+        config_entry_id: HA Config Entry ID for the GoogleFindMy integration.
+        canonical_id: Google UUID - shared across accounts for same physical device.
+        time_offset: EID time window offset in seconds (used for match ranking).
+        is_reversed: Whether EID bytes are in reversed order.
+    """
+
+    device_id: str
+    config_entry_id: str
+    canonical_id: str
+    time_offset: int
+    is_reversed: bool
+
+
+def _convert_to_eid_match(raw_match: Any) -> EIDMatch | None:
+    """
+    Convert an external resolver match to our local EIDMatch type.
+
+    This function safely converts the external resolver's return value to our
+    typed EIDMatch structure, handling missing fields gracefully with defaults.
+
+    Args:
+        raw_match: The match object returned by the external resolver.
+
+    Returns:
+        EIDMatch if conversion succeeds, None if the match is invalid.
+    """
+    if raw_match is None:
+        return None
+
+    try:
+        return EIDMatch(
+            device_id=str(getattr(raw_match, "device_id", "") or ""),
+            config_entry_id=str(getattr(raw_match, "config_entry_id", "") or ""),
+            canonical_id=str(getattr(raw_match, "canonical_id", "") or ""),
+            time_offset=int(getattr(raw_match, "time_offset", 0) or 0),
+            is_reversed=bool(getattr(raw_match, "is_reversed", False)),
+        )
+    except (TypeError, ValueError, AttributeError) as ex:
+        _LOGGER.debug("Failed to convert resolver match to EIDMatch: %s", ex)
+        return None
+
+
 class EidResolver(Protocol):
     """Protocol for the googlefindmy EID resolver."""
 
-    def resolve_eid(self, eid: bytes) -> Any | None:
-        """Resolve an EID to a device match."""
+    def resolve_eid(self, eid: bytes) -> EIDMatch | None:
+        """Resolve an EID to a device match (best match for shared trackers)."""
 
-    def resolve_eid_all(self, eid: bytes) -> list[Any]:
+    def resolve_eid_all(self, eid: bytes) -> list[EIDMatch]:
         """Resolve an EID to all matching devices (for shared trackers)."""
 
 
@@ -191,19 +245,19 @@ class FmdnIntegration:
         """Extract an FMDN EID using the configured format."""
         return extract_fmdn_eids(service_data, mode=DEFAULT_FMDN_EID_FORMAT)
 
-    def process_resolution(self, eid_bytes: bytes) -> Any | None:
+    def process_resolution(self, eid_bytes: bytes) -> EIDMatch | None:
         """Resolve an EID payload to a Home Assistant device registry id."""
         match, _ = self.process_resolution_with_status(eid_bytes, source_mac="unknown")
         return match
 
     def process_resolution_with_status(
         self, eid_bytes: bytes, source_mac: str
-    ) -> tuple[Any | None, EidResolutionStatus]:
+    ) -> tuple[EIDMatch | None, EidResolutionStatus]:
         """
         Resolve an EID payload and track the resolution status.
 
         Returns:
-            Tuple of (match result, resolution status)
+            Tuple of (EIDMatch result, resolution status)
 
         """
         resolver = self.get_resolver()
@@ -218,7 +272,7 @@ class FmdnIntegration:
             return None, EidResolutionStatus.NO_KNOWN_EID_MATCH
 
         try:
-            match = resolver.resolve_eid(normalized_eid)
+            raw_match = resolver.resolve_eid(normalized_eid)
         except (ValueError, TypeError, AttributeError, KeyError) as ex:
             # Known exceptions from data processing issues
             _LOGGER.debug(
@@ -239,15 +293,27 @@ class FmdnIntegration:
             self.manager.record_resolution_failure(eid_bytes, source_mac, EidResolutionStatus.RESOLVER_ERROR)
             return None, EidResolutionStatus.RESOLVER_ERROR
 
+        # Convert external match to typed EIDMatch
+        match = _convert_to_eid_match(raw_match)
         if match is None:
             self.manager.record_resolution_failure(eid_bytes, source_mac, EidResolutionStatus.NO_KNOWN_EID_MATCH)
             return None, EidResolutionStatus.NO_KNOWN_EID_MATCH
+
+        # Diagnostic logging for typically unused fields
+        if match.time_offset != 0:
+            _LOGGER.debug(
+                "FMDN resolution time_offset=%d (non-zero may indicate stale match)",
+                match.time_offset,
+            )
+        if match.is_reversed:
+            _LOGGER.debug("FMDN resolution is_reversed=True (byte order reversed)")
+
         # Match found - will be recorded by caller with device_id
         return match, EidResolutionStatus.NOT_EVALUATED
 
     def process_resolution_all_with_status(  # noqa: PLR0911  # pylint: disable=too-many-return-statements
         self, eid_bytes: bytes, source_mac: str
-    ) -> tuple[list[Any], EidResolutionStatus]:
+    ) -> tuple[list[EIDMatch], EidResolutionStatus]:
         """
         Resolve an EID payload to ALL matching devices (for shared trackers).
 
@@ -257,7 +323,7 @@ class FmdnIntegration:
         for each one.
 
         Returns:
-            Tuple of (list of matches, resolution status)
+            Tuple of (list of EIDMatch, resolution status)
 
         """
         resolver = self.get_resolver()
@@ -276,9 +342,23 @@ class FmdnIntegration:
         resolve_all_failed = False
         if callable(resolve_all):
             try:
-                matches = resolve_all(normalized_eid)  # pylint: disable=not-callable
-                if matches:
-                    return matches, EidResolutionStatus.NOT_EVALUATED
+                raw_matches = resolve_all(normalized_eid)  # pylint: disable=not-callable
+                if raw_matches:
+                    # Convert all matches to typed EIDMatch
+                    typed_matches = [
+                        m for raw in raw_matches if (m := _convert_to_eid_match(raw)) is not None
+                    ]
+                    if typed_matches:
+                        # Diagnostic logging for first match
+                        first = typed_matches[0]
+                        if first.time_offset != 0:
+                            _LOGGER.debug(
+                                "FMDN resolution time_offset=%d (non-zero may indicate stale match)",
+                                first.time_offset,
+                            )
+                        if first.is_reversed:
+                            _LOGGER.debug("FMDN resolution is_reversed=True (byte order reversed)")
+                        return typed_matches, EidResolutionStatus.NOT_EVALUATED
             except (ValueError, TypeError, AttributeError, KeyError) as ex:
                 # Known exceptions from data processing issues
                 _LOGGER.debug(
@@ -303,7 +383,7 @@ class FmdnIntegration:
             _LOGGER.debug("Attempting fallback to resolve_eid after resolve_eid_all failure")
 
         try:
-            single_match = resolver.resolve_eid(normalized_eid)
+            raw_single_match = resolver.resolve_eid(normalized_eid)
         except (ValueError, TypeError, AttributeError, KeyError) as ex:
             # Known exceptions from data processing issues
             _LOGGER.debug(
@@ -324,22 +404,33 @@ class FmdnIntegration:
             self.manager.record_resolution_failure(eid_bytes, source_mac, EidResolutionStatus.RESOLVER_ERROR)
             return [], EidResolutionStatus.RESOLVER_ERROR
 
+        # Convert to typed EIDMatch
+        single_match = _convert_to_eid_match(raw_single_match)
         if single_match is None:
             self.manager.record_resolution_failure(eid_bytes, source_mac, EidResolutionStatus.NO_KNOWN_EID_MATCH)
             return [], EidResolutionStatus.NO_KNOWN_EID_MATCH
 
+        # Diagnostic logging
+        if single_match.time_offset != 0:
+            _LOGGER.debug(
+                "FMDN resolution time_offset=%d (non-zero may indicate stale match)",
+                single_match.time_offset,
+            )
+        if single_match.is_reversed:
+            _LOGGER.debug("FMDN resolution is_reversed=True (byte order reversed)")
+
         # Wrap single match in a list for consistent handling
         return [single_match], EidResolutionStatus.NOT_EVALUATED
 
-    def register_source(self, source_device: BermudaDevice, metadevice_address: str, match: Any) -> None:
+    def register_source(self, source_device: BermudaDevice, metadevice_address: str, match: EIDMatch) -> None:
         """
         Attach a rotating FMDN source MAC to its stable metadevice container.
 
         Uses a lock to prevent race conditions when multiple advertisements
         are processed concurrently, and a cache for O(1) metadevice lookup.
         """
-        fmdn_device_id = getattr(match, "device_id", None)
-        canonical_id = getattr(match, "canonical_id", None)
+        fmdn_device_id: str | None = match.device_id if match.device_id else None
+        canonical_id: str | None = match.canonical_id if match.canonical_id else None
 
         # Use lock to prevent race conditions during metadevice creation
         with self._registration_lock:
@@ -427,18 +518,23 @@ class FmdnIntegration:
             # Note: When resolve_eid_all returns multiple matches, it means the same
             # physical tracker is registered in multiple Google accounts.
             for match in matches:
-                resolved_device_id = getattr(match, "device_id", None)
-                canonical_id = getattr(match, "canonical_id", None)
-
-                if resolved_device_id is None:
+                # With typed EIDMatch, we can access fields directly
+                if not match.device_id:
                     _LOGGER.debug("Resolver returned match without device_id for candidate length %d", len(eid_bytes))
                     continue
 
-                # Successfully resolved - record in FMDN manager
-                self.manager.record_resolution_success(eid_bytes, device.address, str(resolved_device_id), canonical_id)
+                # Successfully resolved - record in FMDN manager with diagnostic fields
+                self.manager.record_resolution_success(
+                    eid_bytes,
+                    device.address,
+                    match.device_id,
+                    match.canonical_id if match.canonical_id else None,
+                    time_offset=match.time_offset,
+                    is_reversed=match.is_reversed,
+                )
                 any_resolved = True
 
-                metadevice_address = self.format_metadevice_address(str(resolved_device_id), canonical_id)
+                metadevice_address = self.format_metadevice_address(match.device_id, match.canonical_id)
                 self.register_source(device, metadevice_address, match)
 
             # Found matches for this EID candidate, no need to try other candidates
