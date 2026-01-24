@@ -614,6 +614,88 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
         return False
 
+    # Known suffixes used in unique_id generation for entity type detection
+    _ENTITY_UNIQUE_ID_SUFFIXES = [
+        "_floor",
+        "_range",
+        "_rssi",
+        "_scanner",
+        "_area_last_seen",
+        "_area_switch_reason",
+        "_training_learn",
+        "_reset_training",
+        "_training_room",
+        "_training_floor",
+        "_range_raw",
+    ]
+
+    def _extract_base_address_from_unique_id(self, unique_id: str) -> str:
+        """Extract the base device address from an entity's unique_id."""
+        base_address = unique_id
+        for suffix in self._ENTITY_UNIQUE_ID_SUFFIXES:
+            if base_address.endswith(suffix):
+                base_address = base_address[: -len(suffix)]
+                break
+
+        # Handle per-scanner entities: {device_address}_{scanner_address}_range
+        parts = base_address.split("_")
+        if len(parts) >= 2:
+            potential_address = parts[0]
+            if potential_address in self.devices or potential_address.startswith("fmdn:"):
+                base_address = potential_address
+
+        return base_address
+
+    def _get_entity_type_key(self, entity: er.RegistryEntry) -> str:
+        """Get a stable key for entity type based on platform and unique_id suffix."""
+        ent_type = entity.domain
+        if entity.unique_id:
+            for suffix in self._ENTITY_UNIQUE_ID_SUFFIXES:
+                if entity.unique_id.endswith(suffix):
+                    ent_type = f"{entity.domain}{suffix}"
+                    break
+        return ent_type
+
+    def _find_duplicate_entities(
+        self,
+        entities: list[er.RegistryEntry],
+    ) -> list[str]:
+        """Find duplicate entities for a device, returning entity_ids to remove."""
+        duplicates_to_remove: list[str] = []
+
+        # Group by entity type (platform + unique_id suffix)
+        entities_by_type: dict[str, list[er.RegistryEntry]] = {}
+        for entity in entities:
+            ent_type = self._get_entity_type_key(entity)
+            entities_by_type.setdefault(ent_type, []).append(entity)
+
+        for type_entities in entities_by_type.values():
+            if len(type_entities) <= 1:
+                continue
+
+            # Sort: enabled first, then prefer entities whose address exists in devices
+            sorted_entities = sorted(
+                type_entities,
+                key=lambda e: (
+                    e.disabled_by is None,
+                    any(e.unique_id and e.unique_id.startswith(addr) for addr in self.devices)
+                    if e.unique_id
+                    else False,
+                ),
+                reverse=True,
+            )
+
+            # Keep the first (best) one, mark others for removal
+            for entity in sorted_entities[1:]:
+                duplicates_to_remove.append(entity.entity_id)
+                _LOGGER.debug(
+                    "Marking duplicate entity for removal: %s (keeping %s)",
+                    entity.entity_id,
+                    sorted_entities[0].entity_id,
+                )
+
+        return duplicates_to_remove
+
     async def async_cleanup_orphaned_entities(self) -> None:
         """
         Clean up orphaned Bermuda entities from the entity registry.
@@ -623,86 +705,39 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
            device_id vs canonical_id change), creating duplicate entities
         2. A device was removed but its entities weren't properly cleaned up
         3. Entity unique_ids became invalid due to address normalization changes
-
-        The method identifies orphaned entities by:
-        - Extracting the base device address from each entity's unique_id
-        - Checking if that address exists in coordinator.devices
-        - Detecting duplicate entities (same device, different unique_ids)
         """
         registry = self.er
         removed_count = 0
         duplicate_count = 0
 
-        # Guard: config_entry must be set
         if self.config_entry is None:
             return
 
-        # Get all Bermuda entities
         bermuda_entities = er.async_entries_for_config_entry(registry, self.config_entry.entry_id)
-
         if not bermuda_entities:
             return
 
-        # Group entities by their base address (without suffixes like _floor, _rssi, etc.)
-        # This helps detect duplicates
+        # Group entities by base address and device_id
         entities_by_base_address: dict[str, list[er.RegistryEntry]] = {}
-        # Track entities by their device_id to detect duplicate entities for same device
         entities_by_device_id: dict[str, list[er.RegistryEntry]] = {}
-
-        # Known suffixes used in unique_id generation
-        known_suffixes = [
-            "_floor",
-            "_range",
-            "_rssi",
-            "_scanner",
-            "_area_last_seen",
-            "_area_switch_reason",
-            "_training_learn",
-            "_reset_training",
-            "_training_room",
-            "_training_floor",
-            "_range_raw",
-        ]
 
         for entity in bermuda_entities:
             if entity.unique_id is None:
                 continue
 
-            # Extract base address by removing known suffixes
-            base_address = entity.unique_id
-            for suffix in known_suffixes:
-                if base_address.endswith(suffix):
-                    base_address = base_address[: -len(suffix)]
-                    break
-
-            # Also handle per-scanner entities which have format:
-            # {device_address}_{scanner_address}_range
-            # We need to extract just the device address part
-            parts = base_address.split("_")
-            if len(parts) >= 2:
-                # Could be a per-scanner entity, try to validate first part as address
-                potential_address = parts[0]
-                if potential_address in self.devices or potential_address.startswith("fmdn:"):
-                    base_address = potential_address
-
+            base_address = self._extract_base_address_from_unique_id(entity.unique_id)
             entities_by_base_address.setdefault(base_address, []).append(entity)
 
             if entity.device_id:
                 entities_by_device_id.setdefault(entity.device_id, []).append(entity)
 
-        # Find and remove orphaned entities
+        # Find orphaned entities (address no longer exists)
         entities_to_remove: list[str] = []
-
         for base_address, entities in entities_by_base_address.items():
-            # Skip global Bermuda entities
             if base_address.startswith("BERMUDA_GLOBAL"):
                 continue
 
-            # Check if this address exists in coordinator.devices
-            address_exists = self._check_address_exists(base_address)
-
-            if not address_exists:
-                # This address doesn't exist - mark all its entities for removal
+            if not self._check_address_exists(base_address):
                 for entity in entities:
                     entities_to_remove.append(entity.entity_id)
                     _LOGGER.debug(
@@ -711,49 +746,14 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                         base_address,
                     )
 
-        # Detect duplicate entities for the same device
-        # (same device_id in registry but different unique_id patterns)
+        # Find duplicate entities for same device
         for entities in entities_by_device_id.values():
             if len(entities) <= 1:
                 continue
-
-            # Group by entity type (determined by name or suffix)
-            entities_by_type: dict[str, list[er.RegistryEntry]] = {}
-            for entity in entities:
-                # Use original_name or name to identify entity type
-                ent_type = entity.original_name or entity.name or "unknown"
-                entities_by_type.setdefault(ent_type, []).append(entity)
-
-            for type_entities in entities_by_type.values():
-                if len(type_entities) <= 1:
-                    continue
-
-                # Multiple entities of the same type for the same device = duplicates
-                # Keep the one that's available or most recently updated
-                # Sort by: available first, then by unique_id (prefer newer format)
-                sorted_entities = sorted(
-                    type_entities,
-                    key=lambda e: (
-                        # Prefer entities that are not disabled
-                        e.disabled_by is None,
-                        # Prefer entities whose base address exists in devices
-                        any(e.unique_id and e.unique_id.startswith(addr) for addr in self.devices)
-                        if e.unique_id
-                        else False,
-                    ),
-                    reverse=True,
-                )
-
-                # Keep the first (best) one, mark others for removal
-                for entity in sorted_entities[1:]:
-                    if entity.entity_id not in entities_to_remove:
-                        entities_to_remove.append(entity.entity_id)
-                        duplicate_count += 1
-                        _LOGGER.debug(
-                            "Marking duplicate entity for removal: %s (keeping %s)",
-                            entity.entity_id,
-                            sorted_entities[0].entity_id,
-                        )
+            for entity_id in self._find_duplicate_entities(entities):
+                if entity_id not in entities_to_remove:
+                    entities_to_remove.append(entity_id)
+                    duplicate_count += 1
 
         # Remove marked entities
         for entity_id in entities_to_remove:
@@ -761,7 +761,6 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                 registry.async_remove(entity_id)
                 removed_count += 1
             except KeyError:
-                # Entity might have been removed already
                 pass
 
         if removed_count > 0:
@@ -826,30 +825,10 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                         )
                         return old_addr
 
-        # For other devices, check by device name match
-        device_name = device.name
-        if device_name:
-            # Find entities with same device but different unique_id base
-            for entity in bermuda_entities:
-                if entity.unique_id is None:
-                    continue
-
-                # Check if the entity belongs to a device with the same name
-                if entity.device_id:
-                    device_entry = self.dr.async_get(entity.device_id)
-                    if device_entry and device_entry.name == device_name:
-                        # Extract base address from unique_id
-                        base_addr = entity.unique_id.split("_")[0]
-                        if base_addr != address and base_addr in self.devices:
-                            # Different address but same device name = potential duplicate
-                            _LOGGER.debug(
-                                "Found potential duplicate: entity %s has address %s but device %s now has address %s",
-                                entity.entity_id,
-                                base_addr,
-                                device_name,
-                                address,
-                            )
-                            return base_addr
+        # Note: We intentionally do NOT use device name matching for non-FMDN devices
+        # because different devices can have the same name, causing false positives.
+        # For non-FMDN devices, the orphan cleanup mechanism handles stale entities
+        # when the old address is no longer in coordinator.devices.
 
         return None
 
