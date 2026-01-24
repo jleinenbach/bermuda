@@ -1270,8 +1270,9 @@ class BermudaDevice:
             METADEVICE_PRIVATE_BLE_DEVICE in self.metadevice_type or METADEVICE_FMDN_DEVICE in self.metadevice_type
         )
         if is_auto_tracked_metadevice:
-            # Preserve the create_sensor value set during discovery/registration
-            pass
+            # Auto-tracked metadevices must always be re-enabled, even if a user
+            # removed their device registry entry (create_sensor=False).
+            self.create_sensor = True
         else:
             self.create_sensor = self.address in configured_devices
 
