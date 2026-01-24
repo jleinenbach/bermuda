@@ -85,7 +85,6 @@ from .const import (
     PRUNE_TIME_DEFAULT,
     PRUNE_TIME_FMDN,
     PRUNE_TIME_INTERVAL,
-    PRUNE_TIME_KNOWN_IRK,
     PRUNE_TIME_UNKNOWN_IRK,
     REPAIR_SCANNER_WITHOUT_AREA,
     SAVEOUT_COOLDOWN,
@@ -1204,7 +1203,6 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             return
         # stamp the run.
         nowstamp = self.stamp_last_prune = monotonic_time_coarse()
-        stamp_known_irk = nowstamp - PRUNE_TIME_KNOWN_IRK
         stamp_fmdn = nowstamp - PRUNE_TIME_FMDN
         stamp_unknown_irk = nowstamp - PRUNE_TIME_UNKNOWN_IRK
 
@@ -1225,26 +1223,39 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         prune_list: list[str] = []  # list of addresses to be pruned
         prunable_stamps: dict[str, float] = {}  # dict of potential prunees if we need to be more aggressive.
 
-        metadevice_source_keepers = set()
+        # =======================================================================
+        # FIX: Collect ALL addresses that serve as sources for ANY metadevice.
+        # These MUST be protected from pruning to ensure metadevices receive data.
+        #
+        # Previous logic was too aggressive: it pruned sources based on age,
+        # even if they were still linked to a metadevice. This caused the
+        # "deadlock" where rotating MAC devices lost their data connection.
+        # =======================================================================
+        metadevice_source_keepers: set[str] = set()
+        for metadevice in self.metadevices.values():
+            # Unconditionally protect ALL sources for this metadevice
+            metadevice_source_keepers.update(metadevice.metadevice_sources)
+
+        # Now handle FMDN-specific pruning for stale sources
+        # (but only if they're truly stale, not fresh sources)
         for metadevice in self.metadevices.values():
             if len(metadevice.metadevice_sources) > 0:
-                # Always keep the most recent source, which we keep in index 0.
-                # This covers static iBeacon sources, and possibly IRKs that might exceed
-                # the spec lifetime but are going stale because they're away for a bit.
-                _first = True
+                sources_to_prune: list[str] = []
                 for address in metadevice.metadevice_sources:
                     if _device := self._get_device(address):
-                        if self.fmdn.prune_source(_device, stamp_fmdn, prune_list):
-                            continue
-                        if _first or _device.last_seen > stamp_known_irk:
-                            # The source has been seen within the spec's limits, keep it.
-                            metadevice_source_keepers.add(address)
-                            _first = False
-                        # FIX: Prevent duplicates - device may appear in multiple metadevices
-                        elif address not in prune_list:
-                            # It's too old to be an IRK, and otherwise we'll auto-detect it,
-                            # so let's be rid of it.
-                            prune_list.append(address)
+                        # FMDN sources that are truly stale can be pruned
+                        if self.fmdn.prune_source(_device, stamp_fmdn, sources_to_prune):
+                            # Remove from keepers so it CAN be pruned
+                            metadevice_source_keepers.discard(address)
+                            if address not in prune_list:
+                                prune_list.append(address)
+                        # Also check IRK sources that are extremely stale
+                        elif _device.last_seen < stamp_unknown_irk:
+                            # Only prune if it's not the ONLY source for this metadevice
+                            if len(metadevice.metadevice_sources) > 1:
+                                metadevice_source_keepers.discard(address)
+                                if address not in prune_list:
+                                    prune_list.append(address)
 
         for device_address, device in self.devices.items():
             if device_address in prune_list:
@@ -1253,13 +1264,12 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             # if we aren't actively tracking them and it's a traditional MAC address.
             # We just collect the addresses first, and do the pruning after exiting this iterator
             #
-            # Reduced selection criteria - basically if if's not:
-            # - a scanner (beacuse we need those!)
-            # - any metadevice less than 15 minutes old (PRUNE_TIME_KNOWN_IRK)
-            # - a private_ble device (because they will re-create anyway, plus we auto-sensor them
-            # - create_sensor
-            # then it should be up for pruning. A stale iBeacon that we don't actually track
-            # should totally be pruned if it's no longer around.
+            # Devices are protected from pruning if they are:
+            # - a scanner (because we need those!)
+            # - a metadevice source (linked to a metadevice for data delivery)
+            # - a metadevice itself
+            # - have create_sensor flag (user configured tracking)
+            # - not a MAC48 address type
             if (
                 device_address not in metadevice_source_keepers
                 and device_address not in self.metadevices
