@@ -512,6 +512,127 @@ identifiers = {
 # Where device_id is the Google UUID (e.g., "68419b51-0000-...")
 ```
 
+### GoogleFindMy-HA EID Resolver API Reference (v1.7.0-3)
+
+This section documents the complete EID Resolver API from GoogleFindMy-HA and how Bermuda uses it.
+
+#### EIDMatch Field Usage in Bermuda
+
+| Field | Type | Description | Bermuda Usage |
+|-------|------|-------------|---------------|
+| `device_id` | `str` | HA Device Registry ID | ✅ **PRIMARY** - Used for metadevice address, unique per account |
+| `config_entry_id` | `str` | HA Config Entry ID | ❌ Currently unused |
+| `canonical_id` | `str` | Google UUID | ✅ Used for cache fallback (shared across accounts) |
+| `time_offset` | `int` | EID window offset (seconds) | ✅ Logged for diagnostics (non-zero may indicate stale match) |
+| `is_reversed` | `bool` | EID byte order flag | ✅ Logged for diagnostics (indicates byte order issues) |
+
+**Important:** `device_id` is unique per HA device entry (account-scoped), while `canonical_id`
+is the Google UUID shared across all accounts. For shared trackers, always use `device_id` as
+the primary identifier to avoid collisions (see Lesson #61).
+
+#### Method Signatures
+
+**resolve_eid(eid_bytes: bytes) -> EIDMatch | None**
+```python
+def resolve_eid(self, eid_bytes: bytes) -> EIDMatch | None:
+    """Resolve a scanned payload to a Home Assistant device registry ID.
+
+    For shared devices (same tracker across multiple accounts), this returns
+    the match with the smallest time_offset (best match).
+    Use resolve_eid_all() to get all matches.
+    """
+```
+- Returns the single BEST match (smallest `time_offset`)
+- Use for simple single-account scenarios
+- Returns `None` if no match found
+
+**resolve_eid_all(eid_bytes: bytes) -> list[EIDMatch]**
+```python
+def resolve_eid_all(self, eid_bytes: bytes) -> list[EIDMatch]:
+    """Resolve a scanned payload to all matching Home Assistant device registry IDs.
+
+    This method supports shared devices: when the same physical tracker
+    is shared between accounts, all accounts' matches are returned.
+
+    Returns:
+        List of EIDMatch entries for all accounts that share this device.
+        Empty list if no match found.
+    """
+```
+- Returns ALL matches (important for shared trackers)
+- Each match represents a different HA device entry
+- Returns empty list if no match found
+- **Bermuda uses this as primary method** with fallback to `resolve_eid`
+
+#### Resolver Access Pattern
+
+```python
+# Constants (in Bermuda's const.py)
+DOMAIN_GOOGLEFINDMY = "googlefindmy"
+DATA_EID_RESOLVER = "eid_resolver"
+
+# Access pattern (in FmdnIntegration.get_resolver())
+bucket = hass.data.get(DOMAIN_GOOGLEFINDMY)
+if isinstance(bucket, dict):
+    resolver = bucket.get(DATA_EID_RESOLVER)
+    if resolver and callable(getattr(resolver, "resolve_eid", None)):
+        # Ready to use
+```
+
+#### Bermuda's Local EIDMatch Type
+
+Bermuda defines a local `EIDMatch` NamedTuple in `fmdn/integration.py` that mirrors
+GoogleFindMy-HA's structure. This provides type safety without creating a hard dependency:
+
+```python
+class EIDMatch(NamedTuple):
+    """Local type definition matching GoogleFindMy-HA's EIDMatch structure."""
+    device_id: str
+    config_entry_id: str
+    canonical_id: str
+    time_offset: int
+    is_reversed: bool
+```
+
+External resolver results are converted to this local type via `_convert_to_eid_match()`,
+which handles missing fields gracefully with defaults.
+
+#### Error Handling
+
+The resolver can raise various exceptions during resolution:
+
+| Exception | When It Occurs | Bermuda Handling |
+|-----------|----------------|------------------|
+| `ValueError` | Invalid EID format | Logged at DEBUG, returns None |
+| `TypeError` | Wrong parameter type | Logged at DEBUG, returns None |
+| `AttributeError` | Internal resolver error | Logged at DEBUG, returns None |
+| `KeyError` | Missing data | Logged at DEBUG, returns None |
+| Other exceptions | Unexpected errors | Logged at WARNING with traceback |
+
+All resolver calls are wrapped in try/except with appropriate status tracking
+via `BermudaFmdnManager`.
+
+#### Diagnostic Fields in Manager
+
+The `BermudaFmdnManager` stores diagnostic fields (`time_offset`, `is_reversed`)
+for each resolved EID. These appear in the diagnostics output:
+
+```python
+# In get_diagnostics_no_redactions() output
+{
+    "resolved_eids": {
+        "abc123...": {
+            "status": "RESOLVED",
+            "device_id": "ha_device_id",
+            "canonical_id": "google_uuid",
+            "time_offset": 0,      # Non-zero indicates stale match
+            "is_reversed": false,  # True indicates byte order issues
+            ...
+        }
+    }
+}
+```
+
 ### Troubleshooting
 
 | Symptom | Cause | Fix |
@@ -5362,3 +5483,132 @@ The new logic ensures that an auto-tracked metadevice is always active after eac
 Both fixes together ensure that FMDN and IRK metadevices:
 1. Are always present in `coordinator.devices` (for Config Flow visibility)
 2. Are never pruned (protected by `create_sensor=True`)
+
+---
+
+## FMDN Shared Tracker Collision Bug (Multi-Account)
+
+### Problem Statement
+
+When a physical FMDN tracker (e.g., Moto Tag, Chipolo) is shared between multiple Google accounts, GoogleFindMy-HA creates separate HA device entries for each account. However, Bermuda incorrectly collapsed these into a single metadevice, causing one account's device to be invisible in the UI.
+
+### Root Cause: Identifier Priority Inversion
+
+The `format_metadevice_address()` function prioritized `canonical_id` (Google UUID) over `device_id` (HA Device Registry ID):
+
+```python
+# BUG: canonical_id is SHARED across accounts!
+def format_metadevice_address(device_id, canonical_id):
+    if canonical_id:  # Always true for FMDN devices
+        return f"fmdn:{canonical_id}"  # COLLISION for shared trackers!
+```
+
+### Collision Scenario
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                    Shared Tracker Collision (BEFORE FIX)                         │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  Physical Tracker: Moto Tag (Google UUID: "ABC-123")                            │
+│                                                                                  │
+│  Account A (User's personal):                                                    │
+│    - HA device_id: "ha_id_A"                                                    │
+│    - canonical_id: "ABC-123"                                                    │
+│    - Metadevice address: fmdn:ABC-123  ← COLLISION!                             │
+│                                                                                  │
+│  Account B (Family shared):                                                      │
+│    - HA device_id: "ha_id_B"                                                    │
+│    - canonical_id: "ABC-123"  (SAME as Account A!)                              │
+│    - Metadevice address: fmdn:ABC-123  ← COLLISION!                             │
+│                                                                                  │
+│  Result:                                                                         │
+│    - Only ONE metadevice created                                                │
+│    - Account B's device_id overwrites Account A's                               │
+│    - Account A's sensors linked to wrong HA device                              │
+│    - Config Flow shows only one device                                          │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### The Fix
+
+Invert the priority: use `device_id` (unique per HA device) before `canonical_id` (shared across accounts):
+
+```python
+# FIX: device_id is UNIQUE per account!
+def format_metadevice_address(device_id, canonical_id):
+    if device_id:  # HA Registry ID - unique per account
+        return f"fmdn:{device_id}"
+    if canonical_id:  # Fallback only
+        return f"fmdn:{canonical_id}"
+```
+
+### Files Changed
+
+| File | Change |
+|------|--------|
+| `fmdn/integration.py` | `format_metadevice_address()`: Priority inverted |
+| `fmdn/integration.py` | `_get_cached_metadevice()`: Cache lookup priority inverted |
+
+### After Fix
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                    Shared Tracker (AFTER FIX)                                    │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  Account A:                                                                      │
+│    - Metadevice address: fmdn:ha_id_A  ← UNIQUE                                 │
+│    - fmdn_device_id: "ha_id_A"                                                  │
+│    - Device congealment: Correct!                                               │
+│                                                                                  │
+│  Account B:                                                                      │
+│    - Metadevice address: fmdn:ha_id_B  ← UNIQUE                                 │
+│    - fmdn_device_id: "ha_id_B"                                                  │
+│    - Device congealment: Correct!                                               │
+│                                                                                  │
+│  Both devices visible in Config Flow ✅                                         │
+│  Both devices have correct sensors ✅                                           │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Test Coverage
+
+See `tests/test_fmdn_shared_tracker.py` for comprehensive tests covering:
+- `test_format_metadevice_address_prioritizes_device_id`
+- `test_shared_tracker_produces_different_addresses`
+- `test_cache_lookup_prioritizes_device_id`
+- `test_both_shared_trackers_in_coordinator_devices`
+- `test_resolve_eid_all_creates_multiple_metadevices`
+
+### Lesson Learned
+
+### 61. Shared Resources Need Account-Scoped Keys
+
+When external integrations allow resource sharing across accounts (shared trackers, shared calendars, etc.), always use account-scoped identifiers as the primary key, not the shared resource identifier.
+
+**Bug Pattern:**
+```python
+# BAD - Uses resource ID (shared across accounts)
+def get_key(device_id, resource_uuid):
+    if resource_uuid:  # Same for all accounts sharing this resource!
+        return f"prefix:{resource_uuid}"
+```
+
+**Fix Pattern:**
+```python
+# GOOD - Uses account-scoped ID (unique per account)
+def get_key(device_id, resource_uuid):
+    if device_id:  # Unique per HA device entry (account-scoped)
+        return f"prefix:{device_id}"
+    if resource_uuid:  # Fallback only
+        return f"prefix:{resource_uuid}"
+```
+
+**Key Insight**: External APIs often return both:
+- `resource_id` / `canonical_id` - The external system's ID for the physical resource (shared across accounts)
+- `device_id` / `account_entry_id` - The HA or local system's ID for THIS account's view of the resource (unique)
+
+Always prefer the account-scoped ID for internal keying to prevent collisions when resources are shared.

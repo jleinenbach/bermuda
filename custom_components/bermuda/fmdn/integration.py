@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import threading
-from typing import TYPE_CHECKING, Any, Protocol, cast
+from typing import TYPE_CHECKING, Any, NamedTuple, Protocol, cast
 
 from homeassistant.const import Platform
 
@@ -30,13 +30,67 @@ if TYPE_CHECKING:
     from custom_components.bermuda.coordinator import BermudaDataUpdateCoordinator
 
 
+class EIDMatch(NamedTuple):
+    """
+    Local type definition matching GoogleFindMy-HA's EIDMatch structure.
+
+    This provides type safety for Bermuda's EID resolution code without
+    creating a hard dependency on GoogleFindMy-HA's internal types.
+
+    See: https://github.com/jleinenbach/GoogleFindMy-HA/blob/1.7.0-3/
+         custom_components/googlefindmy/eid_resolver.py
+
+    Fields:
+        device_id: HA Device Registry ID - unique per account, PRIMARY identifier.
+        config_entry_id: HA Config Entry ID for the GoogleFindMy integration.
+        canonical_id: Google UUID - shared across accounts for same physical device.
+        time_offset: EID time window offset in seconds (used for match ranking).
+        is_reversed: Whether EID bytes are in reversed order.
+    """
+
+    device_id: str
+    config_entry_id: str
+    canonical_id: str
+    time_offset: int
+    is_reversed: bool
+
+
+def _convert_to_eid_match(raw_match: Any) -> EIDMatch | None:
+    """
+    Convert an external resolver match to our local EIDMatch type.
+
+    This function safely converts the external resolver's return value to our
+    typed EIDMatch structure, handling missing fields gracefully with defaults.
+
+    Args:
+        raw_match: The match object returned by the external resolver.
+
+    Returns:
+        EIDMatch if conversion succeeds, None if the match is invalid.
+    """
+    if raw_match is None:
+        return None
+
+    try:
+        return EIDMatch(
+            device_id=str(getattr(raw_match, "device_id", "") or ""),
+            config_entry_id=str(getattr(raw_match, "config_entry_id", "") or ""),
+            canonical_id=str(getattr(raw_match, "canonical_id", "") or ""),
+            time_offset=int(getattr(raw_match, "time_offset", 0) or 0),
+            is_reversed=bool(getattr(raw_match, "is_reversed", False)),
+        )
+    except (TypeError, ValueError, AttributeError) as ex:
+        _LOGGER.debug("Failed to convert resolver match to EIDMatch: %s", ex)
+        return None
+
+
 class EidResolver(Protocol):
     """Protocol for the googlefindmy EID resolver."""
 
-    def resolve_eid(self, eid: bytes) -> Any | None:
-        """Resolve an EID to a device match."""
+    def resolve_eid(self, eid: bytes) -> EIDMatch | None:
+        """Resolve an EID to a device match (best match for shared trackers)."""
 
-    def resolve_eid_all(self, eid: bytes) -> list[Any]:
+    def resolve_eid_all(self, eid: bytes) -> list[EIDMatch]:
         """Resolve an EID to all matching devices (for shared trackers)."""
 
 
@@ -87,26 +141,36 @@ class FmdnIntegration:
         """
         Return the canonical key for an FMDN metadevice.
 
-        Uses canonical_id (from GoogleFindMy API) as primary identifier because:
-        1. It's the native UUID from the external API (e.g., '68e69eca-0000-...')
-        2. It's always available when the API returns data
-        3. It's stable and independent of Home Assistant's internal state
+        IMPORTANT: Uses device_id (HA Device Registry ID) as PRIMARY identifier.
 
-        Falls back to device_id (HA Device Registry ID) only if canonical_id
-        is not available, which should be rare.
+        This is critical for shared trackers: When a physical tracker (e.g., Moto Tag)
+        is shared between multiple Google accounts, GoogleFindMy-HA creates separate
+        HA device entries for each account. All these devices share the SAME canonical_id
+        (the Google UUID), but have DIFFERENT device_ids.
+
+        If we used canonical_id as primary:
+        - Account A: format_metadevice_address("ha_id_A", "UUID") → "fmdn:UUID"
+        - Account B: format_metadevice_address("ha_id_B", "UUID") → "fmdn:UUID" (COLLISION!)
+        - Result: Only ONE metadevice, wrong device entry!
+
+        By using device_id as primary:
+        - Account A: format_metadevice_address("ha_id_A", "UUID") → "fmdn:ha_id_A"
+        - Account B: format_metadevice_address("ha_id_B", "UUID") → "fmdn:ha_id_B"
+        - Result: SEPARATE metadevices, correct device congealment!
 
         Args:
-            device_id: HA Device Registry ID (fallback only)
-            canonical_id: Native ID from GoogleFindMy API (primary)
+            device_id: HA Device Registry ID (PRIMARY - unique per account)
+            canonical_id: Native ID from GoogleFindMy API (fallback - shared across accounts)
 
         """
-        # Prefer canonical_id - the stable identifier from the GoogleFindMy API
-        if canonical_id:
-            return normalize_identifier(f"fmdn:{canonical_id}")
-        # Fallback to device_id only if canonical_id is missing
+        # Use device_id as primary identifier - it's unique per HA device entry,
+        # allowing shared trackers to have separate metadevices for each account.
         if device_id:
-            _LOGGER.debug("Using device_id fallback for FMDN address (canonical_id unavailable)")
             return normalize_identifier(f"fmdn:{device_id}")
+        # Fallback to canonical_id only if device_id is missing (rare edge case)
+        if canonical_id:
+            _LOGGER.debug("Using canonical_id fallback for FMDN address (device_id unavailable)")
+            return normalize_identifier(f"fmdn:{canonical_id}")
         # Should never happen, but handle gracefully
         _LOGGER.warning("FMDN metadevice has neither canonical_id nor device_id")
         return normalize_identifier("fmdn:unknown")
@@ -117,24 +181,31 @@ class FmdnIntegration:
         """
         Look up a metadevice by fmdn_device_id or canonical_id using O(1) cache.
 
-        Tries canonical_id first (primary identifier), then device_id (fallback).
+        IMPORTANT: Tries device_id FIRST (primary identifier), then canonical_id (fallback).
+        This order MUST match format_metadevice_address() to prevent shared tracker collisions.
+
+        For shared trackers (same physical device in multiple accounts):
+        - device_id is UNIQUE per account → correct cache hit
+        - canonical_id is SHARED across accounts → would cause wrong cache hit!
+
         Returns the metadevice if found, None otherwise.
         """
-        # Try canonical_id cache first (primary identifier)
-        if canonical_id and canonical_id in self._fmdn_canonical_id_cache:
-            cached_address = self._fmdn_canonical_id_cache[canonical_id]
-            if cached_address in self.coordinator.metadevices:
-                return self.coordinator.metadevices[cached_address]
-            # Cache entry is stale, remove it
-            del self._fmdn_canonical_id_cache[canonical_id]
-
-        # Try device_id cache as fallback
+        # Try device_id cache FIRST (primary identifier - unique per account)
+        # This prevents shared tracker collisions where multiple accounts have the same canonical_id
         if fmdn_device_id and fmdn_device_id in self._fmdn_device_id_cache:
             cached_address = self._fmdn_device_id_cache[fmdn_device_id]
             if cached_address in self.coordinator.metadevices:
                 return self.coordinator.metadevices[cached_address]
             # Cache entry is stale, remove it
             del self._fmdn_device_id_cache[fmdn_device_id]
+
+        # Try canonical_id cache as fallback (only used when device_id is unavailable)
+        if canonical_id and canonical_id in self._fmdn_canonical_id_cache:
+            cached_address = self._fmdn_canonical_id_cache[canonical_id]
+            if cached_address in self.coordinator.metadevices:
+                return self.coordinator.metadevices[cached_address]
+            # Cache entry is stale, remove it
+            del self._fmdn_canonical_id_cache[canonical_id]
 
         return None
 
@@ -174,19 +245,19 @@ class FmdnIntegration:
         """Extract an FMDN EID using the configured format."""
         return extract_fmdn_eids(service_data, mode=DEFAULT_FMDN_EID_FORMAT)
 
-    def process_resolution(self, eid_bytes: bytes) -> Any | None:
+    def process_resolution(self, eid_bytes: bytes) -> EIDMatch | None:
         """Resolve an EID payload to a Home Assistant device registry id."""
         match, _ = self.process_resolution_with_status(eid_bytes, source_mac="unknown")
         return match
 
     def process_resolution_with_status(
         self, eid_bytes: bytes, source_mac: str
-    ) -> tuple[Any | None, EidResolutionStatus]:
+    ) -> tuple[EIDMatch | None, EidResolutionStatus]:
         """
         Resolve an EID payload and track the resolution status.
 
         Returns:
-            Tuple of (match result, resolution status)
+            Tuple of (EIDMatch result, resolution status)
 
         """
         resolver = self.get_resolver()
@@ -201,7 +272,7 @@ class FmdnIntegration:
             return None, EidResolutionStatus.NO_KNOWN_EID_MATCH
 
         try:
-            match = resolver.resolve_eid(normalized_eid)
+            raw_match = resolver.resolve_eid(normalized_eid)
         except (ValueError, TypeError, AttributeError, KeyError) as ex:
             # Known exceptions from data processing issues
             _LOGGER.debug(
@@ -222,15 +293,27 @@ class FmdnIntegration:
             self.manager.record_resolution_failure(eid_bytes, source_mac, EidResolutionStatus.RESOLVER_ERROR)
             return None, EidResolutionStatus.RESOLVER_ERROR
 
+        # Convert external match to typed EIDMatch
+        match = _convert_to_eid_match(raw_match)
         if match is None:
             self.manager.record_resolution_failure(eid_bytes, source_mac, EidResolutionStatus.NO_KNOWN_EID_MATCH)
             return None, EidResolutionStatus.NO_KNOWN_EID_MATCH
+
+        # Diagnostic logging for typically unused fields
+        if match.time_offset != 0:
+            _LOGGER.debug(
+                "FMDN resolution time_offset=%d (non-zero may indicate stale match)",
+                match.time_offset,
+            )
+        if match.is_reversed:
+            _LOGGER.debug("FMDN resolution is_reversed=True (byte order reversed)")
+
         # Match found - will be recorded by caller with device_id
         return match, EidResolutionStatus.NOT_EVALUATED
 
     def process_resolution_all_with_status(  # noqa: PLR0911  # pylint: disable=too-many-return-statements
         self, eid_bytes: bytes, source_mac: str
-    ) -> tuple[list[Any], EidResolutionStatus]:
+    ) -> tuple[list[EIDMatch], EidResolutionStatus]:
         """
         Resolve an EID payload to ALL matching devices (for shared trackers).
 
@@ -240,7 +323,7 @@ class FmdnIntegration:
         for each one.
 
         Returns:
-            Tuple of (list of matches, resolution status)
+            Tuple of (list of EIDMatch, resolution status)
 
         """
         resolver = self.get_resolver()
@@ -259,9 +342,23 @@ class FmdnIntegration:
         resolve_all_failed = False
         if callable(resolve_all):
             try:
-                matches = resolve_all(normalized_eid)  # pylint: disable=not-callable
-                if matches:
-                    return matches, EidResolutionStatus.NOT_EVALUATED
+                raw_matches = resolve_all(normalized_eid)  # pylint: disable=not-callable
+                if raw_matches:
+                    # Convert all matches to typed EIDMatch
+                    typed_matches = [
+                        m for raw in raw_matches if (m := _convert_to_eid_match(raw)) is not None
+                    ]
+                    if typed_matches:
+                        # Diagnostic logging for first match
+                        first = typed_matches[0]
+                        if first.time_offset != 0:
+                            _LOGGER.debug(
+                                "FMDN resolution time_offset=%d (non-zero may indicate stale match)",
+                                first.time_offset,
+                            )
+                        if first.is_reversed:
+                            _LOGGER.debug("FMDN resolution is_reversed=True (byte order reversed)")
+                        return typed_matches, EidResolutionStatus.NOT_EVALUATED
             except (ValueError, TypeError, AttributeError, KeyError) as ex:
                 # Known exceptions from data processing issues
                 _LOGGER.debug(
@@ -286,7 +383,7 @@ class FmdnIntegration:
             _LOGGER.debug("Attempting fallback to resolve_eid after resolve_eid_all failure")
 
         try:
-            single_match = resolver.resolve_eid(normalized_eid)
+            raw_single_match = resolver.resolve_eid(normalized_eid)
         except (ValueError, TypeError, AttributeError, KeyError) as ex:
             # Known exceptions from data processing issues
             _LOGGER.debug(
@@ -307,22 +404,33 @@ class FmdnIntegration:
             self.manager.record_resolution_failure(eid_bytes, source_mac, EidResolutionStatus.RESOLVER_ERROR)
             return [], EidResolutionStatus.RESOLVER_ERROR
 
+        # Convert to typed EIDMatch
+        single_match = _convert_to_eid_match(raw_single_match)
         if single_match is None:
             self.manager.record_resolution_failure(eid_bytes, source_mac, EidResolutionStatus.NO_KNOWN_EID_MATCH)
             return [], EidResolutionStatus.NO_KNOWN_EID_MATCH
 
+        # Diagnostic logging
+        if single_match.time_offset != 0:
+            _LOGGER.debug(
+                "FMDN resolution time_offset=%d (non-zero may indicate stale match)",
+                single_match.time_offset,
+            )
+        if single_match.is_reversed:
+            _LOGGER.debug("FMDN resolution is_reversed=True (byte order reversed)")
+
         # Wrap single match in a list for consistent handling
         return [single_match], EidResolutionStatus.NOT_EVALUATED
 
-    def register_source(self, source_device: BermudaDevice, metadevice_address: str, match: Any) -> None:
+    def register_source(self, source_device: BermudaDevice, metadevice_address: str, match: EIDMatch) -> None:
         """
         Attach a rotating FMDN source MAC to its stable metadevice container.
 
         Uses a lock to prevent race conditions when multiple advertisements
         are processed concurrently, and a cache for O(1) metadevice lookup.
         """
-        fmdn_device_id = getattr(match, "device_id", None)
-        canonical_id = getattr(match, "canonical_id", None)
+        fmdn_device_id: str | None = match.device_id if match.device_id else None
+        canonical_id: str | None = match.canonical_id if match.canonical_id else None
 
         # Use lock to prevent race conditions during metadevice creation
         with self._registration_lock:
@@ -410,18 +518,23 @@ class FmdnIntegration:
             # Note: When resolve_eid_all returns multiple matches, it means the same
             # physical tracker is registered in multiple Google accounts.
             for match in matches:
-                resolved_device_id = getattr(match, "device_id", None)
-                canonical_id = getattr(match, "canonical_id", None)
-
-                if resolved_device_id is None:
+                # With typed EIDMatch, we can access fields directly
+                if not match.device_id:
                     _LOGGER.debug("Resolver returned match without device_id for candidate length %d", len(eid_bytes))
                     continue
 
-                # Successfully resolved - record in FMDN manager
-                self.manager.record_resolution_success(eid_bytes, device.address, str(resolved_device_id), canonical_id)
+                # Successfully resolved - record in FMDN manager with diagnostic fields
+                self.manager.record_resolution_success(
+                    eid_bytes,
+                    device.address,
+                    match.device_id,
+                    match.canonical_id if match.canonical_id else None,
+                    time_offset=match.time_offset,
+                    is_reversed=match.is_reversed,
+                )
                 any_resolved = True
 
-                metadevice_address = self.format_metadevice_address(str(resolved_device_id), canonical_id)
+                metadevice_address = self.format_metadevice_address(match.device_id, match.canonical_id)
                 self.register_source(device, metadevice_address, match)
 
             # Found matches for this EID candidate, no need to try other candidates

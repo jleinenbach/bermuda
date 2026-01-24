@@ -38,6 +38,9 @@ class SeenEid:
     device_id: str | None = None
     canonical_id: str | None = None
     check_count: int = 1
+    # Diagnostic fields from EIDMatch (typically unused but valuable for debugging)
+    time_offset: int | None = None
+    is_reversed: bool | None = None
 
 
 @dataclass
@@ -83,6 +86,8 @@ class BermudaFmdnManager:
         resolution_status: EidResolutionStatus | str = EidResolutionStatus.NOT_EVALUATED,
         device_id: str | None = None,
         canonical_id: str | None = None,
+        time_offset: int | None = None,
+        is_reversed: bool | None = None,
     ) -> None:
         """
         Record that an EID was seen from a BLE advertisement.
@@ -93,6 +98,8 @@ class BermudaFmdnManager:
             resolution_status: Result of resolution attempt (EidResolutionStatus or device_id string)
             device_id: HA device registry ID if resolved
             canonical_id: Canonical identifier from resolver if available
+            time_offset: EID time window offset in seconds (diagnostic)
+            is_reversed: Whether EID bytes are reversed (diagnostic)
 
         """
         # Validate source_mac format to prevent storing malformed keys
@@ -115,6 +122,11 @@ class BermudaFmdnManager:
                     seen.device_id = device_id
                 if canonical_id:
                     seen.canonical_id = canonical_id
+                # Update diagnostic fields if provided
+                if time_offset is not None:
+                    seen.time_offset = time_offset
+                if is_reversed is not None:
+                    seen.is_reversed = is_reversed
         else:
             # Create new entry
             self._seen_eids[eid_hex] = SeenEid(
@@ -125,6 +137,8 @@ class BermudaFmdnManager:
                 resolution_status=resolution_status,
                 device_id=device_id,
                 canonical_id=canonical_id,
+                time_offset=time_offset,
+                is_reversed=is_reversed,
             )
             self._stats.total_eids_seen += 1
             # Update resolution statistics only for NEW EIDs to avoid double-counting
@@ -154,14 +168,18 @@ class BermudaFmdnManager:
         source_mac: str,
         device_id: str,
         canonical_id: str | None = None,
+        time_offset: int | None = None,
+        is_reversed: bool | None = None,
     ) -> None:
-        """Record a successful EID resolution."""
+        """Record a successful EID resolution with optional diagnostic fields."""
         self.record_eid_seen(
             eid,
             source_mac,
             resolution_status="RESOLVED",
             device_id=device_id,
             canonical_id=canonical_id,
+            time_offset=time_offset,
+            is_reversed=is_reversed,
         )
 
     def record_resolution_failure(
@@ -246,6 +264,12 @@ class BermudaFmdnManager:
                 entry["device_id"] = seen.device_id
             if seen.canonical_id:
                 entry["canonical_id"] = seen.canonical_id
+
+            # Include diagnostic fields when available (non-None)
+            if seen.time_offset is not None:
+                entry["time_offset"] = seen.time_offset
+            if seen.is_reversed is not None:
+                entry["is_reversed"] = seen.is_reversed
 
             eids[eid_hex] = entry
 
