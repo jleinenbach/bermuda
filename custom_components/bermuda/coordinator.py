@@ -558,7 +558,11 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         registry = self.dr
 
         for device in list(registry.devices.values()):
-            if not any(ident_domain == DOMAIN for ident_domain, _ in device.identifiers):
+            # Defensive check: some devices may have malformed identifiers with only 1 element
+            # instead of the expected 2-tuple (domain, identifier). Skip those to avoid ValueError.
+            if not any(
+                len(ident) == 2 and ident[0] == DOMAIN for ident in device.identifiers
+            ):
                 continue
 
             scanned += 1
