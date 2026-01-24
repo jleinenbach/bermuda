@@ -1053,6 +1053,10 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
             self._refresh_areas_by_min_distance()
 
+            # Aggregate area data from sources into metadevices
+            # This must run AFTER area selection so sources have area data populated
+            self.aggregate_source_data_to_metadevices()
+
             # We might need to freshen deliberately on first start if no new scanners
             # were discovered in the first scan update. This is likely if nothing has changed
             # since the last time we booted.
@@ -1431,6 +1435,10 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
     def update_metadevices(self) -> None:
         """Delegate to metadevice_manager for metadevice updates."""
         self.metadevice_manager.update_metadevices()
+
+    def aggregate_source_data_to_metadevices(self) -> None:
+        """Delegate to metadevice_manager for aggregating source data into metadevices."""
+        self.metadevice_manager.aggregate_source_data_to_metadevices()
 
     def dt_mono_to_datetime(self, stamp: float) -> datetime:
         """Given a monotonic timestamp, convert to datetime object."""

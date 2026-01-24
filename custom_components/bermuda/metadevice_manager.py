@@ -19,11 +19,13 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from bluetooth_data_tools import monotonic_time_coarse
 from homeassistant.const import Platform
 
 from .const import (
     CONF_DEVICES,
     DOMAIN_PRIVATE_BLE_DEVICE,
+    EVIDENCE_WINDOW_SECONDS,
     METADEVICE_IBEACON_DEVICE,
     METADEVICE_TYPE_IBEACON_SOURCE,
     METADEVICE_TYPE_PRIVATE_BLE_SOURCE,
@@ -461,3 +463,79 @@ class MetadeviceManager:
                 metadevice.metadevice_sources.remove(source)
             if _want_name_update:
                 metadevice.make_name()
+
+    def aggregate_source_data_to_metadevices(self) -> None:
+        """
+        Aggregate area/distance data from source devices into metadevices.
+
+        This method runs AFTER area selection has completed, so source devices
+        have their area_id, area_name, area_distance, etc. populated.
+
+        For each metadevice, we find the "best" active source (most recent
+        last_seen within evidence window, with valid area data) and copy
+        its area-related properties to the metadevice.
+
+        This ensures metadevices have proper area data for sensors/trackers.
+        """
+        nowstamp = monotonic_time_coarse()
+        evidence_cutoff = nowstamp - EVIDENCE_WINDOW_SECONDS
+
+        for metadevice in self.metadevices.values():
+            best_source: BermudaDevice | None = None
+            best_last_seen: float = 0.0
+
+            # Find the best active source device
+            for source_address in metadevice.metadevice_sources:
+                source_device = self._get_device(source_address)
+                if source_device is None:
+                    continue
+
+                # Source must have been seen recently
+                if source_device.last_seen < evidence_cutoff:
+                    continue
+
+                # Source must have valid area data
+                if source_device.area_id is None:
+                    continue
+
+                # Prefer the source with most recent last_seen
+                if source_device.last_seen > best_last_seen:
+                    best_last_seen = source_device.last_seen
+                    best_source = source_device
+
+            if best_source is None:
+                # No active source with area data found
+                # Keep existing metadevice state (may go stale naturally)
+                continue
+
+            # Copy area-related data from best source to metadevice
+            metadevice.area_id = best_source.area_id
+            metadevice.area_name = best_source.area_name
+            metadevice.area = best_source.area
+            metadevice.area_icon = best_source.area_icon
+            metadevice.area_distance = best_source.area_distance
+            metadevice.area_distance_stamp = best_source.area_distance_stamp
+            metadevice.area_rssi = best_source.area_rssi
+            metadevice.area_advert = best_source.area_advert
+            metadevice.area_last_seen = best_source.area_last_seen
+            metadevice.area_last_seen_id = best_source.area_last_seen_id
+            metadevice.area_last_seen_icon = best_source.area_last_seen_icon
+            metadevice.area_state_stamp = best_source.area_state_stamp
+            metadevice.area_state_source = best_source.area_state_source
+
+            # Copy floor data
+            metadevice.floor_id = best_source.floor_id
+            metadevice.floor = best_source.floor
+            metadevice.floor_name = best_source.floor_name
+            metadevice.floor_level = best_source.floor_level
+
+            # Update last_seen to match best source
+            metadevice.last_seen = best_source.last_seen
+
+            _LOGGER.debug(
+                "Aggregated area data for metadevice %s from source %s: area=%s, distance=%.2fm",
+                metadevice.name,
+                best_source.address,
+                metadevice.area_name,
+                metadevice.area_distance if metadevice.area_distance is not None else -1,
+            )
