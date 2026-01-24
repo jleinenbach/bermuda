@@ -207,25 +207,26 @@ class TestMetadeviceAddressConsistency:
     different addresses, duplicate metadevices will be created!
     """
 
-    def test_canonical_id_preferred_over_device_id(self, fmdn_integration: FmdnIntegration) -> None:
-        """format_metadevice_address should prefer canonical_id."""
+    def test_device_id_preferred_over_canonical_id(self, fmdn_integration: FmdnIntegration) -> None:
+        """format_metadevice_address should prefer device_id (unique per account)."""
+        # Per Lesson #61: device_id is now preferred to prevent shared tracker collisions
         address = fmdn_integration.format_metadevice_address(
             device_id="920aa0336e9c8bcf58b6dada3a9c68cb",
             canonical_id="68419b51-0000-2131-873b-fc411691d329",
         )
 
-        # Should use canonical_id, not device_id
-        assert "68419b51-0000-2131-873b-fc411691d329" in address
-        assert "920aa0336e9c8bcf58b6dada3a9c68cb" not in address
+        # Should use device_id (account-scoped), not canonical_id (shared across accounts)
+        assert "920aa0336e9c8bcf58b6dada3a9c68cb" in address
+        assert "68419b51-0000-2131-873b-fc411691d329" not in address
 
-    def test_fallback_to_device_id_when_no_canonical(self, fmdn_integration: FmdnIntegration) -> None:
-        """format_metadevice_address falls back to device_id."""
+    def test_fallback_to_canonical_id_when_no_device_id(self, fmdn_integration: FmdnIntegration) -> None:
+        """format_metadevice_address falls back to canonical_id when device_id is None."""
         address = fmdn_integration.format_metadevice_address(
-            device_id="920aa0336e9c8bcf58b6dada3a9c68cb",
-            canonical_id=None,
+            device_id=None,
+            canonical_id="68419b51-0000-2131-873b-fc411691d329",
         )
 
-        assert "920aa0336e9c8bcf58b6dada3a9c68cb" in address
+        assert "68419b51-0000-2131-873b-fc411691d329" in address
 
     def test_entity_discovery_and_eid_resolution_produce_same_address(self, fmdn_integration: FmdnIntegration) -> None:
         """
@@ -392,7 +393,7 @@ class TestCacheConsistency:
     def test_cache_prefers_canonical_id_lookup(
         self, fmdn_integration: FmdnIntegration, mock_coordinator: BermudaDataUpdateCoordinator
     ) -> None:
-        """canonical_id cache should be checked before device_id cache."""
+        """device_id cache should be checked before canonical_id cache (Lesson #61)."""
         from custom_components.bermuda.bermuda_device import BermudaDevice
 
         metadevice1 = BermudaDevice(address="fmdn:via-canonical", coordinator=mock_coordinator)
@@ -404,13 +405,13 @@ class TestCacheConsistency:
         fmdn_integration._fmdn_canonical_id_cache["canonical123"] = "fmdn:via-canonical"
         fmdn_integration._fmdn_device_id_cache["device456"] = "fmdn:via-device-id"
 
-        # When both are provided, canonical_id should win
+        # When both are provided, device_id should win (per Lesson #61: account-scoped ID preferred)
         found = fmdn_integration._get_cached_metadevice(
             fmdn_device_id="device456",
             canonical_id="canonical123",
         )
 
-        assert found is metadevice1  # Found via canonical_id, not device_id
+        assert found is metadevice2  # Found via device_id, not canonical_id
 
 
 # =============================================================================

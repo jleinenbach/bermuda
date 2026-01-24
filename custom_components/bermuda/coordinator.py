@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import aiofiles
 import voluptuous as vol
@@ -341,8 +341,10 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         async_dispatcher_send(self.hass, SIGNAL_SCANNERS_CHANGED)
 
     def scanner_list_del(self, scanner_device: BermudaDevice) -> None:
-        self._scanner_list.remove(scanner_device.address)
-        self._scanners.remove(scanner_device)
+        # Use discard() instead of remove() to avoid KeyError if scanner
+        # was never added to the list (e.g., during purge of removed scanners)
+        self._scanner_list.discard(scanner_device.address)
+        self._scanners.discard(scanner_device)
         async_dispatcher_send(self.hass, SIGNAL_SCANNERS_CHANGED)
 
     def reload_options(self) -> None:
@@ -560,9 +562,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         for device in list(registry.devices.values()):
             # Defensive check: some devices may have malformed identifiers with only 1 element
             # instead of the expected 2-tuple (domain, identifier). Skip those to avoid ValueError.
-            if not any(
-                len(ident) == 2 and ident[0] == DOMAIN for ident in device.identifiers
-            ):
+            if not any(len(ident) == 2 and ident[0] == DOMAIN for ident in device.identifiers):
                 continue
 
             scanned += 1
@@ -593,6 +593,292 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                 updated,
                 scanned,
             )
+
+    def _check_address_exists(self, base_address: str) -> bool:
+        """
+        Check if a device address exists in coordinator.devices.
+
+        For FMDN devices, also checks canonical_id and device_id matches.
+        """
+        if base_address in self.devices:
+            return True
+
+        # For FMDN devices, also check with/without the fmdn: prefix
+        if base_address.startswith("fmdn:"):
+            # Try finding by canonical_id or device_id
+            canonical_id = base_address[5:]  # Remove "fmdn:" prefix
+            for device in self.devices.values():
+                if (
+                    getattr(device, "fmdn_canonical_id", None) == canonical_id
+                    or getattr(device, "fmdn_device_id", None) == canonical_id
+                ):
+                    return True
+
+        return False
+
+    # Known suffixes used in unique_id generation for entity type detection
+    _ENTITY_UNIQUE_ID_SUFFIXES = [
+        "_floor",
+        "_range",
+        "_rssi",
+        "_scanner",
+        "_area_last_seen",
+        "_area_switch_reason",
+        "_training_learn",
+        "_reset_training",
+        "_training_room",
+        "_training_floor",
+        "_range_raw",
+    ]
+
+    def _extract_base_address_from_unique_id(self, unique_id: str) -> str:
+        """Extract the base device address from an entity's unique_id."""
+        base_address = unique_id
+        for suffix in self._ENTITY_UNIQUE_ID_SUFFIXES:
+            if base_address.endswith(suffix):
+                base_address = base_address[: -len(suffix)]
+                break
+
+        # Handle per-scanner entities: {device_address}_{scanner_address}_range
+        parts = base_address.split("_")
+        if len(parts) >= 2:
+            potential_address = parts[0]
+            if potential_address in self.devices or potential_address.startswith("fmdn:"):
+                base_address = potential_address
+
+        return base_address
+
+    def _get_entity_type_key(self, entity: er.RegistryEntry) -> str:
+        """Get a stable key for entity type based on platform and unique_id suffix."""
+        ent_type = entity.domain
+        if entity.unique_id:
+            for suffix in self._ENTITY_UNIQUE_ID_SUFFIXES:
+                if entity.unique_id.endswith(suffix):
+                    ent_type = f"{entity.domain}{suffix}"
+                    break
+        return ent_type
+
+    def _find_duplicate_entities(
+        self,
+        entities: list[er.RegistryEntry],
+    ) -> list[str]:
+        """Find duplicate entities for a device, returning entity_ids to remove."""
+        duplicates_to_remove: list[str] = []
+
+        # Group by entity type (platform + unique_id suffix)
+        entities_by_type: dict[str, list[er.RegistryEntry]] = {}
+        for entity in entities:
+            ent_type = self._get_entity_type_key(entity)
+            entities_by_type.setdefault(ent_type, []).append(entity)
+
+        for type_entities in entities_by_type.values():
+            if len(type_entities) <= 1:
+                continue
+
+            # Sort: enabled first, then prefer entities whose address exists in devices
+            sorted_entities = sorted(
+                type_entities,
+                key=lambda e: (
+                    e.disabled_by is None,
+                    any(e.unique_id and e.unique_id.startswith(addr) for addr in self.devices)
+                    if e.unique_id
+                    else False,
+                ),
+                reverse=True,
+            )
+
+            # Keep the first (best) one, mark others for removal
+            for entity in sorted_entities[1:]:
+                duplicates_to_remove.append(entity.entity_id)
+                _LOGGER.debug(
+                    "Marking duplicate entity for removal: %s (keeping %s)",
+                    entity.entity_id,
+                    sorted_entities[0].entity_id,
+                )
+
+        return duplicates_to_remove
+
+    async def async_cleanup_orphaned_entities(self) -> None:
+        """
+        Clean up orphaned Bermuda entities from the entity registry.
+
+        This handles cases where:
+        1. A device was re-discovered with a different address format (e.g., FMDN
+           device_id vs canonical_id change), creating duplicate entities
+        2. A device was removed but its entities weren't properly cleaned up
+        3. Entity unique_ids became invalid due to address normalization changes
+        """
+        registry = self.er
+        removed_count = 0
+        duplicate_count = 0
+
+        if self.config_entry is None:
+            return
+
+        bermuda_entities = er.async_entries_for_config_entry(registry, self.config_entry.entry_id)
+        if not bermuda_entities:
+            return
+
+        # Group entities by base address and device_id
+        entities_by_base_address: dict[str, list[er.RegistryEntry]] = {}
+        entities_by_device_id: dict[str, list[er.RegistryEntry]] = {}
+
+        for entity in bermuda_entities:
+            if entity.unique_id is None:
+                continue
+
+            base_address = self._extract_base_address_from_unique_id(entity.unique_id)
+            entities_by_base_address.setdefault(base_address, []).append(entity)
+
+            if entity.device_id:
+                entities_by_device_id.setdefault(entity.device_id, []).append(entity)
+
+        # Find orphaned entities (address no longer exists)
+        entities_to_remove: list[str] = []
+        for base_address, entities in entities_by_base_address.items():
+            if base_address.startswith("BERMUDA_GLOBAL"):
+                continue
+
+            if not self._check_address_exists(base_address):
+                for entity in entities:
+                    entities_to_remove.append(entity.entity_id)
+                    _LOGGER.debug(
+                        "Marking orphaned entity for removal: %s (base address %s not found)",
+                        entity.entity_id,
+                        base_address,
+                    )
+
+        # Find duplicate entities for same device
+        for entities in entities_by_device_id.values():
+            if len(entities) <= 1:
+                continue
+            for entity_id in self._find_duplicate_entities(entities):
+                if entity_id not in entities_to_remove:
+                    entities_to_remove.append(entity_id)
+                    duplicate_count += 1
+
+        # Remove marked entities
+        for entity_id in entities_to_remove:
+            try:
+                registry.async_remove(entity_id)
+                removed_count += 1
+            except KeyError:
+                pass
+
+        if removed_count > 0:
+            _LOGGER.info(
+                "Cleaned up %d orphaned/duplicate Bermuda entities (%d orphaned, %d duplicates)",
+                removed_count,
+                removed_count - duplicate_count,
+                duplicate_count,
+            )
+
+    def check_for_duplicate_entities(self, address: str) -> str | None:
+        """
+        Check if entities already exist for a device that might be a duplicate.
+
+        This handles the case where a device was previously registered with a different
+        address format (e.g., FMDN canonical_id vs device_id) and now has a new address.
+
+        Returns:
+            The existing address if duplicate entities were found, None otherwise.
+            If an existing address is returned, the caller should skip entity creation
+            and instead clean up the old entities to let the new ones be created.
+
+        """
+        device = self.devices.get(address)
+        if device is None:
+            return None
+
+        # Guard: config_entry must be set
+        if self.config_entry is None:
+            return None
+
+        # Get all Bermuda entities
+        bermuda_entities = er.async_entries_for_config_entry(self.er, self.config_entry.entry_id)
+
+        # For FMDN devices, check if there are entities with the old address format
+        if device.fmdn_device_id or device.fmdn_canonical_id:
+            # Possible old address formats to check
+            old_addresses: list[str] = []
+
+            if device.fmdn_canonical_id:
+                old_addresses.append(f"fmdn:{device.fmdn_canonical_id}")
+            if device.fmdn_device_id:
+                old_addresses.append(f"fmdn:{device.fmdn_device_id}")
+
+            # Remove the current address from the list
+            old_addresses = [addr for addr in old_addresses if addr != address]
+
+            for entity in bermuda_entities:
+                if entity.unique_id is None:
+                    continue
+
+                for old_addr in old_addresses:
+                    if entity.unique_id.startswith(old_addr):
+                        # Found an entity with an old address format
+                        # Return the old address so caller can decide what to do
+                        _LOGGER.debug(
+                            "Found existing entity %s with old FMDN address format %s "
+                            "(current: %s). Will clean up old entities.",
+                            entity.entity_id,
+                            old_addr,
+                            address,
+                        )
+                        return old_addr
+
+        # Note: We intentionally do NOT use device name matching for non-FMDN devices
+        # because different devices can have the same name, causing false positives.
+        # For non-FMDN devices, the orphan cleanup mechanism handles stale entities
+        # when the old address is no longer in coordinator.devices.
+
+        return None
+
+    def cleanup_old_entities_for_device(self, old_address: str, new_address: str) -> int:
+        """
+        Remove entities with an old address format to allow new entities to be created.
+
+        Args:
+            old_address: The old device address (used in existing entity unique_ids)
+            new_address: The new device address that will be used for new entities
+
+        Returns:
+            Number of entities removed
+
+        """
+        # Guard: config_entry must be set
+        if self.config_entry is None:
+            return 0
+
+        removed_count = 0
+        bermuda_entities = er.async_entries_for_config_entry(self.er, self.config_entry.entry_id)
+
+        for entity in bermuda_entities:
+            if entity.unique_id is None:
+                continue
+
+            if entity.unique_id.startswith(old_address):
+                try:
+                    self.er.async_remove(entity.entity_id)
+                    removed_count += 1
+                    _LOGGER.debug(
+                        "Removed old entity %s (old address: %s, new: %s)",
+                        entity.entity_id,
+                        old_address,
+                        new_address,
+                    )
+                except KeyError:
+                    pass
+
+        if removed_count > 0:
+            _LOGGER.info(
+                "Migrated %d entities from old address %s to new address %s",
+                removed_count,
+                old_address,
+                new_address,
+            )
+
+        return removed_count
 
     @callback
     def async_handle_advert(
@@ -1185,7 +1471,11 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                 # whether the service data contains FMDN payloads.
                 # Pass service_data DIRECTLY to ensure no transformation loses data.
                 if self.fmdn:
-                    self.fmdn.handle_advertisement(device, advertisementdata.service_data or {})
+                    service_data = cast(
+                        "Mapping[str | int, Any]",
+                        advertisementdata.service_data or {},
+                    )
+                    self.fmdn.handle_advertisement(device, service_data)
 
                 # 3. Standard Processing (RSSI, Scanner info, etc.)
                 # ONLY NOW do we process the physical advertisement data,

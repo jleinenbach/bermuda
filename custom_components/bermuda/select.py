@@ -35,6 +35,11 @@ async def async_setup_entry(
     def device_new(address: str) -> None:
         """Create entities for newly-found device."""
         if address not in created_devices:
+            # Check for duplicate entities with old address formats before creating new ones
+            old_address = coordinator.check_for_duplicate_entities(address)
+            if old_address:
+                coordinator.cleanup_old_entities_for_device(old_address, address)
+
             entities: list[SelectEntity] = []
             # Create floor select first so room select can reference it
             floor_select = BermudaTrainingFloorSelect(coordinator, entry, address)

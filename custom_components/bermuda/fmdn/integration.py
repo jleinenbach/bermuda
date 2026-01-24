@@ -67,6 +67,7 @@ def _convert_to_eid_match(raw_match: Any) -> EIDMatch | None:
 
     Returns:
         EIDMatch if conversion succeeds, None if the match is invalid.
+
     """
     if raw_match is None:
         return None
@@ -181,25 +182,35 @@ class FmdnIntegration:
         """
         Look up a metadevice by fmdn_device_id or canonical_id using O(1) cache.
 
-        IMPORTANT: Tries device_id FIRST (primary identifier), then canonical_id (fallback).
-        This order MUST match format_metadevice_address() to prevent shared tracker collisions.
+        IMPORTANT: device_id is the primary identifier and MUST be checked first.
+        canonical_id fallback is ONLY used when device_id is None (not just "not in cache").
 
         For shared trackers (same physical device in multiple accounts):
         - device_id is UNIQUE per account → correct cache hit
         - canonical_id is SHARED across accounts → would cause wrong cache hit!
 
+        CRITICAL: When a device_id is provided but not in cache, do NOT fall back to
+        canonical_id! That canonical_id might belong to a different account's metadevice.
+        The fallback to canonical_id is ONLY for cases where device_id is truly None.
+
         Returns the metadevice if found, None otherwise.
         """
         # Try device_id cache FIRST (primary identifier - unique per account)
         # This prevents shared tracker collisions where multiple accounts have the same canonical_id
-        if fmdn_device_id and fmdn_device_id in self._fmdn_device_id_cache:
-            cached_address = self._fmdn_device_id_cache[fmdn_device_id]
-            if cached_address in self.coordinator.metadevices:
-                return self.coordinator.metadevices[cached_address]
-            # Cache entry is stale, remove it
-            del self._fmdn_device_id_cache[fmdn_device_id]
+        if fmdn_device_id:
+            if fmdn_device_id in self._fmdn_device_id_cache:
+                cached_address = self._fmdn_device_id_cache[fmdn_device_id]
+                if cached_address in self.coordinator.metadevices:
+                    return self.coordinator.metadevices[cached_address]
+                # Cache entry is stale, remove it
+                del self._fmdn_device_id_cache[fmdn_device_id]
+            # CRITICAL: device_id was provided but not found in cache.
+            # Do NOT fall back to canonical_id - that might return a different account's metadevice!
+            # Return None to create a new metadevice for this device_id.
+            return None
 
-        # Try canonical_id cache as fallback (only used when device_id is unavailable)
+        # Try canonical_id cache ONLY when device_id is None
+        # (This is the fallback for older EID resolver versions that don't provide device_id)
         if canonical_id and canonical_id in self._fmdn_canonical_id_cache:
             cached_address = self._fmdn_canonical_id_cache[canonical_id]
             if cached_address in self.coordinator.metadevices:
@@ -345,9 +356,7 @@ class FmdnIntegration:
                 raw_matches = resolve_all(normalized_eid)  # pylint: disable=not-callable
                 if raw_matches:
                     # Convert all matches to typed EIDMatch
-                    typed_matches = [
-                        m for raw in raw_matches if (m := _convert_to_eid_match(raw)) is not None
-                    ]
+                    typed_matches = [m for raw in raw_matches if (m := _convert_to_eid_match(raw)) is not None]
                     if typed_matches:
                         # Diagnostic logging for first match
                         first = typed_matches[0]

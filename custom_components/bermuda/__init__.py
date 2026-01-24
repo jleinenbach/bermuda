@@ -65,6 +65,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: BermudaConfigEntry) -> b
     if not coordinator.last_update_success:
         await on_failure()
 
+    # Clean up orphaned entities from previous sessions AFTER first refresh
+    # This MUST run after async_refresh() because self.devices is populated during refresh.
+    # Running before would incorrectly mark ALL entities as orphaned (devices would be empty).
+    # Handles cases where devices were re-discovered with different address formats
+    # (e.g., FMDN device_id vs canonical_id changes) or entities weren't properly removed.
+    await coordinator.async_cleanup_orphaned_entities()
+
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     entry.async_on_unload(entry.add_update_listener(async_reload_entry))

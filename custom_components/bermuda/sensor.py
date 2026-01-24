@@ -69,6 +69,13 @@ async def async_setup_entry(
         #         return
 
         if address not in created_devices:
+            # Check for duplicate entities with old address formats before creating new ones
+            # This handles cases like FMDN address format changes (canonical_id vs device_id)
+            old_address = coordinator.check_for_duplicate_entities(address)
+            if old_address:
+                # Clean up old entities to prevent duplicates
+                coordinator.cleanup_old_entities_for_device(old_address, address)
+
             entities = []
             entities.append(BermudaSensor(coordinator, entry, address))
             if coordinator.have_floors:
