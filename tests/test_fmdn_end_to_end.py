@@ -148,6 +148,59 @@ def lightweight_coordinator(
     return coordinator
 
 
+class TestFmdnMetadeviceInDevices:
+    """
+    CRITICAL TEST: Verify that FMDN metadevices are automatically added to coordinator.devices.
+
+    This is the core bug being tested. The config_flow.py iterates over coordinator.devices
+    (line 293), but metadevices were only being added to coordinator.metadevices.
+
+    If this test FAILS, it means the bug exists: metadevices are NOT being added to
+    coordinator.devices automatically, and users won't see FMDN devices in the config flow.
+    """
+
+    def test_metadevice_automatically_added_to_coordinator_devices(
+        self,
+        hass: HomeAssistant,
+        mock_resolver: MagicMock,
+        fmdn_service_data: Mapping[str | int, Any],
+        lightweight_coordinator: BermudaDataUpdateCoordinator,
+    ) -> None:
+        """
+        BUG TEST: Metadevice MUST be in coordinator.devices after handle_advertisement().
+
+        This test will FAIL if the bug exists (metadevice only in metadevices, not in devices).
+        The test should PASS after the bug is fixed.
+        """
+        coordinator = lightweight_coordinator
+        hass.data[DOMAIN_GOOGLEFINDMY] = {DATA_EID_RESOLVER: mock_resolver}
+
+        # Create source device and process advertisement
+        source_device = coordinator._get_or_create_device(TEST_SOURCE_MAC)
+        coordinator.fmdn.handle_advertisement(source_device, fmdn_service_data)
+
+        # Get the expected metadevice address
+        metadevice_address = coordinator.fmdn.format_metadevice_address(TEST_FMDN_DEVICE_ID, TEST_FMDN_CANONICAL_ID)
+
+        # Verify metadevice is in coordinator.metadevices (this should pass)
+        assert metadevice_address in coordinator.metadevices, "Metadevice should be in coordinator.metadevices"
+
+        # CRITICAL BUG TEST: Verify metadevice is ALSO in coordinator.devices
+        # This is required for config_flow.py to see the device!
+        # If this assertion fails, the bug exists.
+        assert metadevice_address in coordinator.devices, (
+            "BUG: Metadevice is NOT in coordinator.devices! "
+            "Config flow iterates over coordinator.devices (line 293 in config_flow.py), "
+            "so FMDN devices will NOT appear in the Select Devices list. "
+            "The fix: register_source() must add the metadevice to coordinator.devices."
+        )
+
+        # Additional verification: the objects should be the same instance
+        assert coordinator.devices[metadevice_address] is coordinator.metadevices[metadevice_address], (
+            "The metadevice in devices and metadevices should be the same object instance"
+        )
+
+
 class TestFmdnDeviceDiscovery:
     """Test FMDN device discovery and registration (unit tests)."""
 
@@ -325,9 +378,12 @@ class TestFmdnConfigFlowIntegration:
         assert metadevice is not None
         assert metadevice.create_sensor is True  # Auto-tracked
 
-        # CRITICAL: Add the metadevice to coordinator.devices so it appears in config flow
-        # The config flow iterates over coordinator.devices, not coordinator.metadevices!
-        coordinator.devices[metadevice.address] = metadevice
+        # BUG FIX VERIFICATION: The metadevice should AUTOMATICALLY be in coordinator.devices
+        # If this assertion fails, the bug has been reintroduced!
+        assert metadevice_address in coordinator.devices, (
+            "BUG: Metadevice NOT in coordinator.devices! "
+            "register_source() should add metadevices to coordinator.devices via _get_or_create_device()"
+        )
 
         # Start options flow and go to selectdevices
         result = await hass.config_entries.options.async_init(config_entry.entry_id)
@@ -370,9 +426,8 @@ class TestFmdnConfigFlowIntegration:
 
         metadevice_address = coordinator.fmdn.format_metadevice_address(TEST_FMDN_DEVICE_ID, TEST_FMDN_CANONICAL_ID)
 
-        # Add metadevice to coordinator.devices
-        metadevice = coordinator.metadevices.get(metadevice_address)
-        coordinator.devices[metadevice.address] = metadevice
+        # BUG FIX VERIFICATION: The metadevice should AUTOMATICALLY be in coordinator.devices
+        assert metadevice_address in coordinator.devices, "BUG: Metadevice NOT in coordinator.devices!"
 
         # Try to select the FMDN device
         result = await hass.config_entries.options.async_init(config_entry.entry_id)
@@ -528,8 +583,11 @@ class TestFmdnCompleteDataFlow:
         assert metadevice.floor_name == TEST_FLOOR_NAME
 
         # Step 10: Verify device can appear in config flow selectdevices
-        # Add metadevice to coordinator.devices (required for config flow iteration)
-        coordinator.devices[metadevice.address] = metadevice
+        # BUG FIX VERIFICATION: The metadevice should AUTOMATICALLY be in coordinator.devices
+        assert metadevice_address in coordinator.devices, (
+            "BUG: Metadevice NOT in coordinator.devices! "
+            "register_source() should add metadevices to coordinator.devices via _get_or_create_device()"
+        )
 
         result = await hass.config_entries.options.async_init(config_entry.entry_id)
         result = await hass.config_entries.options.async_configure(
