@@ -405,14 +405,14 @@ class FmdnIntegration:
                     first_eid, device.address, EidResolutionStatus.NO_KNOWN_EID_MATCH
                 )
 
-    def prune_source(self, device: BermudaDevice, stamp_fmdn: float, prune_list: list[str]) -> bool:
+    def prune_source(self, device: BermudaDevice, stamp_fmdn: float, prune_list: set[str]) -> bool:
         """Prune stale FMDN rotating MACs and return True if pruned."""
         if METADEVICE_TYPE_FMDN_SOURCE not in device.metadevice_type:
             return False
         if device.last_seen >= stamp_fmdn:
             return False
 
-        prune_list.append(device.address)
+        prune_list.add(device.address)
         return True
 
     @staticmethod

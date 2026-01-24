@@ -1185,7 +1185,9 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         self.fmdn.manager.async_prune()
 
         # Prune devices.
-        prune_list: list[str] = []  # list of addresses to be pruned
+        # Use a set to prevent duplicates - a device appearing twice in the prune list
+        # causes KeyError when the second deletion is attempted
+        prune_list: set[str] = set()  # set of addresses to be pruned
         prunable_stamps: dict[str, float] = {}  # dict of potential prunees if we need to be more aggressive.
 
         metadevice_source_keepers = set()
@@ -1206,7 +1208,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                         else:
                             # It's too old to be an IRK, and otherwise we'll auto-detect it,
                             # so let's be rid of it.
-                            prune_list.append(address)
+                            prune_list.add(address)
 
         for device_address, device in self.devices.items():
             if device_address in prune_list:
@@ -1243,7 +1245,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                             device_address,
                             device.name,
                         )
-                        prune_list.append(device_address)
+                        prune_list.add(device_address)
                     elif device.last_seen < nowstamp - 200:  # BlueZ cache time
                         # It's not stale, but we will prune it if we can't make our
                         # quota of PRUNE_MAX_COUNT we'll shave these off too.
@@ -1261,7 +1263,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                         "Marking old device entry for pruning: %s",
                         device.name,
                     )
-                    prune_list.append(device_address)
+                    prune_list.add(device_address)
                 else:
                     # Device is static, not tracked, not so old, but we might have to prune it anyway
                     prunable_stamps[device_address] = device.last_seen
@@ -1287,7 +1289,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                     )
                 # pylint: disable-next=unused-variable
                 for _stamp, address in sorted_addresses[:cutoff_index]:
-                    prune_list.append(address)
+                    prune_list.add(address)
             else:
                 _LOGGER.warning(
                     "Need to prune another %s devices to make quota, but no extra prunables available",
@@ -1305,7 +1307,10 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         # Prune the source devices
         for device_address in prune_list:
             _LOGGER.debug("Acting on prune list for %s", device_address)
-            del self.devices[device_address]
+            # Use pop() instead of del to handle duplicates in prune_list safely
+            if self.devices.pop(device_address, None) is None:
+                _LOGGER.debug("Device %s already pruned (duplicate in prune_list)", device_address)
+                continue
             # FIX: BUG 7 - Also remove from device_ukfs to prevent memory leak
             # Without this, UKF states for pruned devices accumulate forever
             self.device_ukfs.pop(device_address, None)
