@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from bluetooth_data_tools import monotonic_time_coarse
@@ -40,7 +41,7 @@ def _patch_monotonic_time(monkeypatch: pytest.MonkeyPatch, current_time: list[fl
     monkeypatch.setattr("tests.test_physical_rssi_priority.monotonic_time_coarse", lambda: current_time[0])
 
 
-def _update_advert_stamps(adverts: dict, new_stamp: float) -> None:
+def _update_advert_stamps(adverts: dict[Any, Any], new_stamp: float) -> None:
     """Update the stamp attribute of all adverts to simulate new data arriving.
 
     This is needed for BUG 20 fix: streak counting now requires unique signals
@@ -182,7 +183,7 @@ def coordinator_with_rssi_priority(hass: HomeAssistant) -> BermudaDataUpdateCoor
 class TestMinimumDistance:
     """Tests for minimum distance enforcement in rssi_to_metres."""
 
-    def test_rssi_to_metres_returns_minimum_distance_for_very_strong_signal(self):
+    def test_rssi_to_metres_returns_minimum_distance_for_very_strong_signal(self) -> None:
         """Very strong signals should be clamped to MIN_DISTANCE."""
         # Signal so strong that calculated distance would be < 0.1m
         # rssi = -20, ref_power = -55, attenuation = 3
@@ -191,7 +192,7 @@ class TestMinimumDistance:
         assert distance >= MIN_DISTANCE
         assert distance == pytest.approx(MIN_DISTANCE)
 
-    def test_rssi_to_metres_normal_distance_unchanged(self):
+    def test_rssi_to_metres_normal_distance_unchanged(self) -> None:
         """Normal distances should not be affected by MIN_DISTANCE."""
         # Normal signal: rssi = -65, ref_power = -55, attenuation = 3
         # Using Two-Slope Path Loss Model (near-field exponent ~1.8)
@@ -200,7 +201,7 @@ class TestMinimumDistance:
         assert distance > MIN_DISTANCE
         assert distance == pytest.approx(3.59, rel=0.1)
 
-    def test_rssi_to_metres_at_ref_power_equals_one_meter(self):
+    def test_rssi_to_metres_at_ref_power_equals_one_meter(self) -> None:
         """Signal at ref_power should equal exactly 1 meter."""
         # rssi = ref_power = -55, so distance = 10^0 = 1.0m
         distance = rssi_to_metres(-55, -55, 3)
@@ -215,7 +216,9 @@ class TestMinimumDistance:
 class TestFeatureFlagBehavior:
     """Tests for feature flag on/off behavior."""
 
-    def test_feature_flag_off_uses_timestamp_tiebreak(self, coordinator: BermudaDataUpdateCoordinator):
+    def test_feature_flag_off_uses_timestamp_tiebreak(
+        self, coordinator: BermudaDataUpdateCoordinator
+    ) -> None:
         """When feature is off, timestamp-based tie-breaking is used."""
         device = _configure_device(coordinator, "AA:BB:CC:DD:EE:01")
 
@@ -236,7 +239,7 @@ class TestFeatureFlagBehavior:
             age=0.1,  # Older stamp
         )
 
-        device.adverts = {"older": weaker_older, "newer": stronger_newer}
+        device.adverts = {"older": weaker_older, "newer": stronger_newer}  # type: ignore[dict-item]
 
         coordinator._refresh_area_by_min_distance(device)
 
@@ -244,7 +247,9 @@ class TestFeatureFlagBehavior:
         # Note: This tests the rescue path where no incumbent exists
         assert device.area_advert is not None
 
-    def test_feature_flag_on_uses_rssi_tiebreak(self, coordinator_with_rssi_priority: BermudaDataUpdateCoordinator):
+    def test_feature_flag_on_uses_rssi_tiebreak(
+        self, coordinator_with_rssi_priority: BermudaDataUpdateCoordinator
+    ) -> None:
         """When feature is on, RSSI-based tie-breaking is used."""
         device = _configure_device(coordinator_with_rssi_priority, "AA:BB:CC:DD:EE:02")
 
@@ -252,12 +257,12 @@ class TestFeatureFlagBehavior:
         weaker = _make_advert("weak", "area-weak", distance=0.5, rssi=-70.0)
         stronger = _make_advert("strong", "area-strong", distance=0.5, rssi=-45.0)
 
-        device.adverts = {"weak": weaker, "strong": stronger}
+        device.adverts = {"weak": weaker, "strong": stronger}  # type: ignore[dict-item]
 
         coordinator_with_rssi_priority._refresh_area_by_min_distance(device)
 
         # With RSSI tie-break, stronger signal should win
-        assert device.area_advert is stronger
+        assert device.area_advert is stronger  # type: ignore[comparison-overlap]
 
 
 # =============================================================================
@@ -268,7 +273,9 @@ class TestFeatureFlagBehavior:
 class TestRssiConsistencyCheck:
     """Tests for RSSI/distance ranking consistency verification."""
 
-    def test_consistent_ranking_allows_switch(self, coordinator_with_rssi_priority: BermudaDataUpdateCoordinator):
+    def test_consistent_ranking_allows_switch(
+        self, coordinator_with_rssi_priority: BermudaDataUpdateCoordinator
+    ) -> None:
         """When distance and RSSI rankings agree, switch is allowed."""
         device = _configure_device(coordinator_with_rssi_priority, "AA:BB:CC:DD:EE:03")
 
@@ -277,15 +284,17 @@ class TestRssiConsistencyCheck:
         # Challenger: closer, stronger signal (consistent)
         challenger = _make_advert("chal", "area-chal", distance=1.0, rssi=-55.0)
 
-        device.area_advert = incumbent
-        device.adverts = {"inc": incumbent, "chal": challenger}
+        device.area_advert = incumbent  # type: ignore[assignment]
+        device.adverts = {"inc": incumbent, "chal": challenger}  # type: ignore[dict-item]
 
         coordinator_with_rssi_priority._refresh_area_by_min_distance(device)
 
         # Consistent ranking - challenger should win
-        assert device.area_advert is challenger
+        assert device.area_advert is challenger  # type: ignore[comparison-overlap]
 
-    def test_inconsistent_ranking_blocks_switch(self, coordinator_with_rssi_priority: BermudaDataUpdateCoordinator):
+    def test_inconsistent_ranking_blocks_switch(
+        self, coordinator_with_rssi_priority: BermudaDataUpdateCoordinator
+    ) -> None:
         """When distance ranking contradicts RSSI significantly, switch is blocked."""
         device = _configure_device(coordinator_with_rssi_priority, "AA:BB:CC:DD:EE:04")
 
@@ -307,18 +316,20 @@ class TestRssiConsistencyCheck:
             hist_distance_by_interval=[0.5, 0.5, 0.5],
         )
 
-        device.area_advert = incumbent
-        device.adverts = {"inc": incumbent, "chal": challenger}
+        device.area_advert = incumbent  # type: ignore[assignment]
+        device.adverts = {"inc": incumbent, "chal": challenger}  # type: ignore[dict-item]
 
         coordinator_with_rssi_priority._refresh_area_by_min_distance(device)
 
         # Inconsistent ranking (challenger closer on distance but >8dB weaker on RSSI)
         # Incumbent should stay
-        assert device.area_advert is incumbent
+        assert device.area_advert is incumbent  # type: ignore[comparison-overlap]
 
     def test_small_rssi_difference_still_consistent(
-        self, monkeypatch: pytest.MonkeyPatch, coordinator_with_rssi_priority: BermudaDataUpdateCoordinator
-    ):
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        coordinator_with_rssi_priority: BermudaDataUpdateCoordinator,
+    ) -> None:
         """Small RSSI disadvantage within margin is still considered consistent."""
         current_time = [1000.0]
         _patch_monotonic_time(monkeypatch, current_time)
@@ -342,8 +353,8 @@ class TestRssiConsistencyCheck:
             hist_distance_by_interval=[0.5, 0.5, 0.5],
         )
 
-        device.area_advert = incumbent
-        device.adverts = {"inc": incumbent, "chal": challenger}
+        device.area_advert = incumbent  # type: ignore[assignment]
+        device.adverts = {"inc": incumbent, "chal": challenger}  # type: ignore[dict-item]
 
         # Without significant RSSI advantage, streak logic requires SAME_FLOOR_STREAK (4)
         # consecutive wins before switching areas
@@ -355,7 +366,7 @@ class TestRssiConsistencyCheck:
 
         # 5dB is within 8dB margin, so ranking is considered consistent
         # Challenger should win based on distance (after streak requirement)
-        assert device.area_advert is challenger
+        assert device.area_advert is challenger  # type: ignore[comparison-overlap]
 
 
 # =============================================================================
@@ -368,7 +379,7 @@ class TestPhysicalSignalPriority:
 
     def test_physical_proximity_beats_offset_boosted_distance(
         self, coordinator_with_rssi_priority: BermudaDataUpdateCoordinator
-    ):
+    ) -> None:
         """Strong physical signal should beat offset-boosted closer distance."""
         device = _configure_device(coordinator_with_rssi_priority, "AA:BB:CC:DD:EE:06")
 
@@ -389,15 +400,17 @@ class TestPhysicalSignalPriority:
             hist_distance_by_interval=[0.3, 0.3, 0.3],
         )
 
-        device.area_advert = physically_close
-        device.adverts = {"close": physically_close, "boosted": offset_boosted}
+        device.area_advert = physically_close  # type: ignore[assignment]
+        device.adverts = {"close": physically_close, "boosted": offset_boosted}  # type: ignore[dict-item]
 
         coordinator_with_rssi_priority._refresh_area_by_min_distance(device)
 
         # Physically close should stay - the "closer" distance is not credible
-        assert device.area_advert is physically_close
+        assert device.area_advert is physically_close  # type: ignore[comparison-overlap]
 
-    def test_extreme_offset_scenario(self, coordinator_with_rssi_priority: BermudaDataUpdateCoordinator):
+    def test_extreme_offset_scenario(
+        self, coordinator_with_rssi_priority: BermudaDataUpdateCoordinator
+    ) -> None:
         """
         Extreme case: Sensor B appears at 0.4m through absurd offset,
         but Sensor A at 0.46m has much stronger physical signal.
@@ -421,13 +434,13 @@ class TestPhysicalSignalPriority:
             hist_distance_by_interval=[0.40, 0.40, 0.40],
         )
 
-        device.area_advert = sensor_b  # B is currently "winning"
-        device.adverts = {"a": sensor_a, "b": sensor_b}
+        device.area_advert = sensor_b  # type: ignore[assignment]  # B is currently "winning"
+        device.adverts = {"a": sensor_a, "b": sensor_b}  # type: ignore[dict-item]
 
         coordinator_with_rssi_priority._refresh_area_by_min_distance(device)
 
         # A should win - physical proximity beats offset
-        assert device.area_advert is sensor_a
+        assert device.area_advert is sensor_a  # type: ignore[comparison-overlap]
 
 
 # =============================================================================
@@ -438,7 +451,7 @@ class TestPhysicalSignalPriority:
 class TestMedianRssi:
     """Tests for median RSSI calculation."""
 
-    def test_median_rssi_with_history(self):
+    def test_median_rssi_with_history(self) -> None:
         """Median should be calculated from history when available."""
         advert = _make_advert(
             "test",
@@ -451,7 +464,7 @@ class TestMedianRssi:
         result = advert.median_rssi()
         assert result == pytest.approx(-53.0)
 
-    def test_median_rssi_absorbs_outliers(self):
+    def test_median_rssi_absorbs_outliers(self) -> None:
         """Median should be robust against outliers."""
         advert = _make_advert(
             "test",
@@ -465,7 +478,7 @@ class TestMedianRssi:
         # Sorted: [-90, -52, -51, -50, -50], median is middle value = -51
         assert result == pytest.approx(-51.0)
 
-    def test_median_rssi_falls_back_to_current(self):
+    def test_median_rssi_falls_back_to_current(self) -> None:
         """Without history, median should return current RSSI."""
         advert = _make_advert("test", "area-test", distance=1.0, rssi=-60.0, hist_rssi_by_interval=[])
 
@@ -481,15 +494,17 @@ class TestMedianRssi:
 class TestEdgeCases:
     """Edge cases and robustness tests."""
 
-    def test_none_rssi_handled_gracefully(self, coordinator_with_rssi_priority: BermudaDataUpdateCoordinator):
+    def test_none_rssi_handled_gracefully(
+        self, coordinator_with_rssi_priority: BermudaDataUpdateCoordinator
+    ) -> None:
         """Missing RSSI values should be handled without crashing."""
         device = _configure_device(coordinator_with_rssi_priority, "AA:BB:CC:DD:EE:08")
 
         incumbent = _make_advert("inc", "area-inc", distance=1.0, rssi=None)
         challenger = _make_advert("chal", "area-chal", distance=0.8, rssi=-50.0)
 
-        device.area_advert = incumbent
-        device.adverts = {"inc": incumbent, "chal": challenger}
+        device.area_advert = incumbent  # type: ignore[assignment]
+        device.adverts = {"inc": incumbent, "chal": challenger}  # type: ignore[dict-item]
 
         # Should not raise
         coordinator_with_rssi_priority._refresh_area_by_min_distance(device)
@@ -497,24 +512,26 @@ class TestEdgeCases:
         # Some outcome should be selected
         assert device.area_advert is not None
 
-    def test_both_rssi_none_uses_distance(self, coordinator_with_rssi_priority: BermudaDataUpdateCoordinator):
+    def test_both_rssi_none_uses_distance(
+        self, coordinator_with_rssi_priority: BermudaDataUpdateCoordinator
+    ) -> None:
         """When both have no RSSI, pure distance comparison should work."""
         device = _configure_device(coordinator_with_rssi_priority, "AA:BB:CC:DD:EE:09")
 
         incumbent = _make_advert("inc", "area-inc", distance=2.0, rssi=None)
         challenger = _make_advert("chal", "area-chal", distance=1.0, rssi=None)
 
-        device.area_advert = incumbent
-        device.adverts = {"inc": incumbent, "chal": challenger}
+        device.area_advert = incumbent  # type: ignore[assignment]
+        device.adverts = {"inc": incumbent, "chal": challenger}  # type: ignore[dict-item]
 
         coordinator_with_rssi_priority._refresh_area_by_min_distance(device)
 
         # Challenger is clearly closer, should win
-        assert device.area_advert is challenger
+        assert device.area_advert is challenger  # type: ignore[comparison-overlap]
 
     def test_existing_behavior_preserved_for_clear_winner(
         self, coordinator_with_rssi_priority: BermudaDataUpdateCoordinator
-    ):
+    ) -> None:
         """Existing behavior should be preserved when distance difference is clear."""
         device = _configure_device(coordinator_with_rssi_priority, "AA:BB:CC:DD:EE:10")
 
@@ -533,15 +550,17 @@ class TestEdgeCases:
             hist_distance_by_interval=[1.5, 1.5, 1.5],
         )
 
-        device.area_advert = incumbent
-        device.adverts = {"inc": incumbent, "chal": challenger}
+        device.area_advert = incumbent  # type: ignore[assignment]
+        device.adverts = {"inc": incumbent, "chal": challenger}  # type: ignore[dict-item]
 
         coordinator_with_rssi_priority._refresh_area_by_min_distance(device)
 
         # Clear distance winner with consistent RSSI - should work as before
-        assert device.area_advert is challenger
+        assert device.area_advert is challenger  # type: ignore[comparison-overlap]
 
-    def test_rescue_candidate_uses_rssi_tiebreak(self, coordinator_with_rssi_priority: BermudaDataUpdateCoordinator):
+    def test_rescue_candidate_uses_rssi_tiebreak(
+        self, coordinator_with_rssi_priority: BermudaDataUpdateCoordinator
+    ) -> None:
         """Rescue candidate selection should use raw RSSI for tie-breaking."""
         device = _configure_device(coordinator_with_rssi_priority, "AA:BB:CC:DD:EE:11")
 
@@ -549,12 +568,12 @@ class TestEdgeCases:
         advert_a = _make_advert("a", "area-a", distance=0.5, rssi=-45.0)
         advert_b = _make_advert("b", "area-b", distance=0.5, rssi=-65.0)
 
-        device.adverts = {"a": advert_a, "b": advert_b}
+        device.adverts = {"a": advert_a, "b": advert_b}  # type: ignore[dict-item]
 
         coordinator_with_rssi_priority._refresh_area_by_min_distance(device)
 
         # A should win due to stronger RSSI (tie-break)
-        assert device.area_advert is advert_a
+        assert device.area_advert is advert_a  # type: ignore[comparison-overlap]
 
 
 # =============================================================================
@@ -565,10 +584,10 @@ class TestEdgeCases:
 class TestConstants:
     """Verify constant values are as expected."""
 
-    def test_min_distance_value(self):
+    def test_min_distance_value(self) -> None:
         """MIN_DISTANCE should be 0.1 meters."""
         assert MIN_DISTANCE == 0.1
 
-    def test_rssi_consistency_margin(self):
+    def test_rssi_consistency_margin(self) -> None:
         """RSSI consistency margin should be 8 dB."""
         assert RSSI_CONSISTENCY_MARGIN_DB == 8.0

@@ -518,9 +518,9 @@ class TestIrkResolution:
         test_irk = bytes([0xAA] * 16)
 
         # Track callback invocations
-        callback_calls = []
+        callback_calls: list[tuple[str, Any]] = []
 
-        def test_callback(service_info, change):
+        def test_callback(service_info: Any, change: Any) -> None:
             callback_calls.append((service_info.address, change))
 
         # Register callback for this IRK

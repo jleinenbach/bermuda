@@ -3,7 +3,7 @@
 import pytest
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
-from pytest_homeassistant_custom_component.common import MockConfigEntry  # type: ignore[import-untyped]
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.bermuda.const import DOMAIN
 from custom_components.bermuda.coordinator import BermudaDataUpdateCoordinator

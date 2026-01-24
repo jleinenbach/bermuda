@@ -326,7 +326,7 @@ class TestDeviceCongealment:
 
         # Mock _get_or_create_device
         metadevice = BermudaDevice(address="fmdn:68419b51-0000-2131-873b-fc411691d329", coordinator=mock_coordinator)
-        mock_coordinator._get_or_create_device = MagicMock(return_value=metadevice)
+        mock_coordinator._get_or_create_device = MagicMock(return_value=metadevice)  # type: ignore[method-assign]
 
         metadevice_address = fmdn_integration.format_metadevice_address(
             str(match.device_id), match.canonical_id
@@ -350,7 +350,7 @@ class TestDeviceCongealment:
         )
 
         metadevice = BermudaDevice(address="fmdn:68419b51-0000-2131-873b-fc411691d329", coordinator=mock_coordinator)
-        mock_coordinator._get_or_create_device = MagicMock(return_value=metadevice)
+        mock_coordinator._get_or_create_device = MagicMock(return_value=metadevice)  # type: ignore[method-assign]
 
         metadevice_address = fmdn_integration.format_metadevice_address(
             str(match.device_id), match.canonical_id

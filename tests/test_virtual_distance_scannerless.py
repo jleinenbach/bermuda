@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import math
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import MagicMock, AsyncMock
 
 import pytest
@@ -279,14 +280,14 @@ class TestAreaHasScanner:
     def test_area_with_scanner_returns_true(self, coordinator: BermudaDataUpdateCoordinator) -> None:
         """Area containing a scanner should return True."""
         scanner = _make_scanner_device("kitchen-scanner", "area-kitchen")
-        coordinator._scanners.add(scanner)  # type: ignore[arg-type]
+        coordinator._scanners.add(scanner)
 
         assert coordinator.area_selection._area_has_scanner("area-kitchen") is True
 
     def test_area_without_scanner_returns_false(self, coordinator: BermudaDataUpdateCoordinator) -> None:
         """Area without a scanner should return False."""
         scanner = _make_scanner_device("kitchen-scanner", "area-kitchen")
-        coordinator._scanners.add(scanner)  # type: ignore[arg-type]
+        coordinator._scanners.add(scanner)
 
         # Different area should return False
         assert coordinator.area_selection._area_has_scanner("area-basement") is False
@@ -336,8 +337,8 @@ class TestScannerlessRoomScenarios:
         # Set up two scanners (required by UKF_MIN_SCANNERS = 2)
         yunas_scanner = _make_scanner_device("yunas-scanner", yunas_area, floor_id="floor-og", floor_level=1)
         technik_scanner = _make_scanner_device("technik-scanner", technik_area, floor_id="floor-kg", floor_level=-1)
-        coordinator._scanners.add(yunas_scanner)  # type: ignore[arg-type]
-        coordinator._scanners.add(technik_scanner)  # type: ignore[arg-type]
+        coordinator._scanners.add(yunas_scanner)
+        coordinator._scanners.add(technik_scanner)
 
         # Create button-trained profile for Lagerraum (with readings from both scanners)
         scanner_addrs = [yunas_scanner.address, technik_scanner.address]
@@ -373,9 +374,9 @@ class TestScannerlessRoomScenarios:
             hist_distance_by_interval=[6.5] * 10,
         )
         device.adverts = {
-            "yunas": yunas_advert,
-            "technik": technik_advert,
-        }  # type: ignore[dict-item]
+            "yunas": yunas_advert,  # type: ignore[dict-item]
+            "technik": technik_advert,  # type: ignore[dict-item]
+        }
 
         # Run min-distance algorithm
         coordinator._refresh_area_by_min_distance(device)
@@ -408,8 +409,8 @@ class TestScannerlessRoomScenarios:
         # Set up two scanners (required by UKF_MIN_SCANNERS = 2)
         yunas_scanner = _make_scanner_device("yunas-scanner", yunas_area)
         technik_scanner = _make_scanner_device("technik-scanner", technik_area)
-        coordinator._scanners.add(yunas_scanner)  # type: ignore[arg-type]
-        coordinator._scanners.add(technik_scanner)  # type: ignore[arg-type]
+        coordinator._scanners.add(yunas_scanner)
+        coordinator._scanners.add(technik_scanner)
 
         # Create button-trained profile for Lagerraum with weak expected RSSI
         scanner_addrs = [yunas_scanner.address, technik_scanner.address]
@@ -441,9 +442,9 @@ class TestScannerlessRoomScenarios:
             hist_distance_by_interval=[4.0] * 10,
         )
         device.adverts = {
-            "yunas": yunas_advert,
-            "technik": technik_advert,
-        }  # type: ignore[dict-item]
+            "yunas": yunas_advert,  # type: ignore[dict-item]
+            "technik": technik_advert,  # type: ignore[dict-item]
+        }
 
         # Run min-distance algorithm
         coordinator._refresh_area_by_min_distance(device)
@@ -472,8 +473,8 @@ class TestScannerlessRoomScenarios:
         # Set up two physical scanners (required by UKF_MIN_SCANNERS = 2)
         physical_scanner = _make_scanner_device("physical-scanner", physical_area)
         secondary_scanner = _make_scanner_device("secondary-scanner", secondary_area)
-        coordinator._scanners.add(physical_scanner)  # type: ignore[arg-type]
-        coordinator._scanners.add(secondary_scanner)  # type: ignore[arg-type]
+        coordinator._scanners.add(physical_scanner)
+        coordinator._scanners.add(secondary_scanner)
 
         # Create AUTO-learned profile (not button-trained) for the scannerless area
         profile = AreaProfile(area_id=auto_area)
@@ -525,8 +526,8 @@ class TestScannerlessRoomScenarios:
         # Set up two scanners (required by UKF_MIN_SCANNERS = 2)
         scanner = _make_scanner_device("room-scanner", room_with_scanner)
         other_scanner = _make_scanner_device("other-scanner", other_room)
-        coordinator._scanners.add(scanner)  # type: ignore[arg-type]
-        coordinator._scanners.add(other_scanner)  # type: ignore[arg-type]
+        coordinator._scanners.add(scanner)
+        coordinator._scanners.add(other_scanner)
 
         # Create button-trained profile for the room (even though it has a scanner)
         profile = _create_button_trained_profile(

@@ -15,6 +15,8 @@ from custom_components.bermuda.const import NAME
 from custom_components.bermuda.const import CONF_DEVICES
 
 # from .const import MOCK_OPTIONS
+from typing import Any
+
 from .const import MOCK_CONFIG
 from .const import MOCK_OPTIONS_GLOBALS
 
@@ -22,7 +24,7 @@ from .const import MOCK_OPTIONS_GLOBALS
 # Here we simiulate a successful config flow from the backend.
 # Note that we use the `bypass_get_data` fixture here because
 # we want the config flow validation to succeed during the test.
-async def test_successful_config_flow(hass, bypass_get_data):
+async def test_successful_config_flow(hass: HomeAssistant, bypass_get_data: Any) -> None:
     """Test a successful config flow."""
     # Initialize a config flow
     result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": config_entries.SOURCE_USER})
@@ -48,7 +50,7 @@ async def test_successful_config_flow(hass, bypass_get_data):
 # We use the `error_on_get_data` mock instead of `bypass_get_data`
 # (note the function parameters) to raise an Exception during
 # validation of the input config.
-async def test_failed_config_flow(hass, error_on_get_data):
+async def test_failed_config_flow(hass: HomeAssistant, error_on_get_data: Any) -> None:
     """Test a failed config flow due to credential validation failure."""
 
     result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": config_entries.SOURCE_USER})
@@ -63,7 +65,7 @@ async def test_failed_config_flow(hass, error_on_get_data):
 
 
 # Our config flow also has an options flow, so we must test it as well.
-async def test_options_flow(hass: HomeAssistant, setup_bermuda_entry: MockConfigEntry):
+async def test_options_flow(hass: HomeAssistant, setup_bermuda_entry: MockConfigEntry) -> None:
     """Test an options flow."""
     # Go through options flow
     result = await hass.config_entries.options.async_init(setup_bermuda_entry.entry_id)
@@ -95,7 +97,7 @@ async def test_options_flow(hass: HomeAssistant, setup_bermuda_entry: MockConfig
         assert setup_bermuda_entry.options[key] == value
 
 
-async def test_selectdevices_normalizes_addresses(hass: HomeAssistant, setup_bermuda_entry: MockConfigEntry):
+async def test_selectdevices_normalizes_addresses(hass: HomeAssistant, setup_bermuda_entry: MockConfigEntry) -> None:
     """Ensure selectdevices saves canonical MAC addresses."""
 
     coordinator = setup_bermuda_entry.runtime_data.coordinator

@@ -17,7 +17,7 @@ The fix is to set device attributes FIRST, before local UI variables.
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -44,7 +44,7 @@ class FakeDevice:
         self.area_id: str | None = None
         self.area_name: str | None = None
         self.area_advert: MagicMock | None = None
-        self.adverts: dict = {}
+        self.adverts: dict[str, Any] = {}
         self.ref_power_changed: float = 0.0
 
 

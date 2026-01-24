@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from custom_components.bermuda.filters import (
@@ -19,7 +21,7 @@ from custom_components.bermuda.scanner_calibration import (
 class TestScannerPairData:
     """Test ScannerPairData dataclass."""
 
-    def test_initial_state(self):
+    def test_initial_state(self) -> None:
         """Test initial state of pair data."""
         pair = ScannerPairData(scanner_a="aa:bb:cc:dd:ee:01", scanner_b="aa:bb:cc:dd:ee:02")
         assert pair.rssi_a_sees_b is None
@@ -29,7 +31,7 @@ class TestScannerPairData:
         assert not pair.has_bidirectional_data
         assert pair.rssi_difference is None
 
-    def test_unidirectional_data(self):
+    def test_unidirectional_data(self) -> None:
         """Test with only one direction of visibility."""
         pair = ScannerPairData(scanner_a="aa:bb:cc:dd:ee:01", scanner_b="aa:bb:cc:dd:ee:02")
         # Add samples in one direction only
@@ -38,7 +40,7 @@ class TestScannerPairData:
         assert not pair.has_bidirectional_data
         assert pair.rssi_difference is None
 
-    def test_bidirectional_data_insufficient_samples(self):
+    def test_bidirectional_data_insufficient_samples(self) -> None:
         """Test bidirectional data with insufficient samples."""
         pair = ScannerPairData(scanner_a="aa:bb:cc:dd:ee:01", scanner_b="aa:bb:cc:dd:ee:02")
         # Add fewer samples than required
@@ -49,7 +51,7 @@ class TestScannerPairData:
         assert not pair.has_bidirectional_data
         assert pair.rssi_difference is None
 
-    def test_bidirectional_data_sufficient_samples(self):
+    def test_bidirectional_data_sufficient_samples(self) -> None:
         """Test bidirectional data with sufficient samples."""
         pair = ScannerPairData(scanner_a="aa:bb:cc:dd:ee:01", scanner_b="aa:bb:cc:dd:ee:02")
         # Add enough samples in both directions
@@ -61,7 +63,7 @@ class TestScannerPairData:
         assert pair.rssi_difference is not None
         assert abs(pair.rssi_difference - 10.0) < 1.0  # A sees B 10 dB stronger
 
-    def test_rssi_difference_negative(self):
+    def test_rssi_difference_negative(self) -> None:
         """Test negative RSSI difference (B receives stronger)."""
         pair = ScannerPairData(scanner_a="aa:bb:cc:dd:ee:01", scanner_b="aa:bb:cc:dd:ee:02")
         # Add enough samples with B seeing stronger
@@ -76,14 +78,14 @@ class TestScannerPairData:
 class TestScannerCalibrationManager:
     """Test ScannerCalibrationManager class."""
 
-    def test_initial_state(self):
+    def test_initial_state(self) -> None:
         """Test initial state of calibration manager."""
         manager = ScannerCalibrationManager()
         assert len(manager.scanner_pairs) == 0
         assert len(manager.suggested_offsets) == 0
         assert len(manager.active_scanners) == 0
 
-    def test_get_pair_key_ordering(self):
+    def test_get_pair_key_ordering(self) -> None:
         """Test that pair keys are always consistently ordered."""
         manager = ScannerCalibrationManager()
         key1 = manager._get_pair_key("bb:bb:bb:bb:bb:bb", "aa:aa:aa:aa:aa:aa")
@@ -91,7 +93,7 @@ class TestScannerCalibrationManager:
         assert key1 == key2
         assert key1[0] < key1[1]
 
-    def test_update_cross_visibility_single_direction(self):
+    def test_update_cross_visibility_single_direction(self) -> None:
         """Test updating cross visibility with single direction."""
         manager = ScannerCalibrationManager()
         manager.update_cross_visibility(
@@ -108,7 +110,7 @@ class TestScannerCalibrationManager:
         assert pair.sample_count_ab == 1
         assert pair.sample_count_ba == 0
 
-    def test_update_cross_visibility_bidirectional(self):
+    def test_update_cross_visibility_bidirectional(self) -> None:
         """Test updating cross visibility with bidirectional data."""
         manager = ScannerCalibrationManager()
 
@@ -132,13 +134,13 @@ class TestScannerCalibrationManager:
         assert pair.rssi_difference is not None
         assert abs(pair.rssi_difference - 10.0) < 1.0
 
-    def test_calculate_suggested_offsets_no_data(self):
+    def test_calculate_suggested_offsets_no_data(self) -> None:
         """Test offset calculation with no data."""
         manager = ScannerCalibrationManager()
         offsets = manager.calculate_suggested_offsets()
         assert len(offsets) == 0
 
-    def test_calculate_suggested_offsets_insufficient_samples(self):
+    def test_calculate_suggested_offsets_insufficient_samples(self) -> None:
         """Test offset calculation with insufficient samples."""
         manager = ScannerCalibrationManager()
         # Only add 2 samples - not enough
@@ -149,7 +151,7 @@ class TestScannerCalibrationManager:
         # Should be empty because sample counts are below CALIBRATION_MIN_SAMPLES
         assert len(offsets) == 0
 
-    def test_calculate_suggested_offsets_symmetric(self):
+    def test_calculate_suggested_offsets_symmetric(self) -> None:
         """Test offset calculation produces symmetric results."""
         manager = ScannerCalibrationManager()
 
@@ -169,7 +171,7 @@ class TestScannerCalibrationManager:
         # B receives weaker, so needs positive offset to compensate
         assert offsets["bb:bb:bb:bb:bb:bb"] == 5
 
-    def test_calculate_suggested_offsets_multiple_pairs(self):
+    def test_calculate_suggested_offsets_multiple_pairs(self) -> None:
         """Test offset calculation with multiple scanner pairs."""
         manager = ScannerCalibrationManager()
 
@@ -194,7 +196,7 @@ class TestScannerCalibrationManager:
         assert offsets["bb:bb:bb:bb:bb:bb"] == 2
         assert offsets["cc:cc:cc:cc:cc:cc"] == 2
 
-    def test_calculate_suggested_offsets_rounds_to_integer(self):
+    def test_calculate_suggested_offsets_rounds_to_integer(self) -> None:
         """Test that offsets are rounded to integers."""
         manager = ScannerCalibrationManager()
 
@@ -212,7 +214,7 @@ class TestScannerCalibrationManager:
         assert offsets["aa:aa:aa:aa:aa:aa"] == -4
         assert offsets["bb:bb:bb:bb:bb:bb"] == 4
 
-    def test_get_scanner_pair_info(self):
+    def test_get_scanner_pair_info(self) -> None:
         """Test getting scanner pair info for diagnostics."""
         manager = ScannerCalibrationManager()
         for _ in range(CALIBRATION_MIN_SAMPLES):
@@ -231,7 +233,7 @@ class TestScannerCalibrationManager:
         assert pair_info["difference"] is not None
         assert abs(pair_info["difference"] - 10.0) < 1.0
 
-    def test_clear(self):
+    def test_clear(self) -> None:
         """Test clearing calibration data."""
         manager = ScannerCalibrationManager()
         manager.update_cross_visibility("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb", -55.0)
@@ -247,7 +249,12 @@ class TestScannerCalibrationManager:
 class MockAdvert:
     """Mock BermudaAdvert for testing."""
 
-    def __init__(self, rssi_filtered=None, rssi=None, hist_rssi=None):
+    def __init__(
+        self,
+        rssi_filtered: float | None = None,
+        rssi: float | None = None,
+        hist_rssi: list[float] | None = None,
+    ) -> None:
         self.rssi_filtered = rssi_filtered
         self.rssi = rssi
         self.hist_rssi = hist_rssi or []
@@ -260,7 +267,12 @@ class MockDevice:
     where device_addr is the sender and scanner_addr is the receiver.
     """
 
-    def __init__(self, address: str, adverts: dict | None = None, metadevice_sources: list | None = None):
+    def __init__(
+        self,
+        address: str,
+        adverts: dict[tuple[str, str], MockAdvert] | None = None,
+        metadevice_sources: list[str] | None = None,
+    ) -> None:
         self.address = address
         self.adverts: dict[tuple[str, str], MockAdvert] = adverts or {}
         self.metadevice_sources = metadevice_sources or []
@@ -269,28 +281,28 @@ class MockDevice:
 class TestUpdateScannerCalibration:
     """Test the update_scanner_calibration function."""
 
-    def test_no_scanners(self):
+    def test_no_scanners(self) -> None:
         """Test with no scanners."""
         manager = ScannerCalibrationManager()
         offsets = update_scanner_calibration(manager, set(), {})
         assert len(offsets) == 0
 
-    def test_single_scanner(self):
+    def test_single_scanner(self) -> None:
         """Test with single scanner (no cross-visibility possible)."""
         manager = ScannerCalibrationManager()
         scanner_list = {"aa:aa:aa:aa:aa:aa"}
-        devices = {
+        devices: dict[str, Any] = {
             "aa:aa:aa:aa:aa:aa": MockDevice("aa:aa:aa:aa:aa:aa"),
         }
 
         offsets = update_scanner_calibration(manager, scanner_list, devices)
         assert len(offsets) == 0
 
-    def test_two_scanners_no_visibility(self):
+    def test_two_scanners_no_visibility(self) -> None:
         """Test with two scanners that don't see each other."""
         manager = ScannerCalibrationManager()
         scanner_list = {"aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb"}
-        devices = {
+        devices: dict[str, Any] = {
             "aa:aa:aa:aa:aa:aa": MockDevice("aa:aa:aa:aa:aa:aa"),
             "bb:bb:bb:bb:bb:bb": MockDevice("bb:bb:bb:bb:bb:bb"),
         }
@@ -298,15 +310,15 @@ class TestUpdateScannerCalibration:
         offsets = update_scanner_calibration(manager, scanner_list, devices)
         assert len(offsets) == 0
 
-    def test_two_scanners_unidirectional(self):
+    def test_two_scanners_unidirectional(self) -> None:
         """Test with two scanners where only one sees the other."""
         manager = ScannerCalibrationManager()
         scanner_list = {"aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb"}
 
         # A sees B - key is (sender=B, receiver=A)
-        advert_a_sees_b = MockAdvert(rssi_filtered=-55.0, hist_rssi=[-55] * CALIBRATION_MIN_SAMPLES)
+        advert_a_sees_b = MockAdvert(rssi_filtered=-55.0, hist_rssi=[-55.0] * CALIBRATION_MIN_SAMPLES)
 
-        devices = {
+        devices: dict[str, Any] = {
             "aa:aa:aa:aa:aa:aa": MockDevice(
                 "aa:aa:aa:aa:aa:aa", adverts={("bb:bb:bb:bb:bb:bb", "aa:aa:aa:aa:aa:aa"): advert_a_sees_b}
             ),
@@ -317,7 +329,7 @@ class TestUpdateScannerCalibration:
         # Not enough bidirectional data yet
         assert len(offsets) == 0
 
-    def test_two_scanners_bidirectional(self):
+    def test_two_scanners_bidirectional(self) -> None:
         """Test with two scanners that see each other."""
         manager = ScannerCalibrationManager()
         scanner_list = {"aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb"}
@@ -325,11 +337,11 @@ class TestUpdateScannerCalibration:
         # Adverts are stored on the SENDING device with key (sender_mac, receiver_scanner)
         # A sees B at -55: advert stored on B's device with key (B, A)
         # Note: update_scanner_calibration uses raw rssi, not rssi_filtered
-        advert_a_sees_b = MockAdvert(rssi=-55.0, rssi_filtered=-55.0, hist_rssi=[-55] * CALIBRATION_MIN_SAMPLES)
+        advert_a_sees_b = MockAdvert(rssi=-55.0, rssi_filtered=-55.0, hist_rssi=[-55.0] * CALIBRATION_MIN_SAMPLES)
         # B sees A at -65: advert stored on A's device with key (A, B)
-        advert_b_sees_a = MockAdvert(rssi=-65.0, rssi_filtered=-65.0, hist_rssi=[-65] * CALIBRATION_MIN_SAMPLES)
+        advert_b_sees_a = MockAdvert(rssi=-65.0, rssi_filtered=-65.0, hist_rssi=[-65.0] * CALIBRATION_MIN_SAMPLES)
 
-        devices = {
+        devices: dict[str, Any] = {
             "aa:aa:aa:aa:aa:aa": MockDevice(
                 "aa:aa:aa:aa:aa:aa",
                 # A's adverts: when B sees A, the advert is stored here
@@ -352,7 +364,7 @@ class TestUpdateScannerCalibration:
         assert offsets["aa:aa:aa:aa:aa:aa"] == -5
         assert offsets["bb:bb:bb:bb:bb:bb"] == 5
 
-    def test_fallback_to_raw_rssi(self):
+    def test_fallback_to_raw_rssi(self) -> None:
         """Test fallback to raw RSSI when filtered is not available."""
         manager = ScannerCalibrationManager()
         scanner_list = {"aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb"}
@@ -360,11 +372,11 @@ class TestUpdateScannerCalibration:
         # Adverts stored on SENDING device
         # A sees B (no filtered RSSI, use raw): stored on B with key (B, A)
         # Note: update_scanner_calibration uses raw rssi
-        advert_a_sees_b = MockAdvert(rssi=-55.0, rssi_filtered=None, hist_rssi=[-55] * CALIBRATION_MIN_SAMPLES)
+        advert_a_sees_b = MockAdvert(rssi=-55.0, rssi_filtered=None, hist_rssi=[-55.0] * CALIBRATION_MIN_SAMPLES)
         # B sees A: stored on A with key (A, B)
-        advert_b_sees_a = MockAdvert(rssi=-65.0, rssi_filtered=-65.0, hist_rssi=[-65] * CALIBRATION_MIN_SAMPLES)
+        advert_b_sees_a = MockAdvert(rssi=-65.0, rssi_filtered=-65.0, hist_rssi=[-65.0] * CALIBRATION_MIN_SAMPLES)
 
-        devices = {
+        devices: dict[str, Any] = {
             "aa:aa:aa:aa:aa:aa": MockDevice(
                 "aa:aa:aa:aa:aa:aa", adverts={("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb"): advert_b_sees_a}
             ),
@@ -381,7 +393,7 @@ class TestUpdateScannerCalibration:
         assert "aa:aa:aa:aa:aa:aa" in offsets
         assert "bb:bb:bb:bb:bb:bb" in offsets
 
-    def test_metadevice_sources_lookup(self):
+    def test_metadevice_sources_lookup(self) -> None:
         """Test that metadevice_sources are checked for scanner visibility."""
         manager = ScannerCalibrationManager()
         scanner_list = {"aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb"}
@@ -390,12 +402,12 @@ class TestUpdateScannerCalibration:
         # Advert stored on the iBeacon device (cc:cc) with key (cc, A)
         # Note: update_scanner_calibration uses raw rssi
         advert_a_sees_b_via_ibeacon = MockAdvert(
-            rssi=-55.0, rssi_filtered=-55.0, hist_rssi=[-55] * CALIBRATION_MIN_SAMPLES
+            rssi=-55.0, rssi_filtered=-55.0, hist_rssi=[-55.0] * CALIBRATION_MIN_SAMPLES
         )
         # B sees A: stored on A with key (A, B)
-        advert_b_sees_a = MockAdvert(rssi=-65.0, rssi_filtered=-65.0, hist_rssi=[-65] * CALIBRATION_MIN_SAMPLES)
+        advert_b_sees_a = MockAdvert(rssi=-65.0, rssi_filtered=-65.0, hist_rssi=[-65.0] * CALIBRATION_MIN_SAMPLES)
 
-        devices = {
+        devices: dict[str, Any] = {
             "aa:aa:aa:aa:aa:aa": MockDevice(
                 "aa:aa:aa:aa:aa:aa", adverts={("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb"): advert_b_sees_a}
             ),
@@ -418,7 +430,7 @@ class TestUpdateScannerCalibration:
 class TestEdgeCases:
     """Test edge cases and error handling."""
 
-    def test_none_rssi_values_ignored(self):
+    def test_none_rssi_values_ignored(self) -> None:
         """Test that None RSSI values are properly ignored."""
         manager = ScannerCalibrationManager()
         scanner_list = {"aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb"}
@@ -426,7 +438,7 @@ class TestEdgeCases:
         # A sees B with None RSSI - key is (sender=B, receiver=A)
         advert_a_sees_b = MockAdvert(rssi_filtered=None, rssi=None)
 
-        devices = {
+        devices: dict[str, Any] = {
             "aa:aa:aa:aa:aa:aa": MockDevice(
                 "aa:aa:aa:aa:aa:aa", adverts={("bb:bb:bb:bb:bb:bb", "aa:aa:aa:aa:aa:aa"): advert_a_sees_b}
             ),
@@ -436,13 +448,13 @@ class TestEdgeCases:
         offsets = update_scanner_calibration(manager, scanner_list, devices)
         assert len(offsets) == 0
 
-    def test_missing_device_in_devices_dict(self):
+    def test_missing_device_in_devices_dict(self) -> None:
         """Test handling of scanner in list but not in devices dict."""
         manager = ScannerCalibrationManager()
         scanner_list = {"aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb"}
 
         # Only A exists in devices
-        devices = {
+        devices: dict[str, Any] = {
             "aa:aa:aa:aa:aa:aa": MockDevice("aa:aa:aa:aa:aa:aa"),
         }
 
@@ -450,7 +462,7 @@ class TestEdgeCases:
         offsets = update_scanner_calibration(manager, scanner_list, devices)
         assert len(offsets) == 0
 
-    def test_equal_rssi_produces_zero_offset(self):
+    def test_equal_rssi_produces_zero_offset(self) -> None:
         """Test that equal RSSI values produce zero offset."""
         manager = ScannerCalibrationManager()
         scanner_list = {"aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb"}
@@ -459,11 +471,11 @@ class TestEdgeCases:
         # Adverts stored on SENDING device with key (sender_mac, receiver_scanner)
         # A sees B: advert stored on B's device with key (B, A)
         # Note: update_scanner_calibration uses raw rssi
-        advert_a_sees_b = MockAdvert(rssi=-60.0, rssi_filtered=-60.0, hist_rssi=[-60] * CALIBRATION_MIN_SAMPLES)
+        advert_a_sees_b = MockAdvert(rssi=-60.0, rssi_filtered=-60.0, hist_rssi=[-60.0] * CALIBRATION_MIN_SAMPLES)
         # B sees A: advert stored on A's device with key (A, B)
-        advert_b_sees_a = MockAdvert(rssi=-60.0, rssi_filtered=-60.0, hist_rssi=[-60] * CALIBRATION_MIN_SAMPLES)
+        advert_b_sees_a = MockAdvert(rssi=-60.0, rssi_filtered=-60.0, hist_rssi=[-60.0] * CALIBRATION_MIN_SAMPLES)
 
-        devices = {
+        devices: dict[str, Any] = {
             "aa:aa:aa:aa:aa:aa": MockDevice(
                 "aa:aa:aa:aa:aa:aa",
                 # A's adverts: when B sees A, the advert is stored here
@@ -487,7 +499,7 @@ class TestEdgeCases:
 class TestKalmanTimestampIntegration:
     """Test Kalman filter timestamp integration for scanner calibration."""
 
-    def test_kalman_receives_timestamp(self):
+    def test_kalman_receives_timestamp(self) -> None:
         """Verify Kalman filter receives timestamp for dt calculation."""
         manager = ScannerCalibrationManager()
         ts1 = 1000.0
@@ -513,7 +525,7 @@ class TestKalmanTimestampIntegration:
         # Pair should also track last update time
         assert pair.last_update_ab == ts2
 
-    def test_pair_tracks_update_timestamps(self):
+    def test_pair_tracks_update_timestamps(self) -> None:
         """Verify ScannerPairData tracks timestamps for both directions."""
         manager = ScannerCalibrationManager()
         ts1 = 1000.0
@@ -532,7 +544,7 @@ class TestKalmanTimestampIntegration:
 class TestScannerOnlineDetection:
     """Test scanner online/offline detection for calibration."""
 
-    def test_scanner_online_within_timeout(self):
+    def test_scanner_online_within_timeout(self) -> None:
         """Verify scanner is considered online within timeout."""
         manager = ScannerCalibrationManager()
         nowstamp = 1000.0
@@ -548,7 +560,7 @@ class TestScannerOnlineDetection:
         check_time = nowstamp + CALIBRATION_SCANNER_TIMEOUT - 1
         assert manager._is_scanner_online("aa:aa:aa:aa:aa:aa", check_time)
 
-    def test_scanner_offline_after_timeout(self):
+    def test_scanner_offline_after_timeout(self) -> None:
         """Verify scanner is considered offline after timeout."""
         manager = ScannerCalibrationManager()
         nowstamp = 1000.0
@@ -561,12 +573,12 @@ class TestScannerOnlineDetection:
         assert not manager._is_scanner_online("aa:aa:aa:aa:aa:aa", check_time)
         assert not manager._is_scanner_online("bb:bb:bb:bb:bb:bb", check_time)
 
-    def test_unknown_scanner_is_offline(self):
+    def test_unknown_scanner_is_offline(self) -> None:
         """Verify unknown scanner is considered offline."""
         manager = ScannerCalibrationManager()
         assert not manager._is_scanner_online("unknown:scanner", 1000.0)
 
-    def test_offline_scanner_excluded_from_offset(self):
+    def test_offline_scanner_excluded_from_offset(self) -> None:
         """Verify offline scanners don't contribute to offset calculation."""
         manager = ScannerCalibrationManager()
         nowstamp = 1000.0
@@ -596,7 +608,7 @@ class TestScannerOnlineDetection:
         assert "aa:aa:aa:aa:aa:aa" not in offsets
         assert "bb:bb:bb:bb:bb:bb" not in offsets
 
-    def test_scanner_comes_back_online(self):
+    def test_scanner_comes_back_online(self) -> None:
         """Verify scanner is included again after coming back online."""
         manager = ScannerCalibrationManager()
         nowstamp = 1000.0
@@ -616,7 +628,7 @@ class TestScannerOnlineDetection:
         manager.update_cross_visibility("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb", -56.0, timestamp=comeback_time)
         assert manager._is_scanner_online("aa:aa:aa:aa:aa:aa", comeback_time)
 
-    def test_get_scanner_pair_info_includes_online_status(self):
+    def test_get_scanner_pair_info_includes_online_status(self) -> None:
         """Verify diagnostic info includes online status."""
         manager = ScannerCalibrationManager()
         nowstamp = 1000.0
@@ -636,7 +648,7 @@ class TestScannerOnlineDetection:
         assert pair_info["scanner_b_online"] is True
         assert pair_info["last_update_ab"] == nowstamp
 
-    def test_clear_also_clears_scanner_last_seen(self):
+    def test_clear_also_clears_scanner_last_seen(self) -> None:
         """Verify clear() also clears scanner_last_seen tracking."""
         manager = ScannerCalibrationManager()
         manager.update_cross_visibility("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb", -55.0, timestamp=1000.0)

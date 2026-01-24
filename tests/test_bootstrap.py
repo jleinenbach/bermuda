@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from homeassistant.core import HomeAssistant
 
 from custom_components.bermuda.const import CONF_MAX_RADIUS
 from custom_components.bermuda.coordinator import BermudaDataUpdateCoordinator
@@ -11,7 +12,7 @@ from .test_area_selection import _configure_device, _make_advert, _make_coordina
 
 
 @pytest.fixture
-def coordinator(hass):
+def coordinator(hass: HomeAssistant) -> BermudaDataUpdateCoordinator:
     """Return a minimal coordinator for bootstrap tests."""
     return _make_coordinator(hass)
 
@@ -27,7 +28,7 @@ def test_bootstrap_wins_immediately(coordinator: BermudaDataUpdateCoordinator) -
     device.area_id = None
 
     scanner = _make_advert("scanner1", area_id, distance=5.0)
-    device.adverts = {"scanner1": scanner}
+    device.adverts = {"scanner1": scanner}  # type: ignore[dict-item]
 
     coordinator._refresh_area_by_min_distance(device)
 
