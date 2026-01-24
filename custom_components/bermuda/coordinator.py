@@ -1148,30 +1148,44 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                 # ============================================================
                 # RESOLUTION FIRST: Identity resolvers run BEFORE any filtering
                 # ============================================================
-                # Extract service_data early so resolvers can inspect it before
-                # any logic might discard or filter the device.
-                # Note: SERVICE_UUID_FMDN detection happens inside handle_advertisement,
-                # and RPA detection (first char in 4567) happens inside check_mac.
-                service_data_raw = advertisementdata.service_data or {}
-                service_data = cast("Mapping[str | int, Any]", service_data_raw)
+                # CRITICAL: The identity resolution hooks MUST run BEFORE
+                # process_advertisement() so that rotating MAC addresses can be
+                # linked to their metadevices before any state updates happen.
+                #
+                # Without this order, devices with rotating MACs (Apple IRK,
+                # Google FMDN) would be treated as "unknown noise" and their
+                # advertisement data would be lost.
 
-                # Create/get the device - this always succeeds, never filters
+                # 1. Create/get the device object (OHNE Filter!)
+                # We need the object so resolvers can store their state.
                 device = self._get_or_create_device(bledevice.address)
-                device.process_advertisement(scanner_device, advertisementdata)
 
-                # Google FMDN Resolution: Must run on EVERY advertisement.
-                # This is critical for rotating MAC addresses - the resolver must have
-                # a chance to "claim" the device and link it to a metadevice.
-                # handle_advertisement checks for FMDN service data (UUID 0xFEAA)
-                # internally and returns early if not present.
-                self.fmdn.handle_advertisement(device, service_data)
+                # 2. Identity Resolution Hooks (MUST run before process_advertisement!)
 
-                # Apple IRK Resolution: Check if this MAC matches any known IRKs.
+                # A. Apple IRK Resolution (iPhone, Watch, AirTag, etc.)
+                # Checks if the random MAC belongs to a known IRK.
                 # This is called on every advertisement to catch cases where:
-                # 1. The IRK was learned after the device was first seen
-                # 2. The MAC rotated to a new address that now matches a known IRK
+                # - The IRK was learned after the device was first seen
+                # - The MAC rotated to a new address that now matches a known IRK
                 # The check is cheap because irk_manager caches results.
                 self.irk_manager.check_mac(bledevice.address)
+
+                # B. Google FMDN Resolution (Find My Device Network)
+                # Checks for Service UUID 0xFEAA and resolves EIDs to devices.
+                # Must run on EVERY advertisement - the resolver checks internally
+                # whether the service data contains FMDN payloads.
+                service_data_raw = advertisementdata.service_data or {}
+                service_data = cast("Mapping[str | int, Any]", service_data_raw)
+                self.fmdn.handle_advertisement(device, service_data)
+
+                # 3. Standard Processing (RSSI, Scanner info, etc.)
+                # ONLY NOW do we process the physical advertisement data,
+                # after identity resolution has had a chance to "claim" the device.
+                device.process_advertisement(scanner_device, advertisementdata)
+
+                # ============================================================
+                # END RESOLUTION FIRST
+                # ============================================================
 
         # end of for ha_scanner loop
         return True
