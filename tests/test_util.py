@@ -12,7 +12,7 @@ from custom_components.bermuda import util
 from custom_components.bermuda.filters import KalmanFilter
 
 
-def test_mac_math_offset():
+def test_mac_math_offset() -> None:
     assert util.mac_math_offset("aa:bb:cc:dd:ee:ef", 2) == "aa:bb:cc:dd:ee:f1"
     assert util.mac_math_offset("aa:bb:cc:dd:ee:ef", -3) == "aa:bb:cc:dd:ee:ec"
     assert util.mac_math_offset("aa:bb:cc:dd:ee:ff", 2) is None
@@ -20,7 +20,7 @@ def test_mac_math_offset():
     assert util.mac_math_offset(None, 4) is None
 
 
-def test_normalize_mac_variants():
+def test_normalize_mac_variants() -> None:
     assert util.normalize_mac("AA:bb:CC:88:Ff:00") == "aa:bb:cc:88:ff:00"
     assert util.normalize_mac("aa_bb_CC_dd_ee_ff") == "aa:bb:cc:dd:ee:ff"
     assert util.normalize_mac("aa-77-CC-dd-ee-ff") == "aa:77:cc:dd:ee:ff"
@@ -28,12 +28,12 @@ def test_normalize_mac_variants():
     assert util.normalize_mac("AABBCCDDEEFF") == "aa:bb:cc:dd:ee:ff"
 
 
-def test_normalize_mac_rejects_non_mac():
+def test_normalize_mac_rejects_non_mac() -> None:
     with pytest.raises(ValueError):
         util.normalize_mac("fmdn:abc123")
 
 
-def test_normalize_identifier_and_mac_dispatch():
+def test_normalize_identifier_and_mac_dispatch() -> None:
     assert util.normalize_identifier("AABBCCDDEEFF") == "aabbccddeeff"
     assert util.normalize_identifier("12345678-1234-5678-9abc-def012345678_extra") == (
         "12345678123456789abcdef012345678_extra"
@@ -42,7 +42,7 @@ def test_normalize_identifier_and_mac_dispatch():
     assert util.normalize_address("fmdn:Device-ID") == "fmdn:device-id"
 
 
-def test_mac_explode_formats():
+def test_mac_explode_formats() -> None:
     ex = util.mac_explode_formats("aa:bb:cc:77:ee:ff")
     assert "aa:bb:cc:77:ee:ff" in ex
     assert "aa-bb-cc-77-ee-ff" in ex
@@ -50,12 +50,12 @@ def test_mac_explode_formats():
         assert len(e) in [12, 17]
 
 
-def test_mac_redact():
+def test_mac_redact() -> None:
     assert util.mac_redact("aa:bb:cc:77:ee:ff", "tEstMe") == "aa::tEstMe::ff"
     assert util.mac_redact("howdy::doody::friend", "PLEASENOE") == "ho::PLEASENOE::nd"
 
 
-def test_rssi_to_metres():
+def test_rssi_to_metres() -> None:
     """Test Two-Slope path loss model for RSSI to distance conversion.
 
     The Two-Slope model uses:
@@ -74,7 +74,7 @@ def test_rssi_to_metres():
     assert util.rssi_to_metres(-30, -55, 3.5) == 0.1  # Very strong signal
 
 
-def test_clean_charbuf():
+def test_clean_charbuf() -> None:
     assert util.clean_charbuf("a Normal string.") == "a Normal string."
     assert util.clean_charbuf("Broken\000String\000Fixed\000\000\000") == "Broken"
 
@@ -89,13 +89,13 @@ class TestKalmanFilter:
     - reset() clears state (no initial_estimate parameter)
     """
 
-    def test_kalman_initialization(self):
+    def test_kalman_initialization(self) -> None:
         """Test that KalmanFilter initializes with correct defaults."""
         kf = KalmanFilter()
         assert kf.estimate == 0.0  # Dataclass default
         assert not kf.is_initialized
 
-    def test_kalman_first_measurement(self):
+    def test_kalman_first_measurement(self) -> None:
         """Test that first measurement initializes the filter."""
         kf = KalmanFilter()
         result = kf.update(-70.0)
@@ -103,7 +103,7 @@ class TestKalmanFilter:
         assert kf.estimate == -70.0
         assert kf.is_initialized
 
-    def test_kalman_filters_spike(self):
+    def test_kalman_filters_spike(self) -> None:
         """Test that Kalman filter dampens signal spikes."""
         kf = KalmanFilter(process_noise=1.0, measurement_noise=10.0)
         # Establish baseline at -70 dBm
@@ -119,7 +119,7 @@ class TestKalmanFilter:
         assert result < -45.0  # Not fully following the spike
         assert result > baseline  # Moved toward spike but dampened
 
-    def test_kalman_responds_to_approach(self):
+    def test_kalman_responds_to_approach(self) -> None:
         """Test that filter responds to genuine device approach."""
         kf = KalmanFilter(process_noise=1.0, measurement_noise=10.0)
         results = []
@@ -132,7 +132,7 @@ class TestKalmanFilter:
         # But with smoothing lag
         assert results[-1] < -55  # Not fully caught up yet
 
-    def test_kalman_reduces_variance(self):
+    def test_kalman_reduces_variance(self) -> None:
         """Test that Kalman filter reduces measurement variance."""
         kf = KalmanFilter(process_noise=1.0, measurement_noise=10.0)
         raw = [-60, -61, -59, -60, -62, -58, -60, -61, -59, -60]
@@ -144,7 +144,7 @@ class TestKalmanFilter:
         # Filtered variance should be significantly less
         assert filtered_variance < raw_variance * 0.5
 
-    def test_kalman_reset(self):
+    def test_kalman_reset(self) -> None:
         """Test that reset clears filter state."""
         kf = KalmanFilter()
         kf.update(-70.0)
@@ -155,7 +155,7 @@ class TestKalmanFilter:
         kf.reset()
         assert not kf.is_initialized
 
-    def test_kalman_adaptive_stronger_signal_more_influence(self):
+    def test_kalman_adaptive_stronger_signal_more_influence(self) -> None:
         """Test that stronger signals have more influence with adaptive update."""
         # ref_power of -55 dBm is typical for BLE at 1m
         ref_power = -55.0
@@ -176,7 +176,7 @@ class TestKalmanFilter:
         # Weak signal should move estimate LESS (lower influence)
         assert strong_influence > weak_influence
 
-    def test_kalman_adaptive_weak_signal_dampened(self):
+    def test_kalman_adaptive_weak_signal_dampened(self) -> None:
         """Test that very weak signals are heavily dampened."""
         ref_power = -55.0  # typical BLE ref_power at 1m
         kf = KalmanFilter(process_noise=1.0, measurement_noise=10.0)

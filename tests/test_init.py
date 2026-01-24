@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from homeassistant.core import HomeAssistant
 
 # from homeassistant.exceptions import ConfigEntryNotReady
@@ -22,8 +24,8 @@ from homeassistant.config_entries import ConfigEntryState
 # Assertions allow you to verify that the return value of whatever is on the left
 # side of the assertion matches with the right side.
 async def test_setup_unload_and_reload_entry(
-    hass: HomeAssistant, bypass_get_data, setup_bermuda_entry: MockConfigEntry
-):
+    hass: HomeAssistant, bypass_get_data: Any, setup_bermuda_entry: MockConfigEntry
+) -> None:
     """Test entry setup and unload."""
 
     # Reload the entry and assert that the data from above is still there
@@ -41,7 +43,7 @@ async def test_setup_unload_and_reload_entry(
     assert setup_bermuda_entry.state == ConfigEntryState.NOT_LOADED
 
 
-async def test_setup_entry_exception(hass, error_on_get_data):
+async def test_setup_entry_exception(hass: HomeAssistant, error_on_get_data: Any) -> None:
     """Test ConfigEntryNotReady when API raises an exception during entry setup."""
     config_entry = MockConfigEntry(domain=DOMAIN, data=MOCK_CONFIG, entry_id="test")
 

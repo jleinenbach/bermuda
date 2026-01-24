@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
@@ -206,7 +206,7 @@ def _build_coord(
     if areas:
         for area in areas:
             area_registry.add_area(area)
-    coord.ar = area_registry
+    coord.ar = cast(Any, area_registry)
     coord.area_selection = AreaSelectionHandler(coord)
     return coord
 

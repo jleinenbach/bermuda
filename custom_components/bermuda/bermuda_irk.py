@@ -104,7 +104,7 @@ class BermudaIrkManager:
         # otherwise, all of 'em
         return self._macs.copy()
 
-    def async_prune(self):
+    def async_prune(self) -> None:
         """
         Check for expired MACs and expunge them.
 

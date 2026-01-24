@@ -15,7 +15,7 @@ from custom_components.bermuda.filters.kalman import KalmanFilter
 class TestKalmanFilterPersistence:
     """Test KalmanFilter state persistence."""
 
-    def test_update_sets_initialized(self):
+    def test_update_sets_initialized(self) -> None:
         """KalmanFilter.update() should set _initialized to True."""
         kf = KalmanFilter()
         assert not kf.is_initialized
@@ -26,7 +26,7 @@ class TestKalmanFilterPersistence:
         assert kf.is_initialized
         assert kf.sample_count == 1
 
-    def test_restore_state_with_samples(self):
+    def test_restore_state_with_samples(self) -> None:
         """restore_state() with sample_count > 0 should set _initialized."""
         kf = KalmanFilter()
         assert not kf.is_initialized
@@ -37,7 +37,7 @@ class TestKalmanFilterPersistence:
         assert kf.sample_count == 20
         assert kf.estimate == -80.0
 
-    def test_restore_state_with_zero_samples(self):
+    def test_restore_state_with_zero_samples(self) -> None:
         """restore_state() with sample_count = 0 should NOT set _initialized."""
         kf = KalmanFilter()
 
@@ -50,7 +50,7 @@ class TestKalmanFilterPersistence:
 class TestScannerAbsoluteRssiPersistence:
     """Test ScannerAbsoluteRssi button training persistence."""
 
-    def test_update_button_sets_has_button_training(self):
+    def test_update_button_sets_has_button_training(self) -> None:
         """update_button() should set has_button_training to True."""
         profile = ScannerAbsoluteRssi(scanner_address="AA:BB:CC:DD:EE:FF")
         assert not profile.has_button_training
@@ -60,7 +60,7 @@ class TestScannerAbsoluteRssiPersistence:
         assert profile.has_button_training
         assert profile.button_sample_count == 1
 
-    def test_multiple_update_button_accumulates(self):
+    def test_multiple_update_button_accumulates(self) -> None:
         """Multiple update_button() calls should accumulate samples."""
         profile = ScannerAbsoluteRssi(scanner_address="AA:BB:CC:DD:EE:FF")
 
@@ -70,7 +70,7 @@ class TestScannerAbsoluteRssiPersistence:
         assert profile.has_button_training
         assert profile.button_sample_count == 20
 
-    def test_serialization_round_trip_preserves_button_training(self):
+    def test_serialization_round_trip_preserves_button_training(self) -> None:
         """Button training should survive to_dict() -> from_dict() round-trip."""
         # Create profile and train it
         profile = ScannerAbsoluteRssi(scanner_address="AA:BB:CC:DD:EE:FF")
@@ -103,7 +103,7 @@ class TestScannerAbsoluteRssiPersistence:
 class TestScannerPairCorrelationPersistence:
     """Test ScannerPairCorrelation button training persistence."""
 
-    def test_serialization_round_trip_preserves_button_training(self):
+    def test_serialization_round_trip_preserves_button_training(self) -> None:
         """Button training should survive to_dict() -> from_dict() round-trip."""
         corr = ScannerPairCorrelation(scanner_address="AA:BB:CC:DD:EE:FF")
         for _ in range(20):
@@ -123,7 +123,7 @@ class TestScannerPairCorrelationPersistence:
 class TestAreaProfilePersistence:
     """Test AreaProfile button training persistence."""
 
-    def test_update_button_sets_has_button_training(self):
+    def test_update_button_sets_has_button_training(self) -> None:
         """update_button() on AreaProfile should set has_button_training."""
         profile = AreaProfile(area_id="lagerraum")
         assert not profile.has_button_training
@@ -141,7 +141,7 @@ class TestAreaProfilePersistence:
             assert abs_profile is not None, f"Absolute profile for {addr} should exist"
             assert abs_profile.has_button_training, f"Absolute profile for {addr} should have button training"
 
-    def test_serialization_round_trip_preserves_button_training(self):
+    def test_serialization_round_trip_preserves_button_training(self) -> None:
         """Button training on AreaProfile should survive serialization round-trip."""
         # Create and train profile
         profile = AreaProfile(area_id="lagerraum")
@@ -185,7 +185,7 @@ class TestAreaProfilePersistence:
 class TestAddressNormalization:
     """Test that address normalization doesn't cause key mismatches (BUG 17)."""
 
-    def test_uppercase_vs_lowercase_address(self):
+    def test_uppercase_vs_lowercase_address(self) -> None:
         """
         Verify that correlations stored with different case addresses work correctly.
 
@@ -241,7 +241,7 @@ class TestAddressNormalization:
 class TestCoordinatorIntegration:
     """Test the full coordinator training flow (without actual coordinator)."""
 
-    def test_simulated_training_flow(self):
+    def test_simulated_training_flow(self) -> None:
         """Simulate the training flow that coordinator performs."""
         # This simulates what async_train_fingerprint does
         correlations: dict[str, dict[str, AreaProfile]] = {}

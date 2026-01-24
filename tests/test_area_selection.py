@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from bluetooth_data_tools import monotonic_time_coarse
@@ -120,7 +121,7 @@ def _patch_monotonic_time(monkeypatch: pytest.MonkeyPatch, current_time: list[fl
     monkeypatch.setattr("tests.test_area_selection.monotonic_time_coarse", lambda: current_time[0])
 
 
-def _update_advert_stamps(adverts: dict, new_stamp: float) -> None:
+def _update_advert_stamps(adverts: dict[Any, Any], new_stamp: float) -> None:
     """Update the stamp attribute of all adverts to simulate new data arriving.
 
     This is needed for BUG 20 fix: streak counting now requires unique signals
