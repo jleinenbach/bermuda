@@ -370,7 +370,9 @@ class TestStreakNoIncrementSameData:
         # Simulate multiple coordinator polls at t=1001, 1002, 1003 (same advert stamp)
         streak_increments = 0
         for poll_time in [BASE_TIME + 1, BASE_TIME + 2, BASE_TIME + 3]:
-            current_stamps = coordinator.area_selection._collect_current_stamps(cast("BermudaDevice", device), poll_time)
+            current_stamps = coordinator.area_selection._collect_current_stamps(
+                cast("BermudaDevice", device), poll_time
+            )
             has_new_data = coordinator.area_selection._has_new_advert_data(current_stamps, device.pending_last_stamps)
             if has_new_data:
                 streak_increments += 1
@@ -394,13 +396,17 @@ class TestStreakNoIncrementSameData:
         # First poll - same data (t=1000)
         advert = _make_advert(scanner, -60.0, BASE_TIME, 2.0)
         device.adverts[(DEVICE_ADDRESS, SCANNER_A)] = advert
-        current_stamps = coordinator.area_selection._collect_current_stamps(cast("BermudaDevice", device), BASE_TIME + 1)
+        current_stamps = coordinator.area_selection._collect_current_stamps(
+            cast("BermudaDevice", device), BASE_TIME + 1
+        )
         has_new_data_1 = coordinator.area_selection._has_new_advert_data(current_stamps, device.pending_last_stamps)
 
         # Second poll - new data (t=1003, new advertisement arrived)
         advert_new = _make_advert(scanner, -62.0, BASE_TIME + 3.0, 2.1)
         device.adverts[(DEVICE_ADDRESS, SCANNER_A)] = advert_new
-        current_stamps_new = coordinator.area_selection._collect_current_stamps(cast("BermudaDevice", device), BASE_TIME + 4)
+        current_stamps_new = coordinator.area_selection._collect_current_stamps(
+            cast("BermudaDevice", device), BASE_TIME + 4
+        )
         has_new_data_2 = coordinator.area_selection._has_new_advert_data(current_stamps_new, device.pending_last_stamps)
 
         # First poll should not detect new data

@@ -94,9 +94,7 @@ class TestGoogleFindMyAPIContract:
         # canonical_id should be UUID-only (no colons as separators)
         canonical = eid_match.canonical_id
         # UUID format has dashes, not colons for separation
-        assert ":" not in canonical.replace("-", ""), (
-            "canonical_id should be UUID-only, not entry_id:uuid format"
-        )
+        assert ":" not in canonical.replace("-", ""), "canonical_id should be UUID-only, not entry_id:uuid format"
 
     def test_device_registry_identifier_formats(self) -> None:
         """Verify expected identifier formats from GoogleFindMy-HA.
@@ -122,9 +120,7 @@ class TestGoogleFindMyAPIContract:
             else:
                 extracted = identifier_value
 
-            assert extracted == expected_uuid, (
-                f"Failed to extract UUID from '{identifier_value}'"
-            )
+            assert extracted == expected_uuid, f"Failed to extract UUID from '{identifier_value}'"
 
 
 # =============================================================================
@@ -140,9 +136,7 @@ class TestCanonicalIdExtraction:
         clean_canonical_id = identity.canonical_id.split(":")[-1]
     """
 
-    def test_extracts_uuid_from_full_format(
-        self, fmdn_integration: FmdnIntegration
-    ) -> None:
+    def test_extracts_uuid_from_full_format(self, fmdn_integration: FmdnIntegration) -> None:
         """Extract UUID from entry_id:subentry_id:device_id format."""
         device = SimpleNamespace(
             identifiers={
@@ -154,9 +148,7 @@ class TestCanonicalIdExtraction:
 
         assert result == "68419b51-0000-2131-873b-fc411691d329"
 
-    def test_extracts_uuid_from_canonical_format(
-        self, fmdn_integration: FmdnIntegration
-    ) -> None:
+    def test_extracts_uuid_from_canonical_format(self, fmdn_integration: FmdnIntegration) -> None:
         """Extract UUID from entry_id:device_id format."""
         device = SimpleNamespace(
             identifiers={
@@ -168,9 +160,7 @@ class TestCanonicalIdExtraction:
 
         assert result == "68419b51-0000-2131-873b-fc411691d329"
 
-    def test_returns_uuid_directly_if_no_colons(
-        self, fmdn_integration: FmdnIntegration
-    ) -> None:
+    def test_returns_uuid_directly_if_no_colons(self, fmdn_integration: FmdnIntegration) -> None:
         """Return UUID as-is when already in simplest format."""
         device = SimpleNamespace(
             identifiers={
@@ -182,9 +172,7 @@ class TestCanonicalIdExtraction:
 
         assert result == "68419b51-0000-2131-873b-fc411691d329"
 
-    def test_ignores_non_googlefindmy_identifiers(
-        self, fmdn_integration: FmdnIntegration
-    ) -> None:
+    def test_ignores_non_googlefindmy_identifiers(self, fmdn_integration: FmdnIntegration) -> None:
         """Only process identifiers from googlefindmy domain."""
         device = SimpleNamespace(
             identifiers={
@@ -197,9 +185,7 @@ class TestCanonicalIdExtraction:
 
         assert result == "68419b51-0000"
 
-    def test_returns_none_for_empty_identifiers(
-        self, fmdn_integration: FmdnIntegration
-    ) -> None:
+    def test_returns_none_for_empty_identifiers(self, fmdn_integration: FmdnIntegration) -> None:
         """Return None when no googlefindmy identifiers found."""
         device = SimpleNamespace(identifiers=set())
 
@@ -221,9 +207,7 @@ class TestMetadeviceAddressConsistency:
     different addresses, duplicate metadevices will be created!
     """
 
-    def test_canonical_id_preferred_over_device_id(
-        self, fmdn_integration: FmdnIntegration
-    ) -> None:
+    def test_canonical_id_preferred_over_device_id(self, fmdn_integration: FmdnIntegration) -> None:
         """format_metadevice_address should prefer canonical_id."""
         address = fmdn_integration.format_metadevice_address(
             device_id="920aa0336e9c8bcf58b6dada3a9c68cb",
@@ -234,9 +218,7 @@ class TestMetadeviceAddressConsistency:
         assert "68419b51-0000-2131-873b-fc411691d329" in address
         assert "920aa0336e9c8bcf58b6dada3a9c68cb" not in address
 
-    def test_fallback_to_device_id_when_no_canonical(
-        self, fmdn_integration: FmdnIntegration
-    ) -> None:
+    def test_fallback_to_device_id_when_no_canonical(self, fmdn_integration: FmdnIntegration) -> None:
         """format_metadevice_address falls back to device_id."""
         address = fmdn_integration.format_metadevice_address(
             device_id="920aa0336e9c8bcf58b6dada3a9c68cb",
@@ -245,9 +227,7 @@ class TestMetadeviceAddressConsistency:
 
         assert "920aa0336e9c8bcf58b6dada3a9c68cb" in address
 
-    def test_entity_discovery_and_eid_resolution_produce_same_address(
-        self, fmdn_integration: FmdnIntegration
-    ) -> None:
+    def test_entity_discovery_and_eid_resolution_produce_same_address(self, fmdn_integration: FmdnIntegration) -> None:
         """
         Both discovery paths must produce identical metadevice addresses.
 
@@ -281,9 +261,7 @@ class TestMetadeviceAddressConsistency:
             "This will cause duplicate metadevices!"
         )
 
-    def test_address_format_is_normalized(
-        self, fmdn_integration: FmdnIntegration
-    ) -> None:
+    def test_address_format_is_normalized(self, fmdn_integration: FmdnIntegration) -> None:
         """Addresses should be normalized (lowercase, no special chars)."""
         address = fmdn_integration.format_metadevice_address(
             device_id=None,
@@ -315,6 +293,7 @@ class TestDeviceCongealment:
         """register_source must store fmdn_device_id for congealment."""
         # Create a source device
         from custom_components.bermuda.bermuda_device import BermudaDevice
+
         source_device = BermudaDevice(address="aa:bb:cc:dd:ee:ff", coordinator=mock_coordinator)
         mock_coordinator.devices["aa:bb:cc:dd:ee:ff"] = source_device
 
@@ -328,9 +307,7 @@ class TestDeviceCongealment:
         metadevice = BermudaDevice(address="fmdn:68419b51-0000-2131-873b-fc411691d329", coordinator=mock_coordinator)
         mock_coordinator._get_or_create_device = MagicMock(return_value=metadevice)  # type: ignore[method-assign]
 
-        metadevice_address = fmdn_integration.format_metadevice_address(
-            str(match.device_id), match.canonical_id
-        )
+        metadevice_address = fmdn_integration.format_metadevice_address(str(match.device_id), match.canonical_id)
         fmdn_integration.register_source(source_device, metadevice_address, match)
 
         # Verify fmdn_device_id is set (required for congealment)
@@ -341,6 +318,7 @@ class TestDeviceCongealment:
     ) -> None:
         """register_source must store fmdn_canonical_id."""
         from custom_components.bermuda.bermuda_device import BermudaDevice
+
         source_device = BermudaDevice(address="aa:bb:cc:dd:ee:ff", coordinator=mock_coordinator)
         mock_coordinator.devices["aa:bb:cc:dd:ee:ff"] = source_device
 
@@ -352,9 +330,7 @@ class TestDeviceCongealment:
         metadevice = BermudaDevice(address="fmdn:68419b51-0000-2131-873b-fc411691d329", coordinator=mock_coordinator)
         mock_coordinator._get_or_create_device = MagicMock(return_value=metadevice)  # type: ignore[method-assign]
 
-        metadevice_address = fmdn_integration.format_metadevice_address(
-            str(match.device_id), match.canonical_id
-        )
+        metadevice_address = fmdn_integration.format_metadevice_address(str(match.device_id), match.canonical_id)
         fmdn_integration.register_source(source_device, metadevice_address, match)
 
         # Verify fmdn_canonical_id is set
@@ -473,9 +449,7 @@ class TestRegressions:
         # Should only appear once in prune_list!
         assert prune_list.count("aa:bb:cc:dd:ee:ff") == 1
 
-    def test_canonical_id_uuid_only_not_prefixed(
-        self, fmdn_integration: FmdnIntegration
-    ) -> None:
+    def test_canonical_id_uuid_only_not_prefixed(self, fmdn_integration: FmdnIntegration) -> None:
         """
         Regression test for duplicate metadevices due to ID format mismatch.
 
@@ -494,6 +468,6 @@ class TestRegressions:
         # Must be UUID-only, NOT "config_entry_abc:68419b51-..."
         assert extracted == "68419b51-0000-2131-873b-fc411691d329"
         assert "config_entry" not in extracted
-        assert extracted.count(":") == 0 or all(
-            len(part) <= 4 for part in extracted.split(":")
-        ), "Should be UUID format (dash-separated), not colon-prefixed"
+        assert extracted.count(":") == 0 or all(len(part) <= 4 for part in extracted.split(":")), (
+            "Should be UUID format (dash-separated), not colon-prefixed"
+        )

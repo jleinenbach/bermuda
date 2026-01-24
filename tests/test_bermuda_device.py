@@ -92,7 +92,9 @@ def test_async_as_scanner_update(bermuda_scanner: BermudaDevice, mock_scanner: M
     assert bermuda_scanner.last_seen > 0
 
 
-def test_async_as_scanner_get_stamp(bermuda_scanner: BermudaDevice, mock_scanner: MagicMock, mock_remote_scanner: MagicMock) -> None:
+def test_async_as_scanner_get_stamp(
+    bermuda_scanner: BermudaDevice, mock_scanner: MagicMock, mock_remote_scanner: MagicMock
+) -> None:
     """Test async_as_scanner_get_stamp method."""
     bermuda_scanner.async_as_scanner_init(mock_scanner)
     bermuda_scanner.stamps = {normalize_mac("aa:bb:cc:dd:ee:ff"): 123.45}

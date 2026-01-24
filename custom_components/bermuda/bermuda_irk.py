@@ -130,6 +130,48 @@ class BermudaIrkManager:
         # Do the math
         return self._validate_mac(address)
 
+    def scan_device(self, address: str) -> tuple[bool, bytes]:
+        """
+        Scan a device address for IRK resolution and return results.
+
+        This is the main entry point for the "Resolution First" pattern.
+        It checks the MAC against all known IRKs and returns:
+        - (True, irk_bytes) if a match was found
+        - (False, irk_type) if no match (irk_type indicates why)
+
+        The method also fires callbacks for any registered listeners when
+        a match is found, which links the device to its metadevice.
+
+        Args:
+            address: The MAC address to check.
+
+        Returns:
+            Tuple of (matched: bool, result: bytes)
+            - matched=True: result is the matching IRK (16 bytes)
+            - matched=False: result is an IrkType value indicating status
+
+        """
+        result = self.check_mac(address)
+        is_match = result not in IrkTypes.unresolved()
+
+        if is_match:
+            _LOGGER.debug(
+                "IRK scan_device: MAC %s matched IRK %s",
+                address,
+                result.hex()[:8],
+            )
+        elif result == IrkTypes.NOT_RESOLVABLE_ADDRESS.value:
+            # Not a Resolvable Private Address - this is normal for most devices
+            pass
+        elif result == IrkTypes.NO_KNOWN_IRK_MATCH.value:
+            # RPA but no known IRK matches - device saved for later matching
+            _LOGGER.debug(
+                "IRK scan_device: MAC %s is RPA but no known IRK matches (saved for later)",
+                address,
+            )
+
+        return (is_match, result)
+
     def add_macirk(self, address: str, irk: bytes) -> bytes:
         """
         Insert a new IRK and MAC that have already been validated.

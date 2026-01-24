@@ -316,9 +316,7 @@ class TestFmdnServiceUuidDetection:
     def test_service_data_without_fmdn_uuid(self) -> None:
         """Test detection when FMDN UUID is not present."""
         # Service data with some other UUID
-        service_data: Mapping[str | int, Any] = {
-            "00001800-0000-1000-8000-00805f9b34fb": b"\x01\x02\x03"
-        }
+        service_data: Mapping[str | int, Any] = {"00001800-0000-1000-8000-00805f9b34fb": b"\x01\x02\x03"}
 
         has_fmdn_data = SERVICE_UUID_FMDN in service_data
         assert has_fmdn_data is False

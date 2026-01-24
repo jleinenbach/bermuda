@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 import aiofiles
 import voluptuous as vol
@@ -1168,15 +1168,17 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                 # - The IRK was learned after the device was first seen
                 # - The MAC rotated to a new address that now matches a known IRK
                 # The check is cheap because irk_manager caches results.
-                self.irk_manager.check_mac(bledevice.address)
+                # scan_device() returns (matched, result) and fires callbacks when matched.
+                if self.irk_manager:
+                    self.irk_manager.scan_device(bledevice.address)
 
                 # B. Google FMDN Resolution (Find My Device Network)
                 # Checks for Service UUID 0xFEAA and resolves EIDs to devices.
                 # Must run on EVERY advertisement - the resolver checks internally
                 # whether the service data contains FMDN payloads.
-                service_data_raw = advertisementdata.service_data or {}
-                service_data = cast("Mapping[str | int, Any]", service_data_raw)
-                self.fmdn.handle_advertisement(device, service_data)
+                # Pass service_data DIRECTLY to ensure no transformation loses data.
+                if self.fmdn:
+                    self.fmdn.handle_advertisement(device, advertisementdata.service_data or {})
 
                 # 3. Standard Processing (RSSI, Scanner info, etc.)
                 # ONLY NOW do we process the physical advertisement data,
