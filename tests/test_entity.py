@@ -331,7 +331,8 @@ class TestBermudaEntityCachedRatelimit:
             "custom_components.bermuda.entity.monotonic_time_coarse",
             return_value=105.0,  # Only 5 seconds elapsed, interval is 10
         ):
-            result = entity._cached_ratelimit(42.0)
+            # fast_falling=False to test pure caching behavior without fast_falling shortcut
+            result = entity._cached_ratelimit(42.0, fast_falling=False)
 
         assert result == 50.0  # Cached value
 

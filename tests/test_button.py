@@ -95,7 +95,8 @@ class TestBermudaTrainingButton:
 
     def test_button_has_correct_attributes(self) -> None:
         """Test that button has correct entity attributes."""
-        assert BermudaTrainingButton._attr_should_poll is False
+        # Check class __dict__ to verify attributes are defined on the class itself
+        assert BermudaTrainingButton.__dict__.get("_attr_should_poll") is False
         assert BermudaTrainingButton._attr_has_entity_name is True
         assert BermudaTrainingButton._attr_translation_key == "training_learn"
         assert BermudaTrainingButton._attr_entity_category == EntityCategory.CONFIG
@@ -167,16 +168,14 @@ class TestBermudaTrainingButton:
         # Training should not have started
         assert button._is_training is False
 
-    def test_handle_coordinator_update_calls_parent(self) -> None:
-        """Test that _handle_coordinator_update calls parent method."""
+    def test_handle_coordinator_update_updates_state(self) -> None:
+        """Test that _handle_coordinator_update updates entity state."""
         button = self._create_button()
 
-        with patch.object(
-            BermudaTrainingButton.__bases__[0],
-            "_handle_coordinator_update",
-        ):
-            button._handle_coordinator_update()
+        # Call the method - it should trigger state update
+        button._handle_coordinator_update()
 
+        # Verify state update was triggered
         button.async_write_ha_state.assert_called()
 
 
@@ -222,7 +221,8 @@ class TestBermudaResetTrainingButton:
 
     def test_button_has_correct_attributes(self) -> None:
         """Test that button has correct entity attributes."""
-        assert BermudaResetTrainingButton._attr_should_poll is False
+        # Check class __dict__ to verify attributes are defined on the class itself
+        assert BermudaResetTrainingButton.__dict__.get("_attr_should_poll") is False
         assert BermudaResetTrainingButton._attr_has_entity_name is True
         assert BermudaResetTrainingButton._attr_translation_key == "reset_training"
         assert BermudaResetTrainingButton._attr_entity_category == EntityCategory.CONFIG

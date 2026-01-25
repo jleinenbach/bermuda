@@ -554,8 +554,11 @@ class TestUpdateMetadevices:
         mock_source.adverts = {}
         mock_source.last_seen = 100.0
 
+        # Use a real list and verify it's empty after removal
+        source_list = ["source:address"]
+
         mock_metadevice = MagicMock()
-        mock_metadevice.metadevice_sources = ["source:address"]
+        mock_metadevice.metadevice_sources = source_list
         mock_metadevice.metadevice_type = {METADEVICE_IBEACON_DEVICE}
         mock_metadevice.beacon_unique_id = "old_uuid"  # Different from source
         mock_metadevice.adverts = {("source:address", "scanner1"): MagicMock()}
@@ -565,8 +568,8 @@ class TestUpdateMetadevices:
 
         manager.update_metadevices()
 
-        # Source should be scheduled for removal
-        mock_metadevice.metadevice_sources.remove.assert_called_with("source:address")
+        # Source should have been removed from the list
+        assert "source:address" not in source_list
 
 
 class TestAggregateSourceDataToMetadevices:

@@ -120,7 +120,8 @@ class TestBermudaTrainingRoomSelect:
 
     def test_room_select_has_correct_attributes(self) -> None:
         """Test that room select has correct entity attributes."""
-        assert BermudaTrainingRoomSelect._attr_should_poll is False
+        # Check class __dict__ to verify attributes are defined on the class itself
+        assert BermudaTrainingRoomSelect.__dict__.get("_attr_should_poll") is False
         assert BermudaTrainingRoomSelect._attr_has_entity_name is True
         assert BermudaTrainingRoomSelect._attr_translation_key == "training_room"
         assert BermudaTrainingRoomSelect._attr_entity_category == EntityCategory.CONFIG
@@ -300,7 +301,8 @@ class TestBermudaTrainingFloorSelect:
 
     def test_floor_select_has_correct_attributes(self) -> None:
         """Test that floor select has correct entity attributes."""
-        assert BermudaTrainingFloorSelect._attr_should_poll is False
+        # Check class __dict__ to verify attributes are defined on the class itself
+        assert BermudaTrainingFloorSelect.__dict__.get("_attr_should_poll") is False
         assert BermudaTrainingFloorSelect._attr_has_entity_name is True
         assert BermudaTrainingFloorSelect._attr_translation_key == "training_floor"
         assert BermudaTrainingFloorSelect._attr_entity_category == EntityCategory.CONFIG
