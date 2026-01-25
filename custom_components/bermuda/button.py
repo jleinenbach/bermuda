@@ -8,12 +8,13 @@ import time
 from typing import TYPE_CHECKING
 
 from homeassistant.components.button import ButtonEntity
+from homeassistant.components.persistent_notification import async_create, async_dismiss
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
-from .const import _LOGGER, SIGNAL_DEVICE_NEW
+from .const import _LOGGER, DOMAIN, SIGNAL_DEVICE_NEW
 from .entity import BermudaEntity
 
 if TYPE_CHECKING:
@@ -23,15 +24,21 @@ if TYPE_CHECKING:
     from .coordinator import BermudaDataUpdateCoordinator
 
 # Number of unique training samples to collect
-# 20 samples meets MIN_SAMPLES_FOR_MATURITY threshold for both correlation classes
-TRAINING_SAMPLE_COUNT = 20
+# 60 samples with 82% efficiency (5s interval) = ~49 effective samples
+# This exceeds the n>=30 threshold for Central Limit Theorem reliability
+TRAINING_SAMPLE_COUNT = 60
 
 # Maximum time to wait for training to complete (seconds)
-# Allows for slow-advertising devices (some trackers advertise every 5-10 seconds)
-TRAINING_MAX_TIME_SECONDS = 120.0
+# 60 samples x 5s interval = 300s, plus buffer for missed packets
+TRAINING_MAX_TIME_SECONDS = 300.0
+
+# Minimum time between training samples (seconds)
+# 5s interval reduces autocorrelation (rho=0.10) for 82% statistical efficiency
+# Shorter intervals cause highly correlated samples that add little information
+TRAINING_MIN_SAMPLE_INTERVAL = 5.0
 
 # How often to poll for new advertisement data (seconds)
-# Short interval to catch new data quickly, but not so short as to waste CPU
+# Short interval to catch new data quickly, actual sample timing controlled by MIN_SAMPLE_INTERVAL
 TRAINING_POLL_INTERVAL = 0.3
 
 
@@ -229,6 +236,21 @@ class BermudaTrainingButton(BermudaEntity, ButtonEntity):
             TRAINING_MAX_TIME_SECONDS,
         )
 
+        # Create unique notification ID for this device
+        notification_id = f"{DOMAIN}_training_{self._device.unique_id}"
+
+        # Show start notification
+        async_create(
+            self.coordinator.hass,
+            message=(
+                f"Training fingerprint for **{self._device.name}** in **{target_area_name}**.\n\n"
+                f"Collecting {TRAINING_SAMPLE_COUNT} samples (max {TRAINING_MAX_TIME_SECONDS / 60:.0f} min).\n\n"
+                f"Keep the device in the target room during training."
+            ),
+            title="Bermuda: Training Started",
+            notification_id=notification_id,
+        )
+
         try:
             # BUG 19 FIX: Wait for REAL new advertisements instead of re-reading cached values
             # BLE trackers typically advertise every 1-10 seconds. Polling faster than that
@@ -299,6 +321,9 @@ class BermudaTrainingButton(BermudaEntity, ButtonEntity):
                 # Short poll interval - we're waiting for new BLE advertisements
                 await asyncio.sleep(TRAINING_POLL_INTERVAL)
 
+            # Calculate training duration
+            training_duration = time.monotonic() - start_time
+
             if successful_samples > 0:
                 _LOGGER.info(
                     "Fingerprint training complete for %s in %s (%d/%d samples)",
@@ -313,10 +338,65 @@ class BermudaTrainingButton(BermudaEntity, ButtonEntity):
                 # By setting the area HERE, the device starts in the trained room after refresh,
                 # and UKF retention threshold (0.15) will help keep it there.
                 self._device.update_area_and_floor(target_area_id)
+
+                # Calculate quality index based on sample efficiency
+                # Effective samples considering autocorrelation (rho=0.10 for 5s interval)
+                # n_eff = n * (1-rho)/(1+rho) = n * 0.82
+                autocorr_factor = 0.82  # For 5s sampling interval
+                effective_samples = successful_samples * autocorr_factor
+                # Quality: percentage of effective samples vs target (30 for CLT)
+                clt_target = 30
+                quality_percent = min(100.0, (effective_samples / clt_target) * 100.0)
+
+                # Determine quality rating
+                if quality_percent >= 100:
+                    quality_rating = "Excellent"
+                    quality_icon = "✓"
+                elif quality_percent >= 70:
+                    quality_rating = "Good"
+                    quality_icon = "○"
+                elif quality_percent >= 50:
+                    quality_rating = "Moderate"
+                    quality_icon = "△"
+                else:
+                    quality_rating = "Poor"
+                    quality_icon = "✗"
+
+                # Show success notification with quality index
+                async_dismiss(self.coordinator.hass, notification_id)
+                async_create(
+                    self.coordinator.hass,
+                    message=(
+                        f"Training complete for **{self._device.name}** in **{target_area_name}**.\n\n"
+                        f"**Samples:** {successful_samples}/{TRAINING_SAMPLE_COUNT} "
+                        f"({effective_samples:.0f} effective)\n"
+                        f"**Duration:** {training_duration:.0f}s\n"
+                        f"**Quality:** {quality_icon} {quality_rating} ({quality_percent:.0f}%)\n\n"
+                        f"The device location has been set to **{target_area_name}**."
+                    ),
+                    title="Bermuda: Training Complete",
+                    notification_id=notification_id,
+                )
             else:
                 _LOGGER.warning(
                     "Fingerprint training failed for %s - no valid samples",
                     self._device.name,
+                )
+
+                # Show failure notification
+                async_dismiss(self.coordinator.hass, notification_id)
+                async_create(
+                    self.coordinator.hass,
+                    message=(
+                        f"Training failed for **{self._device.name}** in **{target_area_name}**.\n\n"
+                        f"No valid samples collected after {training_duration:.0f}s.\n\n"
+                        f"Possible causes:\n"
+                        f"- Device is not sending BLE advertisements\n"
+                        f"- No scanners can see the device\n"
+                        f"- Device moved out of range during training"
+                    ),
+                    title="Bermuda: Training Failed",
+                    notification_id=notification_id,
                 )
 
         # FIX 4: Handle CancelledError (e.g., Home Assistant shutdown during training)
@@ -324,6 +404,17 @@ class BermudaTrainingButton(BermudaEntity, ButtonEntity):
             _LOGGER.info(
                 "Training cancelled for %s (shutdown or reload)",
                 self._device.name,
+            )
+            # Show cancellation notification
+            async_dismiss(self.coordinator.hass, notification_id)
+            async_create(
+                self.coordinator.hass,
+                message=(
+                    f"Training cancelled for **{self._device.name}**.\n\n"
+                    f"The training was interrupted (Home Assistant shutdown or reload)."
+                ),
+                title="Bermuda: Training Cancelled",
+                notification_id=notification_id,
             )
             raise  # CancelledError must be re-raised per asyncio contract
         finally:

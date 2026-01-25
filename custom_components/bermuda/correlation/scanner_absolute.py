@@ -278,6 +278,18 @@ class ScannerAbsoluteRssi:
         self._kalman_button.reset()
         self._kalman_auto.reset()
 
+    def reset_variance_only(self) -> None:
+        """
+        Reset button filter variance while preserving estimate.
+
+        Used for multi-position training within the same room. When a user
+        trains from a new position, we want the new samples to have equal
+        influence to previous training, not diminishing influence.
+
+        Only resets the button filter (user training), not auto filter.
+        """
+        self._kalman_button.reset_variance_only()
+
     def z_score(self, observed_rssi: float) -> float:
         """
         Calculate deviation from expected value in standard deviations.
