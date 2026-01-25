@@ -94,31 +94,31 @@ class ScannerAbsoluteRssi:
         repr=False,
     )
 
-    def update(self, rssi: float) -> float:
+    def update(self, rssi: float, timestamp: float | None = None) -> float:
         """
         Update with new observed absolute RSSI from automatic learning.
 
         Args:
         ----
             rssi: Current absolute RSSI value from this scanner.
+            timestamp: Optional timestamp for profile age tracking.
+                      When provided, enables first/last sample tracking.
 
         Returns:
         -------
             Updated fused estimate of expected RSSI.
 
         """
-        self._kalman_auto.update(rssi)
+        self._kalman_auto.update(rssi, timestamp=timestamp)
 
         # Variance Floor: Prevent unbounded convergence that causes z-score explosion.
         # Without this, after thousands of samples variance approaches 0, making normal
         # BLE fluctuations (3-5dB) appear as 10+ sigma deviations.
-        self._kalman_auto.variance = max(
-            self._kalman_auto.variance, AUTO_LEARNING_VARIANCE_FLOOR
-        )
+        self._kalman_auto.variance = max(self._kalman_auto.variance, AUTO_LEARNING_VARIANCE_FLOOR)
 
         return self.expected_rssi
 
-    def update_button(self, rssi: float) -> float:
+    def update_button(self, rssi: float, timestamp: float | None = None) -> float:
         """
         Update with button-trained RSSI value.
 
@@ -134,6 +134,8 @@ class ScannerAbsoluteRssi:
         Args:
         ----
             rssi: Current absolute RSSI value from this scanner.
+            timestamp: Optional timestamp for profile age tracking.
+                      When provided, enables first/last sample tracking.
 
         Returns:
         -------
@@ -142,7 +144,7 @@ class ScannerAbsoluteRssi:
         """
         # Use update() to ADD this sample to the button filter
         # This way all 10 training samples contribute to the average
-        self._kalman_button.update(rssi)
+        self._kalman_button.update(rssi, timestamp=timestamp)
         return self.expected_rssi
 
     @property
@@ -249,6 +251,44 @@ class ScannerAbsoluteRssi:
         return self._kalman_button.is_initialized
 
     @property
+    def first_sample_stamp(self) -> float | None:
+        """
+        Return earliest timestamp from either filter.
+
+        Used for profile age tracking - when was this profile first created.
+        Returns None if no samples have timestamps.
+        """
+        auto_first = self._kalman_auto.first_sample_stamp
+        btn_first = self._kalman_button.first_sample_stamp
+
+        if auto_first is None and btn_first is None:
+            return None
+        if auto_first is None:
+            return btn_first
+        if btn_first is None:
+            return auto_first
+        return min(auto_first, btn_first)
+
+    @property
+    def last_sample_stamp(self) -> float | None:
+        """
+        Return latest timestamp from either filter.
+
+        Used for profile age tracking - when was this profile last updated.
+        Returns None if no samples have timestamps.
+        """
+        auto_last = self._kalman_auto.last_sample_stamp
+        btn_last = self._kalman_button.last_sample_stamp
+
+        if auto_last is None and btn_last is None:
+            return None
+        if auto_last is None:
+            return btn_last
+        if btn_last is None:
+            return auto_last
+        return max(auto_last, btn_last)
+
+    @property
     def is_mature(self) -> bool:
         """
         Check if profile has enough data to be trusted.
@@ -332,10 +372,14 @@ class ScannerAbsoluteRssi:
             "auto_estimate": self._kalman_auto.estimate,
             "auto_variance": self._kalman_auto.variance,
             "auto_samples": self._kalman_auto.sample_count,
+            "auto_first_stamp": self._kalman_auto.first_sample_stamp,
+            "auto_last_stamp": self._kalman_auto.last_sample_stamp,
             # Button filter state
             "button_estimate": self._kalman_button.estimate,
             "button_variance": self._kalman_button.variance,
             "button_samples": self._kalman_button.sample_count,
+            "button_first_stamp": self._kalman_button.first_sample_stamp,
+            "button_last_stamp": self._kalman_button.last_sample_stamp,
             # Legacy fields for backward compatibility
             "estimate": self.expected_rssi,
             "variance": self.variance,
@@ -383,11 +427,18 @@ class ScannerAbsoluteRssi:
                 variance=auto_var,
                 sample_count=auto_samples,
             )
+            # Restore profile age timestamps
+            profile._kalman_auto.first_sample_stamp = data.get("auto_first_stamp")
+            profile._kalman_auto.last_sample_stamp = data.get("auto_last_stamp")
+
             profile._kalman_button.restore_state(
                 estimate=float(data["button_estimate"]),
                 variance=btn_var,
                 sample_count=btn_samples,
             )
+            # Restore profile age timestamps
+            profile._kalman_button.first_sample_stamp = data.get("button_first_stamp")
+            profile._kalman_button.last_sample_stamp = data.get("button_last_stamp")
         else:
             # Old format: validate and migrate to auto filter
             variance = float(data["variance"])

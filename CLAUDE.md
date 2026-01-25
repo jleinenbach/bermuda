@@ -1645,6 +1645,52 @@ info = manager.get_scanner_pair_info(nowstamp=current_time)
   }
   ```
 
+### Profile Age Tracking (Phase 3)
+- **Purpose**: Enable stale profile detection and training age diagnostics by tracking when profiles were first created and last updated
+- **Implementation**:
+  - **`KalmanFilter`** (`filters/kalman.py`): Added `first_sample_stamp` and `last_sample_stamp` fields
+    - `first_sample_stamp`: Timestamp of first sample (when profile was created)
+    - `last_sample_stamp`: Timestamp of most recent sample (when profile was last updated)
+    - Both fields automatically updated in `update()` when timestamp is provided
+    - Included in `to_dict()`, `from_dict()`, `reset()`, and `get_diagnostics()`
+  - **`ScannerAbsoluteRssi`** and **`ScannerPairCorrelation`** (`correlation/scanner_*.py`):
+    - Added `timestamp` parameter to `update()` and `update_button()` methods
+    - Added aggregate `first_sample_stamp` and `last_sample_stamp` properties
+    - Aggregate min(first) and max(last) from both auto and button Kalman filters
+    - Updated `to_dict()` to include timestamps for both filters
+    - Updated `from_dict()` to restore timestamps
+  - **`AreaProfile`** and **`RoomProfile`** (`correlation/area_profile.py`, `room_profile.py`):
+    - Added `timestamp` parameter propagation to child `update()` and `update_button()` calls
+    - Added aggregate `first_sample_stamp` and `last_sample_stamp` properties
+    - Aggregate across all child profiles (correlations, absolute profiles, scanner pairs)
+- **Timestamp Propagation Flow**:
+  ```
+  AreaSelectionHandler.update()
+       │
+       ├─► AreaProfile.update(nowstamp)
+       │        │
+       │        ├─► ScannerPairCorrelation.update(timestamp=nowstamp)
+       │        │        └─► KalmanFilter.update(timestamp=nowstamp)
+       │        │                 └─► first/last_sample_stamp updated
+       │        │
+       │        └─► ScannerAbsoluteRssi.update(timestamp=nowstamp)
+       │                 └─► KalmanFilter.update(timestamp=nowstamp)
+       │
+       └─► RoomProfile.update(nowstamp)
+                └─► ScannerPairCorrelation.update(timestamp=nowstamp)
+  ```
+- **Aggregate Property Logic**:
+  - `first_sample_stamp`: Returns `min()` of all child timestamps (earliest creation)
+  - `last_sample_stamp`: Returns `max()` of all child timestamps (most recent update)
+  - Returns `None` if no timestamps available (profiles created before Phase 3)
+- **Backward Compatibility**: All timestamps are optional - older data without timestamps loads correctly
+- **Files changed**:
+  - `filters/kalman.py`: Added timestamp fields and serialization
+  - `correlation/scanner_absolute.py`: Added timestamp parameter and properties
+  - `correlation/scanner_pair.py`: Added timestamp parameter and properties
+  - `correlation/area_profile.py`: Added timestamp propagation and aggregate properties
+  - `correlation/room_profile.py`: Added timestamp propagation and aggregate properties
+
 ### Room Flickering Fix
 - **Problem**: Tracker constantly switched rooms despite being stationary
 - **Solution**: Added stability margin requiring challengers to be significantly closer

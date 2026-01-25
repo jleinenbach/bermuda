@@ -107,12 +107,16 @@ class RoomProfile:
 
                 # Delta: first alphabetically - second alphabetically
                 delta = readings[addr_a] - readings[addr_b]
-                self._scanner_pairs[pair_key].update(delta)
+                self._scanner_pairs[pair_key].update(delta, timestamp=nowstamp)
 
         self._enforce_memory_limit()
         return True
 
-    def update_button(self, readings: dict[str, float]) -> None:
+    def update_button(
+        self,
+        readings: dict[str, float],
+        timestamp: float | None = None,
+    ) -> None:
         """
         Update room profile with RSSI readings from button training (stronger weight).
 
@@ -123,6 +127,7 @@ class RoomProfile:
         Args:
         ----
             readings: Map of scanner_address to RSSI value.
+            timestamp: Optional timestamp for profile age tracking.
 
         """
         scanner_list = list(readings.keys())
@@ -140,7 +145,7 @@ class RoomProfile:
 
                 # Delta: first alphabetically - second alphabetically
                 delta = readings[addr_a] - readings[addr_b]
-                self._scanner_pairs[pair_key].update_button(delta)
+                self._scanner_pairs[pair_key].update_button(delta, timestamp=timestamp)
 
         self._enforce_memory_limit()
 
@@ -186,6 +191,38 @@ class RoomProfile:
         by the user. This indicates explicit user intent for this room.
         """
         return any(pair.has_button_training for pair in self._scanner_pairs.values())
+
+    @property
+    def first_sample_stamp(self) -> float | None:
+        """
+        Return earliest timestamp from all scanner pairs.
+
+        Aggregates the minimum first_sample_stamp from all scanner pairs.
+        Returns None if no timestamps are available.
+
+        Used for profile age tracking - when was this room profile first created.
+        """
+        timestamps: list[float] = [
+            pair.first_sample_stamp for pair in self._scanner_pairs.values() if pair.first_sample_stamp is not None
+        ]
+
+        return min(timestamps) if timestamps else None
+
+    @property
+    def last_sample_stamp(self) -> float | None:
+        """
+        Return latest timestamp from all scanner pairs.
+
+        Aggregates the maximum last_sample_stamp from all scanner pairs.
+        Returns None if no timestamps are available.
+
+        Used for profile age tracking - when was this room profile last updated.
+        """
+        timestamps: list[float] = [
+            pair.last_sample_stamp for pair in self._scanner_pairs.values() if pair.last_sample_stamp is not None
+        ]
+
+        return max(timestamps) if timestamps else None
 
     def get_match_score(self, readings: dict[str, float]) -> float:
         """

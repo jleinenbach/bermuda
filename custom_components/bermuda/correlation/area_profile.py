@@ -112,7 +112,7 @@ class AreaProfile:
             if scanner_addr not in self._correlations:
                 self._correlations[scanner_addr] = ScannerPairCorrelation(scanner_address=scanner_addr)
 
-            self._correlations[scanner_addr].update(delta)
+            self._correlations[scanner_addr].update(delta, timestamp=nowstamp)
 
         # Update absolute RSSI profiles for ALL visible scanners
         # This enables fallback validation when primary goes offline
@@ -123,7 +123,7 @@ class AreaProfile:
         for scanner_addr, rssi in all_readings.items():
             if scanner_addr not in self._absolute_profiles:
                 self._absolute_profiles[scanner_addr] = ScannerAbsoluteRssi(scanner_address=scanner_addr)
-            self._absolute_profiles[scanner_addr].update(rssi)
+            self._absolute_profiles[scanner_addr].update(rssi, timestamp=nowstamp)
 
         self._enforce_memory_limit()
         return True
@@ -133,6 +133,7 @@ class AreaProfile:
         primary_rssi: float,
         other_readings: dict[str, float],
         primary_scanner_addr: str | None = None,
+        timestamp: float | None = None,
     ) -> None:
         """
         Update correlations with button-trained readings (stronger weight).
@@ -147,6 +148,7 @@ class AreaProfile:
             other_readings: Map of scanner_address to RSSI for other scanners.
                            Must NOT include the primary scanner.
             primary_scanner_addr: Address of the primary scanner (for absolute tracking).
+            timestamp: Optional timestamp for profile age tracking.
 
         """
         # Update delta correlations with button weight
@@ -156,7 +158,7 @@ class AreaProfile:
             if scanner_addr not in self._correlations:
                 self._correlations[scanner_addr] = ScannerPairCorrelation(scanner_address=scanner_addr)
 
-            self._correlations[scanner_addr].update_button(delta)
+            self._correlations[scanner_addr].update_button(delta, timestamp=timestamp)
 
         # Update absolute RSSI profiles with button weight
         all_readings: dict[str, float] = dict(other_readings)
@@ -166,7 +168,7 @@ class AreaProfile:
         for scanner_addr, rssi in all_readings.items():
             if scanner_addr not in self._absolute_profiles:
                 self._absolute_profiles[scanner_addr] = ScannerAbsoluteRssi(scanner_address=scanner_addr)
-            self._absolute_profiles[scanner_addr].update_button(rssi)
+            self._absolute_profiles[scanner_addr].update_button(rssi, timestamp=timestamp)
 
         self._enforce_memory_limit()
 
@@ -425,6 +427,48 @@ class AreaProfile:
             return True
         # Check delta correlations
         return any(corr.has_button_training for corr in self._correlations.values())
+
+    @property
+    def first_sample_stamp(self) -> float | None:
+        """
+        Return earliest timestamp from all child profiles.
+
+        Aggregates the minimum first_sample_stamp from both correlations
+        and absolute profiles. Returns None if no timestamps are available.
+
+        Used for profile age tracking - when was this area profile first created.
+        """
+        timestamps: list[float] = [
+            corr.first_sample_stamp for corr in self._correlations.values() if corr.first_sample_stamp is not None
+        ]
+        timestamps.extend(
+            profile.first_sample_stamp
+            for profile in self._absolute_profiles.values()
+            if profile.first_sample_stamp is not None
+        )
+
+        return min(timestamps) if timestamps else None
+
+    @property
+    def last_sample_stamp(self) -> float | None:
+        """
+        Return latest timestamp from all child profiles.
+
+        Aggregates the maximum last_sample_stamp from both correlations
+        and absolute profiles. Returns None if no timestamps are available.
+
+        Used for profile age tracking - when was this area profile last updated.
+        """
+        timestamps: list[float] = [
+            corr.last_sample_stamp for corr in self._correlations.values() if corr.last_sample_stamp is not None
+        ]
+        timestamps.extend(
+            profile.last_sample_stamp
+            for profile in self._absolute_profiles.values()
+            if profile.last_sample_stamp is not None
+        )
+
+        return max(timestamps) if timestamps else None
 
     def to_dict(self) -> dict[str, Any]:
         """
