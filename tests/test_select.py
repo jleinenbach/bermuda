@@ -120,12 +120,13 @@ class TestBermudaTrainingRoomSelect:
 
     def test_room_select_has_correct_attributes(self) -> None:
         """Test that room select has correct entity attributes."""
-        # Check class __dict__ to verify attributes are defined on the class itself
-        assert BermudaTrainingRoomSelect.__dict__.get("_attr_should_poll") is False
-        assert BermudaTrainingRoomSelect._attr_has_entity_name is True
-        assert BermudaTrainingRoomSelect._attr_translation_key == "training_room"
-        assert BermudaTrainingRoomSelect._attr_entity_category == EntityCategory.CONFIG
-        assert BermudaTrainingRoomSelect._attr_icon == "mdi:map-marker-radius"
+        # Create an instance to test attributes (HA metaclass converts class attrs to properties)
+        select = self._create_room_select()
+        assert select.should_poll is False
+        assert select.has_entity_name is True
+        assert select.translation_key == "training_room"
+        assert select.entity_category == EntityCategory.CONFIG
+        assert select.icon == "mdi:map-marker-radius"
 
     def test_unique_id(self) -> None:
         """Test that unique_id is correctly formatted."""
@@ -301,12 +302,13 @@ class TestBermudaTrainingFloorSelect:
 
     def test_floor_select_has_correct_attributes(self) -> None:
         """Test that floor select has correct entity attributes."""
-        # Check class __dict__ to verify attributes are defined on the class itself
-        assert BermudaTrainingFloorSelect.__dict__.get("_attr_should_poll") is False
-        assert BermudaTrainingFloorSelect._attr_has_entity_name is True
-        assert BermudaTrainingFloorSelect._attr_translation_key == "training_floor"
-        assert BermudaTrainingFloorSelect._attr_entity_category == EntityCategory.CONFIG
-        assert BermudaTrainingFloorSelect._attr_icon == "mdi:floor-plan"
+        # Create an instance to test attributes (HA metaclass converts class attrs to properties)
+        select = self._create_floor_select()
+        assert select.should_poll is False
+        assert select.has_entity_name is True
+        assert select.translation_key == "training_floor"
+        assert select.entity_category == EntityCategory.CONFIG
+        assert select.icon == "mdi:floor-plan"
 
     def test_unique_id(self) -> None:
         """Test that unique_id is correctly formatted."""

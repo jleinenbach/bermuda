@@ -95,11 +95,12 @@ class TestBermudaTrainingButton:
 
     def test_button_has_correct_attributes(self) -> None:
         """Test that button has correct entity attributes."""
-        # Check class __dict__ to verify attributes are defined on the class itself
-        assert BermudaTrainingButton.__dict__.get("_attr_should_poll") is False
-        assert BermudaTrainingButton._attr_has_entity_name is True
-        assert BermudaTrainingButton._attr_translation_key == "training_learn"
-        assert BermudaTrainingButton._attr_entity_category == EntityCategory.CONFIG
+        # Create an instance to test attributes (HA metaclass converts class attrs to properties)
+        button = self._create_button()
+        assert button.should_poll is False
+        assert button.has_entity_name is True
+        assert button.translation_key == "training_learn"
+        assert button.entity_category == EntityCategory.CONFIG
 
     def test_button_icons(self) -> None:
         """Test that button has correct icons defined."""
@@ -221,12 +222,13 @@ class TestBermudaResetTrainingButton:
 
     def test_button_has_correct_attributes(self) -> None:
         """Test that button has correct entity attributes."""
-        # Check class __dict__ to verify attributes are defined on the class itself
-        assert BermudaResetTrainingButton.__dict__.get("_attr_should_poll") is False
-        assert BermudaResetTrainingButton._attr_has_entity_name is True
-        assert BermudaResetTrainingButton._attr_translation_key == "reset_training"
-        assert BermudaResetTrainingButton._attr_entity_category == EntityCategory.CONFIG
-        assert BermudaResetTrainingButton._attr_icon == "mdi:eraser"
+        # Create an instance to test attributes (HA metaclass converts class attrs to properties)
+        button = self._create_button()
+        assert button.should_poll is False
+        assert button.has_entity_name is True
+        assert button.translation_key == "reset_training"
+        assert button.entity_category == EntityCategory.CONFIG
+        assert button.icon == "mdi:eraser"
 
     def test_unique_id(self) -> None:
         """Test that unique_id is correctly formatted."""
