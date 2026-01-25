@@ -419,5 +419,5 @@ class KalmanFilter(SignalFilter):
             sample_count=data.get("sample_count", 0),
         )
         # Restore timestamp for time-aware filtering
-        filter_instance._last_timestamp = data.get("last_timestamp")  # noqa: SLF001
+        filter_instance._last_timestamp = data.get("last_timestamp")
         return filter_instance

@@ -79,6 +79,83 @@ def test_clean_charbuf() -> None:
     assert util.clean_charbuf("Broken\000String\000Fixed\000\000\000") == "Broken"
 
 
+def test_clean_charbuf_none_input() -> None:
+    """Test that clean_charbuf returns empty string for None input."""
+    assert util.clean_charbuf(None) == ""
+
+
+def test_rssi_to_metres_missing_ref_power() -> None:
+    """Test that rssi_to_metres raises ValueError when ref_power is None."""
+    with pytest.raises(ValueError, match="ref_power must be provided"):
+        util.rssi_to_metres(-60, ref_power=None, attenuation=3.5)
+
+
+def test_rssi_to_metres_missing_attenuation() -> None:
+    """Test that rssi_to_metres raises ValueError when attenuation is None."""
+    with pytest.raises(ValueError, match="attenuation must be provided"):
+        util.rssi_to_metres(-60, ref_power=-55, attenuation=None)
+
+
+def test_mac_norm_with_non_mac() -> None:
+    """Test that mac_norm falls back to normalize_identifier for non-MAC inputs."""
+    # Test with UUID-like identifier
+    assert util.mac_norm("fmdn:DEVICE-123") == "fmdn:device-123"
+    # Test with plain identifier
+    assert util.mac_norm("some_identifier") == "some_identifier"
+    # Test with UUID
+    assert util.mac_norm("12345678-1234-5678-9ABC-DEF012345678") == "12345678123456789abcdef012345678"
+
+
+def test_mac_norm_with_mac() -> None:
+    """Test that mac_norm correctly normalizes MAC addresses."""
+    assert util.mac_norm("AA:BB:CC:DD:EE:FF") == "aa:bb:cc:dd:ee:ff"
+    assert util.mac_norm("aa-bb-cc-dd-ee-ff") == "aa:bb:cc:dd:ee:ff"
+
+
+def test_mac_explode_formats_with_non_mac() -> None:
+    """Test that mac_explode_formats returns only normalized identifier for non-MAC."""
+    result = util.mac_explode_formats("fmdn:DEVICE-123")
+    assert result == {"fmdn:device-123"}
+
+
+def test_mac_explode_formats_with_uuid() -> None:
+    """Test that mac_explode_formats handles UUID-like identifiers."""
+    result = util.mac_explode_formats("12345678-1234-5678-9ABC-DEF012345678_suffix")
+    assert result == {"12345678123456789abcdef012345678_suffix"}
+
+
+def test_mac_hex_dotted_format() -> None:
+    """Test that _mac_hex handles Cisco-style dotted MAC format."""
+    # Directly test the _mac_hex function with dotted format
+    result = util._mac_hex("aabb.ccdd.eeff")
+    assert result == "aabbccddeeff"
+    # Uppercase variant
+    result = util._mac_hex("AABB.CCDD.EEFF")
+    assert result == "aabbccddeeff"
+
+
+class TestRssiToMetresEdgeCases:
+    """Additional edge case tests for rssi_to_metres."""
+
+    def test_rssi_to_metres_min_distance_floor(self) -> None:
+        """Test that rssi_to_metres enforces minimum distance."""
+        # Very strong signal should return MIN_DISTANCE (0.1m)
+        result = util.rssi_to_metres(-20, -55, 3.5)
+        assert result == 0.1
+
+    def test_rssi_to_metres_far_field(self) -> None:
+        """Test rssi_to_metres in far-field region (> 6m breakpoint)."""
+        # Distance well beyond 6m breakpoint
+        result = util.rssi_to_metres(-80, -55, 3.5)
+        assert result > 6.0  # Should be in far-field
+
+    def test_rssi_to_metres_near_field(self) -> None:
+        """Test rssi_to_metres in near-field region (< 6m breakpoint)."""
+        # Near-field: signal close to ref_power
+        result = util.rssi_to_metres(-58, -55, 3.5)
+        assert 1.0 < result < 6.0  # Should be in near-field
+
+
 class TestKalmanFilter:
     """Tests for the KalmanFilter class from filters module.
 
@@ -193,3 +270,257 @@ class TestKalmanFilter:
 
         # Estimate should barely change (weak signal heavily dampened)
         assert abs(kf.estimate - baseline) < 5.0  # Less than 5 dBm change
+
+
+class TestGetScanner:
+    """Tests for BermudaDevice.get_scanner method."""
+
+    def test_get_scanner_returns_none_when_no_adverts(self) -> None:
+        """Test get_scanner returns None when no adverts exist."""
+        from unittest.mock import MagicMock
+        from custom_components.bermuda.bermuda_device import BermudaDevice
+
+        mock_coordinator = MagicMock()
+        mock_coordinator.options = {}
+        device = BermudaDevice(address="AA:BB:CC:DD:EE:FF", coordinator=mock_coordinator)
+        device.adverts = {}
+
+        result = device.get_scanner("11:22:33:44:55:66")
+
+        assert result is None
+
+    def test_get_scanner_returns_matching_advert(self) -> None:
+        """Test get_scanner returns matching advert."""
+        from unittest.mock import MagicMock
+        from custom_components.bermuda.bermuda_device import BermudaDevice
+
+        mock_coordinator = MagicMock()
+        mock_coordinator.options = {}
+        device = BermudaDevice(address="AA:BB:CC:DD:EE:FF", coordinator=mock_coordinator)
+
+        # Create mock adverts
+        mock_advert1 = MagicMock()
+        mock_advert1.scanner_address = "11:22:33:44:55:66"
+        mock_advert1.stamp = 100.0
+
+        mock_advert2 = MagicMock()
+        mock_advert2.scanner_address = "77:88:99:aa:bb:cc"
+        mock_advert2.stamp = 200.0
+
+        device.adverts = {
+            ("aa:bb:cc:dd:ee:ff", "11:22:33:44:55:66"): mock_advert1,
+            ("aa:bb:cc:dd:ee:ff", "77:88:99:aa:bb:cc"): mock_advert2,
+        }
+
+        result = device.get_scanner("11:22:33:44:55:66")
+
+        assert result == mock_advert1
+
+    def test_get_scanner_returns_most_recent_advert(self) -> None:
+        """Test get_scanner returns most recent advert when multiple match."""
+        from unittest.mock import MagicMock
+        from custom_components.bermuda.bermuda_device import BermudaDevice
+
+        mock_coordinator = MagicMock()
+        mock_coordinator.options = {}
+        device = BermudaDevice(address="AA:BB:CC:DD:EE:FF", coordinator=mock_coordinator)
+
+        # Create mock adverts with same scanner but different timestamps
+        mock_advert1 = MagicMock()
+        mock_advert1.scanner_address = "11:22:33:44:55:66"
+        mock_advert1.stamp = 100.0
+
+        mock_advert2 = MagicMock()
+        mock_advert2.scanner_address = "11:22:33:44:55:66"
+        mock_advert2.stamp = 200.0  # More recent
+
+        device.adverts = {
+            ("aa:bb:cc:dd:ee:ff", "11:22:33:44:55:66"): mock_advert1,
+            ("aa:bb:cc:dd:ee:00", "11:22:33:44:55:66"): mock_advert2,
+        }
+
+        result = device.get_scanner("11:22:33:44:55:66")
+
+        assert result == mock_advert2
+
+    def test_get_scanner_handles_none_stamp(self) -> None:
+        """Test get_scanner handles advert with None stamp."""
+        from unittest.mock import MagicMock
+        from custom_components.bermuda.bermuda_device import BermudaDevice
+
+        mock_coordinator = MagicMock()
+        mock_coordinator.options = {}
+        device = BermudaDevice(address="AA:BB:CC:DD:EE:FF", coordinator=mock_coordinator)
+
+        mock_advert = MagicMock()
+        mock_advert.scanner_address = "11:22:33:44:55:66"
+        mock_advert.stamp = None
+
+        device.adverts = {("aa:bb:cc:dd:ee:ff", "11:22:33:44:55:66"): mock_advert}
+
+        result = device.get_scanner("11:22:33:44:55:66")
+
+        assert result == mock_advert
+
+
+class TestProcessManufacturerData:
+    """Tests for process_manufacturer_data method."""
+
+    def test_process_manufacturer_data_updates_manufacturer(self) -> None:
+        """Test process_manufacturer_data updates manufacturer from service uuids."""
+        from unittest.mock import MagicMock
+        from custom_components.bermuda.bermuda_device import BermudaDevice
+
+        mock_coordinator = MagicMock()
+        mock_coordinator.options = {}
+        mock_coordinator.get_manufacturer_from_id.return_value = ("Apple Inc.", False)
+        device = BermudaDevice(address="AA:BB:CC:DD:EE:FF", coordinator=mock_coordinator)
+        device.manufacturer = None
+
+        mock_advert = MagicMock()
+        mock_advert.service_uuids = ["0000abcd-0000-1000-8000-00805f9b34fb"]
+        mock_advert.manufacturer_data = []
+
+        device.process_manufacturer_data(mock_advert)
+
+        assert device.manufacturer == "Apple Inc."
+
+    def test_process_manufacturer_data_with_ibeacon(self) -> None:
+        """Test process_manufacturer_data detects iBeacon data."""
+        from unittest.mock import MagicMock
+        from custom_components.bermuda.bermuda_device import BermudaDevice
+        from custom_components.bermuda.const import METADEVICE_TYPE_IBEACON_SOURCE
+
+        mock_coordinator = MagicMock()
+        mock_coordinator.options = {}
+        mock_coordinator.get_manufacturer_from_id.return_value = ("Apple Inc.", False)
+        device = BermudaDevice(address="AA:BB:CC:DD:EE:FF", coordinator=mock_coordinator)
+
+        # iBeacon manufacturer data: company code 0x004C (Apple), type 0x02
+        # Format: 0x02 + length + uuid (16 bytes) + major (2 bytes) + minor (2 bytes) + tx_power (1 byte)
+        ibeacon_data = (
+            b"\x02\x15"  # Type and length
+            + b"\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f\x10"  # UUID (16 bytes)
+            + b"\x00\x01"  # Major (1)
+            + b"\x00\x02"  # Minor (2)
+            + b"\xc8"  # TX Power
+        )
+
+        mock_advert = MagicMock()
+        mock_advert.service_uuids = []
+        mock_advert.manufacturer_data = [{0x004C: ibeacon_data}]
+
+        device.process_manufacturer_data(mock_advert)
+
+        assert METADEVICE_TYPE_IBEACON_SOURCE in device.metadevice_type
+        assert device.beacon_uuid == "0102030405060708090a0b0c0d0e0f10"
+        assert device.beacon_major == "1"
+        assert device.beacon_minor == "2"
+
+    def test_process_manufacturer_data_with_short_ibeacon(self) -> None:
+        """Test process_manufacturer_data handles short iBeacon (22 bytes, no tx_power)."""
+        from unittest.mock import MagicMock
+        from custom_components.bermuda.bermuda_device import BermudaDevice
+        from custom_components.bermuda.const import METADEVICE_TYPE_IBEACON_SOURCE
+
+        mock_coordinator = MagicMock()
+        mock_coordinator.options = {}
+        mock_coordinator.get_manufacturer_from_id.return_value = ("Apple Inc.", False)
+        device = BermudaDevice(address="AA:BB:CC:DD:EE:FF", coordinator=mock_coordinator)
+
+        # Short iBeacon data (22 bytes, missing tx_power)
+        ibeacon_data = (
+            b"\x02\x15"  # Type and length
+            + b"\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f\x10"  # UUID
+            + b"\x00\x03"  # Major (3)
+            + b"\x00\x04"  # Minor (4)
+        )
+
+        mock_advert = MagicMock()
+        mock_advert.service_uuids = []
+        mock_advert.manufacturer_data = [{0x004C: ibeacon_data}]
+
+        device.process_manufacturer_data(mock_advert)
+
+        assert METADEVICE_TYPE_IBEACON_SOURCE in device.metadevice_type
+        assert device.beacon_major == "3"
+        assert device.beacon_minor == "4"
+
+
+class TestCalculateDataExtended:
+    """Extended tests for calculate_data method."""
+
+    def test_calculate_data_with_invalid_devices_option(self) -> None:
+        """Test calculate_data handles non-list CONF_DEVICES."""
+        from unittest.mock import MagicMock, patch
+        from custom_components.bermuda.bermuda_device import BermudaDevice
+        from custom_components.bermuda.const import CONF_DEVICES, CONF_DEVTRACK_TIMEOUT
+
+        mock_coordinator = MagicMock()
+        mock_coordinator.options = {
+            CONF_DEVICES: "not_a_list",  # Invalid - should be list
+            CONF_DEVTRACK_TIMEOUT: 300,
+        }
+        mock_coordinator.count_active_scanners.return_value = 1
+
+        device = BermudaDevice(address="AA:BB:CC:DD:EE:FF", coordinator=mock_coordinator)
+        device.last_seen = 1.0
+
+        with patch("custom_components.bermuda.bermuda_device.monotonic_time_coarse", return_value=1000.0):
+            device.calculate_data()
+
+        # Should not raise, create_sensor should be False since address not in empty set
+        assert device.create_sensor is False
+
+    def test_calculate_data_fmdn_mode_resolved_only(self) -> None:
+        """Test calculate_data respects FMDN_MODE_RESOLVED_ONLY."""
+        from unittest.mock import MagicMock, patch
+        from custom_components.bermuda.bermuda_device import BermudaDevice
+        from custom_components.bermuda.const import (
+            CONF_DEVICES,
+            CONF_DEVTRACK_TIMEOUT,
+            CONF_FMDN_MODE,
+            FMDN_MODE_RESOLVED_ONLY,
+            METADEVICE_TYPE_FMDN_SOURCE,
+        )
+
+        mock_coordinator = MagicMock()
+        mock_coordinator.options = {
+            CONF_DEVICES: [],
+            CONF_DEVTRACK_TIMEOUT: 300,
+            CONF_FMDN_MODE: FMDN_MODE_RESOLVED_ONLY,
+        }
+        mock_coordinator.count_active_scanners.return_value = 1
+
+        device = BermudaDevice(address="AA:BB:CC:DD:EE:FF", coordinator=mock_coordinator)
+        device.metadevice_type.add(METADEVICE_TYPE_FMDN_SOURCE)
+        device.last_seen = 1.0
+
+        with patch("custom_components.bermuda.bermuda_device.monotonic_time_coarse", return_value=1000.0):
+            device.calculate_data()
+
+        # FMDN source with RESOLVED_ONLY mode should have create_sensor=False
+        assert device.create_sensor is False
+
+    def test_calculate_data_invalid_fmdn_mode_uses_default(self) -> None:
+        """Test calculate_data uses default for invalid FMDN mode."""
+        from unittest.mock import MagicMock, patch
+        from custom_components.bermuda.bermuda_device import BermudaDevice
+        from custom_components.bermuda.const import CONF_DEVICES, CONF_DEVTRACK_TIMEOUT, CONF_FMDN_MODE
+
+        mock_coordinator = MagicMock()
+        mock_coordinator.options = {
+            CONF_DEVICES: [],
+            CONF_DEVTRACK_TIMEOUT: 300,
+            CONF_FMDN_MODE: "invalid_mode",
+        }
+        mock_coordinator.count_active_scanners.return_value = 1
+
+        device = BermudaDevice(address="AA:BB:CC:DD:EE:FF", coordinator=mock_coordinator)
+        device.last_seen = 1.0
+
+        with patch("custom_components.bermuda.bermuda_device.monotonic_time_coarse", return_value=1000.0):
+            device.calculate_data()
+
+        # Should not raise
+        assert device.zone == "not_home"

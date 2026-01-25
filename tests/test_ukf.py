@@ -634,3 +634,520 @@ class TestLagerraumScenario:
         assert (
             scannerless_result[2] > adjacent_result[2]
         ), f"Scannerless room ({scannerless_result[2]:.4f}) should beat adjacent room ({adjacent_result[2]:.4f})"
+
+
+class TestPurePythonMatrixOperations:
+    """Tests for pure Python matrix operations (NumPy disabled).
+
+    These tests ensure the pure Python fallback implementations work correctly
+    by mocking `is_numpy_available` to return False.
+    """
+
+    def test_cholesky_pure_python_simple(self) -> None:
+        """Test Cholesky decomposition with NumPy disabled."""
+        from unittest.mock import patch
+
+        with patch(
+            "custom_components.bermuda.filters.ukf.is_numpy_available",
+            return_value=False,
+        ):
+            # Simple positive definite matrix
+            a = [[4.0, 2.0], [2.0, 5.0]]
+            lower = _cholesky_decompose(a)
+
+            # Verify: lower @ lower.T should equal original matrix
+            lower_t = _matrix_transpose(lower)
+            reconstructed = _matrix_multiply(lower, lower_t)
+
+            assert abs(reconstructed[0][0] - 4.0) < 1e-5
+            assert abs(reconstructed[0][1] - 2.0) < 1e-5
+            assert abs(reconstructed[1][0] - 2.0) < 1e-5
+            assert abs(reconstructed[1][1] - 5.0) < 1e-5
+
+    def test_cholesky_pure_python_larger_matrix(self) -> None:
+        """Test Cholesky decomposition with 3x3 matrix."""
+        from unittest.mock import patch
+
+        with patch(
+            "custom_components.bermuda.filters.ukf.is_numpy_available",
+            return_value=False,
+        ):
+            # 3x3 positive definite matrix
+            a = [[4.0, 2.0, 1.0], [2.0, 5.0, 2.0], [1.0, 2.0, 6.0]]
+            lower = _cholesky_decompose(a)
+
+            # Verify shape
+            assert len(lower) == 3
+            assert len(lower[0]) == 3
+
+            # Verify it's lower triangular (upper part should be zeros)
+            assert lower[0][1] == 0.0
+            assert lower[0][2] == 0.0
+            assert lower[1][2] == 0.0
+
+    def test_cholesky_pure_python_with_regularization(self) -> None:
+        """Test Cholesky handles near-singular matrix via regularization."""
+        from unittest.mock import patch
+
+        with patch(
+            "custom_components.bermuda.filters.ukf.is_numpy_available",
+            return_value=False,
+        ):
+            # Matrix with very small diagonal element (near singular)
+            a = [[1e-15, 0.0], [0.0, 1.0]]
+            lower = _cholesky_decompose(a)
+
+            # Should not raise, should produce valid lower triangular matrix
+            assert len(lower) == 2
+            assert lower[0][0] > 0  # Should be regularized, not 0
+            assert lower[1][1] > 0
+
+    def test_cholesky_pure_python_near_zero_diagonal_branch(self) -> None:
+        """Test Cholesky handles near-zero lower diagonal for division protection."""
+        from unittest.mock import patch
+
+        with patch(
+            "custom_components.bermuda.filters.ukf.is_numpy_available",
+            return_value=False,
+        ):
+            # Matrix that would produce very small lower[j][j] during decomposition
+            # This tests the abs(lower[j][j]) < MIN_VARIANCE branch
+            a = [[0.001, 0.0], [0.0, 1.0]]
+            lower = _cholesky_decompose(a)
+
+            # Should not raise, should produce valid result
+            assert len(lower) == 2
+            assert lower[1][1] == 1.0
+
+    def test_matrix_multiply_pure_python(self) -> None:
+        """Test matrix multiplication with NumPy disabled."""
+        from unittest.mock import patch
+
+        with patch(
+            "custom_components.bermuda.filters.ukf.is_numpy_available",
+            return_value=False,
+        ):
+            a = [[1.0, 2.0], [3.0, 4.0]]
+            b = [[5.0, 6.0], [7.0, 8.0]]
+            result = _matrix_multiply(a, b)
+
+            assert result == [[19.0, 22.0], [43.0, 50.0]]
+
+    def test_matrix_multiply_pure_python_non_square(self) -> None:
+        """Test matrix multiplication with non-square matrices."""
+        from unittest.mock import patch
+
+        with patch(
+            "custom_components.bermuda.filters.ukf.is_numpy_available",
+            return_value=False,
+        ):
+            # 2x3 @ 3x2 = 2x2
+            a = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]
+            b = [[7.0, 8.0], [9.0, 10.0], [11.0, 12.0]]
+            result = _matrix_multiply(a, b)
+
+            assert len(result) == 2
+            assert len(result[0]) == 2
+            assert result[0][0] == 1 * 7 + 2 * 9 + 3 * 11  # 58
+            assert result[0][1] == 1 * 8 + 2 * 10 + 3 * 12  # 64
+            assert result[1][0] == 4 * 7 + 5 * 9 + 6 * 11  # 139
+            assert result[1][1] == 4 * 8 + 5 * 10 + 6 * 12  # 154
+
+    def test_matrix_inverse_pure_python(self) -> None:
+        """Test matrix inverse with NumPy disabled."""
+        from unittest.mock import patch
+
+        with patch(
+            "custom_components.bermuda.filters.ukf.is_numpy_available",
+            return_value=False,
+        ):
+            a = [[4.0, 7.0], [2.0, 6.0]]
+            inv = _matrix_inverse(a)
+
+            # a @ inv should be identity
+            product = _matrix_multiply(a, inv)
+            assert abs(product[0][0] - 1.0) < 1e-6
+            assert abs(product[0][1]) < 1e-6
+            assert abs(product[1][0]) < 1e-6
+            assert abs(product[1][1] - 1.0) < 1e-6
+
+    def test_matrix_inverse_pure_python_larger(self) -> None:
+        """Test matrix inverse with 3x3 matrix."""
+        from unittest.mock import patch
+
+        with patch(
+            "custom_components.bermuda.filters.ukf.is_numpy_available",
+            return_value=False,
+        ):
+            a = [[2.0, 1.0, 0.0], [1.0, 2.0, 1.0], [0.0, 1.0, 2.0]]
+            inv = _matrix_inverse(a)
+
+            # a @ inv should be identity
+            product = _matrix_multiply(a, inv)
+            for i in range(3):
+                for j in range(3):
+                    expected = 1.0 if i == j else 0.0
+                    assert abs(product[i][j] - expected) < 1e-5
+
+    def test_matrix_inverse_pure_python_near_singular(self) -> None:
+        """Test matrix inverse with near-singular matrix (regularization needed)."""
+        from unittest.mock import patch
+
+        with patch(
+            "custom_components.bermuda.filters.ukf.is_numpy_available",
+            return_value=False,
+        ):
+            # Near-singular matrix
+            a = [[1.0, 2.0], [1.0, 2.0 + 1e-12]]
+            inv = _matrix_inverse(a)
+
+            # Should not raise - regularization should kick in
+            assert len(inv) == 2
+            assert len(inv[0]) == 2
+
+    def test_matrix_inverse_pure_python_pivot_selection(self) -> None:
+        """Test matrix inverse with matrix requiring pivot selection."""
+        from unittest.mock import patch
+
+        with patch(
+            "custom_components.bermuda.filters.ukf.is_numpy_available",
+            return_value=False,
+        ):
+            # Matrix where first column has larger value in second row
+            # This exercises the pivot selection logic
+            a = [[1.0, 2.0], [10.0, 3.0]]
+            inv = _matrix_inverse(a)
+
+            # Verify inverse is correct
+            product = _matrix_multiply(a, inv)
+            assert abs(product[0][0] - 1.0) < 1e-6
+            assert abs(product[0][1]) < 1e-6
+            assert abs(product[1][0]) < 1e-6
+            assert abs(product[1][1] - 1.0) < 1e-6
+
+
+class TestUKFWithPurePython:
+    """Test full UKF functionality with NumPy disabled.
+
+    These tests verify that the UKF works correctly end-to-end
+    when using the pure Python matrix implementations.
+    """
+
+    def test_ukf_update_multi_pure_python(self) -> None:
+        """Test UKF update_multi with NumPy disabled."""
+        from unittest.mock import patch
+
+        with patch(
+            "custom_components.bermuda.filters.ukf.is_numpy_available",
+            return_value=False,
+        ):
+            ukf = UnscentedKalmanFilter(
+                scanner_addresses=["scanner1", "scanner2"]
+            )
+
+            # Update with measurements
+            ukf.update_multi({"scanner1": -70.0, "scanner2": -75.0})
+
+            # State should be updated - access via diagnostics
+            diag = ukf.get_diagnostics()
+            state = diag["state"]
+            assert "scanner1" in state
+            assert "scanner2" in state
+            # Values should be close to measurements after first update
+            assert abs(state["scanner1"] - (-70.0)) < 10
+            assert abs(state["scanner2"] - (-75.0)) < 10
+
+    def test_ukf_predict_pure_python(self) -> None:
+        """Test UKF predict with NumPy disabled."""
+        from unittest.mock import patch
+
+        with patch(
+            "custom_components.bermuda.filters.ukf.is_numpy_available",
+            return_value=False,
+        ):
+            ukf = UnscentedKalmanFilter(
+                scanner_addresses=["scanner1", "scanner2"]
+            )
+
+            # Initialize state
+            ukf.update_multi({"scanner1": -70.0, "scanner2": -75.0})
+
+            # Predict step
+            initial_cov = ukf._p_cov[0][0]
+            ukf.predict(dt=2.0)
+
+            # Covariance should have increased
+            assert ukf._p_cov[0][0] > initial_cov
+
+    def test_ukf_convergence_pure_python(self) -> None:
+        """Test UKF convergence with NumPy disabled."""
+        from unittest.mock import patch
+
+        with patch(
+            "custom_components.bermuda.filters.ukf.is_numpy_available",
+            return_value=False,
+        ):
+            ukf = UnscentedKalmanFilter(
+                scanner_addresses=["scanner1"]
+            )
+
+            # Feed consistent measurements
+            for _ in range(20):
+                ukf.update_multi({"scanner1": -65.0})
+
+            diag = ukf.get_diagnostics()
+            state = diag["state"]
+            # Should converge to measurement value
+            assert abs(state["scanner1"] - (-65.0)) < 2.0
+
+
+class TestNumpyFunctions:
+    """Tests for NumPy accelerated functions in ukf_numpy.py."""
+
+    def test_cholesky_numpy_success(self) -> None:
+        """Test cholesky_numpy with valid positive definite matrix."""
+        from custom_components.bermuda.filters.ukf_numpy import cholesky_numpy, is_numpy_available
+
+        if not is_numpy_available():
+            pytest.skip("NumPy not available")
+
+        matrix = [[4.0, 2.0], [2.0, 5.0]]
+        result = cholesky_numpy(matrix)
+
+        assert result is not None
+        # Verify L @ L.T approximately equals original
+        n = len(result)
+        for i in range(n):
+            for j in range(n):
+                reconstructed = sum(result[i][k] * result[j][k] for k in range(n))
+                # Allow small tolerance for regularization
+                assert abs(reconstructed - matrix[i][j]) < 0.01
+
+    def test_cholesky_numpy_singular_matrix(self) -> None:
+        """Test cholesky_numpy with singular matrix returns None."""
+        from custom_components.bermuda.filters.ukf_numpy import cholesky_numpy, is_numpy_available
+
+        if not is_numpy_available():
+            pytest.skip("NumPy not available")
+
+        # Near-singular matrix (regularization may save it, but highly singular should fail)
+        # Create a matrix that's definitely not positive definite
+        matrix = [[1.0, 0.0], [0.0, -1.0]]  # Negative eigenvalue
+        result = cholesky_numpy(matrix)
+        assert result is None
+
+    def test_matrix_inverse_numpy_success(self) -> None:
+        """Test matrix_inverse_numpy with invertible matrix."""
+        from custom_components.bermuda.filters.ukf_numpy import (
+            is_numpy_available,
+            matrix_inverse_numpy,
+        )
+
+        if not is_numpy_available():
+            pytest.skip("NumPy not available")
+
+        matrix = [[4.0, 2.0], [1.0, 3.0]]
+        result = matrix_inverse_numpy(matrix)
+
+        assert result is not None
+        # Verify A @ A^-1 approximately equals identity
+        n = len(result)
+        for i in range(n):
+            for j in range(n):
+                product = sum(matrix[i][k] * result[k][j] for k in range(n))
+                expected = 1.0 if i == j else 0.0
+                assert abs(product - expected) < 0.01
+
+    def test_matrix_inverse_numpy_singular(self) -> None:
+        """Test matrix_inverse_numpy with singular matrix."""
+        from custom_components.bermuda.filters.ukf_numpy import (
+            is_numpy_available,
+            matrix_inverse_numpy,
+        )
+
+        if not is_numpy_available():
+            pytest.skip("NumPy not available")
+
+        # Highly singular matrix (row of zeros)
+        matrix = [[0.0, 0.0], [0.0, 0.0]]
+        result = matrix_inverse_numpy(matrix)
+        # With regularization it might succeed, but the result should be handled
+        # The function adds 1e-6 regularization, so this will actually work
+        assert result is not None  # regularization saves it
+
+    def test_mahalanobis_distance_numpy(self) -> None:
+        """Test mahalanobis_distance_numpy calculation."""
+        from custom_components.bermuda.filters.ukf_numpy import (
+            is_numpy_available,
+            mahalanobis_distance_numpy,
+        )
+
+        if not is_numpy_available():
+            pytest.skip("NumPy not available")
+
+        diff = [1.0, 2.0]
+        cov_inv = [[1.0, 0.0], [0.0, 1.0]]  # Identity matrix
+
+        result = mahalanobis_distance_numpy(diff, cov_inv)
+
+        assert result is not None
+        # D² = diff.T @ I @ diff = 1² + 2² = 5
+        assert abs(result - 5.0) < 0.001
+
+    def test_matrix_multiply_numpy(self) -> None:
+        """Test matrix_multiply_numpy."""
+        from custom_components.bermuda.filters.ukf_numpy import (
+            is_numpy_available,
+            matrix_multiply_numpy,
+        )
+
+        if not is_numpy_available():
+            pytest.skip("NumPy not available")
+
+        a = [[1.0, 2.0], [3.0, 4.0]]
+        b = [[5.0, 6.0], [7.0, 8.0]]
+
+        result = matrix_multiply_numpy(a, b)
+
+        assert result is not None
+        # Expected: [[1*5+2*7, 1*6+2*8], [3*5+4*7, 3*6+4*8]] = [[19, 22], [43, 50]]
+        assert abs(result[0][0] - 19.0) < 0.001
+        assert abs(result[0][1] - 22.0) < 0.001
+        assert abs(result[1][0] - 43.0) < 0.001
+        assert abs(result[1][1] - 50.0) < 0.001
+
+    def test_outer_product_numpy(self) -> None:
+        """Test outer_product_numpy."""
+        from custom_components.bermuda.filters.ukf_numpy import (
+            is_numpy_available,
+            outer_product_numpy,
+        )
+
+        if not is_numpy_available():
+            pytest.skip("NumPy not available")
+
+        a = [1.0, 2.0, 3.0]
+        b = [4.0, 5.0]
+
+        result = outer_product_numpy(a, b)
+
+        assert result is not None
+        # Expected: [[1*4, 1*5], [2*4, 2*5], [3*4, 3*5]] = [[4, 5], [8, 10], [12, 15]]
+        assert len(result) == 3
+        assert len(result[0]) == 2
+        assert abs(result[0][0] - 4.0) < 0.001
+        assert abs(result[1][0] - 8.0) < 0.001
+        assert abs(result[2][1] - 15.0) < 0.001
+
+    def test_sigma_points_numpy_success(self) -> None:
+        """Test sigma_points_numpy generation."""
+        from custom_components.bermuda.filters.ukf_numpy import (
+            is_numpy_available,
+            sigma_points_numpy,
+        )
+
+        if not is_numpy_available():
+            pytest.skip("NumPy not available")
+
+        x = [-70.0, -75.0]
+        p_cov = [[4.0, 0.0], [0.0, 4.0]]
+        gamma = 2.0
+
+        result = sigma_points_numpy(x, p_cov, gamma)
+
+        assert result is not None
+        # Should have 2n+1 = 5 sigma points
+        assert len(result) == 5
+        # First sigma point should be the mean
+        assert abs(result[0][0] - (-70.0)) < 0.01
+        assert abs(result[0][1] - (-75.0)) < 0.01
+
+    def test_sigma_points_numpy_singular_matrix(self) -> None:
+        """Test sigma_points_numpy with non-positive definite matrix."""
+        from custom_components.bermuda.filters.ukf_numpy import (
+            is_numpy_available,
+            sigma_points_numpy,
+        )
+
+        if not is_numpy_available():
+            pytest.skip("NumPy not available")
+
+        x = [-70.0, -75.0]
+        # Not positive definite matrix
+        p_cov = [[1.0, 0.0], [0.0, -1.0]]
+        gamma = 2.0
+
+        result = sigma_points_numpy(x, p_cov, gamma)
+        assert result is None
+
+    def test_is_numpy_available(self) -> None:
+        """Test is_numpy_available returns True when numpy is installed."""
+        from custom_components.bermuda.filters.ukf_numpy import is_numpy_available
+
+        # NumPy should be available in the test environment
+        assert is_numpy_available() is True
+
+
+class TestNumpyFunctionsWithMocking:
+    """Tests for NumPy functions when NumPy is unavailable."""
+
+    def test_cholesky_numpy_no_numpy(self) -> None:
+        """Test cholesky_numpy returns None when NumPy unavailable."""
+        from unittest.mock import patch
+
+        with patch("custom_components.bermuda.filters.ukf_numpy._get_numpy", return_value=None):
+            from custom_components.bermuda.filters import ukf_numpy
+
+            # Force reimport to get patched version
+            result = ukf_numpy.cholesky_numpy([[1.0, 0.0], [0.0, 1.0]])
+            assert result is None
+
+    def test_matrix_inverse_numpy_no_numpy(self) -> None:
+        """Test matrix_inverse_numpy returns None when NumPy unavailable."""
+        from unittest.mock import patch
+
+        with patch("custom_components.bermuda.filters.ukf_numpy._get_numpy", return_value=None):
+            from custom_components.bermuda.filters import ukf_numpy
+
+            result = ukf_numpy.matrix_inverse_numpy([[1.0, 0.0], [0.0, 1.0]])
+            assert result is None
+
+    def test_mahalanobis_distance_numpy_no_numpy(self) -> None:
+        """Test mahalanobis_distance_numpy returns None when NumPy unavailable."""
+        from unittest.mock import patch
+
+        with patch("custom_components.bermuda.filters.ukf_numpy._get_numpy", return_value=None):
+            from custom_components.bermuda.filters import ukf_numpy
+
+            result = ukf_numpy.mahalanobis_distance_numpy([1.0], [[1.0]])
+            assert result is None
+
+    def test_matrix_multiply_numpy_no_numpy(self) -> None:
+        """Test matrix_multiply_numpy returns None when NumPy unavailable."""
+        from unittest.mock import patch
+
+        with patch("custom_components.bermuda.filters.ukf_numpy._get_numpy", return_value=None):
+            from custom_components.bermuda.filters import ukf_numpy
+
+            result = ukf_numpy.matrix_multiply_numpy([[1.0]], [[1.0]])
+            assert result is None
+
+    def test_outer_product_numpy_no_numpy(self) -> None:
+        """Test outer_product_numpy returns None when NumPy unavailable."""
+        from unittest.mock import patch
+
+        with patch("custom_components.bermuda.filters.ukf_numpy._get_numpy", return_value=None):
+            from custom_components.bermuda.filters import ukf_numpy
+
+            result = ukf_numpy.outer_product_numpy([1.0], [1.0])
+            assert result is None
+
+    def test_sigma_points_numpy_no_numpy(self) -> None:
+        """Test sigma_points_numpy returns None when NumPy unavailable."""
+        from unittest.mock import patch
+
+        with patch("custom_components.bermuda.filters.ukf_numpy._get_numpy", return_value=None):
+            from custom_components.bermuda.filters import ukf_numpy
+
+            result = ukf_numpy.sigma_points_numpy([1.0], [[1.0]], 1.0)
+            assert result is None

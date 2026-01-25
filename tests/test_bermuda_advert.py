@@ -651,3 +651,273 @@ class TestConfigOptionsDynamicReading:
         assert (
             advert.conf_rssi_offset == 20
         ), "Advert should see updated RSSI offset after shared options dict is modified"
+
+
+class TestBermudaAdvertEdgeCases:
+    """Tests for edge cases in BermudaAdvert."""
+
+    def test_hash_method(self, bermuda_advert: BermudaAdvert) -> None:
+        """Test __hash__ method returns consistent hash for device/scanner pair."""
+        h1 = hash(bermuda_advert)
+        h2 = hash(bermuda_advert)
+        assert h1 == h2
+
+    def test_median_rssi_with_no_history(self, bermuda_advert: BermudaAdvert) -> None:
+        """Test median_rssi falls back to current rssi when no history."""
+        bermuda_advert.hist_rssi_by_interval = []
+        bermuda_advert.rssi = -75
+        result = bermuda_advert.median_rssi()
+        assert result == -75
+
+    def test_median_rssi_with_history(self, bermuda_advert: BermudaAdvert) -> None:
+        """Test median_rssi calculates median correctly."""
+        bermuda_advert.hist_rssi_by_interval = [-70, -75, -80, -65, -72]
+        result = bermuda_advert.median_rssi()
+        # Sorted: [-80, -75, -72, -70, -65] -> median is -72
+        assert result == -72
+
+    def test_median_rssi_even_count(self, bermuda_advert: BermudaAdvert) -> None:
+        """Test median_rssi with even number of samples."""
+        bermuda_advert.hist_rssi_by_interval = [-70, -75, -80, -65]
+        result = bermuda_advert.median_rssi()
+        # Sorted: [-80, -75, -70, -65] -> median is (-75 + -70) / 2 = -72.5
+        assert result == -72.5
+
+    def test_get_effective_ref_power_device_calibrated(self, bermuda_advert: BermudaAdvert) -> None:
+        """Test _get_effective_ref_power uses device-calibrated value."""
+        bermuda_advert.ref_power = -55
+        ref_power, source = bermuda_advert._get_effective_ref_power()
+        assert ref_power == -55
+        assert source == "device-calibrated"
+
+    def test_get_effective_ref_power_beacon_power(self, bermuda_advert: BermudaAdvert) -> None:
+        """Test _get_effective_ref_power uses iBeacon beacon_power."""
+        bermuda_advert.ref_power = 0  # Not calibrated
+        bermuda_advert._device.beacon_power = -60
+        ref_power, source = bermuda_advert._get_effective_ref_power()
+        assert ref_power == -60
+        assert source == "iBeacon beacon_power"
+
+    def test_get_effective_ref_power_global_config(self, bermuda_advert: BermudaAdvert) -> None:
+        """Test _get_effective_ref_power uses global config default."""
+        bermuda_advert.ref_power = 0  # Not calibrated
+        bermuda_advert._device.beacon_power = None  # No beacon power
+        ref_power, source = bermuda_advert._get_effective_ref_power()
+        assert ref_power == -59  # from options CONF_REF_POWER
+        assert source == "global config default"
+
+    def test_get_effective_ref_power_fallback_default(self, bermuda_advert: BermudaAdvert) -> None:
+        """Test _get_effective_ref_power uses DEFAULT_REF_POWER when no config."""
+        bermuda_advert.ref_power = 0
+        bermuda_advert._device.beacon_power = None
+        bermuda_advert.options[CONF_REF_POWER] = None  # No global config
+        ref_power, source = bermuda_advert._get_effective_ref_power()
+        assert source == "global config default"
+
+    def test_update_raw_distance_none_rssi(self, bermuda_advert: BermudaAdvert) -> None:
+        """Test _update_raw_distance with None rssi returns DISTANCE_INFINITE."""
+        from custom_components.bermuda.const import DISTANCE_INFINITE
+
+        bermuda_advert.rssi = None
+        result = bermuda_advert._update_raw_distance(reading_is_new=True)
+        assert result == DISTANCE_INFINITE
+        assert bermuda_advert.rssi_distance_raw == DISTANCE_INFINITE
+
+    def test_update_raw_distance_not_new_reading(self, bermuda_advert: BermudaAdvert) -> None:
+        """Test _update_raw_distance with reading_is_new=False."""
+        bermuda_advert.rssi = -70
+        bermuda_advert.rssi_distance = 5.0
+        bermuda_advert.hist_distance = [5.0]
+        bermuda_advert.hist_distance_by_interval = [5.0]
+        # Force Kalman filter to be initialized
+        bermuda_advert.rssi_kalman.update(-70)
+
+        result = bermuda_advert._update_raw_distance(reading_is_new=False)
+        assert result is not None
+
+    def test_set_ref_power_same_value_no_reset(self, bermuda_advert: BermudaAdvert) -> None:
+        """Test set_ref_power with same value doesn't reset history."""
+        current_ref_power = bermuda_advert.ref_power
+        bermuda_advert.hist_distance = [5.0, 4.5, 5.2]
+
+        result = bermuda_advert.set_ref_power(current_ref_power)
+        # Should return current distance without resetting history
+        assert result == bermuda_advert.rssi_distance_raw
+        assert len(bermuda_advert.hist_distance) == 3  # Not cleared
+
+    def test_calculate_data_velocity_acceptable(self, bermuda_advert: BermudaAdvert) -> None:
+        """Test calculate_data with acceptable velocity."""
+        bermuda_advert.hist_stamp = [100.0, 99.0, 98.0]
+        bermuda_advert.hist_distance = [5.0, 5.1, 5.2]
+        bermuda_advert.new_stamp = 101.0
+        bermuda_advert.stamp = 100.0
+        bermuda_advert.rssi_distance_raw = 4.9  # Small change = low velocity
+        bermuda_advert.rssi_distance = 5.0
+
+        bermuda_advert.calculate_data()
+
+        # Velocity should be acceptable, measurement accepted
+        assert bermuda_advert.velocity_blocked_count == 0
+
+    def test_clear_stale_history(self, bermuda_advert: BermudaAdvert) -> None:
+        """Test _clear_stale_history clears all distance-related history."""
+        bermuda_advert.rssi_distance = 5.0
+        bermuda_advert.rssi_filtered = -70.0
+        bermuda_advert.hist_distance_by_interval = [5.0, 4.9, 5.1]
+        bermuda_advert.hist_rssi_by_interval = [-70, -71, -69]
+        bermuda_advert.hist_distance = [5.0, 4.9, 5.1]
+        bermuda_advert.hist_stamp = [100.0, 99.0, 98.0]
+        bermuda_advert.hist_velocity = [0.1, 0.2]
+
+        bermuda_advert._clear_stale_history()
+
+        assert bermuda_advert.rssi_distance is None
+        assert bermuda_advert.rssi_filtered is None
+        assert len(bermuda_advert.hist_distance_by_interval) == 0
+        assert len(bermuda_advert.hist_rssi_by_interval) == 0
+        assert len(bermuda_advert.hist_distance) == 0
+        assert len(bermuda_advert.hist_stamp) == 0
+        assert len(bermuda_advert.hist_velocity) == 0
+
+
+class TestUpdateAdvertisementEdgeCases:
+    """Tests for update_advertisement edge cases."""
+
+    def test_update_advertisement_different_scanner(
+        self,
+        bermuda_advert: BermudaAdvert,
+        mock_advertisement_data: MagicMock,
+    ) -> None:
+        """Test update_advertisement replaces scanner when different."""
+        new_scanner = MagicMock()
+        new_scanner.address = normalize_mac("22:33:44:55:66:77")
+        new_scanner.name = "New Scanner"
+        new_scanner.area_id = "new_room"
+        new_scanner.area_name = "New Room"
+        new_scanner.is_remote_scanner = True
+        new_scanner.last_seen = 0.0
+        new_scanner.async_as_scanner_get_stamp.return_value = 200.0
+
+        with patch("custom_components.bermuda.bermuda_advert.monotonic_time_coarse", return_value=201.0):
+            bermuda_advert.update_advertisement(mock_advertisement_data, new_scanner)
+
+        # Scanner should be replaced
+        assert bermuda_advert.scanner_device == new_scanner
+
+    def test_update_advertisement_area_updated(
+        self,
+        bermuda_advert: BermudaAdvert,
+        mock_advertisement_data: MagicMock,
+        mock_scanner_device: MagicMock,
+    ) -> None:
+        """Test update_advertisement updates area from scanner."""
+        # Change scanner's area
+        mock_scanner_device.area_id = "new_area"
+        mock_scanner_device.area_name = "New Area"
+        mock_scanner_device.async_as_scanner_get_stamp.return_value = 200.0
+
+        with patch("custom_components.bermuda.bermuda_advert.monotonic_time_coarse", return_value=201.0):
+            bermuda_advert.update_advertisement(mock_advertisement_data, mock_scanner_device)
+
+        assert bermuda_advert.area_id == "new_area"
+        assert bermuda_advert.area_name == "New Area"
+
+    def test_update_advertisement_local_scanner_no_stamps(
+        self,
+        mock_parent_device: MagicMock,
+        mock_advertisement_data: MagicMock,
+    ) -> None:
+        """Test update_advertisement with local (non-remote) scanner."""
+        scanner = MagicMock()
+        scanner.address = normalize_mac("11:22:33:44:55:66")
+        scanner.name = "Local Scanner"
+        scanner.area_id = "local_room"
+        scanner.area_name = "Local Room"
+        scanner.is_remote_scanner = False  # Local scanner
+        scanner.last_seen = 0.0
+
+        options: dict[str, Any] = {
+            CONF_RSSI_OFFSETS: {},
+            CONF_REF_POWER: -59,
+            CONF_ATTENUATION: 2.0,
+            CONF_MAX_VELOCITY: 3.0,
+            CONF_SMOOTHING_SAMPLES: 5,
+        }
+
+        with patch("custom_components.bermuda.bermuda_advert.monotonic_time_coarse", return_value=100.0):
+            advert = BermudaAdvert(
+                parent_device=mock_parent_device,
+                advertisementdata=mock_advertisement_data,
+                options=options,
+                scanner_device=scanner,
+            )
+
+        assert advert.scanner_sends_stamps is False
+
+    def test_update_advertisement_stale_stamp_ignored(
+        self,
+        bermuda_advert: BermudaAdvert,
+        mock_advertisement_data: MagicMock,
+        mock_scanner_device: MagicMock,
+    ) -> None:
+        """Test update_advertisement ignores older stamp."""
+        bermuda_advert.stamp = 150.0  # Current stamp is newer
+        mock_scanner_device.async_as_scanner_get_stamp.return_value = 100.0  # Older stamp
+
+        with patch("custom_components.bermuda.bermuda_advert.monotonic_time_coarse", return_value=155.0):
+            bermuda_advert.update_advertisement(mock_advertisement_data, mock_scanner_device)
+
+        # Stamp should not be updated
+        assert bermuda_advert.stamp == 150.0
+
+    def test_update_advertisement_future_stamp_ignored(
+        self,
+        bermuda_advert: BermudaAdvert,
+        mock_advertisement_data: MagicMock,
+        mock_scanner_device: MagicMock,
+    ) -> None:
+        """Test update_advertisement ignores future stamp."""
+        mock_scanner_device.async_as_scanner_get_stamp.return_value = 200.0  # Future stamp
+        bermuda_advert.stamp = 100.0
+
+        # Current time is much earlier than the stamp
+        with patch("custom_components.bermuda.bermuda_advert.monotonic_time_coarse", return_value=100.0):
+            bermuda_advert.update_advertisement(mock_advertisement_data, mock_scanner_device)
+
+        # Stale update count should increase
+        assert bermuda_advert.stale_update_count > 0
+
+
+class TestComputeSmoothedDistance:
+    """Tests for _compute_smoothed_distance method."""
+
+    def test_compute_smoothed_distance_with_kalman(self, bermuda_advert: BermudaAdvert) -> None:
+        """Test _compute_smoothed_distance uses Kalman-filtered RSSI."""
+        bermuda_advert.rssi_filtered = -65.0
+        result = bermuda_advert._compute_smoothed_distance()
+        assert result is not None
+        assert result > 0
+
+    def test_compute_smoothed_distance_fallback_median(self, bermuda_advert: BermudaAdvert) -> None:
+        """Test _compute_smoothed_distance falls back to median."""
+        bermuda_advert.rssi_filtered = None
+        bermuda_advert.hist_distance_by_interval = [4.0, 5.0, 6.0, 4.5, 5.5]
+        result = bermuda_advert._compute_smoothed_distance()
+        # Median of sorted [4.0, 4.5, 5.0, 5.5, 6.0] is 5.0
+        assert result == 5.0
+
+    def test_compute_smoothed_distance_fallback_raw(self, bermuda_advert: BermudaAdvert) -> None:
+        """Test _compute_smoothed_distance falls back to raw distance."""
+        bermuda_advert.rssi_filtered = None
+        bermuda_advert.hist_distance_by_interval = []
+        bermuda_advert.rssi_distance_raw = 7.5
+        result = bermuda_advert._compute_smoothed_distance()
+        assert result == 7.5
+
+    def test_compute_smoothed_distance_even_history(self, bermuda_advert: BermudaAdvert) -> None:
+        """Test _compute_smoothed_distance median with even count."""
+        bermuda_advert.rssi_filtered = None
+        bermuda_advert.hist_distance_by_interval = [4.0, 5.0, 6.0, 7.0]
+        result = bermuda_advert._compute_smoothed_distance()
+        # Median of [4.0, 5.0, 6.0, 7.0] is (5.0 + 6.0) / 2 = 5.5
+        assert result == 5.5

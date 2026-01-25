@@ -439,9 +439,9 @@ class AreaProfile:
         # Restore delta correlations
         for corr_data in data.get("correlations", []):
             corr = ScannerPairCorrelation.from_dict(corr_data)
-            profile._correlations[corr.scanner_address] = corr  # noqa: SLF001
+            profile._correlations[corr.scanner_address] = corr
         # Restore absolute profiles
         for profile_data in data.get("absolute_profiles", []):
             abs_profile = ScannerAbsoluteRssi.from_dict(profile_data)
-            profile._absolute_profiles[abs_profile.scanner_address] = abs_profile  # noqa: SLF001
+            profile._absolute_profiles[abs_profile.scanner_address] = abs_profile
         return profile

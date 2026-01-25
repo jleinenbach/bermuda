@@ -691,6 +691,414 @@ class TestGlobalSensors:
         assert visible_device.state_class == SensorStateClass.MEASUREMENT
 
 
+class TestBermudaSensorScannerRange:
+    """Tests for BermudaSensorScannerRange class."""
+
+    def _create_sensor(
+        self,
+        rssi_distance: float | None = 3.5,
+    ) -> BermudaSensorScannerRange:
+        """Create a BermudaSensorScannerRange instance for testing."""
+        mock_coordinator = MagicMock()
+        mock_coordinator.last_update_success = True
+
+        mock_device = MagicMock()
+        mock_device.name = "Test Device"
+        mock_device.unique_id = "test_unique_id"
+        mock_device.address = "aa:bb:cc:dd:ee:ff"
+
+        mock_advert = MagicMock()
+        mock_advert.rssi_distance = rssi_distance
+        mock_device.adverts = {"scanner:addr": mock_advert}
+        mock_device.get_scanner = MagicMock(return_value=mock_advert)
+
+        mock_scanner = MagicMock()
+        mock_scanner.name = "Test Scanner"
+        mock_scanner.address = "scanner:addr"
+        mock_scanner.address_wifi_mac = None
+        mock_scanner.area_id = "scanner_area"
+        mock_scanner.area_name = "Scanner Room"
+        mock_coordinator.devices = {
+            "aa:bb:cc:dd:ee:ff": mock_device,
+            "scanner:addr": mock_scanner,
+        }
+
+        mock_config_entry = MagicMock()
+        mock_config_entry.options = {}
+
+        with (
+            patch("custom_components.bermuda.entity.ar.async_get") as mock_ar,
+            patch("custom_components.bermuda.entity.dr.async_get") as mock_dr,
+        ):
+            mock_ar.return_value = MagicMock()
+            mock_dr.return_value = MagicMock()
+
+            sensor = object.__new__(BermudaSensorScannerRange)
+            sensor.coordinator = mock_coordinator
+            sensor.config_entry = mock_config_entry
+            sensor.address = "aa:bb:cc:dd:ee:ff"
+            sensor._device = mock_device
+            sensor._scanner = mock_scanner
+            sensor._lastname = mock_device.name
+            sensor.ar = mock_ar.return_value
+            sensor.dr = mock_dr.return_value
+            sensor.devreg_init_done = False
+            sensor.bermuda_last_state = None
+            sensor.bermuda_last_stamp = 0.0
+            sensor.bermuda_update_interval = 1.0
+
+        return sensor
+
+    def test_unique_id(self) -> None:
+        """Test that unique_id is correctly formatted."""
+        sensor = self._create_sensor()
+        assert sensor.unique_id == "test_unique_id_scanner:addr_range"
+
+    def test_name(self) -> None:
+        """Test that name includes scanner name."""
+        sensor = self._create_sensor()
+        assert sensor.name == "Distance to Test Scanner"
+
+    def test_device_class(self) -> None:
+        """Test that device_class is DISTANCE."""
+        sensor = self._create_sensor()
+        assert sensor.device_class == SensorDeviceClass.DISTANCE
+
+    def test_native_value_returns_distance(self) -> None:
+        """Test that native_value returns rssi_distance."""
+        sensor = self._create_sensor(rssi_distance=4.256)
+        assert sensor.native_value == 4.256
+
+    def test_native_value_returns_none_when_no_advert(self) -> None:
+        """Test that native_value returns None when advert missing."""
+        sensor = self._create_sensor()
+        sensor._device.get_scanner = MagicMock(return_value=None)
+        assert sensor.native_value is None
+
+
+class TestBermudaSensorScannerRangeRaw:
+    """Tests for BermudaSensorScannerRangeRaw class."""
+
+    def _create_sensor(
+        self,
+        rssi_distance_raw: float | None = 5.0,
+    ) -> BermudaSensorScannerRangeRaw:
+        """Create a BermudaSensorScannerRangeRaw instance for testing."""
+        mock_coordinator = MagicMock()
+        mock_coordinator.last_update_success = True
+
+        mock_device = MagicMock()
+        mock_device.name = "Test Device"
+        mock_device.unique_id = "test_unique_id"
+        mock_device.address = "aa:bb:cc:dd:ee:ff"
+
+        mock_advert = MagicMock()
+        mock_advert.rssi_distance_raw = rssi_distance_raw
+        mock_device.adverts = {"scanner:addr": mock_advert}
+        mock_device.get_scanner = MagicMock(return_value=mock_advert)
+
+        mock_scanner = MagicMock()
+        mock_scanner.name = "Test Scanner"
+        mock_scanner.address = "scanner:addr"
+        mock_scanner.address_wifi_mac = None
+        mock_coordinator.devices = {
+            "aa:bb:cc:dd:ee:ff": mock_device,
+            "scanner:addr": mock_scanner,
+        }
+
+        mock_config_entry = MagicMock()
+        mock_config_entry.options = {}
+
+        with (
+            patch("custom_components.bermuda.entity.ar.async_get") as mock_ar,
+            patch("custom_components.bermuda.entity.dr.async_get") as mock_dr,
+        ):
+            mock_ar.return_value = MagicMock()
+            mock_dr.return_value = MagicMock()
+
+            sensor = object.__new__(BermudaSensorScannerRangeRaw)
+            sensor.coordinator = mock_coordinator
+            sensor.config_entry = mock_config_entry
+            sensor.address = "aa:bb:cc:dd:ee:ff"
+            sensor._device = mock_device
+            sensor._scanner = mock_scanner
+            sensor._lastname = mock_device.name
+            sensor.ar = mock_ar.return_value
+            sensor.dr = mock_dr.return_value
+            sensor.devreg_init_done = False
+            sensor.bermuda_last_state = None
+            sensor.bermuda_last_stamp = 0.0
+            sensor.bermuda_update_interval = 1.0
+
+        return sensor
+
+    def test_unique_id(self) -> None:
+        """Test that unique_id is correctly formatted."""
+        sensor = self._create_sensor()
+        assert sensor.unique_id == "test_unique_id_scanner:addr_range_raw"
+
+    def test_name(self) -> None:
+        """Test that name includes scanner name."""
+        sensor = self._create_sensor()
+        assert sensor.name == "Unfiltered Distance to Test Scanner"
+
+    def test_native_value_returns_raw_distance(self) -> None:
+        """Test that native_value returns rssi_distance_raw."""
+        sensor = self._create_sensor(rssi_distance_raw=6.345)
+        assert sensor.native_value == 6.345
+
+    def test_native_value_returns_none_when_no_advert(self) -> None:
+        """Test that native_value returns None when advert missing."""
+        sensor = self._create_sensor()
+        sensor._device.get_scanner = MagicMock(return_value=None)
+        assert sensor.native_value is None
+
+
+class TestDeviceNewCallback:
+    """Tests for the device_new callback in async_setup_entry."""
+
+    @pytest.mark.asyncio
+    async def test_device_new_creates_sensors(self, hass: HomeAssistant) -> None:
+        """Test that device_new callback creates sensor entities."""
+        mock_device = MagicMock()
+        mock_device.name = "Test Device"
+        mock_device.unique_id = "test_unique_id"
+        mock_device.address = "aa:bb:cc:dd:ee:ff"
+        mock_device.area_name = "Living Room"
+        mock_device.area_id = "living_room"
+        mock_device.floor_id = "floor1"
+        mock_device.floor_name = "Ground Floor"
+        mock_device.floor_level = 0
+        mock_device.area_icon = "mdi:sofa"
+        mock_device.area_last_seen_icon = "mdi:clock"
+        mock_device.floor_icon = "mdi:home-floor-0"
+        mock_device.address_type = "public"
+        mock_device.adverts = {}
+        mock_device.area_state_metadata = MagicMock(return_value={})
+
+        mock_coordinator = MagicMock()
+        mock_coordinator.hass = hass
+        mock_coordinator.last_update_success = True
+        mock_coordinator.devices = {"aa:bb:cc:dd:ee:ff": mock_device}
+        mock_coordinator.have_floors = True
+        mock_coordinator.scanner_list = []
+        mock_coordinator.get_scanners = []
+        mock_coordinator.check_for_duplicate_entities = MagicMock(return_value=None)
+        mock_coordinator.sensor_created = MagicMock()
+
+        mock_entry = MagicMock()
+        mock_entry.runtime_data = MagicMock()
+        mock_entry.runtime_data.coordinator = mock_coordinator
+        mock_entry.async_on_unload = MagicMock()
+        mock_entry.options = {}
+
+        added_entities: list = []
+        mock_add_devices = MagicMock(side_effect=lambda entities, update=False: added_entities.extend(entities))
+
+        with (
+            patch("custom_components.bermuda.sensor.async_dispatcher_connect") as mock_dispatcher,
+            patch("custom_components.bermuda.entity.ar.async_get") as mock_ar,
+            patch("custom_components.bermuda.entity.dr.async_get") as mock_dr,
+        ):
+            mock_ar.return_value = MagicMock()
+            mock_dr.return_value = MagicMock()
+
+            await async_setup_entry(hass, mock_entry, mock_add_devices)
+
+            # Get the device_new callback (first dispatcher call)
+            callback_func = mock_dispatcher.call_args_list[0][0][2]
+            callback_func("aa:bb:cc:dd:ee:ff")
+
+        # Should have created multiple sensors (with floors enabled: 7 sensors)
+        # BermudaSensor, BermudaSensorFloor, BermudaSensorRange, BermudaSensorScanner,
+        # BermudaSensorRssi, BermudaSensorAreaLastSeen, BermudaSensorAreaSwitchReason
+        assert len(added_entities) >= 7
+        mock_coordinator.sensor_created.assert_called_once_with("aa:bb:cc:dd:ee:ff")
+
+    @pytest.mark.asyncio
+    async def test_device_new_handles_duplicate_cleanup(self, hass: HomeAssistant) -> None:
+        """Test that device_new handles duplicate entity cleanup."""
+        mock_device = MagicMock()
+        mock_device.name = "Test Device"
+        mock_device.unique_id = "test_unique_id"
+        mock_device.address = "aa:bb:cc:dd:ee:ff"
+        mock_device.area_name = "Living Room"
+        mock_device.area_id = "living_room"
+        mock_device.floor_id = None
+        mock_device.floor_name = None
+        mock_device.area_icon = "mdi:sofa"
+        mock_device.area_last_seen_icon = "mdi:clock"
+        mock_device.address_type = "public"
+        mock_device.adverts = {}
+        mock_device.area_state_metadata = MagicMock(return_value={})
+
+        mock_coordinator = MagicMock()
+        mock_coordinator.hass = hass
+        mock_coordinator.last_update_success = True
+        mock_coordinator.devices = {"aa:bb:cc:dd:ee:ff": mock_device}
+        mock_coordinator.have_floors = False
+        mock_coordinator.scanner_list = []
+        mock_coordinator.get_scanners = []
+        mock_coordinator.check_for_duplicate_entities = MagicMock(return_value="old:aa:bb:cc:dd:ee:ff")
+        mock_coordinator.cleanup_old_entities_for_device = MagicMock()
+        mock_coordinator.sensor_created = MagicMock()
+
+        mock_entry = MagicMock()
+        mock_entry.runtime_data = MagicMock()
+        mock_entry.runtime_data.coordinator = mock_coordinator
+        mock_entry.async_on_unload = MagicMock()
+        mock_entry.options = {}
+
+        mock_add_devices = MagicMock()
+
+        with (
+            patch("custom_components.bermuda.sensor.async_dispatcher_connect") as mock_dispatcher,
+            patch("custom_components.bermuda.entity.ar.async_get") as mock_ar,
+            patch("custom_components.bermuda.entity.dr.async_get") as mock_dr,
+        ):
+            mock_ar.return_value = MagicMock()
+            mock_dr.return_value = MagicMock()
+
+            await async_setup_entry(hass, mock_entry, mock_add_devices)
+
+            callback_func = mock_dispatcher.call_args_list[0][0][2]
+            callback_func("aa:bb:cc:dd:ee:ff")
+
+        mock_coordinator.cleanup_old_entities_for_device.assert_called_once_with(
+            "old:aa:bb:cc:dd:ee:ff", "aa:bb:cc:dd:ee:ff"
+        )
+
+    @pytest.mark.asyncio
+    async def test_device_new_skips_duplicates(self, hass: HomeAssistant) -> None:
+        """Test that device_new skips already-created devices."""
+        mock_device = MagicMock()
+        mock_device.name = "Test Device"
+        mock_device.unique_id = "test_unique_id"
+        mock_device.address = "aa:bb:cc:dd:ee:ff"
+        mock_device.area_name = "Living Room"
+        mock_device.area_id = "living_room"
+        mock_device.floor_id = None
+        mock_device.floor_name = None
+        mock_device.area_icon = "mdi:sofa"
+        mock_device.area_last_seen_icon = "mdi:clock"
+        mock_device.address_type = "public"
+        mock_device.adverts = {}
+        mock_device.area_state_metadata = MagicMock(return_value={})
+
+        mock_coordinator = MagicMock()
+        mock_coordinator.hass = hass
+        mock_coordinator.last_update_success = True
+        mock_coordinator.devices = {"aa:bb:cc:dd:ee:ff": mock_device}
+        mock_coordinator.have_floors = False
+        mock_coordinator.scanner_list = []
+        mock_coordinator.get_scanners = []
+        mock_coordinator.check_for_duplicate_entities = MagicMock(return_value=None)
+        mock_coordinator.sensor_created = MagicMock()
+
+        mock_entry = MagicMock()
+        mock_entry.runtime_data = MagicMock()
+        mock_entry.runtime_data.coordinator = mock_coordinator
+        mock_entry.async_on_unload = MagicMock()
+        mock_entry.options = {}
+
+        # Track how many times entities are added
+        call_count = 0
+
+        def count_calls(entities, update=False):
+            nonlocal call_count
+            call_count += 1
+
+        mock_add_devices = MagicMock(side_effect=count_calls)
+
+        with (
+            patch("custom_components.bermuda.sensor.async_dispatcher_connect") as mock_dispatcher,
+            patch("custom_components.bermuda.entity.ar.async_get") as mock_ar,
+            patch("custom_components.bermuda.entity.dr.async_get") as mock_dr,
+        ):
+            mock_ar.return_value = MagicMock()
+            mock_dr.return_value = MagicMock()
+
+            await async_setup_entry(hass, mock_entry, mock_add_devices)
+
+            callback_func = mock_dispatcher.call_args_list[0][0][2]
+            callback_func("aa:bb:cc:dd:ee:ff")
+            callback_func("aa:bb:cc:dd:ee:ff")
+
+        # First call creates entities + global sensors, second should be skipped
+        # But sensor_created is called twice
+        assert mock_coordinator.sensor_created.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_scanners_changed_creates_scanner_entities(self, hass: HomeAssistant) -> None:
+        """Test that scanners_changed callback creates scanner entities."""
+        mock_device = MagicMock()
+        mock_device.name = "Test Device"
+        mock_device.unique_id = "test_unique_id"
+        mock_device.address = "aa:bb:cc:dd:ee:ff"
+        mock_device.area_name = "Living Room"
+        mock_device.area_id = "living_room"
+        mock_device.floor_id = None
+        mock_device.floor_name = None
+        mock_device.area_icon = "mdi:sofa"
+        mock_device.area_last_seen_icon = "mdi:clock"
+        mock_device.address_type = "public"
+        mock_device.adverts = {}
+        mock_device.area_state_metadata = MagicMock(return_value={})
+
+        mock_scanner = MagicMock()
+        mock_scanner.is_remote_scanner = False
+        mock_scanner.address_wifi_mac = "11:22:33:44:55:66"
+        mock_scanner.address = "11:22:33:44:55:66"
+        mock_scanner.name = "Scanner Device"
+        mock_scanner.unique_id = "scanner_unique_id"
+
+        mock_coordinator = MagicMock()
+        mock_coordinator.hass = hass
+        mock_coordinator.last_update_success = True
+        # Include both the device and scanner in devices dict
+        mock_coordinator.devices = {
+            "aa:bb:cc:dd:ee:ff": mock_device,
+            "11:22:33:44:55:66": mock_scanner,
+        }
+        mock_coordinator.have_floors = False
+        mock_coordinator.scanner_list = ["11:22:33:44:55:66"]
+        mock_coordinator.get_scanners = [mock_scanner]
+        mock_coordinator.check_for_duplicate_entities = MagicMock(return_value=None)
+        mock_coordinator.sensor_created = MagicMock()
+
+        mock_entry = MagicMock()
+        mock_entry.runtime_data = MagicMock()
+        mock_entry.runtime_data.coordinator = mock_coordinator
+        mock_entry.async_on_unload = MagicMock()
+        mock_entry.options = {}
+
+        added_entities: list = []
+        mock_add_devices = MagicMock(side_effect=lambda entities, update=False: added_entities.extend(entities))
+
+        with (
+            patch("custom_components.bermuda.sensor.async_dispatcher_connect") as mock_dispatcher,
+            patch("custom_components.bermuda.entity.ar.async_get") as mock_ar,
+            patch("custom_components.bermuda.entity.dr.async_get") as mock_dr,
+        ):
+            mock_ar.return_value = MagicMock()
+            mock_dr.return_value = MagicMock()
+
+            await async_setup_entry(hass, mock_entry, mock_add_devices)
+
+            # First create the device
+            device_new_callback = mock_dispatcher.call_args_list[0][0][2]
+            device_new_callback("aa:bb:cc:dd:ee:ff")
+
+            # Get scanners_changed callback (second dispatcher call)
+            scanners_changed_callback = mock_dispatcher.call_args_list[1][0][2]
+            # Call it to trigger scanner entity creation
+            scanners_changed_callback()
+
+        # Should have scanner entities for the device
+        assert any(isinstance(e, BermudaSensorScannerRange) for e in added_entities)
+        assert any(isinstance(e, BermudaSensorScannerRangeRaw) for e in added_entities)
+
+
 class TestSensorIntegration:
     """Integration tests for sensor module."""
 

@@ -401,6 +401,159 @@ class TestBermudaTrainingFloorSelect:
         assert select.floor_override_id is None
 
 
+class TestDeviceNewCallback:
+    """Tests for the device_new callback in async_setup_entry."""
+
+    @pytest.mark.asyncio
+    async def test_device_new_creates_both_selects(self, hass: HomeAssistant) -> None:
+        """Test that device_new callback creates floor and room selects."""
+        mock_device = MagicMock()
+        mock_device.name = "Test Device"
+        mock_device.unique_id = "test_unique_id"
+        mock_device.address = "aa:bb:cc:dd:ee:ff"
+        mock_device.training_target_floor_id = None
+        mock_device.training_target_area_id = None
+        mock_device.area_advert = None
+        mock_device.adverts = {}
+
+        mock_coordinator = MagicMock()
+        mock_coordinator.hass = hass
+        mock_coordinator.last_update_success = True
+        mock_coordinator.devices = {"aa:bb:cc:dd:ee:ff": mock_device}
+        mock_coordinator.check_for_duplicate_entities = MagicMock(return_value=None)
+        mock_coordinator.select_created = MagicMock()
+
+        mock_entry = MagicMock()
+        mock_entry.runtime_data = MagicMock()
+        mock_entry.runtime_data.coordinator = mock_coordinator
+        mock_entry.async_on_unload = MagicMock()
+        mock_entry.options = {}
+
+        added_entities: list = []
+        mock_add_devices = MagicMock(side_effect=lambda entities, _: added_entities.extend(entities))
+
+        with (
+            patch("custom_components.bermuda.select.async_dispatcher_connect") as mock_dispatcher,
+            patch("custom_components.bermuda.entity.ar.async_get") as mock_ar,
+            patch("custom_components.bermuda.entity.dr.async_get") as mock_dr,
+            patch("custom_components.bermuda.select.ar.async_get") as mock_ar_select,
+        ):
+            mock_ar.return_value = MagicMock()
+            mock_dr.return_value = MagicMock()
+            mock_ar_select.return_value = MagicMock()
+            mock_ar_select.return_value.async_list_areas.return_value = []
+
+            await async_setup_entry(hass, mock_entry, mock_add_devices)
+
+            callback_func = mock_dispatcher.call_args[0][2]
+            callback_func("aa:bb:cc:dd:ee:ff")
+
+        assert len(added_entities) == 2
+        assert any(isinstance(e, BermudaTrainingRoomSelect) for e in added_entities)
+        assert any(isinstance(e, BermudaTrainingFloorSelect) for e in added_entities)
+        mock_coordinator.select_created.assert_called_once_with("aa:bb:cc:dd:ee:ff")
+
+    @pytest.mark.asyncio
+    async def test_device_new_handles_duplicate_cleanup(self, hass: HomeAssistant) -> None:
+        """Test that device_new handles duplicate entity cleanup."""
+        mock_device = MagicMock()
+        mock_device.name = "Test Device"
+        mock_device.unique_id = "test_unique_id"
+        mock_device.address = "aa:bb:cc:dd:ee:ff"
+        mock_device.training_target_floor_id = None
+        mock_device.training_target_area_id = None
+        mock_device.area_advert = None
+        mock_device.adverts = {}
+
+        mock_coordinator = MagicMock()
+        mock_coordinator.hass = hass
+        mock_coordinator.last_update_success = True
+        mock_coordinator.devices = {"aa:bb:cc:dd:ee:ff": mock_device}
+        mock_coordinator.check_for_duplicate_entities = MagicMock(return_value="old:aa:bb:cc:dd:ee:ff")
+        mock_coordinator.cleanup_old_entities_for_device = MagicMock()
+        mock_coordinator.select_created = MagicMock()
+
+        mock_entry = MagicMock()
+        mock_entry.runtime_data = MagicMock()
+        mock_entry.runtime_data.coordinator = mock_coordinator
+        mock_entry.async_on_unload = MagicMock()
+        mock_entry.options = {}
+
+        mock_add_devices = MagicMock()
+
+        with (
+            patch("custom_components.bermuda.select.async_dispatcher_connect") as mock_dispatcher,
+            patch("custom_components.bermuda.entity.ar.async_get") as mock_ar,
+            patch("custom_components.bermuda.entity.dr.async_get") as mock_dr,
+            patch("custom_components.bermuda.select.ar.async_get") as mock_ar_select,
+        ):
+            mock_ar.return_value = MagicMock()
+            mock_dr.return_value = MagicMock()
+            mock_ar_select.return_value = MagicMock()
+            mock_ar_select.return_value.async_list_areas.return_value = []
+
+            await async_setup_entry(hass, mock_entry, mock_add_devices)
+
+            callback_func = mock_dispatcher.call_args[0][2]
+            callback_func("aa:bb:cc:dd:ee:ff")
+
+        mock_coordinator.cleanup_old_entities_for_device.assert_called_once_with(
+            "old:aa:bb:cc:dd:ee:ff", "aa:bb:cc:dd:ee:ff"
+        )
+
+    @pytest.mark.asyncio
+    async def test_device_new_skips_duplicates(self, hass: HomeAssistant) -> None:
+        """Test that device_new skips already-created devices."""
+        mock_device = MagicMock()
+        mock_device.name = "Test Device"
+        mock_device.unique_id = "test_unique_id"
+        mock_device.address = "aa:bb:cc:dd:ee:ff"
+        mock_device.training_target_floor_id = None
+        mock_device.training_target_area_id = None
+        mock_device.area_advert = None
+        mock_device.adverts = {}
+
+        mock_coordinator = MagicMock()
+        mock_coordinator.hass = hass
+        mock_coordinator.last_update_success = True
+        mock_coordinator.devices = {"aa:bb:cc:dd:ee:ff": mock_device}
+        mock_coordinator.check_for_duplicate_entities = MagicMock(return_value=None)
+        mock_coordinator.select_created = MagicMock()
+
+        mock_entry = MagicMock()
+        mock_entry.runtime_data = MagicMock()
+        mock_entry.runtime_data.coordinator = mock_coordinator
+        mock_entry.async_on_unload = MagicMock()
+        mock_entry.options = {}
+
+        call_count = 0
+
+        def track_calls(entities, _):
+            nonlocal call_count
+            call_count += 1
+
+        mock_add_devices = MagicMock(side_effect=track_calls)
+
+        with (
+            patch("custom_components.bermuda.select.async_dispatcher_connect") as mock_dispatcher,
+            patch("custom_components.bermuda.entity.ar.async_get") as mock_ar,
+            patch("custom_components.bermuda.entity.dr.async_get") as mock_dr,
+            patch("custom_components.bermuda.select.ar.async_get") as mock_ar_select,
+        ):
+            mock_ar.return_value = MagicMock()
+            mock_dr.return_value = MagicMock()
+            mock_ar_select.return_value = MagicMock()
+            mock_ar_select.return_value.async_list_areas.return_value = []
+
+            await async_setup_entry(hass, mock_entry, mock_add_devices)
+
+            callback_func = mock_dispatcher.call_args[0][2]
+            callback_func("aa:bb:cc:dd:ee:ff")
+            callback_func("aa:bb:cc:dd:ee:ff")
+
+        assert call_count == 1
+
+
 class TestSelectIntegration:
     """Integration tests for select module."""
 
