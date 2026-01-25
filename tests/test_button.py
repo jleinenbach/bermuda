@@ -23,9 +23,7 @@ class TestAsyncSetupEntry:
     """Tests for async_setup_entry function."""
 
     @pytest.mark.asyncio
-    async def test_async_setup_entry_registers_dispatcher(
-        self, hass: HomeAssistant
-    ) -> None:
+    async def test_async_setup_entry_registers_dispatcher(self, hass: HomeAssistant) -> None:
         """Test that async_setup_entry registers a dispatcher listener."""
         mock_coordinator = MagicMock()
         mock_coordinator.check_for_duplicate_entities = MagicMock(return_value=None)
@@ -37,9 +35,7 @@ class TestAsyncSetupEntry:
 
         mock_add_devices = MagicMock()
 
-        with patch(
-            "custom_components.bermuda.button.async_dispatcher_connect"
-        ) as mock_dispatcher:
+        with patch("custom_components.bermuda.button.async_dispatcher_connect") as mock_dispatcher:
             await async_setup_entry(hass, mock_entry, mock_add_devices)
 
         mock_dispatcher.assert_called_once()
@@ -123,17 +119,13 @@ class TestBermudaTrainingButton:
 
     def test_available_returns_true_when_floor_and_area_selected(self) -> None:
         """Test that button is available when floor and area are selected."""
-        button = self._create_button(
-            training_floor_id="floor1", training_area_id="area1"
-        )
+        button = self._create_button(training_floor_id="floor1", training_area_id="area1")
 
         assert button.available is True
 
     def test_available_returns_false_when_training(self) -> None:
         """Test that button is unavailable during training."""
-        button = self._create_button(
-            training_floor_id="floor1", training_area_id="area1"
-        )
+        button = self._create_button(training_floor_id="floor1", training_area_id="area1")
         button._is_training = True
 
         assert button.available is False
@@ -147,9 +139,7 @@ class TestBermudaTrainingButton:
     @pytest.mark.asyncio
     async def test_async_press_returns_early_when_training(self) -> None:
         """Test that async_press returns early if already training."""
-        button = self._create_button(
-            training_floor_id="floor1", training_area_id="area1"
-        )
+        button = self._create_button(training_floor_id="floor1", training_area_id="area1")
         button._is_training = True
 
         await button.async_press()
@@ -170,9 +160,7 @@ class TestBermudaTrainingButton:
     @pytest.mark.asyncio
     async def test_async_press_returns_early_when_no_adverts(self) -> None:
         """Test that async_press returns early if no adverts available."""
-        button = self._create_button(
-            training_floor_id="floor1", training_area_id="area1", has_adverts=False
-        )
+        button = self._create_button(training_floor_id="floor1", training_area_id="area1", has_adverts=False)
 
         await button.async_press()
 
@@ -253,9 +241,7 @@ class TestBermudaResetTrainingButton:
 
         await button.async_press()
 
-        button.coordinator.async_reset_device_training.assert_called_once_with(
-            "aa:bb:cc:dd:ee:ff"
-        )
+        button.coordinator.async_reset_device_training.assert_called_once_with("aa:bb:cc:dd:ee:ff")
 
     @pytest.mark.asyncio
     async def test_async_press_triggers_refresh(self) -> None:

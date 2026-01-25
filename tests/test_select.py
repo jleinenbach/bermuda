@@ -19,9 +19,7 @@ class TestAsyncSetupEntry:
     """Tests for async_setup_entry function."""
 
     @pytest.mark.asyncio
-    async def test_async_setup_entry_registers_dispatcher(
-        self, hass: HomeAssistant
-    ) -> None:
+    async def test_async_setup_entry_registers_dispatcher(self, hass: HomeAssistant) -> None:
         """Test that async_setup_entry registers a dispatcher listener."""
         mock_coordinator = MagicMock()
         mock_coordinator.check_for_duplicate_entities = MagicMock(return_value=None)
@@ -34,9 +32,7 @@ class TestAsyncSetupEntry:
 
         mock_add_devices = MagicMock()
 
-        with patch(
-            "custom_components.bermuda.select.async_dispatcher_connect"
-        ) as mock_dispatcher:
+        with patch("custom_components.bermuda.select.async_dispatcher_connect") as mock_dispatcher:
             await async_setup_entry(hass, mock_entry, mock_add_devices)
 
         mock_dispatcher.assert_called_once()

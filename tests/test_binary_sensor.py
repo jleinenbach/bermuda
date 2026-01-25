@@ -18,9 +18,7 @@ class TestAsyncSetupEntry:
     """Tests for async_setup_entry function."""
 
     @pytest.mark.asyncio
-    async def test_async_setup_entry_does_not_add_entities(
-        self, hass: HomeAssistant
-    ) -> None:
+    async def test_async_setup_entry_does_not_add_entities(self, hass: HomeAssistant) -> None:
         """Test that async_setup_entry does not add any entities (currently disabled)."""
         mock_entry = MagicMock()
         mock_add_devices = MagicMock()
