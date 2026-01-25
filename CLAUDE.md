@@ -1608,6 +1608,43 @@ info = manager.get_scanner_pair_info(nowstamp=current_time)
   - `area_selection.py`: Added `nowstamp` parameter propagation to correlation updates
 - **Backward compatible**: `nowstamp=None` default preserves existing behavior
 
+### Auto-Learning Diagnostic Logging (Phase 2)
+- **Purpose**: Provide visibility into auto-learning behavior for debugging and monitoring
+- **Implementation**:
+  - **`AutoLearningStats` class** (`correlation/__init__.py`): Dataclass tracking update patterns
+    - `updates_performed`: Successful updates (new data accepted)
+    - `updates_skipped_interval`: Updates skipped due to minimum interval enforcement
+    - `skip_ratio`: Percentage of attempts skipped (target: ~80% for good decorrelation)
+    - `_device_stats`: Per-device breakdown of performed/skipped counts
+  - **Integration in `AreaSelectionHandler`** (`area_selection.py`):
+    - `_auto_learning_stats` instance attribute
+    - `record_update()` called in `_update_device_correlations()` after each update attempt
+    - `get_auto_learning_diagnostics()` method returns stats for diagnostics output
+    - `reset_auto_learning_stats()` method to clear counters
+  - **Diagnostics integration** (`diagnostics.py`): Stats exposed in `async_get_config_entry_diagnostics()`
+- **Files changed**:
+  - `correlation/__init__.py`: Added `AutoLearningStats` class
+  - `area_selection.py`: Added stats tracking and `get_auto_learning_diagnostics()` method
+  - `diagnostics.py`: Added `auto_learning` key to diagnostics output
+- **Note**: Stats reset on HA restart (not persisted) - this is a debug tool, not critical data
+- **Example diagnostics output**:
+  ```json
+  {
+    "auto_learning": {
+      "updates_performed": 1234,
+      "updates_skipped_interval": 5678,
+      "total_attempts": 6912,
+      "skip_ratio": "82.1%",
+      "skip_ratio_raw": 0.821,
+      "last_update_stamp": 1234567.89,
+      "devices_tracked": 5,
+      "device_breakdown": {
+        "aa:bb:cc:dd:ee:ff": {"performed": 100, "skipped": 400, "total": 500}
+      }
+    }
+  }
+  ```
+
 ### Room Flickering Fix
 - **Problem**: Tracker constantly switched rooms despite being stationary
 - **Solution**: Added stability margin requiring challengers to be significantly closer

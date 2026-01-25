@@ -95,7 +95,7 @@ from .const import (
     VIRTUAL_DISTANCE_MIN_SCORE,
     VIRTUAL_DISTANCE_SCALE,
 )
-from .correlation import AreaProfile, RoomProfile, z_scores_to_confidence
+from .correlation import AreaProfile, AutoLearningStats, RoomProfile, z_scores_to_confidence
 from .filters import UnscentedKalmanFilter
 
 if TYPE_CHECKING:
@@ -192,6 +192,8 @@ class AreaSelectionHandler:
 
         """
         self.coordinator = coordinator
+        # Auto-learning diagnostic stats (resets on HA restart, not persisted)
+        self._auto_learning_stats = AutoLearningStats()
 
     # =========================================================================
     # Property accessors for coordinator state
@@ -231,6 +233,54 @@ class AreaSelectionHandler:
     def devices(self) -> dict[str, BermudaDevice]:
         """Access device dictionary."""
         return self.coordinator.devices
+
+    # =========================================================================
+    # Diagnostic methods
+    # =========================================================================
+
+    def get_auto_learning_diagnostics(self) -> dict[str, Any]:
+        """
+        Get diagnostic information about auto-learning.
+
+        Returns statistics about the auto-learning process including:
+        - Total updates performed vs skipped (due to minimum interval)
+        - Skip ratio (percentage of attempts skipped)
+        - Per-device breakdown
+
+        Note: Stats reset on Home Assistant restart (not persisted).
+
+        Returns
+        -------
+            Dictionary with auto-learning statistics for diagnostics output.
+
+        """
+        stats_dict = self._auto_learning_stats.to_dict()
+
+        # Add detailed per-device stats (limited to most active devices)
+        device_details: dict[str, dict[str, int]] = {}
+        for device_addr, device_stats in self._auto_learning_stats._device_stats.items():
+            total = device_stats["performed"] + device_stats["skipped"]
+            if total >= 10:  # Only include devices with meaningful activity
+                device_details[device_addr] = {
+                    "performed": device_stats["performed"],
+                    "skipped": device_stats["skipped"],
+                    "total": total,
+                }
+
+        # Sort by total activity and limit to top 20
+        sorted_devices = sorted(
+            device_details.items(),
+            key=lambda x: x[1]["total"],
+            reverse=True,
+        )[:20]
+
+        stats_dict["device_breakdown"] = dict(sorted_devices)
+
+        return stats_dict
+
+    def reset_auto_learning_stats(self) -> None:
+        """Reset auto-learning statistics to zero."""
+        self._auto_learning_stats.reset()
 
     # =========================================================================
     # Pure helper functions (no coordinator state access)
@@ -479,7 +529,7 @@ class AreaSelectionHandler:
             )
 
         # Update device-specific profile (with minimum interval check)
-        self.correlations[device.address][area_id].update(
+        area_update_performed = self.correlations[device.address][area_id].update(
             primary_rssi=primary_rssi,
             other_readings=other_readings,
             primary_scanner_addr=primary_scanner_addr,
@@ -494,6 +544,15 @@ class AreaSelectionHandler:
         if area_id not in self.room_profiles:
             self.room_profiles[area_id] = RoomProfile(area_id=area_id)
         self.room_profiles[area_id].update(all_readings, nowstamp=nowstamp)
+
+        # Record stats for diagnostic purposes
+        # Use area_update_performed as the primary indicator (both have the same interval logic)
+        if nowstamp is not None:
+            self._auto_learning_stats.record_update(
+                performed=area_update_performed,
+                stamp=nowstamp,
+                device_address=device.address,
+            )
 
     # =========================================================================
     # Virtual distance for scannerless rooms
