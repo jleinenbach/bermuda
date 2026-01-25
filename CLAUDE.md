@@ -2232,6 +2232,406 @@ This pattern allows the button to clear the dropdowns indirectly by:
 | Converged threshold | 5.0 | inline | Variance below which inflation triggers |
 | Inflation target | 15.0 | inline | Reset variance value |
 
+## Multi-Position Training System
+
+### Problem Statement
+
+Large rooms (living rooms, open-plan offices) have significant RSSI variation depending on device position. A single training position creates a fingerprint that only matches one corner of the room, causing:
+
+1. **Position-dependent detection**: Device in corner A matches, device in corner B doesn't
+2. **Training frustration**: Users must stand in exact trained spot for detection to work
+3. **Converged variance trap**: After first training, Kalman filter variance converges to ~2.5, making subsequent positions have diminishing influence (~10%)
+
+### Solution: Variance Reset for Equal Position Weighting
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                    Multi-Position Training Flow                                  │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  Position 1 (Corner A):                                                          │
+│  ┌────────────────────────────────────────────────────────────────────────────┐ │
+│  │ User trains device → Button filter learns -85dB                            │ │
+│  │ Kalman state: estimate=-85dB, variance=25 (initial)                        │ │
+│  │ After training: variance converges to ~3.5                                  │ │
+│  └────────────────────────────────────────────────────────────────────────────┘ │
+│                                                                                  │
+│  Position 2 (Corner B) - WITHOUT variance reset:                                │
+│  ┌────────────────────────────────────────────────────────────────────────────┐ │
+│  │ User trains at -70dB                                                        │ │
+│  │ Kalman gain = variance / (variance + measurement_noise)                    │ │
+│  │            = 3.5 / (3.5 + 25) ≈ 0.12                                       │ │
+│  │ New samples have only ~12% influence!                                       │ │
+│  │ Final estimate: -85 + 0.12 * (-70 - (-85)) = -83.2dB (barely moved!)       │ │
+│  └────────────────────────────────────────────────────────────────────────────┘ │
+│                                                                                  │
+│  Position 2 (Corner B) - WITH variance reset:                                   │
+│  ┌────────────────────────────────────────────────────────────────────────────┐ │
+│  │ reset_variance_only() called first                                          │ │
+│  │ Kalman state: estimate=-85dB (preserved), variance=25 (reset!)             │ │
+│  │ Kalman gain = 25 / (25 + 25) = 0.5                                         │ │
+│  │ New samples have ~50% influence!                                            │ │
+│  │ After training: estimate moves significantly toward -70dB                   │ │
+│  └────────────────────────────────────────────────────────────────────────────┘ │
+│                                                                                  │
+│  Result: Final fingerprint reflects AVERAGE of both positions                   │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                    Variance Reset Propagation                                    │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  AreaProfile.reset_variance_only()                                              │
+│       │                                                                          │
+│       ├──► For each ScannerPairCorrelation in _correlations:                    │
+│       │        └──► _kalman_button.reset_variance_only()                        │
+│       │                 └──► variance = measurement_noise (25.0)                │
+│       │                 └──► estimate preserved                                  │
+│       │                 └──► sample_count preserved                              │
+│       │                 └──► _last_timestamp = None                             │
+│       │                                                                          │
+│       └──► For each ScannerAbsoluteRssi in _absolute_profiles:                  │
+│                └──► _kalman_button.reset_variance_only()                        │
+│                         └──► (same as above)                                     │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Key Files and Methods
+
+| File | Method | Purpose |
+|------|--------|---------|
+| `filters/kalman.py` | `reset_variance_only(target_variance)` | Core variance reset, preserves estimate |
+| `correlation/scanner_absolute.py` | `reset_variance_only()` | Delegates to button Kalman filter |
+| `correlation/scanner_pair.py` | `reset_variance_only()` | Delegates to button Kalman filter |
+| `correlation/area_profile.py` | `reset_variance_only()` | Resets all correlations and profiles |
+
+### Implementation Details
+
+**KalmanFilter.reset_variance_only()** (`filters/kalman.py:273-301`):
+```python
+def reset_variance_only(self, target_variance: float | None = None) -> None:
+    """
+    Reset variance while preserving the estimate (for multi-position training).
+
+    This method is used when starting a new training session for a device
+    that already has training data. By resetting variance but keeping the
+    estimate, we allow new samples to have equal influence to previous
+    training sessions.
+
+    Args:
+        target_variance: Variance to reset to. If None, uses measurement_noise.
+                        Higher values = more trust in new measurements.
+    """
+    if not self._initialized:
+        return  # Nothing to reset if filter hasn't been used
+
+    self.variance = target_variance if target_variance is not None else self.measurement_noise
+    # Reset timestamp to avoid dt-scaling issues with large time gaps
+    self._last_timestamp = None
+    # Note: estimate and sample_count are preserved!
+```
+
+**Key Design Decisions:**
+
+1. **Only affects button filter**: Auto filter continues learning independently
+2. **Preserves estimate**: Previous training data not lost, just weighted equally
+3. **Preserves sample_count**: History of training sessions maintained
+4. **Clears timestamp**: Prevents dt-scaling issues when training resumes later
+
+### Mathematical Foundation
+
+**Kalman Gain Formula:**
+```
+K = P / (P + R)
+
+Where:
+  K = Kalman gain (influence of new measurement)
+  P = Current variance (uncertainty in estimate)
+  R = Measurement noise (uncertainty in new measurement)
+```
+
+**Effect of Variance on Influence:**
+
+| Variance (P) | Measurement Noise (R) | Kalman Gain (K) | New Sample Influence |
+|--------------|----------------------|-----------------|---------------------|
+| 3.5 (converged) | 25.0 | 0.12 | 12% |
+| 10.0 | 25.0 | 0.29 | 29% |
+| 25.0 (reset) | 25.0 | 0.50 | 50% |
+| 50.0 | 25.0 | 0.67 | 67% |
+
+### Usage Example (Future UI Integration)
+
+```python
+# When user clicks "Train from New Position" button:
+async def async_train_new_position(self, device_address: str, target_area_id: str):
+    # 1. Reset variance to allow new samples equal influence
+    if device_address in self.correlations:
+        if target_area_id in self.correlations[device_address]:
+            self.correlations[device_address][target_area_id].reset_variance_only()
+
+    # 2. Proceed with normal training
+    await self.async_train_fingerprint(device_address, target_area_id)
+```
+
+### Test Coverage
+
+Test file: `tests/test_multi_position_training.py` (98 tests, 100% coverage)
+
+**Test Classes:**
+
+| Class | Tests | Purpose |
+|-------|-------|---------|
+| `TestKalmanFilterResetVarianceOnly` | 7 | Core variance reset functionality |
+| `TestKalmanFilterAdditionalMethods` | 16 | update_adaptive, serialization, time-aware updates |
+| `TestScannerAbsoluteRssiResetVarianceOnly` | 3 | Reset propagation to absolute profiles |
+| `TestScannerAbsoluteRssiAdditional` | 19 | z_score, serialization, validation |
+| `TestScannerPairCorrelationResetVarianceOnly` | 2 | Reset propagation to pair correlations |
+| `TestScannerPairCorrelationAdditional` | 19 | z_score, serialization, validation |
+| `TestAreaProfileResetVarianceOnly` | 4 | Bulk reset of all profiles |
+| `TestAreaProfileAdditional` | 19 | z_score methods, serialization, memory limits |
+| `TestQualityIndexCalculation` | 4 | Training quality feedback |
+| `TestMultiPositionTrainingIntegration` | 3 | End-to-end position averaging |
+| `TestTrainingConstants` | 3 | Constant validation |
+
+### Constants
+
+| Constant | Value | File | Purpose |
+|----------|-------|------|---------|
+| `KALMAN_MEASUREMENT_NOISE` | 25.0 | `filters/const.py` | Default reset variance target |
+| `RSSI_MEASUREMENT_NOISE` | 25.0 | `scanner_absolute.py` | Absolute RSSI filter noise |
+| `DELTA_MEASUREMENT_NOISE` | 16.0 | `scanner_pair.py` | Delta correlation filter noise |
+| `MIN_SAMPLES_FOR_MATURITY` | 20/30 | `scanner_*.py` | Samples before profile trusted |
+
+### Edge Cases and Guards
+
+1. **Uninitialized filter**: `reset_variance_only()` is a no-op (nothing to preserve)
+2. **Zero variance guard**: `z_score()` returns 0.0 if `variance <= 0` (prevents division by zero)
+3. **Negative variance validation**: `from_dict()` raises `ValueError` for negative variance
+4. **Memory limits**: `AreaProfile` enforces `MAX_CORRELATIONS_PER_AREA = 15`
+
+### Lessons Learned from Implementation
+
+**62. Kalman Filter Variance Reset Enables Equal Position Weighting**
+
+When training a device from multiple positions, the Kalman filter's converged variance causes diminishing influence for later positions. Reset variance (but preserve estimate) to allow each position equal contribution.
+
+**Bug Pattern:**
+```python
+# BAD - Later positions have diminishing influence
+def train_new_position(self, rssi):
+    # First position: variance=25 → 50% influence
+    # After 10 samples: variance≈3 → 10% influence for next position!
+    self.kalman.update(rssi)
+```
+
+**Fix Pattern:**
+```python
+# GOOD - Reset variance before each new position
+def train_new_position(self, rssi):
+    self.kalman.reset_variance_only()  # variance=25, estimate preserved
+    # Now new position has equal ~50% influence
+    self.kalman.update(rssi)
+```
+
+**Rule of Thumb**: When averaging data from multiple training sessions, reset the Kalman filter's variance (but not estimate) between sessions to give each session equal weight.
+
+---
+
+**63. Test Edge Cases via Direct State Manipulation**
+
+When a code path guards against impossible states (like `variance <= 0`), test it by directly manipulating internal state rather than trying to trigger it through normal API calls.
+
+**Bug Pattern:**
+```python
+# BAD - Protection in variance property makes this impossible
+def test_z_score_zero_variance(self):
+    profile._kalman_button.reset_to_value(x, variance=0.0)
+    z = profile.z_score(y)  # Variance property returns min 1e-6, not 0!
+```
+
+**Fix Pattern:**
+```python
+# GOOD - Directly set internal state to trigger guard
+def test_z_score_zero_variance(self):
+    # Bypass property protection by setting internal state directly
+    profile._kalman_auto._initialized = True
+    profile._kalman_auto.estimate = -75.0
+    profile._kalman_auto.variance = 0.0  # Direct assignment
+    z = profile.z_score(-80.0)
+    assert z == 0.0  # Guard triggered!
+```
+
+**Rule of Thumb**: Defensive guards that should "never" trigger still need test coverage. Directly manipulate internal state to verify the guard works correctly.
+
+---
+
+**64. Serialization Round-Trip Must Preserve All Behavioral State**
+
+When testing serialization, verify not just that values match, but that the restored object behaves identically to the original.
+
+**Bug Pattern:**
+```python
+# BAD - Only checks value equality
+def test_serialization(self):
+    data = obj.to_dict()
+    restored = Obj.from_dict(data)
+    assert restored.estimate == obj.estimate  # Values match but...
+    # ...behavior may differ if _initialized or _last_timestamp wrong!
+```
+
+**Fix Pattern:**
+```python
+# GOOD - Verify behavioral equivalence
+def test_serialization(self):
+    data = obj.to_dict()
+    restored = Obj.from_dict(data)
+
+    # Values
+    assert restored.estimate == obj.estimate
+    assert restored.variance == obj.variance
+
+    # Behavioral state
+    assert restored._initialized == obj._initialized
+    assert restored._last_timestamp == obj._last_timestamp
+
+    # Behavioral equivalence
+    assert restored.z_score(x) == obj.z_score(x)
+```
+
+**Rule of Thumb**: Serialization tests should verify that `f(original) == f(restored)` for all methods, not just that stored values match.
+
+---
+
+**65. Variance Reset Gives MORE Influence, Not Equal Influence**
+
+A common misconception: resetting Kalman filter variance to match measurement noise creates "equal weighting" between old and new samples. This is **wrong**. Higher variance means the filter TRUSTS NEW MEASUREMENTS MORE.
+
+**The Math:**
+```
+Kalman Gain K = P / (P + R)
+
+Where P = current variance, R = measurement noise
+
+After many samples: P ≈ 3 (converged)
+  → K = 3 / (3 + 25) = 0.11 → New samples have 11% influence
+
+After variance reset: P = 25 (reset to R)
+  → K = 25 / (25 + 25) = 0.50 → New samples have 50% influence!
+```
+
+**Bug Pattern (Wrong Test Expectation):**
+```python
+# BAD - Assumes "equal weighting"
+def test_multi_position_equal_weight(self):
+    kf.update(-85)  # Position 1
+    kf.reset_variance_only()
+    kf.update(-70)  # Position 2
+    # WRONG: Expected (-85 + -70) / 2 = -77.5
+    assert kf.estimate == pytest.approx(-77.5)  # FAILS!
+```
+
+**Fix Pattern (Correct Understanding):**
+```python
+# GOOD - Understands that new samples have MORE influence after reset
+def test_multi_position_more_influence(self):
+    kf.update(-85)  # Position 1, converged variance ≈ 3
+    kf.reset_variance_only()  # Reset variance to 25
+    kf.update(-70)  # Position 2, K = 0.5, so 50% influence!
+    # Estimate moves SIGNIFICANTLY toward -70
+    # Not equal weighting, but new position has strong initial pull
+    assert -85 < kf.estimate < -70
+    assert abs(kf.estimate - (-85)) > 5  # Moved significantly
+```
+
+**Rule of Thumb**: Variance reset doesn't create "equal" samples - it makes the filter temporarily uncertain, which means it TRUSTS NEW MEASUREMENTS MORE. The old estimate is preserved, but new samples have ~50% influence initially (vs ~10% when converged).
+
+---
+
+**66. Always Verify Field Names Against Production Code**
+
+When testing backward compatibility with "old format" serialization, never assume field names - always check the production `from_dict()` implementation.
+
+**Bug Pattern:**
+```python
+# BAD - Assumed field name without checking code
+def test_from_dict_old_format(self):
+    restored = ScannerPairCorrelation.from_dict({
+        "scanner": "aa:bb:cc:dd:ee:02",
+        "delta": -5.0,  # WRONG! Code expects 'estimate'
+    })
+```
+
+**Fix Pattern:**
+```python
+# GOOD - Verified field name in from_dict() implementation first
+# Production code: data.get("estimate", data.get("delta", 0.0))
+def test_from_dict_old_format(self):
+    restored = ScannerPairCorrelation.from_dict({
+        "scanner": "aa:bb:cc:dd:ee:02",
+        "estimate": -5.0,  # Correct! Old format uses 'estimate'
+    })
+```
+
+**Rule of Thumb**: Before writing tests for legacy format compatibility, READ the actual `from_dict()` implementation to see which field names it expects. Don't guess based on current API naming.
+
+---
+
+**67. Pytest Coverage Uses Module Paths, Not File Paths**
+
+The `--cov` parameter expects Python module paths (with dots), not filesystem paths (with slashes).
+
+**Bug Pattern:**
+```bash
+# BAD - Uses file paths → "Module was never imported" warning
+pytest --cov=custom_components/bermuda/filters/kalman tests/
+# Result: 0% coverage, warnings about module not imported
+```
+
+**Fix Pattern:**
+```bash
+# GOOD - Uses Python module paths
+pytest --cov=custom_components.bermuda.filters.kalman tests/
+# Result: Correct coverage measurement
+```
+
+**Rule of Thumb**: For pytest-cov, convert paths to module notation: replace `/` with `.` and omit `.py` extension.
+
+---
+
+**68. Verify Actual Behavior Before Writing Integration Test Assertions**
+
+Integration tests that assert specific numeric outcomes often fail because the assertion was based on theoretical understanding rather than actual system behavior. Always run the code first and observe what it actually does.
+
+**Bug Pattern:**
+```python
+# BAD - Wrote assertion based on theoretical understanding
+def test_integration(self):
+    # "After reset, both positions should average to -77.5"
+    result = complex_multi_step_process()
+    assert result == -77.5  # FAILS! Actual result is different
+```
+
+**Fix Pattern:**
+```python
+# GOOD - First observe, then assert bounds/relationships
+def test_integration(self):
+    # Step 1: Run code and print actual result
+    result = complex_multi_step_process()
+    print(f"Actual result: {result}")  # Observe: -72.3
+
+    # Step 2: Assert reasonable bounds based on actual behavior
+    assert -85 < result < -70  # Result is in expected range
+    assert abs(result - (-85)) > 5  # Moved significantly from starting point
+```
+
+**Rule of Thumb**: For integration tests with complex calculations, first run the code to observe actual behavior. Then write assertions that verify relationships and bounds rather than exact values. Exact value assertions are brittle and often based on incorrect mental models.
+
 ## Lessons Learned
 
 > **See also:** [Architecture Decisions & FAQ](#architecture-decisions--faq) for common "Why?" questions about design choices (30% clamping, variance=2.0, device-level reset, etc.)

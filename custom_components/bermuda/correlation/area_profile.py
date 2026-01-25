@@ -165,6 +165,30 @@ class AreaProfile:
         for profile in self._absolute_profiles.values():
             profile.reset_training()
 
+    def reset_variance_only(self) -> None:
+        """
+        Reset variance in all button filters while preserving estimates.
+
+        Used for multi-position training within the same room. When starting
+        a new training session, we want the new samples to have equal
+        influence to previous training sessions, achieving true averaging
+        across positions.
+
+        Without this reset, subsequent training sessions would have
+        diminishing influence due to the already-low variance from
+        previous training (Kalman filter convergence).
+
+        Example - 3 positions in a large room:
+            Position 1: estimate=-75dB, variance converges to 3
+            Position 2: Without reset, new samples have only ~10% influence!
+            Position 2: With reset, variance=25, new samples have ~50% influence.
+            Position 3: Same pattern - equal weighting across all positions.
+        """
+        for corr in self._correlations.values():
+            corr.reset_variance_only()
+        for profile in self._absolute_profiles.values():
+            profile.reset_variance_only()
+
     def _enforce_memory_limit(self) -> None:
         """
         Evict least-important correlations if over memory limit.

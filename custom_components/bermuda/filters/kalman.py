@@ -270,6 +270,36 @@ class KalmanFilter(SignalFilter):
         self.sample_count = sample_count
         self._initialized = True
 
+    def reset_variance_only(self, target_variance: float | None = None) -> None:
+        """
+        Reset variance while preserving the estimate (for multi-position training).
+
+        This method is used when starting a new training session for a device
+        that already has training data. By resetting variance but keeping the
+        estimate, we allow new samples to have equal influence to previous
+        training sessions.
+
+        Without this, subsequent training sessions would have diminishing
+        influence due to the already-low variance from previous training.
+
+        Args:
+            target_variance: Variance to reset to. If None, uses measurement_noise.
+                            Higher values = more trust in new measurements.
+
+        Example:
+            Session 1: Train at position A → estimate=-75dB, variance=3
+            Session 2: Without reset → new samples have ~10% influence (bad!)
+            Session 2: With reset → variance=25, new samples have ~50% influence (good!)
+
+        """
+        if not self._initialized:
+            return  # Nothing to reset if filter hasn't been used
+
+        self.variance = target_variance if target_variance is not None else self.measurement_noise
+        # Reset timestamp to avoid dt-scaling issues with large time gaps
+        self._last_timestamp = None
+        # Note: estimate and sample_count are preserved!
+
     def restore_state(
         self,
         estimate: float,

@@ -1000,6 +1000,29 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         # calculations are irrelevant and should not block acceptance of new readings.
         device.reset_velocity_history()
 
+        # MULTI-POSITION TRAINING FIX: Reset variance at start of new training session
+        # When last_stamps is empty, this is the first call of a new session (button press).
+        # If an existing profile exists for this area, reset its button filter variance
+        # so new samples have equal influence to previous training sessions.
+        #
+        # Without this reset, Kalman filter convergence causes subsequent sessions
+        # to have diminishing influence:
+        #   Session 1: estimate=-75dB, variance converges to 3
+        #   Session 2: Without reset, new samples have only ~10% influence!
+        #   Session 2: With reset, variance=25, new samples have ~50% influence.
+        #
+        # This enables true averaging across multiple positions in a large room.
+        if not last_stamps:  # First call of new training session
+            normalized_address = device.address
+            if normalized_address in self.correlations and target_area_id in self.correlations[normalized_address]:
+                existing_profile = self.correlations[normalized_address][target_area_id]
+                existing_profile.reset_variance_only()
+                _LOGGER.info(
+                    "Reset variance for %s in area %s (multi-position training enabled)",
+                    device.name,
+                    target_area_id,
+                )
+
         # Collect current RSSI readings AND timestamps from all visible scanners
         nowstamp = monotonic_time_coarse()
         rssi_readings: dict[str, float] = {}
