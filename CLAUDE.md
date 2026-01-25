@@ -1099,6 +1099,67 @@ ukf.update_multi({"scanner1": -70.0, "scanner2": -75.0}, timestamp=time.time())
 | `MIN_UPDATE_DT` | 0.01s | Minimum dt to prevent numerical issues |
 | `MAX_UPDATE_DT` | 60.0s | Cap to prevent extreme uncertainty growth |
 
+### Kalman vs Kalman-dt: When to Use Which
+
+The KalmanFilter supports two modes: **standard** (without timestamp) and **time-aware** (with timestamp). Different use cases require different modes:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                    Kalman Mode Selection Guide                                   │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  USE CASE                         MODE              WHY                          │
+│  ─────────────────────────────────────────────────────────────────────────────  │
+│                                                                                  │
+│  Button Training                  Standard          Known, controlled 5s         │
+│  (ScannerAbsoluteRssi,           (no timestamp)     interval. Accumulation via   │
+│   ScannerPairCorrelation)                           sample count, not time.      │
+│                                                                                  │
+│  Scanner Calibration              Time-Aware        Irregular iBeacon intervals. │
+│  (ScannerCalibrationManager)      (with timestamp)  Longer gaps = more process   │
+│                                                     noise = more trust in new.   │
+│                                                                                  │
+│  RSSI Distance Tracking           Time-Aware        BLE adverts every 1-10s+.    │
+│  (BermudaAdvert)                  (with timestamp)  Scanner outages must         │
+│                                                     increase uncertainty.         │
+│                                                                                  │
+│  UKF Multi-Scanner Fusion         Time-Aware        Different scanners see       │
+│  (UnscentedKalmanFilter)          (with timestamp)  device at different times.   │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Standard Mode (without timestamp):**
+```python
+# Button Training: controlled 5-second intervals
+# No timestamp needed - interval is known and constant
+self._kalman_button.update(rssi)  # Accumulates over sample_count
+```
+
+**Time-Aware Mode (with timestamp):**
+```python
+# Scanner Calibration: irregular iBeacon visibility
+# Timestamp required for proper dt calculation
+pair.kalman_ab.update(rssi_raw, timestamp=monotonic_time_coarse())
+```
+
+**Mathematical Difference:**
+
+| Mode | Predict Step | Effect |
+|------|--------------|--------|
+| Standard | `P = P + Q` | Fixed process noise each update |
+| Time-Aware | `P = P + Q × dt` | Process noise scales with time gap |
+
+**When Standard Mode is Appropriate:**
+1. Sampling interval is known and controlled (e.g., 5s button training)
+2. You want sample count to dominate over time (training accumulation)
+3. Time gaps don't indicate increased uncertainty (controlled environment)
+
+**When Time-Aware Mode is Required:**
+1. Sampling interval is variable/unknown (BLE advertisements)
+2. Longer gaps indicate more uncertainty (device moved, scanner offline)
+3. Cross-correlation between time-spaced measurements matters
+
 ### UKF Performance Optimization (20+ Scanners)
 
 For installations with NumPy available, the UKF uses optional NumPy acceleration:
