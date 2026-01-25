@@ -337,6 +337,60 @@ class AreaProfile:
 | `AUTO_LEARNING_MIN_INTERVAL` | 5.0s | Minimum seconds between auto-learning updates |
 | `AUTO_LEARNING_VARIANCE_FLOOR` | 4.0 dB² | Minimum variance (std_dev = 2 dB) |
 
+**Feature 3: Diagnostic Logging (Observability)**
+
+The auto-learning system provides diagnostic stats for monitoring and debugging:
+
+```python
+# Access via diagnostics.py → async_get_config_entry_diagnostics()
+{
+    "auto_learning": {
+        "updates_performed": 1234,      # Samples accepted
+        "updates_skipped_interval": 5678,  # Samples skipped (min interval)
+        "skip_ratio": "82.1%",          # Target: ~80% for good decorrelation
+        "devices_tracked": 5,
+        "device_breakdown": {
+            "aa:bb:cc:dd:ee:ff": {"performed": 100, "skipped": 400}
+        }
+    }
+}
+```
+
+**Implementation:** `AutoLearningStats` class in `correlation/__init__.py`, integrated in `AreaSelectionHandler`.
+
+**Feature 4: Profile Age Tracking (Stale Detection)**
+
+Each Kalman filter tracks when it was created and last updated:
+
+```
+Timestamp Propagation Hierarchy:
+┌────────────────────────────────────────────────────────────────┐
+│ KalmanFilter                                                   │
+│   first_sample_stamp: float | None  (earliest sample)         │
+│   last_sample_stamp: float | None   (most recent sample)      │
+└──────────────────────────┬─────────────────────────────────────┘
+                           │ Aggregated by
+         ┌─────────────────┴─────────────────┐
+         ▼                                   ▼
+┌─────────────────────┐           ┌─────────────────────┐
+│ ScannerAbsoluteRssi │           │ ScannerPairCorrel.  │
+│   min(auto, button) │           │   min(auto, button) │
+│   max(auto, button) │           │   max(auto, button) │
+└─────────┬───────────┘           └──────────┬──────────┘
+          │ Aggregated by                    │
+          ▼                                  ▼
+    ┌─────────────────────────────────────────────┐
+    │ AreaProfile / RoomProfile                   │
+    │   first_sample_stamp: min(all children)    │
+    │   last_sample_stamp: max(all children)     │
+    └─────────────────────────────────────────────┘
+```
+
+**Use cases:**
+- Detect stale profiles (last_sample_stamp too old)
+- Training age diagnostics (days since first training)
+- Backward compatible: `None` for profiles created before this feature
+
 ### Calibration vs Fingerprints (Independence)
 
 **Important**: Scanner/device calibration settings do NOT affect fingerprint data.
@@ -1592,104 +1646,13 @@ info = manager.get_scanner_pair_info(nowstamp=current_time)
 
 ## Recent Changes (Session Notes)
 
-### Auto-Learning Quality Improvements (Phase 1)
-- **Problem**: Auto-learning had two statistical quality issues:
-  1. Variance converged to near-zero after many samples, causing z-score explosion (normal 3dB fluctuations appeared as 10+ sigma deviations)
-  2. Consecutive samples highly correlated (ρ ≈ 0.95), reducing Effective Sample Size
-- **Solution**:
-  1. **Variance Floor**: `AUTO_LEARNING_VARIANCE_FLOOR = 4.0 dB²` prevents over-convergence while still providing meaningful uncertainty reduction
-  2. **Minimum Interval**: `AUTO_LEARNING_MIN_INTERVAL = 5.0s` reduces autocorrelation (ρ: 0.95 → 0.82), improving ESS by ~3.7×
-- **Files changed**:
-  - `const.py`: Added new constants
-  - `correlation/scanner_absolute.py`: Added variance floor enforcement in `update()`
-  - `correlation/scanner_pair.py`: Added variance floor enforcement in `update()`
-  - `correlation/area_profile.py`: Added `_last_update_stamp` field, minimum interval check, serialization
-  - `correlation/room_profile.py`: Same as area_profile.py
-  - `area_selection.py`: Added `nowstamp` parameter propagation to correlation updates
-- **Backward compatible**: `nowstamp=None` default preserves existing behavior
-
-### Auto-Learning Diagnostic Logging (Phase 2)
-- **Purpose**: Provide visibility into auto-learning behavior for debugging and monitoring
-- **Implementation**:
-  - **`AutoLearningStats` class** (`correlation/__init__.py`): Dataclass tracking update patterns
-    - `updates_performed`: Successful updates (new data accepted)
-    - `updates_skipped_interval`: Updates skipped due to minimum interval enforcement
-    - `skip_ratio`: Percentage of attempts skipped (target: ~80% for good decorrelation)
-    - `_device_stats`: Per-device breakdown of performed/skipped counts
-  - **Integration in `AreaSelectionHandler`** (`area_selection.py`):
-    - `_auto_learning_stats` instance attribute
-    - `record_update()` called in `_update_device_correlations()` after each update attempt
-    - `get_auto_learning_diagnostics()` method returns stats for diagnostics output
-    - `reset_auto_learning_stats()` method to clear counters
-  - **Diagnostics integration** (`diagnostics.py`): Stats exposed in `async_get_config_entry_diagnostics()`
-- **Files changed**:
-  - `correlation/__init__.py`: Added `AutoLearningStats` class
-  - `area_selection.py`: Added stats tracking and `get_auto_learning_diagnostics()` method
-  - `diagnostics.py`: Added `auto_learning` key to diagnostics output
-- **Note**: Stats reset on HA restart (not persisted) - this is a debug tool, not critical data
-- **Example diagnostics output**:
-  ```json
-  {
-    "auto_learning": {
-      "updates_performed": 1234,
-      "updates_skipped_interval": 5678,
-      "total_attempts": 6912,
-      "skip_ratio": "82.1%",
-      "skip_ratio_raw": 0.821,
-      "last_update_stamp": 1234567.89,
-      "devices_tracked": 5,
-      "device_breakdown": {
-        "aa:bb:cc:dd:ee:ff": {"performed": 100, "skipped": 400, "total": 500}
-      }
-    }
-  }
-  ```
-
-### Profile Age Tracking (Phase 3)
-- **Purpose**: Enable stale profile detection and training age diagnostics by tracking when profiles were first created and last updated
-- **Implementation**:
-  - **`KalmanFilter`** (`filters/kalman.py`): Added `first_sample_stamp` and `last_sample_stamp` fields
-    - `first_sample_stamp`: Timestamp of first sample (when profile was created)
-    - `last_sample_stamp`: Timestamp of most recent sample (when profile was last updated)
-    - Both fields automatically updated in `update()` when timestamp is provided
-    - Included in `to_dict()`, `from_dict()`, `reset()`, and `get_diagnostics()`
-  - **`ScannerAbsoluteRssi`** and **`ScannerPairCorrelation`** (`correlation/scanner_*.py`):
-    - Added `timestamp` parameter to `update()` and `update_button()` methods
-    - Added aggregate `first_sample_stamp` and `last_sample_stamp` properties
-    - Aggregate min(first) and max(last) from both auto and button Kalman filters
-    - Updated `to_dict()` to include timestamps for both filters
-    - Updated `from_dict()` to restore timestamps
-  - **`AreaProfile`** and **`RoomProfile`** (`correlation/area_profile.py`, `room_profile.py`):
-    - Added `timestamp` parameter propagation to child `update()` and `update_button()` calls
-    - Added aggregate `first_sample_stamp` and `last_sample_stamp` properties
-    - Aggregate across all child profiles (correlations, absolute profiles, scanner pairs)
-- **Timestamp Propagation Flow**:
-  ```
-  AreaSelectionHandler.update()
-       │
-       ├─► AreaProfile.update(nowstamp)
-       │        │
-       │        ├─► ScannerPairCorrelation.update(timestamp=nowstamp)
-       │        │        └─► KalmanFilter.update(timestamp=nowstamp)
-       │        │                 └─► first/last_sample_stamp updated
-       │        │
-       │        └─► ScannerAbsoluteRssi.update(timestamp=nowstamp)
-       │                 └─► KalmanFilter.update(timestamp=nowstamp)
-       │
-       └─► RoomProfile.update(nowstamp)
-                └─► ScannerPairCorrelation.update(timestamp=nowstamp)
-  ```
-- **Aggregate Property Logic**:
-  - `first_sample_stamp`: Returns `min()` of all child timestamps (earliest creation)
-  - `last_sample_stamp`: Returns `max()` of all child timestamps (most recent update)
-  - Returns `None` if no timestamps available (profiles created before Phase 3)
-- **Backward Compatibility**: All timestamps are optional - older data without timestamps loads correctly
-- **Files changed**:
-  - `filters/kalman.py`: Added timestamp fields and serialization
-  - `correlation/scanner_absolute.py`: Added timestamp parameter and properties
-  - `correlation/scanner_pair.py`: Added timestamp parameter and properties
-  - `correlation/area_profile.py`: Added timestamp propagation and aggregate properties
-  - `correlation/room_profile.py`: Added timestamp propagation and aggregate properties
+### Auto-Learning Statistical Quality Improvements
+- Added variance floor (`AUTO_LEARNING_VARIANCE_FLOOR = 4.0 dB²`) to prevent z-score explosion
+- Added minimum interval (`AUTO_LEARNING_MIN_INTERVAL = 5.0s`) to reduce autocorrelation (ρ: 0.95 → 0.82)
+- Added diagnostic logging (`AutoLearningStats` class) for monitoring skip ratios
+- Added profile age tracking (`first_sample_stamp`, `last_sample_stamp`) for stale detection
+- **Files**: `const.py`, `correlation/*.py`, `filters/kalman.py`, `area_selection.py`, `diagnostics.py`
+- **See**: "Auto-Learning Quality Improvements" section for detailed architecture documentation
 
 ### Room Flickering Fix
 - **Problem**: Tracker constantly switched rooms despite being stationary
