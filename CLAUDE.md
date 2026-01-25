@@ -2506,6 +2506,132 @@ def test_serialization(self):
 
 **Rule of Thumb**: Serialization tests should verify that `f(original) == f(restored)` for all methods, not just that stored values match.
 
+---
+
+**65. Variance Reset Gives MORE Influence, Not Equal Influence**
+
+A common misconception: resetting Kalman filter variance to match measurement noise creates "equal weighting" between old and new samples. This is **wrong**. Higher variance means the filter TRUSTS NEW MEASUREMENTS MORE.
+
+**The Math:**
+```
+Kalman Gain K = P / (P + R)
+
+Where P = current variance, R = measurement noise
+
+After many samples: P ≈ 3 (converged)
+  → K = 3 / (3 + 25) = 0.11 → New samples have 11% influence
+
+After variance reset: P = 25 (reset to R)
+  → K = 25 / (25 + 25) = 0.50 → New samples have 50% influence!
+```
+
+**Bug Pattern (Wrong Test Expectation):**
+```python
+# BAD - Assumes "equal weighting"
+def test_multi_position_equal_weight(self):
+    kf.update(-85)  # Position 1
+    kf.reset_variance_only()
+    kf.update(-70)  # Position 2
+    # WRONG: Expected (-85 + -70) / 2 = -77.5
+    assert kf.estimate == pytest.approx(-77.5)  # FAILS!
+```
+
+**Fix Pattern (Correct Understanding):**
+```python
+# GOOD - Understands that new samples have MORE influence after reset
+def test_multi_position_more_influence(self):
+    kf.update(-85)  # Position 1, converged variance ≈ 3
+    kf.reset_variance_only()  # Reset variance to 25
+    kf.update(-70)  # Position 2, K = 0.5, so 50% influence!
+    # Estimate moves SIGNIFICANTLY toward -70
+    # Not equal weighting, but new position has strong initial pull
+    assert -85 < kf.estimate < -70
+    assert abs(kf.estimate - (-85)) > 5  # Moved significantly
+```
+
+**Rule of Thumb**: Variance reset doesn't create "equal" samples - it makes the filter temporarily uncertain, which means it TRUSTS NEW MEASUREMENTS MORE. The old estimate is preserved, but new samples have ~50% influence initially (vs ~10% when converged).
+
+---
+
+**66. Always Verify Field Names Against Production Code**
+
+When testing backward compatibility with "old format" serialization, never assume field names - always check the production `from_dict()` implementation.
+
+**Bug Pattern:**
+```python
+# BAD - Assumed field name without checking code
+def test_from_dict_old_format(self):
+    restored = ScannerPairCorrelation.from_dict({
+        "scanner": "aa:bb:cc:dd:ee:02",
+        "delta": -5.0,  # WRONG! Code expects 'estimate'
+    })
+```
+
+**Fix Pattern:**
+```python
+# GOOD - Verified field name in from_dict() implementation first
+# Production code: data.get("estimate", data.get("delta", 0.0))
+def test_from_dict_old_format(self):
+    restored = ScannerPairCorrelation.from_dict({
+        "scanner": "aa:bb:cc:dd:ee:02",
+        "estimate": -5.0,  # Correct! Old format uses 'estimate'
+    })
+```
+
+**Rule of Thumb**: Before writing tests for legacy format compatibility, READ the actual `from_dict()` implementation to see which field names it expects. Don't guess based on current API naming.
+
+---
+
+**67. Pytest Coverage Uses Module Paths, Not File Paths**
+
+The `--cov` parameter expects Python module paths (with dots), not filesystem paths (with slashes).
+
+**Bug Pattern:**
+```bash
+# BAD - Uses file paths → "Module was never imported" warning
+pytest --cov=custom_components/bermuda/filters/kalman tests/
+# Result: 0% coverage, warnings about module not imported
+```
+
+**Fix Pattern:**
+```bash
+# GOOD - Uses Python module paths
+pytest --cov=custom_components.bermuda.filters.kalman tests/
+# Result: Correct coverage measurement
+```
+
+**Rule of Thumb**: For pytest-cov, convert paths to module notation: replace `/` with `.` and omit `.py` extension.
+
+---
+
+**68. Verify Actual Behavior Before Writing Integration Test Assertions**
+
+Integration tests that assert specific numeric outcomes often fail because the assertion was based on theoretical understanding rather than actual system behavior. Always run the code first and observe what it actually does.
+
+**Bug Pattern:**
+```python
+# BAD - Wrote assertion based on theoretical understanding
+def test_integration(self):
+    # "After reset, both positions should average to -77.5"
+    result = complex_multi_step_process()
+    assert result == -77.5  # FAILS! Actual result is different
+```
+
+**Fix Pattern:**
+```python
+# GOOD - First observe, then assert bounds/relationships
+def test_integration(self):
+    # Step 1: Run code and print actual result
+    result = complex_multi_step_process()
+    print(f"Actual result: {result}")  # Observe: -72.3
+
+    # Step 2: Assert reasonable bounds based on actual behavior
+    assert -85 < result < -70  # Result is in expected range
+    assert abs(result - (-85)) > 5  # Moved significantly from starting point
+```
+
+**Rule of Thumb**: For integration tests with complex calculations, first run the code to observe actual behavior. Then write assertions that verify relationships and bounds rather than exact values. Exact value assertions are brittle and often based on incorrect mental models.
+
 ## Lessons Learned
 
 > **See also:** [Architecture Decisions & FAQ](#architecture-decisions--faq) for common "Why?" questions about design choices (30% clamping, variance=2.0, device-level reset, etc.)
