@@ -462,7 +462,7 @@ class FmdnIntegration:
                 )
             else:
                 # pylint: disable-next=protected-access
-                metadevice = self.coordinator._get_or_create_device(metadevice_address)  # noqa: SLF001
+                metadevice = self.coordinator._get_or_create_device(metadevice_address)
 
             metadevice.metadevice_type.add(METADEVICE_FMDN_DEVICE)
             metadevice.address_type = ADDR_TYPE_FMDN_DEVICE
@@ -639,7 +639,7 @@ class FmdnIntegration:
         else:
             metadevice_address = self.format_metadevice_address(fmdn_device.id, canonical_id)
             # pylint: disable-next=protected-access
-            metadevice = self.coordinator._get_or_create_device(metadevice_address)  # noqa: SLF001
+            metadevice = self.coordinator._get_or_create_device(metadevice_address)
 
         # Configure the metadevice
         metadevice.create_sensor = True
@@ -679,9 +679,9 @@ class FmdnIntegration:
         discover_private_ble_metadevices().
         """
         # pylint: disable=protected-access
-        if not self.coordinator._do_fmdn_device_init:  # noqa: SLF001
+        if not self.coordinator._do_fmdn_device_init:
             return
-        self.coordinator._do_fmdn_device_init = False  # noqa: SLF001
+        self.coordinator._do_fmdn_device_init = False
         # pylint: enable=protected-access
 
         _LOGGER.debug("Refreshing FMDN Device list from googlefindmy integration")

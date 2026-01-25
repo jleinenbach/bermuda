@@ -196,9 +196,9 @@ class TestFmdnMetadeviceInDevices:
         )
 
         # Additional verification: the objects should be the same instance
-        assert (
-            coordinator.devices[metadevice_address] is coordinator.metadevices[metadevice_address]
-        ), "The metadevice in devices and metadevices should be the same object instance"
+        assert coordinator.devices[metadevice_address] is coordinator.metadevices[metadevice_address], (
+            "The metadevice in devices and metadevices should be the same object instance"
+        )
 
 
 class TestFmdnDeviceDiscovery:

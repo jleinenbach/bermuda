@@ -1,52 +1,138 @@
-"""Test Bermuda BLE Trilateration switch."""
+"""Test Bermuda BLE Trilateration switch platform."""
 
 from __future__ import annotations
 
-# from homeassistant.components.switch import SERVICE_TURN_OFF
-# from homeassistant.components.switch import SERVICE_TURN_ON
-# from homeassistant.const import ATTR_ENTITY_ID
+from unittest.mock import MagicMock
+
+import pytest
+from homeassistant.core import HomeAssistant
+
+from custom_components.bermuda.const import DEFAULT_NAME, ICON
+from custom_components.bermuda.switch import (
+    SWITCH,
+    BermudaBinarySwitch,
+    async_setup_entry,
+)
 
 
-# from custom_components.bermuda.const import DEFAULT_NAME
+class TestAsyncSetupEntry:
+    """Tests for async_setup_entry function."""
+
+    @pytest.mark.asyncio
+    async def test_async_setup_entry_does_not_add_entities(self, hass: HomeAssistant) -> None:
+        """Test that async_setup_entry does not add any entities (currently disabled)."""
+        mock_entry = MagicMock()
+        mock_add_devices = MagicMock()
+
+        await async_setup_entry(hass, mock_entry, mock_add_devices)
+
+        # Currently the function is a no-op (entities are commented out)
+        mock_add_devices.assert_not_called()
 
 
-# from unittest.mock import call
-# from unittest.mock import patch
+class TestBermudaBinarySwitch:
+    """Tests for BermudaBinarySwitch class."""
+
+    def _create_switch(self) -> BermudaBinarySwitch:
+        """Create a BermudaBinarySwitch instance for testing."""
+        mock_coordinator = MagicMock()
+        mock_coordinator.data = {}
+        mock_coordinator.devices = {"test_address": MagicMock()}
+        mock_coordinator.hass = MagicMock()
+
+        mock_config_entry = MagicMock()
+        mock_config_entry.options = {}
+
+        mock_device = MagicMock()
+        mock_device.name = "Test Device"
+        mock_device.unique_id = "test_unique_id"
+        mock_coordinator.devices["test_address"] = mock_device
+
+        # Create the switch without calling __init__ to avoid CoordinatorEntity complexity
+        switch = object.__new__(BermudaBinarySwitch)
+        switch.coordinator = mock_coordinator
+        switch.config_entry = mock_config_entry
+        switch._device = mock_device
+
+        return switch
+
+    def test_name_property(self) -> None:
+        """Test that name property returns correct format."""
+        switch = self._create_switch()
+
+        name = switch.name
+
+        assert name == f"{DEFAULT_NAME}_{SWITCH}"
+
+    def test_icon_property(self) -> None:
+        """Test that icon property returns correct value."""
+        switch = self._create_switch()
+
+        icon = switch.icon
+
+        assert icon == ICON
+
+    def test_is_on_property_returns_true(self) -> None:
+        """Test that is_on property returns True (default implementation)."""
+        switch = self._create_switch()
+
+        is_on = switch.is_on
+
+        assert is_on is True
+
+    @pytest.mark.asyncio
+    async def test_async_turn_on_is_noop(self) -> None:
+        """Test that async_turn_on is currently a no-op."""
+        switch = self._create_switch()
+
+        # Should not raise any exceptions
+        await switch.async_turn_on()
+
+    @pytest.mark.asyncio
+    async def test_async_turn_off_is_noop(self) -> None:
+        """Test that async_turn_off is currently a no-op."""
+        switch = self._create_switch()
+
+        # Should not raise any exceptions
+        await switch.async_turn_off()
+
+    @pytest.mark.asyncio
+    async def test_async_turn_on_with_kwargs(self) -> None:
+        """Test that async_turn_on accepts kwargs."""
+        switch = self._create_switch()
+
+        # Should not raise any exceptions with kwargs
+        await switch.async_turn_on(brightness=100, transition=5)
+
+    @pytest.mark.asyncio
+    async def test_async_turn_off_with_kwargs(self) -> None:
+        """Test that async_turn_off accepts kwargs."""
+        switch = self._create_switch()
+
+        # Should not raise any exceptions with kwargs
+        await switch.async_turn_off(transition=5)
 
 
-# from custom_components.bermuda.const import SWITCH
+class TestSwitchIntegration:
+    """Integration tests for switch module."""
 
-# Not currently used - commenting out
-# async def test_switch_services(hass: HomeAssistant):
-#     """Test switch services."""
-#     # Create a mock entry so we don't have to go through config flow
-#     config_entry = MockConfigEntry(domain=DOMAIN, data=MOCK_CONFIG, entry_id="test")
-#     assert await async_setup_entry(hass, config_entry)
-#     await hass.async_block_till_done()
+    def test_module_imports_correctly(self) -> None:
+        """Test that the module can be imported without errors."""
+        from custom_components.bermuda import switch
 
-# Functions/objects can be patched directly
-# in test code as well and can be used to test
-# additional things, like whether a function
-# was called or what arguments it was called with
-# with patch(
-#     "custom_components.bermuda.BermudaDataUpdateCoordinator.async_set_title"
-# ) as title_func:
-#     await hass.services.async_call(
-#         SWITCH,
-#         SERVICE_TURN_OFF,
-#         service_data={ATTR_ENTITY_ID: f"{SWITCH}.{DEFAULT_NAME}_{SWITCH}"},
-#         blocking=True,
-#     )
-#     assert title_func.called
-#     assert title_func.call_args == call("foo")
+        assert hasattr(switch, "async_setup_entry")
+        assert hasattr(switch, "BermudaBinarySwitch")
+        assert hasattr(switch, "SWITCH")
 
-#     title_func.reset_mock()
+    def test_switch_inherits_from_correct_classes(self) -> None:
+        """Test that BermudaBinarySwitch inherits from required base classes."""
+        from homeassistant.components.switch import SwitchEntity
 
-#     await hass.services.async_call(
-#         SWITCH,
-#         SERVICE_TURN_ON,
-#         service_data={ATTR_ENTITY_ID: f"{SWITCH}.{DEFAULT_NAME}_{SWITCH}"},
-#         blocking=True,
-#     )
-#     assert title_func.called
-#     assert title_func.call_args == call("bar")
+        from custom_components.bermuda.entity import BermudaEntity
+
+        assert issubclass(BermudaBinarySwitch, BermudaEntity)
+        assert issubclass(BermudaBinarySwitch, SwitchEntity)
+
+    def test_switch_constant_value(self) -> None:
+        """Test that SWITCH constant has correct value."""
+        assert SWITCH == "switch"

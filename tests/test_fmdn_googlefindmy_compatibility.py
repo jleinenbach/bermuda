@@ -469,6 +469,6 @@ class TestRegressions:
         # Must be UUID-only, NOT "config_entry_abc:68419b51-..."
         assert extracted == "68419b51-0000-2131-873b-fc411691d329"
         assert "config_entry" not in extracted
-        assert extracted.count(":") == 0 or all(
-            len(part) <= 4 for part in extracted.split(":")
-        ), "Should be UUID format (dash-separated), not colon-prefixed"
+        assert extracted.count(":") == 0 or all(len(part) <= 4 for part in extracted.split(":")), (
+            "Should be UUID format (dash-separated), not colon-prefixed"
+        )

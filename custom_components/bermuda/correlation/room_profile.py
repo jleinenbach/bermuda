@@ -229,5 +229,5 @@ class RoomProfile:
         profile = cls(area_id=data["area_id"])
         for pair_data in data.get("scanner_pairs", []):
             pair = ScannerPairCorrelation.from_dict(pair_data)
-            profile._scanner_pairs[pair.scanner_address] = pair  # noqa: SLF001
+            profile._scanner_pairs[pair.scanner_address] = pair
         return profile

@@ -1116,7 +1116,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         # BUG 17 DEBUG: Log button sample counts after training
         trained_profile = self.correlations[normalized_address][target_area_id]
         btn_counts = []
-        for scanner_addr, abs_prof in trained_profile._absolute_profiles.items():  # noqa: SLF001
+        for scanner_addr, abs_prof in trained_profile._absolute_profiles.items():
             btn_counts.append(f"{scanner_addr[-8:]}:{abs_prof.button_sample_count}")
         _LOGGER.info(
             "Trained fingerprint (button) for %s in area %s with %d scanners. "
@@ -1304,7 +1304,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                 for area_id, profile in areas.items():
                     if profile.has_button_training:
                         btn_counts = []
-                        for scanner, abs_p in profile._absolute_profiles.items():  # noqa: SLF001
+                        for scanner, abs_p in profile._absolute_profiles.items():
                             if abs_p.button_sample_count > 0:
                                 btn_counts.append(f"{scanner[-8:]}:{abs_p.button_sample_count}")
                         _LOGGER.info(
@@ -1787,7 +1787,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
     def _refresh_area_by_min_distance(self, device: BermudaDevice) -> None:
         """Delegate to area_selection handler for min-distance area detection."""
-        self.area_selection._refresh_area_by_min_distance(device)  # noqa: SLF001
+        self.area_selection._refresh_area_by_min_distance(device)
 
     def _refresh_scanners(self, force=False):
         """

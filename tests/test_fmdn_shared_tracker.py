@@ -270,12 +270,12 @@ class TestSharedTrackerCacheLookup:
         metadevice_b = coordinator.metadevices[address_b]
 
         # CRITICAL: Each metadevice should have the correct fmdn_device_id
-        assert (
-            metadevice_a.fmdn_device_id == ACCOUNT_A_DEVICE_ID
-        ), f"Account A metadevice has wrong device_id: {metadevice_a.fmdn_device_id}"
-        assert (
-            metadevice_b.fmdn_device_id == ACCOUNT_B_DEVICE_ID
-        ), f"Account B metadevice has wrong device_id: {metadevice_b.fmdn_device_id}"
+        assert metadevice_a.fmdn_device_id == ACCOUNT_A_DEVICE_ID, (
+            f"Account A metadevice has wrong device_id: {metadevice_a.fmdn_device_id}"
+        )
+        assert metadevice_b.fmdn_device_id == ACCOUNT_B_DEVICE_ID, (
+            f"Account B metadevice has wrong device_id: {metadevice_b.fmdn_device_id}"
+        )
 
 
 class TestSharedTrackerConfigFlowVisibility:
@@ -365,12 +365,12 @@ class TestSharedTrackerSourceLinking:
         metadevice_b = coordinator.metadevices[address_b]
 
         # Verify source linkage
-        assert (
-            source_a.address in metadevice_a.metadevice_sources
-        ), f"Source A '{source_a.address}' not linked to Account A metadevice"
-        assert (
-            source_b.address in metadevice_b.metadevice_sources
-        ), f"Source B '{source_b.address}' not linked to Account B metadevice"
+        assert source_a.address in metadevice_a.metadevice_sources, (
+            f"Source A '{source_a.address}' not linked to Account A metadevice"
+        )
+        assert source_b.address in metadevice_b.metadevice_sources, (
+            f"Source B '{source_b.address}' not linked to Account B metadevice"
+        )
 
 
 class TestSharedTrackerMetadeviceAttributes:
@@ -463,9 +463,9 @@ class TestResolveEidAllWithSharedTrackers:
         metadevice_a = coordinator.metadevices[address_a]
         metadevice_b = coordinator.metadevices[address_b]
 
-        assert (
-            source_device.address in metadevice_a.metadevice_sources
-        ), "Source should be linked to Account A metadevice"
-        assert (
-            source_device.address in metadevice_b.metadevice_sources
-        ), "Source should be linked to Account B metadevice"
+        assert source_device.address in metadevice_a.metadevice_sources, (
+            "Source should be linked to Account A metadevice"
+        )
+        assert source_device.address in metadevice_b.metadevice_sources, (
+            "Source should be linked to Account B metadevice"
+        )

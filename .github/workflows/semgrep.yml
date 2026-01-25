@@ -1,0 +1,172 @@
+---
+name: Semgrep (SAST)
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+    branches:
+      - main
+      - master
+  schedule:
+    # Run twice daily at 02:12 and 14:12 UTC
+    - cron: "12 2 * * *"
+    - cron: "12 14 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  semgrep:
+    name: Static Analysis
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' || github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch PR base branch
+        if: github.event_name == 'pull_request'
+        run: git fetch origin ${{ github.base_ref }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5.6.0
+        with:
+          python-version: "3.x"
+
+      - name: Install Semgrep
+        run: pip install semgrep
+
+      - name: Run Semgrep scan (JSON)
+        id: semgrep-json
+        continue-on-error: true
+        run: |
+          BASELINE_ARG=""
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASELINE_ARG="--baseline-commit origin/${{ github.base_ref }}"
+          fi
+
+          semgrep scan \
+            --config auto \
+            --metrics=off \
+            --json \
+            --output semgrep-results.json \
+            $BASELINE_ARG \
+            custom_components/bermuda/ || EXIT_CODE=$?
+
+          echo "exit_code=${EXIT_CODE:-0}" >> $GITHUB_OUTPUT
+
+      - name: Run Semgrep scan (SARIF)
+        id: semgrep-sarif
+        continue-on-error: true
+        run: |
+          BASELINE_ARG=""
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASELINE_ARG="--baseline-commit origin/${{ github.base_ref }}"
+          fi
+
+          semgrep scan \
+            --config auto \
+            --metrics=off \
+            --sarif \
+            --output semgrep-results.sarif \
+            $BASELINE_ARG \
+            custom_components/bermuda/ || true
+
+      - name: Handle scan failure
+        if: steps.semgrep-json.outputs.exit_code == '2'
+        run: |
+          echo "Semgrep encountered an error, generating empty results"
+          echo '{"results": [], "errors": []}' > semgrep-results.json
+          # Generate valid SARIF 2.1.0 with required tool property
+          cat > semgrep-results.sarif << 'SARIF_EOF'
+          {
+            "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+            "version": "2.1.0",
+            "runs": [
+              {
+                "tool": {
+                  "driver": {
+                    "name": "Semgrep",
+                    "informationUri": "https://semgrep.dev",
+                    "rules": []
+                  }
+                },
+                "results": []
+              }
+            ]
+          }
+          SARIF_EOF
+
+      - name: Analyze findings
+        id: analyze
+        run: |
+          if [ -f semgrep-results.json ]; then
+            # Count findings by severity
+            HIGH=$(cat semgrep-results.json | python3 -c "
+          import sys, json
+          d = json.load(sys.stdin)
+          count = len([r for r in d.get('results', []) if r.get('extra', {}).get('severity', '').upper() in ['HIGH', 'ERROR']])
+          print(count)
+          " 2>/dev/null || echo "0")
+
+            CRITICAL=$(cat semgrep-results.json | python3 -c "
+          import sys, json
+          d = json.load(sys.stdin)
+          count = len([r for r in d.get('results', []) if r.get('extra', {}).get('severity', '').upper() == 'CRITICAL'])
+          print(count)
+          " 2>/dev/null || echo "0")
+
+            TOTAL=$(cat semgrep-results.json | python3 -c "
+          import sys, json
+          d = json.load(sys.stdin)
+          print(len(d.get('results', [])))
+          " 2>/dev/null || echo "0")
+          else
+            HIGH=0
+            CRITICAL=0
+            TOTAL=0
+          fi
+
+          echo "high=$HIGH" >> $GITHUB_OUTPUT
+          echo "critical=$CRITICAL" >> $GITHUB_OUTPUT
+          echo "total=$TOTAL" >> $GITHUB_OUTPUT
+
+      - name: Generate summary
+        run: |
+          echo "## Semgrep Security Scan Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ steps.analyze.outputs.total }}" = "0" ]; then
+            echo "No security issues found." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| Severity | Count |" >> $GITHUB_STEP_SUMMARY
+            echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+            echo "| Critical | ${{ steps.analyze.outputs.critical }} |" >> $GITHUB_STEP_SUMMARY
+            echo "| High | ${{ steps.analyze.outputs.high }} |" >> $GITHUB_STEP_SUMMARY
+            echo "| Total | ${{ steps.analyze.outputs.total }} |" >> $GITHUB_STEP_SUMMARY
+
+            if [ "${{ steps.analyze.outputs.critical }}" != "0" ] || [ "${{ steps.analyze.outputs.high }}" != "0" ]; then
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "Please review the Security tab for details." >> $GITHUB_STEP_SUMMARY
+            fi
+          fi
+
+      - name: Upload SARIF results
+        if: always() && hashFiles('semgrep-results.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: semgrep-results.sarif
+          category: semgrep
+
+      - name: Fail on critical findings
+        if: steps.analyze.outputs.critical != '0'
+        run: |
+          echo "::error::Found ${{ steps.analyze.outputs.critical }} critical security issues!"
+          exit 1

@@ -86,8 +86,7 @@ class CorrelationStore:
             CorrelationData with device_profiles and room_profiles.
 
         """
-        # pylint: disable=import-outside-toplevel
-        from homeassistant.helpers.storage import Store
+        from homeassistant.helpers.storage import Store  # noqa: PLC0415
 
         self._store = Store(
             self._hass,
@@ -117,8 +116,7 @@ class CorrelationStore:
 
         """
         if self._store is None:
-            # pylint: disable=import-outside-toplevel
-            from homeassistant.helpers.storage import Store
+            from homeassistant.helpers.storage import Store  # noqa: PLC0415
 
             self._store = Store(
                 self._hass,

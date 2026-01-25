@@ -767,7 +767,7 @@ class UnscentedKalmanFilter(SignalFilter):
 
                 for i, addr in enumerate(self.scanner_addresses):
                     if hasattr(profile, "_absolute_profiles"):
-                        abs_profiles = profile._absolute_profiles  # noqa: SLF001
+                        abs_profiles = profile._absolute_profiles
                         if addr in abs_profiles:
                             abs_profile = abs_profiles[addr]
                             if hasattr(abs_profile, "is_mature") and abs_profile.is_mature:

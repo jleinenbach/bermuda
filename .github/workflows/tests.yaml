@@ -1,4 +1,5 @@
-name: Linting
+---
+name: CI
 
 on:
   push:
@@ -11,12 +12,12 @@ on:
     - cron: "0 0 * * *"
 
 env:
-  DEFAULT_PYTHON: 3.13
+  DEFAULT_PYTHON: "3.13"
   UV_SYSTEM_PYTHON: 1
 
 jobs:
   linting:
-    runs-on: "ubuntu-latest"
+    runs-on: ubuntu-latest
     name: Linting
     steps:
       - name: Check out the repository
@@ -25,7 +26,6 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v6
         with:
-          # Install a specific version of uv.
           version: "0.7.9"
           enable-cache: true
 
@@ -39,7 +39,7 @@ jobs:
         run: |
           uv pip install --constraint=.github/workflows/constraints.txt pre-commit
 
-      - name: "Install requirements"
+      - name: Install requirements
         run: uv pip install -r requirements.txt
 
       - name: Run pre-commit on all files
@@ -47,51 +47,114 @@ jobs:
           pre-commit run --all-files --show-diff-on-failure --color=always
 
   hacs:
-    runs-on: "ubuntu-latest"
+    runs-on: ubuntu-latest
     name: HACS
     steps:
       - name: Check out the repository
-        uses: "actions/checkout@v4"
+        uses: actions/checkout@v4
 
       - name: Install uv
         uses: astral-sh/setup-uv@v6
         with:
-          # Install a specific version of uv.
           version: "0.7.9"
           enable-cache: true
 
       - name: HACS validation
-        uses: "hacs/action@22.5.0"
+        uses: hacs/action@22.5.0
         with:
-          category: "integration"
+          category: integration
           ignore: brands
 
   hassfest:
-    runs-on: "ubuntu-latest"
+    runs-on: ubuntu-latest
     name: Hassfest
     steps:
       - name: Check out the repository
-        uses: "actions/checkout@v4"
+        uses: actions/checkout@v4
 
       - name: Hassfest validation
-        uses: "home-assistant/actions/hassfest@master"
+        uses: home-assistant/actions/hassfest@master
 
-  tests:
-    runs-on: "ubuntu-latest"
-    name: Run tests
+  bandit:
+    runs-on: ubuntu-latest
+    name: Security (Bandit)
     steps:
-      - name: Check out code from GitHub
-        uses: "actions/checkout@v4"
+      - name: Check out the repository
+        uses: actions/checkout@v4
 
       - name: Install uv
         uses: astral-sh/setup-uv@v6
         with:
-          # Install a specific version of uv.
+          version: "0.7.9"
+          enable-cache: true
+
+      - name: Set up Python ${{ env.DEFAULT_PYTHON }}
+        uses: actions/setup-python@v5.6.0
+        with:
+          python-version: ${{ env.DEFAULT_PYTHON }}
+
+      - name: Install Bandit
+        run: uv pip install bandit[toml]
+
+      - name: Run Bandit security scan
+        id: bandit
+        continue-on-error: true
+        run: |
+          bandit -r custom_components/bermuda/ \
+            --format json \
+            --output bandit-results.json \
+            -ll \
+            --skip B101 || true
+
+          # Count issues
+          if [ -f bandit-results.json ]; then
+            HIGH=$(cat bandit-results.json | python3 -c "import sys,json; d=json.load(sys.stdin); print(len([r for r in d.get('results', []) if r.get('issue_severity') == 'HIGH']))" 2>/dev/null || echo "0")
+            MEDIUM=$(cat bandit-results.json | python3 -c "import sys,json; d=json.load(sys.stdin); print(len([r for r in d.get('results', []) if r.get('issue_severity') == 'MEDIUM']))" 2>/dev/null || echo "0")
+          else
+            HIGH=0
+            MEDIUM=0
+          fi
+
+          echo "high=$HIGH" >> $GITHUB_OUTPUT
+          echo "medium=$MEDIUM" >> $GITHUB_OUTPUT
+
+      - name: Generate summary
+        run: |
+          echo "## Bandit Security Scan" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Severity | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| High | ${{ steps.bandit.outputs.high }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Medium | ${{ steps.bandit.outputs.medium }} |" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ steps.bandit.outputs.high }}" != "0" ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### High Severity Issues" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            bandit -r custom_components/bermuda/ -ll --skip B101 -f txt 2>/dev/null | head -100 || true
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Warn on high severity issues
+        if: steps.bandit.outputs.high != '0'
+        run: |
+          echo "::warning::Found ${{ steps.bandit.outputs.high }} high severity security issues"
+
+  tests:
+    runs-on: ubuntu-latest
+    name: Tests
+    steps:
+      - name: Check out code from GitHub
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
           version: "0.7.9"
           enable-cache: true
 
       - name: Setup Python ${{ env.DEFAULT_PYTHON }}
-        uses: "actions/setup-python@v5.6.0"
+        uses: actions/setup-python@v5.6.0
         with:
           python-version: ${{ env.DEFAULT_PYTHON }}
 
@@ -99,11 +162,73 @@ jobs:
         run: |
           uv pip install --constraint=.github/workflows/constraints.txt pip
           uv pip install -r requirements_test.txt
-      - name: Tests suite
+
+      - name: Run tests with coverage
         run: |
           pytest \
             --timeout=9 \
             --durations=10 \
             -n auto \
             -p no:sugar \
+            --cov=custom_components/bermuda \
+            --cov-report=xml \
+            --cov-report=term-missing \
             tests
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: ./coverage.xml
+          fail_ci_if_error: false
+          verbose: true
+
+  ci-success:
+    name: CI Success
+    runs-on: ubuntu-latest
+    needs:
+      - linting
+      - hacs
+      - hassfest
+      - bandit
+      - tests
+    if: always()
+    steps:
+      - name: Check all job results
+        run: |
+          echo "## CI Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Job | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Linting | ${{ needs.linting.result == 'success' && '✅' || '❌' }} ${{ needs.linting.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| HACS | ${{ needs.hacs.result == 'success' && '✅' || '❌' }} ${{ needs.hacs.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Hassfest | ${{ needs.hassfest.result == 'success' && '✅' || '❌' }} ${{ needs.hassfest.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Bandit | ${{ needs.bandit.result == 'success' && '✅' || '⚠️' }} ${{ needs.bandit.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Tests | ${{ needs.tests.result == 'success' && '✅' || '❌' }} ${{ needs.tests.result }} |" >> $GITHUB_STEP_SUMMARY
+
+      - name: Determine overall status
+        run: |
+          # Required jobs that must pass
+          if [ "${{ needs.linting.result }}" != "success" ]; then
+            echo "::error::Linting failed"
+            exit 1
+          fi
+          if [ "${{ needs.hacs.result }}" != "success" ]; then
+            echo "::error::HACS validation failed"
+            exit 1
+          fi
+          if [ "${{ needs.hassfest.result }}" != "success" ]; then
+            echo "::error::Hassfest validation failed"
+            exit 1
+          fi
+          if [ "${{ needs.tests.result }}" != "success" ]; then
+            echo "::error::Tests failed"
+            exit 1
+          fi
+
+          # Bandit is informational (doesn't block)
+          if [ "${{ needs.bandit.result }}" != "success" ]; then
+            echo "::warning::Bandit security scan had issues (non-blocking)"
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "✅ **All required checks passed**" >> $GITHUB_STEP_SUMMARY

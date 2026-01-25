@@ -610,7 +610,7 @@ class BermudaDevice:
                 raw_stamps = self._hascanner.discovered_device_timestamps  # type: ignore
             else:
                 # pylint: disable=W0212,C0301
-                raw_stamps = self._hascanner._discovered_device_timestamps  # type: ignore # noqa: SLF001
+                raw_stamps = self._hascanner._discovered_device_timestamps  # type: ignore
 
             if raw_stamps is not None:
                 normalized: dict[str, float] = {}

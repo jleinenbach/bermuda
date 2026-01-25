@@ -170,9 +170,9 @@ def create_filter(
 
     """
     # Lazy imports to avoid circular dependencies
-    from .adaptive import AdaptiveRobustFilter
-    from .kalman import KalmanFilter
-    from .ukf import UnscentedKalmanFilter
+    from .adaptive import AdaptiveRobustFilter  # noqa: PLC0415
+    from .kalman import KalmanFilter  # noqa: PLC0415
+    from .ukf import UnscentedKalmanFilter  # noqa: PLC0415
 
     config = config or FilterConfig()
 

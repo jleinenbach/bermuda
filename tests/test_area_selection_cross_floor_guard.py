@@ -707,9 +707,9 @@ def test_same_floor_confirmation_allows_strong_switch(monkeypatch: pytest.Monkey
         BermudaDataUpdateCoordinator._refresh_area_by_min_distance(coord, device)  # type: ignore[arg-type]
 
     # Even with same-floor witnesses, such strong evidence should win
-    assert (
-        device.area_advert is challenger
-    ), f"Expected challenger to win with strong evidence. Got area={device.area_name!r}, floor={device.floor_id!r}"
+    assert device.area_advert is challenger, (
+        f"Expected challenger to win with strong evidence. Got area={device.area_name!r}, floor={device.floor_id!r}"
+    )
 
 
 def test_floor_sandwich_logic_blocks_switch(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -807,9 +807,9 @@ def test_floor_sandwich_logic_blocks_switch(monkeypatch: pytest.MonkeyPatch) -> 
 
     # With sandwich logic, the ground floor (middle) should be protected
     # The 50% difference is not enough to overcome the sandwich margin boost
-    assert (
-        device.floor_id == original_floor
-    ), f"Unexpected switch from sandwiched floor. Expected floor={original_floor!r}, got={device.floor_id!r}"
+    assert device.floor_id == original_floor, (
+        f"Unexpected switch from sandwiched floor. Expected floor={original_floor!r}, got={device.floor_id!r}"
+    )
 
 
 def test_non_adjacent_floor_requires_stronger_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -883,9 +883,9 @@ def test_non_adjacent_floor_requires_stronger_evidence(monkeypatch: pytest.Monke
 
     # With floor skip penalty (15% extra margin for skipping 1 floor),
     # the 55% difference should NOT be enough
-    assert (
-        device.floor_id == original_floor
-    ), f"Unexpected switch to non-adjacent floor. Expected floor={original_floor!r}, got={device.floor_id!r}"
+    assert device.floor_id == original_floor, (
+        f"Unexpected switch to non-adjacent floor. Expected floor={original_floor!r}, got={device.floor_id!r}"
+    )
 
 
 def test_challenger_floor_witnesses_penalty(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1110,9 +1110,9 @@ def test_near_field_distance_ratio_protection(monkeypatch: pytest.MonkeyPatch) -
     # 2. Challenger's rssi_distance (1.3m) is tracked - but the key protection
     #    comes from the accumulated margins (base 25% + additional protections)
     # The 35% improvement is borderline but should be blocked by cross-floor guards.
-    assert (
-        device.floor_id == original_floor
-    ), f"Unexpected cross-floor switch despite near-field incumbent at 2m. Got floor={device.floor_id!r}"
+    assert device.floor_id == original_floor, (
+        f"Unexpected cross-floor switch despite near-field incumbent at 2m. Got floor={device.floor_id!r}"
+    )
 
 
 class TestCoVisibilityLearning:
@@ -1308,7 +1308,7 @@ def test_cross_floor_requires_streak_even_when_incumbent_out_of_range(
     )
 
     # The pending state should be set (building streak toward the challenger)
-    assert (
-        device.pending_area_id == challenger.area_id
-    ), "Pending area should be set to challenger while building streak"
+    assert device.pending_area_id == challenger.area_id, (
+        "Pending area should be set to challenger while building streak"
+    )
     assert device.pending_streak >= 1, "Streak should have started building"

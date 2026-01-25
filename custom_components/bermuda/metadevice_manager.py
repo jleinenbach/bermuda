@@ -112,12 +112,12 @@ class MetadeviceManager:
     @property
     def _do_private_device_init(self) -> bool:
         """Check if Private BLE device init is needed."""
-        return self.coordinator._do_private_device_init  # noqa: SLF001
+        return self.coordinator._do_private_device_init
 
     @_do_private_device_init.setter
     def _do_private_device_init(self, value: bool) -> None:
         """Set Private BLE device init flag."""
-        self.coordinator._do_private_device_init = value  # noqa: SLF001
+        self.coordinator._do_private_device_init = value
 
     # =========================================================================
     # Helper methods (delegate to coordinator)
@@ -125,11 +125,11 @@ class MetadeviceManager:
 
     def _get_or_create_device(self, address: str) -> BermudaDevice:
         """Get or create a BermudaDevice by address."""
-        return self.coordinator._get_or_create_device(address)  # noqa: SLF001
+        return self.coordinator._get_or_create_device(address)
 
     def _get_device(self, address: str) -> BermudaDevice | None:
         """Get a BermudaDevice by address (returns None if not found)."""
-        return self.coordinator._get_device(address)  # noqa: SLF001
+        return self.coordinator._get_device(address)
 
     # =========================================================================
     # Main metadevice methods

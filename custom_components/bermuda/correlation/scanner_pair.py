@@ -387,12 +387,12 @@ class ScannerPairCorrelation:
                 msg = "sample_count must be non-negative"
                 raise ValueError(msg)
 
-            corr._kalman_auto.restore_state(  # noqa: SLF001
+            corr._kalman_auto.restore_state(
                 estimate=float(data["auto_estimate"]),
                 variance=auto_var,
                 sample_count=auto_samples,
             )
-            corr._kalman_button.restore_state(  # noqa: SLF001
+            corr._kalman_button.restore_state(
                 estimate=float(data["button_estimate"]),
                 variance=btn_var,
                 sample_count=btn_samples,
@@ -409,7 +409,7 @@ class ScannerPairCorrelation:
                 msg = "sample_count must be non-negative"
                 raise ValueError(msg)
 
-            corr._kalman_auto.restore_state(  # noqa: SLF001
+            corr._kalman_auto.restore_state(
                 estimate=float(data["estimate"]),
                 variance=variance,
                 sample_count=samples,

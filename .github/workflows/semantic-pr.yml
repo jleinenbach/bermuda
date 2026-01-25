@@ -1,0 +1,97 @@
+---
+name: Semantic PR Title
+
+on:
+  pull_request:
+    types:
+      - opened
+      - edited
+      - synchronize
+      - reopened
+
+permissions:
+  pull-requests: read
+
+jobs:
+  validate-pr-title:
+    name: Validate PR Title
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate semantic PR title
+        id: validate
+        uses: amannn/action-semantic-pull-request@v5
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # Conventional Commits types
+          types: |
+            feat
+            fix
+            docs
+            style
+            refactor
+            perf
+            test
+            build
+            ci
+            chore
+            revert
+          # Bermuda-specific scopes (optional)
+          scopes: |
+            deps
+            coordinator
+            config-flow
+            entities
+            services
+            diagnostics
+            discovery
+            fmdn
+            irk
+            ibeacon
+            metadevice
+            filters
+            correlation
+            calibration
+            translations
+            ci
+            release
+          # Require lowercase subject
+          subjectPattern: ^[a-z].*$
+          subjectPatternError: |
+            The subject must start with a lowercase letter.
+          # Allow WIP PRs to bypass validation
+          ignoreLabels: |
+            wip
+            work in progress
+            skip-semantic-pr
+            automated-pr
+            dependencies
+
+      - name: Generate summary
+        run: |
+          echo "## PR Title Validation" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ steps.validate.outcome }}" = "success" ]; then
+            echo "✅ PR title follows Conventional Commits format" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ PR title does not follow Conventional Commits format" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### Expected format" >> $GITHUB_STEP_SUMMARY
+            echo "\`type(scope): description\`" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### Examples" >> $GITHUB_STEP_SUMMARY
+            echo "- \`feat(fmdn): add support for shared trackers\`" >> $GITHUB_STEP_SUMMARY
+            echo "- \`fix(coordinator): resolve memory leak in pruning\`" >> $GITHUB_STEP_SUMMARY
+            echo "- \`docs: update installation instructions\`" >> $GITHUB_STEP_SUMMARY
+            echo "- \`chore(deps): update dependencies\`" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### Valid types" >> $GITHUB_STEP_SUMMARY
+            echo "\`feat\`, \`fix\`, \`docs\`, \`style\`, \`refactor\`, \`perf\`, \`test\`, \`build\`, \`ci\`, \`chore\`, \`revert\`" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### Valid scopes (optional)" >> $GITHUB_STEP_SUMMARY
+            echo "\`coordinator\`, \`config-flow\`, \`entities\`, \`fmdn\`, \`irk\`, \`ibeacon\`, \`metadevice\`, \`filters\`, \`correlation\`, \`calibration\`, \`diagnostics\`, \`services\`, \`translations\`, \`deps\`, \`ci\`, \`release\`" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "_Note: This check is informational and does not block merging._" >> $GITHUB_STEP_SUMMARY
+          fi

@@ -1,0 +1,80 @@
+---
+name: Semgrep Auto-Fix
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Run monthly on the first Monday at 04:00 UTC
+    - cron: "0 4 1-7 * 1"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  autofix:
+    name: Apply Semgrep Auto-Fixes
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5.6.0
+        with:
+          python-version: "3.x"
+
+      - name: Install Semgrep
+        run: pip install semgrep
+
+      - name: Run Semgrep with autofix
+        run: |
+          semgrep scan \
+            --config auto \
+            --metrics=off \
+            --autofix \
+            custom_components/bermuda/ || true
+
+      - name: Check for changes
+        id: changes
+        run: |
+          if git diff --quiet; then
+            echo "changed=false" >> $GITHUB_OUTPUT
+            echo "No changes to commit"
+          else
+            echo "changed=true" >> $GITHUB_OUTPUT
+            echo "Changes detected:"
+            git diff --stat
+          fi
+
+      - name: Create Pull Request
+        if: steps.changes.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          commit-message: "chore: apply Semgrep auto-fixes"
+          title: "chore: Apply Semgrep auto-fixes"
+          body: |
+            ## Automated Code Quality Improvements
+
+            This PR was automatically created by the Semgrep autofix workflow.
+
+            **What changed:**
+            Semgrep detected code patterns that can be automatically improved for:
+            - Security best practices
+            - Code quality
+            - Performance optimizations
+
+            **Review notes:**
+            - Please review each change carefully
+            - These are automated suggestions that may need human judgment
+            - Some changes might affect behavior in edge cases
+
+            ---
+            _This is an automated PR. See the [semgrep-autofix workflow](.github/workflows/semgrep-autofix.yml) for details._
+          branch: chore/semgrep-autofix
+          labels: |
+            code-quality
+            automated-pr
+          delete-branch: true

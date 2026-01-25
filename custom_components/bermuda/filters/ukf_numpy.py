@@ -62,7 +62,7 @@ def _get_numpy() -> Any:
         return _numpy
 
     try:
-        import numpy as np
+        import numpy as np  # noqa: PLC0415
 
         _numpy = np
         _LOGGER.debug("NumPy backend available for UKF acceleration (version %s)", np.__version__)
