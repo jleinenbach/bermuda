@@ -156,39 +156,40 @@ class TestScannerCalibrationManager:
         manager = ScannerCalibrationManager()
         nowstamp = 1000.0
 
-        # A sees B at -55, B sees A at -65
-        # Difference is 10 dB, so A receives 5 dB stronger, B receives 5 dB weaker
-        # A needs offset -5, B needs offset +5
+        # A sees B at -55, B sees A at -65 (diff=10, A is 5dB stronger)
+        # With median-based aggregation:
+        # - A is the outlier (stronger than all peers) → gets offset -5
+        # - B, C, D are equal to each other (majority) → get offset 0
         # Need 4 scanners (3 pairs each) with CONSISTENT data to meet confidence threshold (70%)
-        # Consistent means: A is 5dB stronger than B, B is 5dB stronger than C, C is 5dB stronger than D
         for i in range(150):  # More samples for higher confidence
             # A-B: A is 5dB stronger (diff=10)
             manager.update_cross_visibility("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb", -55.0, timestamp=nowstamp + i)
             manager.update_cross_visibility("bb:bb:bb:bb:bb:bb", "aa:aa:aa:aa:aa:aa", -65.0, timestamp=nowstamp + i)
-            # A-C: A is 5dB stronger (diff=10) - consistent with A-B
+            # A-C: A is 5dB stronger (diff=10)
             manager.update_cross_visibility("aa:aa:aa:aa:aa:aa", "cc:cc:cc:cc:cc:cc", -55.0, timestamp=nowstamp + i)
             manager.update_cross_visibility("cc:cc:cc:cc:cc:cc", "aa:aa:aa:aa:aa:aa", -65.0, timestamp=nowstamp + i)
-            # A-D: A is 5dB stronger (diff=10) - consistent
+            # A-D: A is 5dB stronger (diff=10)
             manager.update_cross_visibility("aa:aa:aa:aa:aa:aa", "dd:dd:dd:dd:dd:dd", -55.0, timestamp=nowstamp + i)
             manager.update_cross_visibility("dd:dd:dd:dd:dd:dd", "aa:aa:aa:aa:aa:aa", -65.0, timestamp=nowstamp + i)
-            # B-C: B is 5dB stronger than C (diff=10) - implies C is 10dB weaker than A
-            manager.update_cross_visibility("bb:bb:bb:bb:bb:bb", "cc:cc:cc:cc:cc:cc", -55.0, timestamp=nowstamp + i)
-            manager.update_cross_visibility("cc:cc:cc:cc:cc:cc", "bb:bb:bb:bb:bb:bb", -65.0, timestamp=nowstamp + i)
-            # B-D: B equal to D (diff=0)
+            # B-C: B and C are equal (diff=0)
+            manager.update_cross_visibility("bb:bb:bb:bb:bb:bb", "cc:cc:cc:cc:cc:cc", -60.0, timestamp=nowstamp + i)
+            manager.update_cross_visibility("cc:cc:cc:cc:cc:cc", "bb:bb:bb:bb:bb:bb", -60.0, timestamp=nowstamp + i)
+            # B-D: B and D are equal (diff=0)
             manager.update_cross_visibility("bb:bb:bb:bb:bb:bb", "dd:dd:dd:dd:dd:dd", -60.0, timestamp=nowstamp + i)
             manager.update_cross_visibility("dd:dd:dd:dd:dd:dd", "bb:bb:bb:bb:bb:bb", -60.0, timestamp=nowstamp + i)
-            # C-D: D is 5dB stronger than C (diff=10)
-            manager.update_cross_visibility("cc:cc:cc:cc:cc:cc", "dd:dd:dd:dd:dd:dd", -65.0, timestamp=nowstamp + i)
-            manager.update_cross_visibility("dd:dd:dd:dd:dd:dd", "cc:cc:cc:cc:cc:cc", -55.0, timestamp=nowstamp + i)
+            # C-D: C and D are equal (diff=0)
+            manager.update_cross_visibility("cc:cc:cc:cc:cc:cc", "dd:dd:dd:dd:dd:dd", -60.0, timestamp=nowstamp + i)
+            manager.update_cross_visibility("dd:dd:dd:dd:dd:dd", "cc:cc:cc:cc:cc:cc", -60.0, timestamp=nowstamp + i)
 
         offsets = manager.calculate_suggested_offsets(nowstamp=nowstamp + 150)
 
         assert "aa:aa:aa:aa:aa:aa" in offsets
         assert "bb:bb:bb:bb:bb:bb" in offsets
-        # A receives stronger, so needs negative offset to compensate
+        # A is the outlier (stronger than all), needs negative offset
         assert offsets["aa:aa:aa:aa:aa:aa"] == -5
-        # B receives weaker, so needs positive offset to compensate
-        assert offsets["bb:bb:bb:bb:bb:bb"] == 5
+        # B is in the majority (equal to C, D), median-based algorithm gives 0
+        # B's contributions: from A pair=-5, from C pair=0, from D pair=0 → median=0
+        assert offsets["bb:bb:bb:bb:bb:bb"] == 0
 
     def test_calculate_suggested_offsets_multiple_pairs(self) -> None:
         """Test offset calculation with multiple scanner pairs."""
@@ -258,9 +259,11 @@ class TestScannerCalibrationManager:
         # Check that values are integers (rounded)
         assert isinstance(offsets["aa:aa:aa:aa:aa:aa"], int)
         assert isinstance(offsets["bb:bb:bb:bb:bb:bb"], int)
-        # 7/2 = 3.5, rounds to 4
+        # 7/2 = 3.5, rounds to 4 for A (the outlier)
+        # B, C, D are equal to each other (diff=0), so they form the majority baseline
+        # With median-based aggregation: B's contributions = [-4, 0, 0] → median = 0
         assert offsets["aa:aa:aa:aa:aa:aa"] == -4
-        assert offsets["bb:bb:bb:bb:bb:bb"] == 4
+        assert offsets["bb:bb:bb:bb:bb:bb"] == 0
 
     def test_get_scanner_pair_info(self) -> None:
         """Test getting scanner pair info for diagnostics."""
@@ -446,8 +449,11 @@ class TestUpdateScannerCalibration:
 
         assert "aa:aa:aa:aa:aa:aa" in offsets
         assert "bb:bb:bb:bb:bb:bb" in offsets
+        # A is the outlier (5dB stronger than all others) → gets offset -5
+        # B, C, D are equal to each other (diff=0), forming the majority baseline
+        # With median-based aggregation: B's contributions = [-5, 0, 0] → median = 0
         assert offsets["aa:aa:aa:aa:aa:aa"] == -5
-        assert offsets["bb:bb:bb:bb:bb:bb"] == 5
+        assert offsets["bb:bb:bb:bb:bb:bb"] == 0
 
     def test_fallback_to_raw_rssi(self) -> None:
         """Test fallback to raw RSSI when filtered is not available."""
