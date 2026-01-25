@@ -84,7 +84,25 @@ jobs:
         run: |
           echo "Semgrep encountered an error, generating empty results"
           echo '{"results": [], "errors": []}' > semgrep-results.json
-          echo '{"runs": [{"results": []}]}' > semgrep-results.sarif
+          # Generate valid SARIF 2.1.0 with required tool property
+          cat > semgrep-results.sarif << 'SARIF_EOF'
+          {
+            "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+            "version": "2.1.0",
+            "runs": [
+              {
+                "tool": {
+                  "driver": {
+                    "name": "Semgrep",
+                    "informationUri": "https://semgrep.dev",
+                    "rules": []
+                  }
+                },
+                "results": []
+              }
+            ]
+          }
+          SARIF_EOF
 
       - name: Analyze findings
         id: analyze
@@ -142,7 +160,7 @@ jobs:
 
       - name: Upload SARIF results
         if: always() && hashFiles('semgrep-results.sarif') != ''
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: semgrep-results.sarif
           category: semgrep
