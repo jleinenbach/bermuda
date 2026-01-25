@@ -211,12 +211,8 @@ class TestKnownMacs:
         resolved_irk = b"\x01" * 16
         unresolved_irk = IrkTypes.NO_KNOWN_IRK_MATCH.value
 
-        manager._macs["AA:BB:CC:DD:EE:01"] = ResolvableMAC(
-            mac="AA:BB:CC:DD:EE:01", expires=9999999, irk=resolved_irk
-        )
-        manager._macs["AA:BB:CC:DD:EE:02"] = ResolvableMAC(
-            mac="AA:BB:CC:DD:EE:02", expires=9999999, irk=unresolved_irk
-        )
+        manager._macs["AA:BB:CC:DD:EE:01"] = ResolvableMAC(mac="AA:BB:CC:DD:EE:01", expires=9999999, irk=resolved_irk)
+        manager._macs["AA:BB:CC:DD:EE:02"] = ResolvableMAC(mac="AA:BB:CC:DD:EE:02", expires=9999999, irk=unresolved_irk)
 
         result = manager.known_macs(resolved=True)
 
@@ -230,12 +226,8 @@ class TestKnownMacs:
         resolved_irk = b"\x01" * 16
         unresolved_irk = IrkTypes.NO_KNOWN_IRK_MATCH.value
 
-        manager._macs["AA:BB:CC:DD:EE:01"] = ResolvableMAC(
-            mac="AA:BB:CC:DD:EE:01", expires=9999999, irk=resolved_irk
-        )
-        manager._macs["AA:BB:CC:DD:EE:02"] = ResolvableMAC(
-            mac="AA:BB:CC:DD:EE:02", expires=9999999, irk=unresolved_irk
-        )
+        manager._macs["AA:BB:CC:DD:EE:01"] = ResolvableMAC(mac="AA:BB:CC:DD:EE:01", expires=9999999, irk=resolved_irk)
+        manager._macs["AA:BB:CC:DD:EE:02"] = ResolvableMAC(mac="AA:BB:CC:DD:EE:02", expires=9999999, irk=unresolved_irk)
 
         result = manager.known_macs(resolved=False)
 
@@ -311,8 +303,10 @@ class TestFireCallbacks:
 
         manager._irk_callbacks[irk] = [callback]
 
-        with patch("custom_components.bermuda.bermuda_irk.MAJOR_VERSION", 2025), \
-             patch("custom_components.bermuda.bermuda_irk.MINOR_VERSION", 8):
+        with (
+            patch("custom_components.bermuda.bermuda_irk.MAJOR_VERSION", 2025),
+            patch("custom_components.bermuda.bermuda_irk.MINOR_VERSION", 8),
+        ):
             manager.fire_callbacks(irk, mac)
 
         callback.assert_called_once()
@@ -327,8 +321,10 @@ class TestFireCallbacks:
         mac = "AA:BB:CC:DD:EE:FF"
 
         # Should not raise
-        with patch("custom_components.bermuda.bermuda_irk.MAJOR_VERSION", 2025), \
-             patch("custom_components.bermuda.bermuda_irk.MINOR_VERSION", 8):
+        with (
+            patch("custom_components.bermuda.bermuda_irk.MAJOR_VERSION", 2025),
+            patch("custom_components.bermuda.bermuda_irk.MINOR_VERSION", 8),
+        ):
             manager.fire_callbacks(irk, mac)
 
 
@@ -341,8 +337,10 @@ class TestRegisterIrkCallback:
         irk = b"\x01" * 16
         callback = MagicMock()
 
-        with patch("custom_components.bermuda.bermuda_irk.MAJOR_VERSION", 2025), \
-             patch("custom_components.bermuda.bermuda_irk.MINOR_VERSION", 8):
+        with (
+            patch("custom_components.bermuda.bermuda_irk.MAJOR_VERSION", 2025),
+            patch("custom_components.bermuda.bermuda_irk.MINOR_VERSION", 8),
+        ):
             unsubscribe = manager.register_irk_callback(callback, irk)
 
         assert irk in manager._irk_callbacks
@@ -355,8 +353,10 @@ class TestRegisterIrkCallback:
         irk = b"\x01" * 16
         callback = MagicMock()
 
-        with patch("custom_components.bermuda.bermuda_irk.MAJOR_VERSION", 2025), \
-             patch("custom_components.bermuda.bermuda_irk.MINOR_VERSION", 8):
+        with (
+            patch("custom_components.bermuda.bermuda_irk.MAJOR_VERSION", 2025),
+            patch("custom_components.bermuda.bermuda_irk.MINOR_VERSION", 8),
+        ):
             unsubscribe = manager.register_irk_callback(callback, irk)
             unsubscribe()
 
@@ -373,8 +373,10 @@ class TestRegisterIrkCallback:
         manager._macs[mac] = ResolvableMAC(mac=mac, expires=9999999, irk=irk)
         manager._irks[irk] = MagicMock()  # Add the IRK too
 
-        with patch("custom_components.bermuda.bermuda_irk.MAJOR_VERSION", 2025), \
-             patch("custom_components.bermuda.bermuda_irk.MINOR_VERSION", 8):
+        with (
+            patch("custom_components.bermuda.bermuda_irk.MAJOR_VERSION", 2025),
+            patch("custom_components.bermuda.bermuda_irk.MINOR_VERSION", 8),
+        ):
             manager.register_irk_callback(callback, irk)
 
         callback.assert_called()
@@ -409,9 +411,7 @@ class TestGetDiagnosticsNoRedactions:
         mac = "AA:BB:CC:DD:EE:FF"
         nowstamp = monotonic_time_coarse()
 
-        manager._macs[mac] = ResolvableMAC(
-            mac=mac, expires=int(nowstamp + 1000), irk=irk
-        )
+        manager._macs[mac] = ResolvableMAC(mac=mac, expires=int(nowstamp + 1000), irk=irk)
 
         result = manager.get_diagnostics_no_redactions()
 
@@ -439,9 +439,7 @@ class TestGetDiagnosticsNoRedactions:
         mac = "AA:BB:CC:DD:EE:FF"
         nowstamp = monotonic_time_coarse()
 
-        manager._macs[mac] = ResolvableMAC(
-            mac=mac, expires=int(nowstamp + 1000), irk=IrkTypes.NO_KNOWN_IRK_MATCH.value
-        )
+        manager._macs[mac] = ResolvableMAC(mac=mac, expires=int(nowstamp + 1000), irk=IrkTypes.NO_KNOWN_IRK_MATCH.value)
 
         result = manager.get_diagnostics_no_redactions()
 
@@ -522,9 +520,11 @@ class TestValidateMacIrk:
         cipher = MagicMock()
         manager._irks[irk] = cipher
 
-        with patch("custom_components.bermuda.bermuda_irk.resolve_private_address", return_value=True), \
-             patch("custom_components.bermuda.bermuda_irk.MAJOR_VERSION", 2025), \
-             patch("custom_components.bermuda.bermuda_irk.MINOR_VERSION", 8):
+        with (
+            patch("custom_components.bermuda.bermuda_irk.resolve_private_address", return_value=True),
+            patch("custom_components.bermuda.bermuda_irk.MAJOR_VERSION", 2025),
+            patch("custom_components.bermuda.bermuda_irk.MINOR_VERSION", 8),
+        ):
             result = manager._validate_mac_irk(mac, irk, cipher)
 
         assert result == irk
@@ -570,9 +570,11 @@ class TestIrkManagerIntegration:
         assert irk in manager._irks
 
         # Step 2: Scan device with matching IRK
-        with patch("custom_components.bermuda.bermuda_irk.resolve_private_address", return_value=True), \
-             patch("custom_components.bermuda.bermuda_irk.MAJOR_VERSION", 2025), \
-             patch("custom_components.bermuda.bermuda_irk.MINOR_VERSION", 8):
+        with (
+            patch("custom_components.bermuda.bermuda_irk.resolve_private_address", return_value=True),
+            patch("custom_components.bermuda.bermuda_irk.MAJOR_VERSION", 2025),
+            patch("custom_components.bermuda.bermuda_irk.MINOR_VERSION", 8),
+        ):
             matched, result = manager.scan_device(mac)
 
         assert matched is True
@@ -600,9 +602,11 @@ class TestIrkManagerIntegration:
         assert result == IrkTypes.NO_KNOWN_IRK_MATCH.value
 
         # Step 2: Now add the IRK
-        with patch("custom_components.bermuda.bermuda_irk.resolve_private_address", return_value=True), \
-             patch("custom_components.bermuda.bermuda_irk.MAJOR_VERSION", 2025), \
-             patch("custom_components.bermuda.bermuda_irk.MINOR_VERSION", 8):
+        with (
+            patch("custom_components.bermuda.bermuda_irk.resolve_private_address", return_value=True),
+            patch("custom_components.bermuda.bermuda_irk.MAJOR_VERSION", 2025),
+            patch("custom_components.bermuda.bermuda_irk.MINOR_VERSION", 8),
+        ):
             matching_macs = manager.add_irk(irk)
 
         # Step 3: Verify the MAC was matched

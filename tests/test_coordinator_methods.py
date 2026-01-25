@@ -455,7 +455,9 @@ class TestFindDuplicateEntities:
         coordinator = _make_coordinator(hass)
         coordinator._get_or_create_device("aa:bb:cc:dd:ee:ff")
         entities = [
-            SimpleNamespace(entity_id="sensor.test1", domain="sensor", unique_id="aa:bb:cc:dd:ee:ff_floor", disabled_by=None),
+            SimpleNamespace(
+                entity_id="sensor.test1", domain="sensor", unique_id="aa:bb:cc:dd:ee:ff_floor", disabled_by=None
+            ),
             SimpleNamespace(entity_id="sensor.test2", domain="sensor", unique_id="other_floor", disabled_by=None),
         ]
 
@@ -523,9 +525,7 @@ class TestHandleDevregChanges:
         """Test handling create event without device_id."""
         coordinator = _make_coordinator(hass)
 
-        event = SimpleNamespace(
-            data={"action": "create", "device_id": None}
-        )
+        event = SimpleNamespace(data={"action": "create", "device_id": None})
 
         # Should not raise
         coordinator.handle_devreg_changes(event)
@@ -538,9 +538,7 @@ class TestHandleDevregChanges:
         device.entry_id = "test-entry-id"
 
         with patch.object(coordinator, "_refresh_scanners") as mock_refresh:
-            event = SimpleNamespace(
-                data={"action": "update", "device_id": "test-entry-id", "changes": {}}
-            )
+            event = SimpleNamespace(data={"action": "update", "device_id": "test-entry-id", "changes": {}})
 
             coordinator.handle_devreg_changes(event)
 
@@ -550,9 +548,7 @@ class TestHandleDevregChanges:
         """Test handling update event logs correctly."""
         coordinator = _make_coordinator(hass)
 
-        event = SimpleNamespace(
-            data={"action": "update", "device_id": "some-id", "changes": {"name": "new name"}}
-        )
+        event = SimpleNamespace(data={"action": "update", "device_id": "some-id", "changes": {"name": "new name"}})
 
         # Should not raise even with non-existent device_id
         coordinator.handle_devreg_changes(event)
@@ -561,9 +557,7 @@ class TestHandleDevregChanges:
         """Test handling remove event."""
         coordinator = _make_coordinator(hass)
 
-        event = SimpleNamespace(
-            data={"action": "remove", "device_id": "some-id"}
-        )
+        event = SimpleNamespace(data={"action": "remove", "device_id": "some-id"})
 
         # Should not raise
         coordinator.handle_devreg_changes(event)
@@ -608,9 +602,7 @@ class TestHandleDevregChangesExtended:
         mock_device_entry.connections = set()
 
         with patch.object(coordinator.dr, "async_get", return_value=mock_device_entry):
-            event = SimpleNamespace(
-                data={"action": "update", "device_id": "test-device-id", "changes": {}}
-            )
+            event = SimpleNamespace(data={"action": "update", "device_id": "test-device-id", "changes": {}})
 
             coordinator.handle_devreg_changes(event)
 
@@ -631,9 +623,7 @@ class TestHandleDevregChangesExtended:
         mock_device_entry.name_by_user = "Custom Name"
 
         with patch.object(coordinator.dr, "async_get", return_value=mock_device_entry):
-            event = SimpleNamespace(
-                data={"action": "update", "device_id": "test-device-id", "changes": {}}
-            )
+            event = SimpleNamespace(data={"action": "update", "device_id": "test-device-id", "changes": {}})
 
             coordinator.handle_devreg_changes(event)
 
@@ -649,9 +639,7 @@ class TestHandleDevregChangesExtended:
         mock_device_entry.connections = {("private_ble_device", "test-pble-id")}
 
         with patch.object(coordinator.dr, "async_get", return_value=mock_device_entry):
-            event = SimpleNamespace(
-                data={"action": "update", "device_id": "test-device-id", "changes": {}}
-            )
+            event = SimpleNamespace(data={"action": "update", "device_id": "test-device-id", "changes": {}})
 
             coordinator.handle_devreg_changes(event)
 
@@ -669,9 +657,7 @@ class TestHandleDevregChangesExtended:
         coordinator._scanner_init_pending = False
 
         with patch.object(coordinator.dr, "async_get", return_value=mock_device_entry):
-            event = SimpleNamespace(
-                data={"action": "update", "device_id": "test-device-id", "changes": {}}
-            )
+            event = SimpleNamespace(data={"action": "update", "device_id": "test-device-id", "changes": {}})
 
             coordinator.handle_devreg_changes(event)
 
@@ -688,9 +674,7 @@ class TestHandleDevregChangesExtended:
         mock_device_entry.connections = {("bluetooth", "aa:bb:cc:dd:ee:ff")}
 
         with patch.object(coordinator.dr, "async_get", return_value=mock_device_entry):
-            event = SimpleNamespace(
-                data={"action": "update", "device_id": "test-device-id", "changes": {}}
-            )
+            event = SimpleNamespace(data={"action": "update", "device_id": "test-device-id", "changes": {}})
 
             coordinator.handle_devreg_changes(event)
 
@@ -706,9 +690,7 @@ class TestHandleDevregChangesExtended:
         scanner.entry_id = "scanner-entry-id"
         coordinator._scanners.add(scanner)
 
-        event = SimpleNamespace(
-            data={"action": "remove", "device_id": "scanner-entry-id"}
-        )
+        event = SimpleNamespace(data={"action": "remove", "device_id": "scanner-entry-id"})
 
         coordinator.handle_devreg_changes(event)
 
@@ -720,9 +702,7 @@ class TestHandleDevregChangesExtended:
         coordinator._do_private_device_init = False
         coordinator._do_fmdn_device_init = False
 
-        event = SimpleNamespace(
-            data={"action": "remove", "device_id": "non-scanner-id"}
-        )
+        event = SimpleNamespace(data={"action": "remove", "device_id": "non-scanner-id"})
 
         coordinator.handle_devreg_changes(event)
 
@@ -735,9 +715,7 @@ class TestHandleDevregChangesExtended:
 
         # Mock the device registry to return None (device not found)
         with patch.object(coordinator.dr, "async_get", return_value=None):
-            event = SimpleNamespace(
-                data={"action": "update", "device_id": "nonexistent-id", "changes": {}}
-            )
+            event = SimpleNamespace(data={"action": "update", "device_id": "nonexistent-id", "changes": {}})
 
             # Should not raise
             coordinator.handle_devreg_changes(event)

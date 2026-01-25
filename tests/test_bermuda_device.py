@@ -413,9 +413,7 @@ class TestMovementState:
 
         bermuda_device.area_changed_at = 1000.0
         # Test in settling window
-        result = bermuda_device.get_movement_state(
-            stamp_now=1000.0 + DWELL_TIME_MOVING_SECONDS + 10
-        )
+        result = bermuda_device.get_movement_state(stamp_now=1000.0 + DWELL_TIME_MOVING_SECONDS + 10)
         assert result == MOVEMENT_STATE_SETTLING
 
     def test_get_movement_state_stationary_after_settling(self, bermuda_device: BermudaDevice) -> None:
@@ -423,9 +421,7 @@ class TestMovementState:
         from custom_components.bermuda.const import MOVEMENT_STATE_STATIONARY, DWELL_TIME_SETTLING_SECONDS
 
         bermuda_device.area_changed_at = 1000.0
-        result = bermuda_device.get_movement_state(
-            stamp_now=1000.0 + DWELL_TIME_SETTLING_SECONDS + 100
-        )
+        result = bermuda_device.get_movement_state(stamp_now=1000.0 + DWELL_TIME_SETTLING_SECONDS + 100)
         assert result == MOVEMENT_STATE_STATIONARY
 
     def test_get_dwell_time_zero_when_never_moved(self, bermuda_device: BermudaDevice) -> None:
@@ -504,9 +500,7 @@ class TestCoVisibility:
 
     def test_update_co_visibility_updates_existing(self, bermuda_device: BermudaDevice) -> None:
         """Test update_co_visibility updates existing stats."""
-        bermuda_device.co_visibility_stats["area1"] = {
-            "scanner1": {"seen": 5, "total": 10}
-        }
+        bermuda_device.co_visibility_stats["area1"] = {"scanner1": {"seen": 5, "total": 10}}
 
         visible = {"scanner1"}
         candidates = {"scanner1"}
@@ -523,9 +517,7 @@ class TestCoVisibility:
 
     def test_get_co_visibility_confidence_not_enough_samples(self, bermuda_device: BermudaDevice) -> None:
         """Test get_co_visibility_confidence returns 1.0 with insufficient samples."""
-        bermuda_device.co_visibility_stats["area1"] = {
-            "scanner1": {"seen": 5, "total": 10}
-        }
+        bermuda_device.co_visibility_stats["area1"] = {"scanner1": {"seen": 5, "total": 10}}
         bermuda_device.co_visibility_min_samples = 50
 
         result = bermuda_device.get_co_visibility_confidence("area1", {"scanner1"})
@@ -566,16 +558,19 @@ class TestParseTrackerTimeout:
     def test_parse_tracker_timeout_with_invalid_string(self, bermuda_device: BermudaDevice) -> None:
         """Test parsing invalid string returns default."""
         from custom_components.bermuda.const import DEFAULT_DEVTRACK_TIMEOUT
+
         assert bermuda_device._parse_tracker_timeout("invalid") == float(DEFAULT_DEVTRACK_TIMEOUT)
 
     def test_parse_tracker_timeout_with_negative(self, bermuda_device: BermudaDevice) -> None:
         """Test parsing negative value returns default."""
         from custom_components.bermuda.const import DEFAULT_DEVTRACK_TIMEOUT
+
         assert bermuda_device._parse_tracker_timeout(-100) == float(DEFAULT_DEVTRACK_TIMEOUT)
 
     def test_parse_tracker_timeout_with_zero(self, bermuda_device: BermudaDevice) -> None:
         """Test parsing zero returns default."""
         from custom_components.bermuda.const import DEFAULT_DEVTRACK_TIMEOUT
+
         assert bermuda_device._parse_tracker_timeout(0) == float(DEFAULT_DEVTRACK_TIMEOUT)
 
 

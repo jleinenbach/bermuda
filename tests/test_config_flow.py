@@ -167,9 +167,7 @@ async def test_selectdevices_with_empty_list(hass: HomeAssistant, setup_bermuda_
     assert result["step_id"] == "selectdevices"
 
     # Submit with empty device list
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], user_input={CONF_DEVICES: []}
-    )
+    result = await hass.config_entries.options.async_configure(result["flow_id"], user_input={CONF_DEVICES: []})
     assert result["type"] == FlowResultType.CREATE_ENTRY
     assert setup_bermuda_entry.options.get(CONF_DEVICES) == []
 
@@ -198,7 +196,9 @@ async def test_selectdevices_filters_auto_configured(hass: HomeAssistant, setup_
     assert setup_bermuda_entry.options.get(CONF_DEVICES) == []
 
 
-async def test_selectdevices_with_various_device_types(hass: HomeAssistant, setup_bermuda_entry: MockConfigEntry) -> None:
+async def test_selectdevices_with_various_device_types(
+    hass: HomeAssistant, setup_bermuda_entry: MockConfigEntry
+) -> None:
     """Test selectdevices shows different device types correctly."""
     from custom_components.bermuda.const import (
         ADDR_TYPE_IBEACON,
@@ -363,7 +363,9 @@ async def test_selectdevices_skips_scanner_devices(hass: HomeAssistant, setup_be
     # Scanner should not appear in the options
 
 
-async def test_selectdevices_skips_old_random_devices(hass: HomeAssistant, setup_bermuda_entry: MockConfigEntry) -> None:
+async def test_selectdevices_skips_old_random_devices(
+    hass: HomeAssistant, setup_bermuda_entry: MockConfigEntry
+) -> None:
     """Test selectdevices skips random MAC devices that are too old."""
     from custom_components.bermuda.const import BDADDR_TYPE_RANDOM_RESOLVABLE
 
@@ -438,10 +440,7 @@ async def test_calibration2_with_scanner_list(hass: HomeAssistant, setup_bermuda
     coordinator.scanner_list.add("aa:bb:cc:dd:ee:ff")
 
     # Set existing offsets
-    hass.config_entries.async_update_entry(
-        setup_bermuda_entry,
-        options={CONF_RSSI_OFFSETS: {"aa:bb:cc:dd:ee:ff": 5}}
-    )
+    hass.config_entries.async_update_entry(setup_bermuda_entry, options={CONF_RSSI_OFFSETS: {"aa:bb:cc:dd:ee:ff": 5}})
     await hass.async_block_till_done()
 
     result = await hass.config_entries.options.async_init(setup_bermuda_entry.entry_id)

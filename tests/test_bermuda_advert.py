@@ -366,9 +366,9 @@ def test_median_smoothing_responds_to_approach(bermuda_advert: BermudaAdvert) ->
 
     # Raw (1.5m) < median (~5.0m), so should use raw for quick approach response
     assert bermuda_advert.rssi_distance is not None
-    assert (
-        bermuda_advert.rssi_distance == 1.5
-    ), f"Expected raw distance 1.5m for quick approach response, got {bermuda_advert.rssi_distance}m"
+    assert bermuda_advert.rssi_distance == 1.5, (
+        f"Expected raw distance 1.5m for quick approach response, got {bermuda_advert.rssi_distance}m"
+    )
 
 
 def test_median_smoothing_stable_readings(bermuda_advert: BermudaAdvert) -> None:
@@ -384,9 +384,9 @@ def test_median_smoothing_stable_readings(bermuda_advert: BermudaAdvert) -> None
 
     # Median of [2.8, 2.9, 3.0, 3.1, 3.2] is 3.0
     assert bermuda_advert.rssi_distance is not None
-    assert (
-        2.9 <= bermuda_advert.rssi_distance <= 3.1
-    ), f"Expected stable median ~3.0m, got {bermuda_advert.rssi_distance}m"
+    assert 2.9 <= bermuda_advert.rssi_distance <= 3.1, (
+        f"Expected stable median ~3.0m, got {bermuda_advert.rssi_distance}m"
+    )
 
 
 class TestConfigOptionsDynamicReading:
@@ -648,9 +648,9 @@ class TestConfigOptionsDynamicReading:
         shared_options[CONF_RSSI_OFFSETS] = {scanner_address: 20}
 
         # The advert should see the new value immediately
-        assert (
-            advert.conf_rssi_offset == 20
-        ), "Advert should see updated RSSI offset after shared options dict is modified"
+        assert advert.conf_rssi_offset == 20, (
+            "Advert should see updated RSSI offset after shared options dict is modified"
+        )
 
 
 class TestBermudaAdvertEdgeCases:

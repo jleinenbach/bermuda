@@ -101,9 +101,9 @@ class TestScannerPairCorrelationDualFilter:
         estimate_after = corr.expected_delta
 
         # Estimate should have moved toward new value
-        assert (
-            estimate_after > estimate_before + 5.0
-        ), f"Auto should adapt to changes: before={estimate_before}, after={estimate_after}"
+        assert estimate_after > estimate_before + 5.0, (
+            f"Auto should adapt to changes: before={estimate_before}, after={estimate_after}"
+        )
 
     def test_button_sets_anchor_auto_refines(self) -> None:
         """Button sets the anchor, auto can refine within limits."""
@@ -346,9 +346,9 @@ class TestClampedBayesianFusion:
         # With clamping, auto gets max 30%:
         # Worst case: 0.7 * 100 + 0.3 * 0 = 70.0
         # Button anchor (100.0) should dominate
-        assert (
-            estimate >= 70.0
-        ), f"Button should have at least 70% weight even with massive auto data. Expected >= 70.0, got {estimate}"
+        assert estimate >= 70.0, (
+            f"Button should have at least 70% weight even with massive auto data. Expected >= 70.0, got {estimate}"
+        )
 
     def test_auto_influence_is_clamped_not_zero(self) -> None:
         """Auto should have SOME influence (up to 30%), not be completely ignored.
@@ -392,9 +392,9 @@ class TestClampedBayesianFusion:
             corr.update_button(10.0)
         fused_variance = corr.variance
 
-        assert (
-            fused_variance < auto_only_variance
-        ), f"Fused variance ({fused_variance}) should be < auto-only variance ({auto_only_variance})"
+        assert fused_variance < auto_only_variance, (
+            f"Fused variance ({fused_variance}) should be < auto-only variance ({auto_only_variance})"
+        )
 
     def test_min_variance_prevents_division_by_zero(self) -> None:
         """MIN_VARIANCE constant prevents division by zero in edge cases."""
@@ -424,12 +424,12 @@ class TestControlledEvolution:
         polished_estimate = corr.expected_delta
 
         # The estimate should move slightly toward auto (45.0) but stay close to button (50.0)
-        assert (
-            polished_estimate < initial_estimate
-        ), f"Auto should polish anchor downward. Initial: {initial_estimate}, Polished: {polished_estimate}"
-        assert (
-            polished_estimate > 45.0
-        ), f"Anchor should not move all the way to auto value. Polished: {polished_estimate}"
+        assert polished_estimate < initial_estimate, (
+            f"Auto should polish anchor downward. Initial: {initial_estimate}, Polished: {polished_estimate}"
+        )
+        assert polished_estimate > 45.0, (
+            f"Anchor should not move all the way to auto value. Polished: {polished_estimate}"
+        )
 
     def test_reset_training_clears_all_data(self) -> None:
         """reset_training() should clear BOTH button AND auto filters for clean slate.
@@ -528,9 +528,9 @@ class TestHyperPrecisionParadoxFix:
 
         # The key behavior: estimate should still be dominated by button due to clamping
         # Even if variances are similar, clamping limits auto to 30%
-        assert (
-            abs(corr.expected_delta - 10.0) < 1.0
-        ), f"Button should still dominate estimate. Got {corr.expected_delta}, expected ~10.0"
+        assert abs(corr.expected_delta - 10.0) < 1.0, (
+            f"Button should still dominate estimate. Got {corr.expected_delta}, expected ~10.0"
+        )
 
     def test_absolute_rssi_z_score_accepts_normal_fluctuations(self) -> None:
         """ScannerAbsoluteRssi should also accept normal BLE fluctuations."""

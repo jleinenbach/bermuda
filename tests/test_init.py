@@ -132,9 +132,7 @@ class TestAsyncRemoveConfigEntryDevice:
         assert device.create_sensor is False
 
     @pytest.mark.asyncio
-    async def test_remove_device_with_suffix(
-        self, hass: HomeAssistant, setup_bermuda_entry: MockConfigEntry
-    ) -> None:
+    async def test_remove_device_with_suffix(self, hass: HomeAssistant, setup_bermuda_entry: MockConfigEntry) -> None:
         """Test removing a device with suffixed identifier."""
         coordinator = setup_bermuda_entry.runtime_data.coordinator
 

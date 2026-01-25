@@ -116,9 +116,9 @@ class TestAreaProfileZScores:
             other_readings={"scanner_hallway": -80.0},  # 30 dB diff instead of 10!
         )
 
-        assert (
-            len(z_scores) == 1
-        ), f"Expected 1 z-score, got {len(z_scores)}. Missing z-scores mean anomalies go undetected."
+        assert len(z_scores) == 1, (
+            f"Expected 1 z-score, got {len(z_scores)}. Missing z-scores mean anomalies go undetected."
+        )
 
         _, z = z_scores[0]
         assert z > 2.0, (
@@ -145,9 +145,9 @@ class TestAreaProfileZScores:
         assert len(weighted) == 1
         scanner, z, samples = weighted[0]
 
-        assert (
-            samples == 50
-        ), f"Sample count={samples}, expected 50. Incorrect sample count would skew weighted confidence calculations."
+        assert samples == 50, (
+            f"Sample count={samples}, expected 50. Incorrect sample count would skew weighted confidence calculations."
+        )
         assert isinstance(samples, int), f"Sample count is {type(samples).__name__}, expected int."
 
     def test_z_scores_ignores_unknown_scanners(self) -> None:
@@ -168,9 +168,9 @@ class TestAreaProfileZScores:
         )
 
         # Should only return z-score for scanner_a, ignore scanner_b
-        assert (
-            len(z_scores) == 1
-        ), f"Expected 1 z-score for known scanner, got {len(z_scores)}. Unknown scanners should be silently ignored."
+        assert len(z_scores) == 1, (
+            f"Expected 1 z-score for known scanner, got {len(z_scores)}. Unknown scanners should be silently ignored."
+        )
         assert z_scores[0][0] == "scanner_a"
 
     def test_weighted_z_scores_ignores_unknown_and_immature(self) -> None:
@@ -200,9 +200,9 @@ class TestAreaProfileZScores:
         )
 
         # Should only return scanner_a (mature and known)
-        assert (
-            len(weighted) == 1
-        ), f"Expected 1 weighted z-score, got {len(weighted)}. Unknown/immature scanners should be excluded."
+        assert len(weighted) == 1, (
+            f"Expected 1 weighted z-score, got {len(weighted)}. Unknown/immature scanners should be excluded."
+        )
         assert weighted[0][0] == "scanner_a"
 
 

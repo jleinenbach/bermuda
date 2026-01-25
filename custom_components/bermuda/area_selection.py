@@ -524,7 +524,7 @@ class AreaSelectionHandler:
             Dict mapping area_id to virtual distance (meters) for scannerless rooms.
 
         """
-        from .filters.ukf import UnscentedKalmanFilter
+        from .filters.ukf import UnscentedKalmanFilter  # noqa: PLC0415
 
         virtual_distances: dict[str, float] = {}
 

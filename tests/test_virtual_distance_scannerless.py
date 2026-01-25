@@ -382,9 +382,9 @@ class TestScannerlessRoomScenarios:
         coordinator._refresh_area_by_min_distance(device)
 
         # Verify: Device should be in Lagerraum due to virtual distance
-        assert (
-            device.area_id == lagerraum_area
-        ), f"Expected area {lagerraum_area}, got {device.area_id}. Scannerless room with good fingerprint should win."
+        assert device.area_id == lagerraum_area, (
+            f"Expected area {lagerraum_area}, got {device.area_id}. Scannerless room with good fingerprint should win."
+        )
 
     def test_physical_scanner_wins_with_poor_fingerprint_match(self, coordinator: BermudaDataUpdateCoordinator) -> None:
         """
@@ -650,9 +650,9 @@ class TestVirtualDistanceEdgeCases:
         )
 
         # Both rooms should have virtual distances
-        assert (
-            room1 in virtual_distances or room2 in virtual_distances
-        ), "At least one scannerless room should have a virtual distance"
+        assert room1 in virtual_distances or room2 in virtual_distances, (
+            "At least one scannerless room should have a virtual distance"
+        )
 
 
 class TestAreaProfileHasButtonTraining:
