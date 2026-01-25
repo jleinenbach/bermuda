@@ -137,6 +137,7 @@ class AdvertAnalyzer:
         Initialize the analyzer with current context.
 
         Args:
+        ----
             device: The device being analyzed
             nowstamp: Current monotonic timestamp
             evidence_cutoff: Timestamp cutoff for valid evidence
@@ -180,9 +181,11 @@ class AdvertAnalyzer:
         a single area selection cycle.
 
         Args:
+        ----
             advert: The advertisement to get distance for
 
         Returns:
+        -------
             The effective distance in meters, or None if unavailable
 
         """
@@ -199,9 +202,11 @@ class AdvertAnalyzer:
         Check if advert belongs to this device's advertisement collection.
 
         Args:
+        ----
             advert: The advertisement to check
 
         Returns:
+        -------
             True if advert is in device.adverts.values()
 
         """
@@ -212,9 +217,11 @@ class AdvertAnalyzer:
         Check if advert timestamp is within the evidence window.
 
         Args:
+        ----
             advert: The advertisement to check
 
         Returns:
+        -------
             True if advert.stamp >= evidence_cutoff
 
         """
@@ -225,9 +232,11 @@ class AdvertAnalyzer:
         Check if advert has a valid area assignment.
 
         Args:
+        ----
             advert: The advertisement to check
 
         Returns:
+        -------
             True if advert.area_id is not None
 
         """
@@ -240,9 +249,11 @@ class AdvertAnalyzer:
         An advert is a candidate if it belongs to the device and has an area.
 
         Args:
+        ----
             advert: The advertisement to check
 
         Returns:
+        -------
             True if advert is a valid area candidate
 
         """
@@ -258,9 +269,11 @@ class AdvertAnalyzer:
         - Have a valid effective distance within max_radius
 
         Args:
+        ----
             advert: The advertisement to check
 
         Returns:
+        -------
             True if advert is a valid distance contender
 
         """
@@ -277,7 +290,8 @@ class AdvertAnalyzer:
         """
         Check if any advert for this device is a distance contender.
 
-        Returns:
+        Returns
+        -------
             True if at least one advert qualifies as a distance contender
 
         """
@@ -288,9 +302,11 @@ class AdvertAnalyzer:
         Get floor_id from advert's scanner device.
 
         Args:
+        ----
             advert: The advertisement to get floor from
 
         Returns:
+        -------
             Floor ID string or None if unavailable
 
         """
@@ -307,10 +323,12 @@ class AdvertAnalyzer:
         Check if switching from current to candidate would cross floors.
 
         Args:
+        ----
             current: The current incumbent advert
             candidate: The challenger advert
 
         Returns:
+        -------
             True if the switch would be cross-floor
 
         """
@@ -324,7 +342,8 @@ class AdvertAnalyzer:
 
         Only includes scanners with adverts that qualify as distance contenders.
 
-        Returns:
+        Returns
+        -------
             Set of scanner addresses
 
         """
@@ -341,9 +360,11 @@ class AdvertAnalyzer:
         Uses the device's co_visibility_stats to find historically known scanners.
 
         Args:
+        ----
             area_id: The area to query
 
         Returns:
+        -------
             Set of scanner addresses, empty if no stats available
 
         """

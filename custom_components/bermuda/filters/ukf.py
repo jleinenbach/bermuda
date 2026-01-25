@@ -19,7 +19,8 @@ Architecture:
     Measurement: Observed RSSI from visible scanners (partial)
     Fingerprint: Compare state to learned area profiles (Mahalanobis)
 
-References:
+References
+----------
     - Julier, S.J., Uhlmann, J.K. (2004). Unscented filtering and nonlinear estimation
     - Wan, E.A., Van Der Merwe, R. (2000). The unscented Kalman filter for nonlinear estimation
     - Research: "Variational Bayesian Adaptive UKF for RSSI-based Indoor Localization"
@@ -120,12 +121,15 @@ def _cholesky_decompose(matrix: list[list[float]]) -> list[list[float]]:
     across all installations. Falls back to Cholesky-Banachiewicz algorithm.
 
     Args:
+    ----
         matrix: Symmetric positive-definite matrix.
 
     Returns:
+    -------
         Lower triangular matrix L.
 
     Note:
+    ----
         Small regularization is automatically added for numerical stability.
 
     """
@@ -201,12 +205,15 @@ def _matrix_inverse(matrix: list[list[float]]) -> list[list[float]]:
     otherwise uses Gauss-Jordan elimination.
 
     Args:
+    ----
         matrix: Square matrix.
 
     Returns:
+    -------
         Inverse matrix.
 
     Note:
+    ----
         Small regularization is automatically added for numerical stability.
 
     """
@@ -279,11 +286,13 @@ class UnscentedKalmanFilter(SignalFilter):
     - Sensor fusion with different noise characteristics
 
     Attributes:
+    ----------
         scanner_addresses: List of scanner MAC addresses (defines state order)
         state: State vector [rssi₁, rssi₂, ..., rssi_N]
         covariance: Covariance matrix (N x N)
 
     Example:
+    -------
         ukf = UnscentedKalmanFilter(scanner_addresses=["AA:BB:...", "CC:DD:..."])
         ukf.predict(dt=1.0)
         ukf.update({"AA:BB:...": -65.0, "CC:DD:...": -78.0})
@@ -337,9 +346,11 @@ class UnscentedKalmanFilter(SignalFilter):
         Add a new scanner to track.
 
         Args:
+        ----
             address: Scanner MAC address
 
         Returns:
+        -------
             Index of the scanner in the state vector
 
         """
@@ -384,7 +395,8 @@ class UnscentedKalmanFilter(SignalFilter):
 
         Uses NumPy acceleration for large scanner networks if available.
 
-        Returns:
+        Returns
+        -------
             Tuple of (sigma_points, weights_mean, weights_cov)
             - sigma_points: 2n+1 points, each of dimension n
             - weights_mean: weights for mean calculation
@@ -450,6 +462,7 @@ class UnscentedKalmanFilter(SignalFilter):
         Process noise increases with time to allow for gradual drift.
 
         Args:
+        ----
             dt: Time delta in seconds since last update
 
         """
@@ -471,10 +484,12 @@ class UnscentedKalmanFilter(SignalFilter):
         Use update_multi() for proper multi-scanner updates.
 
         Args:
+        ----
             measurement: RSSI value (not directly usable without scanner address)
             timestamp: Optional timestamp
 
         Returns:
+        -------
             The measurement (unchanged, as we can't process without address)
 
         """
@@ -498,11 +513,13 @@ class UnscentedKalmanFilter(SignalFilter):
             growth during the time between measurements.
 
         Args:
+        ----
             measurements: Dict of scanner_address -> RSSI value
             timestamp: Optional timestamp (seconds). When provided, enables
                        time-aware filtering with automatic predict() call.
 
         Returns:
+        -------
             Updated state vector
 
         """
@@ -630,10 +647,12 @@ class UnscentedKalmanFilter(SignalFilter):
         small numerical differences due to floating point operations.
 
         Args:
+        ----
             measurements: Dict of scanner_address -> RSSI value
             timestamp: Optional timestamp for time-aware filtering.
 
         Returns:
+        -------
             Updated state vector
 
         """
@@ -712,10 +731,12 @@ class UnscentedKalmanFilter(SignalFilter):
         fingerprints for matching. Combines scores using weighted fusion.
 
         Args:
+        ----
             area_profiles: Dict of area_id -> AreaProfile with device-specific fingerprints
             room_profiles: Optional dict of area_id -> RoomProfile (device-independent)
 
         Returns:
+        -------
             List of (area_id, mahalanobis_distance, match_score) sorted by score.
 
         """

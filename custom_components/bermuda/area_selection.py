@@ -187,6 +187,7 @@ class AreaSelectionHandler:
         Initialize the area selection handler.
 
         Args:
+        ----
             coordinator: The parent coordinator that owns device state and configuration.
 
         """
@@ -246,10 +247,12 @@ class AreaSelectionHandler:
         Formula: max_radius * SCALE * (1 - score)²
 
         Args:
+        ----
             score: UKF match score (0.0 to 1.0)
             max_radius: Maximum radius from configuration
 
         Returns:
+        -------
             Virtual distance in meters. Lower scores produce larger distances.
 
         """
@@ -265,10 +268,12 @@ class AreaSelectionHandler:
         values from being counted multiple times.
 
         Args:
+        ----
             device: The BermudaDevice to collect stamps from.
             nowstamp: Current monotonic timestamp for freshness check.
 
         Returns:
+        -------
             Dictionary mapping scanner_address to advert timestamp.
             Only includes adverts within EVIDENCE_WINDOW_SECONDS.
 
@@ -291,10 +296,12 @@ class AreaSelectionHandler:
         to detect when new BLE advertisement data has arrived.
 
         Args:
+        ----
             current_stamps: Current scanner timestamps from _collect_current_stamps().
             last_stamps: Previously recorded timestamps (e.g., device.pending_last_stamps).
 
         Returns:
+        -------
             True if at least one scanner has a newer timestamp.
 
         """
@@ -323,9 +330,11 @@ class AreaSelectionHandler:
         Check if an area has at least one scanner assigned to it.
 
         Args:
+        ----
             area_id: The Home Assistant area ID to check.
 
         Returns:
+        -------
             True if the area contains at least one scanner device.
 
         """
@@ -370,7 +379,7 @@ class AreaSelectionHandler:
             return None
 
         hist_distances = [
-            value for value in getattr(advert, "hist_distance_by_interval", []) if isinstance(value, (int, float))
+            value for value in getattr(advert, "hist_distance_by_interval", []) if isinstance(value, int | float)
         ]
         if hist_distances:
             return hist_distances[0]
@@ -394,12 +403,14 @@ class AreaSelectionHandler:
         Compares observed RSSI patterns against learned expectations.
 
         Args:
+        ----
             device_address: The device's address.
             area_id: The area to check confidence for.
             primary_rssi: RSSI from the primary scanner.
             current_readings: Map of scanner_id to RSSI for all visible scanners.
 
         Returns:
+        -------
             Confidence value 0.0-1.0. Returns 1.0 if no learned data exists.
 
         """
@@ -444,6 +455,7 @@ class AreaSelectionHandler:
         consistent correlation data.
 
         Args:
+        ----
             device: The device being tracked.
             area_id: The area the device is currently in.
             primary_rssi: RSSI from the primary (strongest) scanner.
@@ -503,14 +515,16 @@ class AreaSelectionHandler:
         3. Have a minimum UKF score (to avoid phantom matches)
 
         Args:
+        ----
             device: The device to calculate virtual distances for.
             rssi_readings: Current RSSI readings from all visible scanners.
 
         Returns:
+        -------
             Dict mapping area_id to virtual distance (meters) for scannerless rooms.
 
         """
-        from .filters.ukf import UnscentedKalmanFilter  # noqa: PLC0415
+        from .filters.ukf import UnscentedKalmanFilter
 
         virtual_distances: dict[str, float] = {}
 
@@ -630,6 +644,7 @@ class AreaSelectionHandler:
         4. Fall back to min-distance heuristic
 
         Args:
+        ----
             device: The BermudaDevice to determine area for
             has_mature_profiles: Whether the system has mature RoomProfiles globally
 

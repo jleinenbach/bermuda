@@ -44,6 +44,7 @@ class BermudaServiceHandler:
         Initialize the service handler.
 
         Args:
+        ----
             coordinator: The Bermuda data update coordinator instance.
 
         """
@@ -65,12 +66,14 @@ class BermudaServiceHandler:
         Return a dump of beacon advertisements by receiver.
 
         Args:
+        ----
             call: The service call with optional parameters:
                 - addresses: Space-separated list of addresses to include
                 - redact: Whether to redact MAC addresses
                 - configured_devices: Whether to include configured devices
 
         Returns:
+        -------
             A dictionary containing device data, optionally redacted.
 
         """
@@ -215,10 +218,12 @@ class BermudaServiceHandler:
         so if you're changing it bear that in mind!
 
         Args:
+        ----
             data: The data to redact (can be str, dict, list, or other)
             first_recursion: Whether this is the first/outer call
 
         Returns:
+        -------
             The redacted data with MAC addresses replaced.
 
         """

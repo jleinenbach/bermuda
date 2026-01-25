@@ -461,72 +461,84 @@ class TestScannerAbsoluteRssiAdditional:
     def test_from_dict_invalid_scanner_type(self) -> None:
         """from_dict should raise TypeError for non-string scanner."""
         with pytest.raises(TypeError):
-            ScannerAbsoluteRssi.from_dict({
-                "scanner": 12345,  # Should be string
-                "auto_estimate": -75.0,
-                "auto_variance": 4.0,
-                "auto_samples": 10,
-                "button_estimate": 0.0,
-                "button_variance": 4.0,
-                "button_samples": 0,
-            })
+            ScannerAbsoluteRssi.from_dict(
+                {
+                    "scanner": 12345,  # Should be string
+                    "auto_estimate": -75.0,
+                    "auto_variance": 4.0,
+                    "auto_samples": 10,
+                    "button_estimate": 0.0,
+                    "button_variance": 4.0,
+                    "button_samples": 0,
+                }
+            )
 
     def test_from_dict_negative_variance(self) -> None:
         """from_dict should raise ValueError for negative variance."""
         with pytest.raises(ValueError):
-            ScannerAbsoluteRssi.from_dict({
-                "scanner": "aa:bb:cc:dd:ee:ff",
-                "auto_estimate": -75.0,
-                "auto_variance": -4.0,  # Negative!
-                "auto_samples": 10,
-                "button_estimate": 0.0,
-                "button_variance": 4.0,
-                "button_samples": 0,
-            })
+            ScannerAbsoluteRssi.from_dict(
+                {
+                    "scanner": "aa:bb:cc:dd:ee:ff",
+                    "auto_estimate": -75.0,
+                    "auto_variance": -4.0,  # Negative!
+                    "auto_samples": 10,
+                    "button_estimate": 0.0,
+                    "button_variance": 4.0,
+                    "button_samples": 0,
+                }
+            )
 
     def test_from_dict_negative_samples(self) -> None:
         """from_dict should raise ValueError for negative sample count."""
         with pytest.raises(ValueError):
-            ScannerAbsoluteRssi.from_dict({
-                "scanner": "aa:bb:cc:dd:ee:ff",
-                "auto_estimate": -75.0,
-                "auto_variance": 4.0,
-                "auto_samples": -5,  # Negative!
-                "button_estimate": 0.0,
-                "button_variance": 4.0,
-                "button_samples": 0,
-            })
+            ScannerAbsoluteRssi.from_dict(
+                {
+                    "scanner": "aa:bb:cc:dd:ee:ff",
+                    "auto_estimate": -75.0,
+                    "auto_variance": 4.0,
+                    "auto_samples": -5,  # Negative!
+                    "button_estimate": 0.0,
+                    "button_variance": 4.0,
+                    "button_samples": 0,
+                }
+            )
 
     def test_from_dict_old_format(self) -> None:
         """from_dict should handle legacy single-filter format."""
-        restored = ScannerAbsoluteRssi.from_dict({
-            "scanner": "aa:bb:cc:dd:ee:ff",
-            "estimate": -75.0,
-            "variance": 4.0,
-            "samples": 10,
-        })
+        restored = ScannerAbsoluteRssi.from_dict(
+            {
+                "scanner": "aa:bb:cc:dd:ee:ff",
+                "estimate": -75.0,
+                "variance": 4.0,
+                "samples": 10,
+            }
+        )
         assert restored.scanner_address == "aa:bb:cc:dd:ee:ff"
         assert abs(restored._kalman_auto.estimate - (-75.0)) < 0.01
 
     def test_from_dict_old_format_negative_variance(self) -> None:
         """from_dict should raise ValueError for negative variance in old format."""
         with pytest.raises(ValueError):
-            ScannerAbsoluteRssi.from_dict({
-                "scanner": "aa:bb:cc:dd:ee:ff",
-                "estimate": -75.0,
-                "variance": -4.0,  # Negative!
-                "samples": 10,
-            })
+            ScannerAbsoluteRssi.from_dict(
+                {
+                    "scanner": "aa:bb:cc:dd:ee:ff",
+                    "estimate": -75.0,
+                    "variance": -4.0,  # Negative!
+                    "samples": 10,
+                }
+            )
 
     def test_from_dict_old_format_negative_samples(self) -> None:
         """from_dict should raise ValueError for negative samples in old format."""
         with pytest.raises(ValueError):
-            ScannerAbsoluteRssi.from_dict({
-                "scanner": "aa:bb:cc:dd:ee:ff",
-                "estimate": -75.0,
-                "variance": 4.0,
-                "samples": -5,  # Negative!
-            })
+            ScannerAbsoluteRssi.from_dict(
+                {
+                    "scanner": "aa:bb:cc:dd:ee:ff",
+                    "estimate": -75.0,
+                    "variance": 4.0,
+                    "samples": -5,  # Negative!
+                }
+            )
 
 
 # =============================================================================
@@ -696,72 +708,84 @@ class TestScannerPairCorrelationAdditional:
     def test_from_dict_invalid_scanner_type(self) -> None:
         """from_dict should raise TypeError for non-string scanner."""
         with pytest.raises(TypeError):
-            ScannerPairCorrelation.from_dict({
-                "scanner": 12345,  # Should be string
-                "auto_estimate": -5.0,
-                "auto_variance": 4.0,
-                "auto_samples": 10,
-                "button_estimate": 0.0,
-                "button_variance": 4.0,
-                "button_samples": 0,
-            })
+            ScannerPairCorrelation.from_dict(
+                {
+                    "scanner": 12345,  # Should be string
+                    "auto_estimate": -5.0,
+                    "auto_variance": 4.0,
+                    "auto_samples": 10,
+                    "button_estimate": 0.0,
+                    "button_variance": 4.0,
+                    "button_samples": 0,
+                }
+            )
 
     def test_from_dict_negative_variance(self) -> None:
         """from_dict should raise ValueError for negative variance."""
         with pytest.raises(ValueError):
-            ScannerPairCorrelation.from_dict({
-                "scanner": "aa:bb:cc:dd:ee:02",
-                "auto_estimate": -5.0,
-                "auto_variance": -4.0,  # Negative!
-                "auto_samples": 10,
-                "button_estimate": 0.0,
-                "button_variance": 4.0,
-                "button_samples": 0,
-            })
+            ScannerPairCorrelation.from_dict(
+                {
+                    "scanner": "aa:bb:cc:dd:ee:02",
+                    "auto_estimate": -5.0,
+                    "auto_variance": -4.0,  # Negative!
+                    "auto_samples": 10,
+                    "button_estimate": 0.0,
+                    "button_variance": 4.0,
+                    "button_samples": 0,
+                }
+            )
 
     def test_from_dict_negative_samples(self) -> None:
         """from_dict should raise ValueError for negative sample count."""
         with pytest.raises(ValueError):
-            ScannerPairCorrelation.from_dict({
-                "scanner": "aa:bb:cc:dd:ee:02",
-                "auto_estimate": -5.0,
-                "auto_variance": 4.0,
-                "auto_samples": -5,  # Negative!
-                "button_estimate": 0.0,
-                "button_variance": 4.0,
-                "button_samples": 0,
-            })
+            ScannerPairCorrelation.from_dict(
+                {
+                    "scanner": "aa:bb:cc:dd:ee:02",
+                    "auto_estimate": -5.0,
+                    "auto_variance": 4.0,
+                    "auto_samples": -5,  # Negative!
+                    "button_estimate": 0.0,
+                    "button_variance": 4.0,
+                    "button_samples": 0,
+                }
+            )
 
     def test_from_dict_old_format(self) -> None:
         """from_dict should handle legacy single-filter format."""
-        restored = ScannerPairCorrelation.from_dict({
-            "scanner": "aa:bb:cc:dd:ee:02",
-            "estimate": -5.0,  # Old format uses 'estimate', not 'delta'
-            "variance": 4.0,
-            "samples": 10,
-        })
+        restored = ScannerPairCorrelation.from_dict(
+            {
+                "scanner": "aa:bb:cc:dd:ee:02",
+                "estimate": -5.0,  # Old format uses 'estimate', not 'delta'
+                "variance": 4.0,
+                "samples": 10,
+            }
+        )
         assert restored.scanner_address == "aa:bb:cc:dd:ee:02"
         assert abs(restored._kalman_auto.estimate - (-5.0)) < 0.01
 
     def test_from_dict_old_format_negative_variance(self) -> None:
         """from_dict should raise ValueError for negative variance in old format."""
         with pytest.raises(ValueError):
-            ScannerPairCorrelation.from_dict({
-                "scanner": "aa:bb:cc:dd:ee:02",
-                "estimate": -5.0,
-                "variance": -4.0,  # Negative!
-                "samples": 10,
-            })
+            ScannerPairCorrelation.from_dict(
+                {
+                    "scanner": "aa:bb:cc:dd:ee:02",
+                    "estimate": -5.0,
+                    "variance": -4.0,  # Negative!
+                    "samples": 10,
+                }
+            )
 
     def test_from_dict_old_format_negative_samples(self) -> None:
         """from_dict should raise ValueError for negative samples in old format."""
         with pytest.raises(ValueError):
-            ScannerPairCorrelation.from_dict({
-                "scanner": "aa:bb:cc:dd:ee:02",
-                "estimate": -5.0,
-                "variance": 4.0,
-                "samples": -5,  # Negative!
-            })
+            ScannerPairCorrelation.from_dict(
+                {
+                    "scanner": "aa:bb:cc:dd:ee:02",
+                    "estimate": -5.0,
+                    "variance": 4.0,
+                    "samples": -5,  # Negative!
+                }
+            )
 
 
 # =============================================================================
@@ -808,10 +832,7 @@ class TestAreaProfileResetVarianceOnly:
 
         # All absolute profiles should have reset variance
         for abs_prof in profile._absolute_profiles.values():
-            assert (
-                abs_prof._kalman_button.variance
-                == abs_prof._kalman_button.measurement_noise
-            )
+            assert abs_prof._kalman_button.variance == abs_prof._kalman_button.measurement_noise
 
     def test_reset_preserves_has_button_training(self) -> None:
         """reset_variance_only() should preserve has_button_training status."""
@@ -899,9 +920,7 @@ class TestAreaProfileAdditional:
         for _ in range(25):
             profile.update(-75.0, {"scanner2": -70.0}, "scanner1")
 
-        z_scores = profile.get_weighted_absolute_z_scores(
-            {"scanner1": -75.0, "scanner2": -70.0}
-        )
+        z_scores = profile.get_weighted_absolute_z_scores({"scanner1": -75.0, "scanner2": -70.0})
         assert isinstance(z_scores, list)
 
     def test_correlation_count(self) -> None:

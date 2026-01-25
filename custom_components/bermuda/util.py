@@ -169,6 +169,7 @@ def rssi_to_metres(
       Due to multipath, obstacles, and environmental factors
 
     Args:
+    ----
         rssi: Received signal strength indicator in dBm
         ref_power: RSSI at 1 metre reference distance (dBm). Affected by
                    receiver sensitivity, transmitter calibration, antenna design.
@@ -176,9 +177,11 @@ def rssi_to_metres(
                      Only applies beyond TWO_SLOPE_BREAKPOINT_METRES (~6m).
 
     Returns:
+    -------
         Distance in metres (minimum MIN_DISTANCE to prevent 0m readings).
 
     References:
+    ----------
         - PMC6165244: Indoor Positioning Algorithm Based on Improved RSSI Distance Model
         - Two-ray ground-reflection model (Wikipedia)
         - applsci-10-02003: BLE Indoor Localization research

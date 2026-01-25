@@ -1,6 +1,7 @@
 {
   "domain": "bermuda",
   "name": "Bermuda BLE Trilateration",
+  "after_dependencies": ["googlefindmy"],
   "bluetooth": [
     {
       "connectable": false,
@@ -10,7 +11,6 @@
   "codeowners": ["@agittins"],
   "config_flow": true,
   "dependencies": ["bluetooth_adapters", "device_tracker", "private_ble_device"],
-  "after_dependencies": ["googlefindmy"],
   "documentation": "https://github.com/agittins/bermuda",
   "integration_type": "device",
   "iot_class": "calculated",

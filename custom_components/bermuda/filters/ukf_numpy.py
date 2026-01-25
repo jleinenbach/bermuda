@@ -27,7 +27,8 @@ Performance comparison (n=20 scanners):
     - Pure Python Cholesky: ~3ms
     - NumPy Cholesky: ~0.03ms (100x faster)
 
-References:
+References
+----------
     - NumPy linalg: https://numpy.org/doc/stable/reference/routines.linalg.html
 
 """
@@ -50,7 +51,8 @@ def _get_numpy() -> Any:
 
     Uses module-level caching to avoid repeated import attempts.
 
-    Returns:
+    Returns
+    -------
         numpy module if available, None otherwise.
 
     """
@@ -60,7 +62,7 @@ def _get_numpy() -> Any:
         return _numpy
 
     try:
-        import numpy as np  # noqa: PLC0415
+        import numpy as np
 
         _numpy = np
         _LOGGER.debug("NumPy backend available for UKF acceleration (version %s)", np.__version__)
@@ -76,7 +78,8 @@ def is_numpy_available() -> bool:
     """
     Check if NumPy is available for acceleration.
 
-    Returns:
+    Returns
+    -------
         True if NumPy can be imported, False otherwise.
 
     """
@@ -90,13 +93,16 @@ def cholesky_numpy(matrix: list[list[float]]) -> list[list[float]] | None:
     Computes the lower triangular matrix L such that matrix = L @ L.T.
 
     Args:
+    ----
         matrix: Symmetric positive-definite matrix as list of lists.
 
     Returns:
+    -------
         Lower triangular matrix as list of lists, or None if NumPy
         is unavailable or the matrix is not positive definite.
 
     Note:
+    ----
         Small regularization (1e-6) is added to the diagonal to handle
         near-singular matrices common in BLE RSSI covariance estimation.
 
@@ -126,13 +132,16 @@ def matrix_inverse_numpy(matrix: list[list[float]]) -> list[list[float]] | None:
     NumPy-accelerated matrix inverse.
 
     Args:
+    ----
         matrix: Square matrix as list of lists.
 
     Returns:
+    -------
         Inverse matrix as list of lists, or None if NumPy is unavailable
         or the matrix is singular.
 
     Note:
+    ----
         Small regularization (1e-6) is added to the diagonal to handle
         near-singular matrices.
 
@@ -166,10 +175,12 @@ def mahalanobis_distance_numpy(
     Computes: D² = diff.T @ cov_inv @ diff
 
     Args:
+    ----
         diff: Difference vector (x - mean).
         cov_inv: Inverse covariance matrix.
 
     Returns:
+    -------
         Squared Mahalanobis distance, or None if NumPy is unavailable.
 
     """
@@ -192,10 +203,12 @@ def matrix_multiply_numpy(
     NumPy-accelerated matrix multiplication.
 
     Args:
+    ----
         a: First matrix (n x m).
         b: Second matrix (m x k).
 
     Returns:
+    -------
         Product matrix (n x k), or None if NumPy is unavailable.
 
     """
@@ -217,10 +230,12 @@ def outer_product_numpy(
     NumPy-accelerated outer product.
 
     Args:
+    ----
         a: First vector (n,).
         b: Second vector (m,).
 
     Returns:
+    -------
         Outer product matrix (n x m), or None if NumPy is unavailable.
 
     """
@@ -245,11 +260,13 @@ def sigma_points_numpy(
     Generates 2n+1 sigma points for the Unscented Transform.
 
     Args:
+    ----
         x: State vector (n,).
         p_cov: Covariance matrix (n x n).
         gamma: Scaling parameter sqrt(n + lambda).
 
     Returns:
+    -------
         Sigma points as list of lists (2n+1 x n), or None if NumPy
         is unavailable or Cholesky fails.
 

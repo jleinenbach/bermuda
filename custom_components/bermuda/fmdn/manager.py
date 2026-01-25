@@ -93,6 +93,7 @@ class BermudaFmdnManager:
         Record that an EID was seen from a BLE advertisement.
 
         Args:
+        ----
             eid: The raw EID bytes extracted from service data
             source_mac: The MAC address of the device broadcasting this EID
             resolution_status: Result of resolution attempt (EidResolutionStatus or device_id string)

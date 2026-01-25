@@ -150,6 +150,7 @@ class ScannerPairData:
         - Corrected diff = raw_diff - tx_correction
 
         Example:
+        -------
             - A transmits at -4 dBm, B transmits at -12 dBm (A is 8 dB stronger)
             - A sees B at -60 dBm, B sees A at -52 dBm
             - Raw diff = -60 - (-52) = -8 dB (A appears to receive weaker)
@@ -223,10 +224,12 @@ class ScannerCalibrationManager:
         data from affecting calibration when a scanner is moved or replaced.
 
         Args:
+        ----
             scanner_addr: Address of the scanner to check.
             nowstamp: Current monotonic timestamp.
 
         Returns:
+        -------
             True if scanner has been seen within timeout, False otherwise.
 
         """
@@ -244,6 +247,7 @@ class ScannerCalibrationManager:
         TX power will be heard stronger, which doesn't indicate receiver sensitivity.
 
         Args:
+        ----
             scanner_addr: Address of the scanner.
             tx_power: Transmit power in dBm (typically -12 to 0 dBm).
 
@@ -273,12 +277,14 @@ class ScannerCalibrationManager:
         - Consistency (30%): Lower stddev across pairs = more reliable
 
         Args:
+        ----
             scanner_addr: Scanner address (for logging).
             contributions: List of offset contributions from each pair.
             pair_count: Number of pairs contributing to this scanner.
             avg_samples: Average sample count across pairs.
 
         Returns:
+        -------
             Tuple of (confidence, factors_dict) where factors_dict contains
             the individual factor scores for diagnostics.
 
@@ -335,6 +341,7 @@ class ScannerCalibrationManager:
         process noise scaling.
 
         Args:
+        ----
             receiver_addr: Address of the scanner that received the signal
             sender_addr: Address of the scanner that sent the signal (as iBeacon)
             rssi_raw: RAW RSSI value (NOT adjusted by rssi_offset!)
@@ -386,10 +393,12 @@ class ScannerCalibrationManager:
         5. Round to integer dB values
 
         Args:
+        ----
             nowstamp: Current timestamp for online checking. If None, uses
                      monotonic_time_coarse(). Exposed for testing.
 
         Returns:
+        -------
             Dictionary mapping scanner addresses to suggested RSSI offsets
 
         """
@@ -563,10 +572,12 @@ class ScannerCalibrationManager:
         Get human-readable info about scanner pairs for diagnostics.
 
         Args:
+        ----
             nowstamp: Current timestamp for online checking. If None, uses
                      monotonic_time_coarse(). Exposed for testing.
 
         Returns:
+        -------
             List of dictionaries with pair information including Kalman filter
             diagnostics, TX power info, and online status.
 
@@ -606,7 +617,8 @@ class ScannerCalibrationManager:
         """
         Get detailed information about suggested offsets with confidence.
 
-        Returns:
+        Returns
+        -------
             Dictionary mapping scanner addresses to info dictionaries containing:
             - suggested_offset: The suggested offset value (or None)
             - confidence: Confidence score (0.0-1.0)
@@ -652,11 +664,13 @@ def update_scanner_calibration(  # noqa: C901
     to refresh cross-visibility data and recalculate suggested offsets.
 
     Args:
+    ----
         calibration_manager: The calibration manager instance
         scanner_list: Set of scanner addresses
         devices: Dictionary of all BermudaDevice instances
 
     Returns:
+    -------
         Dictionary of suggested RSSI offsets per scanner
 
     """
