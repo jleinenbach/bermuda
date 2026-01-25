@@ -220,7 +220,7 @@ class AreaSelectionHandler:
     @property
     def _scanners(self) -> set[BermudaDevice]:
         """Access scanner set."""
-        return self.coordinator._scanners  # noqa: SLF001
+        return self.coordinator._scanners
 
     @property
     def ar(self) -> AreaRegistry | None:
@@ -567,7 +567,7 @@ class AreaSelectionHandler:
                 has_scanner = self._area_has_scanner(area_id)
                 abs_details = []
                 if hasattr(profile, "_absolute_profiles"):
-                    for scanner_addr, abs_prof in profile._absolute_profiles.items():  # noqa: SLF001
+                    for scanner_addr, abs_prof in profile._absolute_profiles.items():
                         abs_details.append(
                             f"{scanner_addr[-8:]}:btn={abs_prof.button_sample_count}/auto={abs_prof.auto_sample_count}"
                         )
