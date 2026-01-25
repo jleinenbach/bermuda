@@ -22,6 +22,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Self
 
+from custom_components.bermuda.const import AUTO_LEARNING_VARIANCE_FLOOR
 from custom_components.bermuda.filters.kalman import KalmanFilter
 
 # Kalman parameters for absolute RSSI tracking.
@@ -107,6 +108,14 @@ class ScannerAbsoluteRssi:
 
         """
         self._kalman_auto.update(rssi)
+
+        # Variance Floor: Prevent unbounded convergence that causes z-score explosion.
+        # Without this, after thousands of samples variance approaches 0, making normal
+        # BLE fluctuations (3-5dB) appear as 10+ sigma deviations.
+        self._kalman_auto.variance = max(
+            self._kalman_auto.variance, AUTO_LEARNING_VARIANCE_FLOOR
+        )
+
         return self.expected_rssi
 
     def update_button(self, rssi: float) -> float:

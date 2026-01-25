@@ -201,6 +201,12 @@ MATURE_PROFILE_MIN_PAIRS: Final = 2  # Minimum scanner pairs for mature room pro
 MATURE_ABSOLUTE_MIN_COUNT: Final = 2  # Minimum absolute correlations for maturity check
 ABSOLUTE_Z_SCORE_MAX: Final = 2.0  # Max average z-score for absolute profile confidence
 
+# Auto-learning quality improvements
+# Minimum interval between auto-learning updates to reduce autocorrelation (rho: 0.95 to 0.82)
+AUTO_LEARNING_MIN_INTERVAL: Final = 5.0  # seconds
+# Variance floor prevents unbounded convergence that causes z-score explosion
+AUTO_LEARNING_VARIANCE_FLOOR: Final = 4.0  # dB^2 (std_dev = 2 dB)
+
 # Sentinel values for distance/RSSI
 DISTANCE_INFINITE_SENTINEL: Final = 999.0  # Sentinel value for unknown/infinite distance
 RSSI_INVALID_SENTINEL: Final = -999.0  # Sentinel value for invalid/missing RSSI

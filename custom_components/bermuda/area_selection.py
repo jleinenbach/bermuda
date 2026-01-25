@@ -447,6 +447,7 @@ class AreaSelectionHandler:
         primary_rssi: float,
         primary_scanner_addr: str | None,
         other_readings: dict[str, float],
+        nowstamp: float | None = None,
     ) -> None:
         """
         Update device correlations for area learning.
@@ -461,6 +462,7 @@ class AreaSelectionHandler:
             primary_rssi: RSSI from the primary (strongest) scanner.
             primary_scanner_addr: Address of the primary scanner.
             other_readings: RSSI readings from other visible scanners.
+            nowstamp: Current timestamp for minimum interval enforcement.
 
         """
         if not other_readings:
@@ -476,21 +478,22 @@ class AreaSelectionHandler:
                 area_id=area_id,
             )
 
-        # Update device-specific profile
+        # Update device-specific profile (with minimum interval check)
         self.correlations[device.address][area_id].update(
             primary_rssi=primary_rssi,
             other_readings=other_readings,
             primary_scanner_addr=primary_scanner_addr,
+            nowstamp=nowstamp,
         )
 
-        # Update room-wide profile
+        # Update room-wide profile (with minimum interval check)
         all_readings = dict(other_readings)
         if primary_scanner_addr is not None:
             all_readings[primary_scanner_addr] = primary_rssi
 
         if area_id not in self.room_profiles:
             self.room_profiles[area_id] = RoomProfile(area_id=area_id)
-        self.room_profiles[area_id].update(all_readings)
+        self.room_profiles[area_id].update(all_readings, nowstamp=nowstamp)
 
     # =========================================================================
     # Virtual distance for scannerless rooms
@@ -770,6 +773,7 @@ class AreaSelectionHandler:
                 primary_rssi=best_advert.rssi,
                 primary_scanner_addr=best_advert.scanner_address,
                 other_readings=other_readings,
+                nowstamp=nowstamp,
             )
 
     def _refresh_area_by_ukf(self, device: BermudaDevice) -> bool:  # noqa: PLR0911, C901
@@ -1946,6 +1950,7 @@ class AreaSelectionHandler:
                         primary_rssi=advert.rssi,
                         primary_scanner_addr=advert.scanner_address,
                         other_readings=other_readings,
+                        nowstamp=nowstamp,
                     )
 
         if winner is None:

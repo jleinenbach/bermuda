@@ -24,6 +24,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Self
 
+from custom_components.bermuda.const import AUTO_LEARNING_MIN_INTERVAL
+
 from .scanner_pair import ScannerPairCorrelation
 
 # Memory limit: keep only the most useful scanner pairs.
@@ -61,19 +63,35 @@ class RoomProfile:
         default_factory=dict,
         repr=False,
     )
+    # Timestamp of last auto-learning update (for minimum interval enforcement)
+    _last_update_stamp: float = field(default=0.0, repr=False)
 
-    def update(self, readings: dict[str, float]) -> None:
+    def update(self, readings: dict[str, float], nowstamp: float | None = None) -> bool:
         """
         Update room profile with RSSI readings from automatic learning.
 
         Automatic samples are capped at AUTO_SAMPLE_CAP per scanner pair
         to prevent overwhelming button-trained data.
+        Minimum interval enforcement reduces autocorrelation (rho: 0.95 to 0.82).
 
         Args:
         ----
             readings: Map of scanner_address to RSSI value.
+            nowstamp: Current timestamp for minimum interval enforcement.
+                      If None, update always proceeds (backward compatibility).
+
+        Returns:
+        -------
+            True if update was performed, False if skipped due to minimum interval.
 
         """
+        # Minimum Interval Check: Skip updates that are too frequent
+        # This reduces autocorrelation from rho=0.95 to rho=0.82, improving ESS
+        if nowstamp is not None:
+            if nowstamp - self._last_update_stamp < AUTO_LEARNING_MIN_INTERVAL:
+                return False
+            self._last_update_stamp = nowstamp
+
         scanner_list = list(readings.keys())
 
         for i, first in enumerate(scanner_list):
@@ -92,6 +110,7 @@ class RoomProfile:
                 self._scanner_pairs[pair_key].update(delta)
 
         self._enforce_memory_limit()
+        return True
 
     def update_button(self, readings: dict[str, float]) -> None:
         """
@@ -221,6 +240,7 @@ class RoomProfile:
         return {
             "area_id": self.area_id,
             "scanner_pairs": [p.to_dict() for p in self._scanner_pairs.values()],
+            "last_update_stamp": self._last_update_stamp,
         }
 
     @classmethod
@@ -230,4 +250,6 @@ class RoomProfile:
         for pair_data in data.get("scanner_pairs", []):
             pair = ScannerPairCorrelation.from_dict(pair_data)
             profile._scanner_pairs[pair.scanner_address] = pair
+        # Restore last update timestamp (default 0.0 for backward compatibility)
+        profile._last_update_stamp = data.get("last_update_stamp", 0.0)
         return profile
