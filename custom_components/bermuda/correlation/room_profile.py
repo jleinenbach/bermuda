@@ -70,6 +70,7 @@ class RoomProfile:
         to prevent overwhelming button-trained data.
 
         Args:
+        ----
             readings: Map of scanner_address to RSSI value.
 
         """
@@ -101,6 +102,7 @@ class RoomProfile:
         automatic learning.
 
         Args:
+        ----
             readings: Map of scanner_address to RSSI value.
 
         """
@@ -170,7 +172,8 @@ class RoomProfile:
         """
         Calculate how well current readings match this room's profile.
 
-        Returns:
+        Returns
+        -------
             Score from 0.0 (no match) to 1.0 (perfect match).
             Returns 0.5 if no mature pairs to compare.
 
@@ -226,5 +229,5 @@ class RoomProfile:
         profile = cls(area_id=data["area_id"])
         for pair_data in data.get("scanner_pairs", []):
             pair = ScannerPairCorrelation.from_dict(pair_data)
-            profile._scanner_pairs[pair.scanner_address] = pair
+            profile._scanner_pairs[pair.scanner_address] = pair  # noqa: SLF001
         return profile

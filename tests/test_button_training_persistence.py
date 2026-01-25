@@ -161,9 +161,9 @@ class TestAreaProfilePersistence:
         # Check that absolute_profiles have button_samples > 0
         for abs_data in data.get("absolute_profiles", []):
             print(f"  Scanner {abs_data['scanner']}: button_samples={abs_data.get('button_samples', 'MISSING')}")
-            assert abs_data.get("button_samples", 0) > 0, (
-                f"Scanner {abs_data['scanner']} should have button_samples > 0"
-            )
+            assert (
+                abs_data.get("button_samples", 0) > 0
+            ), f"Scanner {abs_data['scanner']} should have button_samples > 0"
 
         # Deserialize
         restored = AreaProfile.from_dict(data)

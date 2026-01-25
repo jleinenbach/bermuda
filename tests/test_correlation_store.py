@@ -69,9 +69,9 @@ class TestCorrelationStoreRoundtrip:
 
         # Verify profile data preserved
         for device_addr, areas in original_data.items():
-            assert device_addr in loaded_data, (
-                f"Device {device_addr} missing after load. All device correlations would be lost for this device."
-            )
+            assert (
+                device_addr in loaded_data
+            ), f"Device {device_addr} missing after load. All device correlations would be lost for this device."
             for area_id, original_profile in areas.items():
                 assert area_id in loaded_data[device_addr], f"Area {area_id} missing for device {device_addr}."
                 loaded_profile = loaded_data[device_addr][area_id]

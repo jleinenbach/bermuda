@@ -67,7 +67,8 @@ class ScannerPairCorrelation:
     - Prevents long-term drift while allowing intelligent refinement
     - Solves the "Keller-Lager" problem while enabling controlled evolution
 
-    Attributes:
+    Attributes
+    ----------
         scanner_address: MAC address of the "other" scanner being correlated.
 
     """
@@ -97,9 +98,11 @@ class ScannerPairCorrelation:
         Its influence on the final estimate is weighted against button training.
 
         Args:
+        ----
             observed_delta: Current (primary_rssi - other_rssi) value.
 
         Returns:
+        -------
             Updated fused estimate of the expected delta.
 
         """
@@ -120,9 +123,11 @@ class ScannerPairCorrelation:
         claimed 500 samples worth of confidence!
 
         Args:
+        ----
             observed_delta: Current (primary_rssi - other_rssi) value.
 
         Returns:
+        -------
             The fused estimate (button + limited auto refinement).
 
         """
@@ -254,7 +259,8 @@ class ScannerPairCorrelation:
         BUG 12 FIX: Without this, scannerless room profiles were never mature
         (10 button samples < 30 maturity threshold) and were skipped by UKF matching.
 
-        Returns:
+        Returns
+        -------
             True if profile is mature or has button training.
 
         """
@@ -300,9 +306,11 @@ class ScannerPairCorrelation:
         Calculate deviation from expectation in standard deviations.
 
         Args:
+        ----
             observed_delta: Currently observed delta to compare.
 
         Returns:
+        -------
             Absolute z-score. Lower values indicate better match.
             Returns 0.0 if variance is zero (prevents division by zero).
 
@@ -343,12 +351,15 @@ class ScannerPairCorrelation:
         Uses KalmanFilter.restore_state() for clean state restoration.
 
         Args:
+        ----
             data: Dictionary from to_dict().
 
         Returns:
+        -------
             Restored ScannerPairCorrelation instance.
 
         Raises:
+        ------
             TypeError: If scanner address is not a string.
             ValueError: If data contains invalid values (negative variance, etc.)
             KeyError: If required fields are missing.
@@ -376,12 +387,12 @@ class ScannerPairCorrelation:
                 msg = "sample_count must be non-negative"
                 raise ValueError(msg)
 
-            corr._kalman_auto.restore_state(
+            corr._kalman_auto.restore_state(  # noqa: SLF001
                 estimate=float(data["auto_estimate"]),
                 variance=auto_var,
                 sample_count=auto_samples,
             )
-            corr._kalman_button.restore_state(
+            corr._kalman_button.restore_state(  # noqa: SLF001
                 estimate=float(data["button_estimate"]),
                 variance=btn_var,
                 sample_count=btn_samples,
@@ -398,7 +409,7 @@ class ScannerPairCorrelation:
                 msg = "sample_count must be non-negative"
                 raise ValueError(msg)
 
-            corr._kalman_auto.restore_state(
+            corr._kalman_auto.restore_state(  # noqa: SLF001
                 estimate=float(data["estimate"]),
                 variance=variance,
                 sample_count=samples,

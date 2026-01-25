@@ -154,9 +154,9 @@ class TestRotatingMacResolutionFirst:
 
         # Verify the metadevice was created
         metadevice_address = coordinator.fmdn.format_metadevice_address(expected_device_id, expected_canonical_id)
-        assert metadevice_address in coordinator.metadevices, (
-            "Metadevice MUST be created after successful FMDN resolution"
-        )
+        assert (
+            metadevice_address in coordinator.metadevices
+        ), "Metadevice MUST be created after successful FMDN resolution"
 
         metadevice = coordinator.metadevices[metadevice_address]
 
@@ -205,9 +205,9 @@ class TestRotatingMacResolutionFirst:
         metadevice = coordinator.metadevices[metadevice_address]
 
         for mac in mac_addresses:
-            assert mac.lower() in metadevice.metadevice_sources, (
-                f"MAC {mac} should be in metadevice_sources after resolution"
-            )
+            assert (
+                mac.lower() in metadevice.metadevice_sources
+            ), f"MAC {mac} should be in metadevice_sources after resolution"
 
     def test_non_fmdn_advertisement_still_creates_device(
         self, hass: HomeAssistant, coordinator: BermudaDataUpdateCoordinator
@@ -228,9 +228,9 @@ class TestRotatingMacResolutionFirst:
         coordinator.fmdn.handle_advertisement(source_device, service_data)
 
         # Device should exist even without FMDN data
-        assert random_mac.lower() in coordinator.devices, (
-            "Device should be created for any BLE advertisement, not just FMDN advertisements"
-        )
+        assert (
+            random_mac.lower() in coordinator.devices
+        ), "Device should be created for any BLE advertisement, not just FMDN advertisements"
 
     def test_fmdn_resolution_failure_still_keeps_device(
         self, hass: HomeAssistant, coordinator: BermudaDataUpdateCoordinator
@@ -284,9 +284,9 @@ class TestRotatingMacResolutionFirst:
         coordinator.fmdn.handle_advertisement(source_device, service_data)
 
         # Source device should be tagged as FMDN source
-        assert METADEVICE_TYPE_FMDN_SOURCE in source_device.metadevice_type, (
-            "Source device should be tagged as FMDN_SOURCE after successful resolution"
-        )
+        assert (
+            METADEVICE_TYPE_FMDN_SOURCE in source_device.metadevice_type
+        ), "Source device should be tagged as FMDN_SOURCE after successful resolution"
 
     def test_metadevice_configured_for_sensor_creation(
         self, hass: HomeAssistant, coordinator: BermudaDataUpdateCoordinator
@@ -354,9 +354,9 @@ class TestResolutionOrderInPipeline:
 
         # At this point, BEFORE calling handle_advertisement,
         # the device should already exist
-        assert random_mac.lower() in coordinator.devices, (
-            "Device must exist before handle_advertisement is called. This is the 'Resolution First' principle."
-        )
+        assert (
+            random_mac.lower() in coordinator.devices
+        ), "Device must exist before handle_advertisement is called. This is the 'Resolution First' principle."
 
         # The device object should be usable
         assert device is not None
@@ -462,9 +462,9 @@ class TestIrkResolution:
         # At this point, no IRKs are known, so the result should be an IrkType
         from custom_components.bermuda.const import IrkTypes
 
-        assert result_before in IrkTypes.unresolved(), (
-            "Before any IRK is added, check_mac should return an unresolved IrkType"
-        )
+        assert (
+            result_before in IrkTypes.unresolved()
+        ), "Before any IRK is added, check_mac should return an unresolved IrkType"
 
         # Step 2: Learn a valid IRK (16 bytes = 128 bits)
         # Note: This IRK won't actually match the random MAC since we're using

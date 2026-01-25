@@ -615,7 +615,7 @@ class BermudaDevice:
             if raw_stamps is not None:
                 normalized: dict[str, float] = {}
                 for addr, stamp in raw_stamps.items():
-                    if not isinstance(stamp, (int, float)):
+                    if not isinstance(stamp, int | float):
                         continue
                     try:
                         normalized_addr = normalize_mac(str(addr))
@@ -872,6 +872,7 @@ class BermudaDevice:
         see it (all_candidate_scanners).
 
         Args:
+        ----
             area_id: The area the device is currently assigned to
             visible_scanners: Set of scanner addresses that currently see the device
             all_candidate_scanners: Set of all scanner addresses that have ever seen
@@ -915,10 +916,12 @@ class BermudaDevice:
         (all expected scanners present or not enough data).
 
         Args:
+        ----
             area_id: The area to check co-visibility for
             visible_scanners: Set of scanner addresses currently seeing the device
 
         Returns:
+        -------
             Confidence multiplier (0.0 to 1.0). Lower values mean more expected
             scanners are missing, suggesting the device might not actually be
             in this area.
@@ -962,7 +965,7 @@ class BermudaDevice:
 
     def _parse_tracker_timeout(self, raw: object) -> float:
         """Return a safe tracker timeout value in seconds."""
-        if isinstance(raw, (int, float)) and raw > 0:
+        if isinstance(raw, int | float) and raw > 0:
             return float(raw)
         if isinstance(raw, str):
             try:
@@ -988,7 +991,7 @@ class BermudaDevice:
             return
         if not (evidence_ok or old_area is None):
             return
-        if not isinstance(advert_stamp, (int, float)):
+        if not isinstance(advert_stamp, int | float):
             if _LOGGER.isEnabledFor(logging.DEBUG):
                 _LOGGER.debug(
                     "Skipping last_seen refresh for %s: missing valid advert stamp from %s",
@@ -1058,7 +1061,7 @@ class BermudaDevice:
             scanner_address = getattr(bermuda_advert, "scanner_address", None)
             advert_stamp = getattr(bermuda_advert, "stamp", None)
 
-        advert_stamp_valid = isinstance(advert_stamp, (int, float))
+        advert_stamp_valid = isinstance(advert_stamp, int | float)
         advert_stamp_future = bool(advert_stamp_valid and advert_stamp is not None and advert_stamp > stamp_now + 0.5)
         if advert_stamp_future:
             _LOGGER_SPAM_LESS.debug(

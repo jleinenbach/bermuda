@@ -366,7 +366,7 @@ def extract_fmdn_eids(
     for service_uuid, payload in service_data.items():
         if not is_fmdn_service_uuid(service_uuid):
             continue
-        if not isinstance(payload, (bytes, bytearray, memoryview)):
+        if not isinstance(payload, bytes | bytearray | memoryview):
             continue
 
         payload_bytes = bytes(payload)

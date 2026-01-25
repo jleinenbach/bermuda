@@ -53,10 +53,12 @@ class SignalFilter(ABC):
         Process a new measurement and update filter state.
 
         Args:
+        ----
             measurement: Raw RSSI value in dBm (typically -100 to 0)
             timestamp: Optional timestamp for time-aware filtering
 
         Returns:
+        -------
             The filtered/smoothed estimate after incorporating this measurement
 
         """
@@ -66,7 +68,8 @@ class SignalFilter(ABC):
         """
         Return the current best estimate of the signal.
 
-        Returns:
+        Returns
+        -------
             Current filtered RSSI estimate in dBm
 
         """
@@ -76,7 +79,8 @@ class SignalFilter(ABC):
         """
         Return the current uncertainty estimate.
 
-        Returns:
+        Returns
+        -------
             Variance of the estimate (dBm²). Can be used for:
             - Weighting in multi-sensor fusion
             - Confidence intervals
@@ -92,7 +96,8 @@ class SignalFilter(ABC):
         """
         Return diagnostic information for debugging/monitoring.
 
-        Returns:
+        Returns
+        -------
             Dictionary with filter-specific diagnostic data.
             Default implementation returns basic state.
 
@@ -140,6 +145,7 @@ def create_filter(
     useful for configuration-driven filter selection.
 
     Args:
+    ----
         filter_type: Type of filter to create. One of:
             - "kalman": 1D Kalman filter (default, best for most cases)
             - "adaptive": EMA with CUSUM changepoint detection
@@ -147,12 +153,15 @@ def create_filter(
         config: Optional configuration. Uses sensible defaults if None.
 
     Returns:
+    -------
         Configured SignalFilter instance.
 
     Raises:
+    ------
         ValueError: If filter_type is not recognized.
 
     Example:
+    -------
         >>> filter = create_filter("kalman")
         >>> filtered = filter.update(-70.0)
 
@@ -161,9 +170,9 @@ def create_filter(
 
     """
     # Lazy imports to avoid circular dependencies
-    from .adaptive import AdaptiveRobustFilter  # noqa: PLC0415
-    from .kalman import KalmanFilter  # noqa: PLC0415
-    from .ukf import UnscentedKalmanFilter  # noqa: PLC0415
+    from .adaptive import AdaptiveRobustFilter
+    from .kalman import KalmanFilter
+    from .ukf import UnscentedKalmanFilter
 
     config = config or FilterConfig()
 

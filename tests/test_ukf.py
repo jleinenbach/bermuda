@@ -567,9 +567,9 @@ class TestLagerraumScenario:
         praxis_score = praxis_result[2]
 
         # Key assertion: Lagerraum should win
-        assert lagerraum_score > praxis_score, (
-            f"Lagerraum ({lagerraum_score:.4f}) should beat Praxis ({praxis_score:.4f})"
-        )
+        assert (
+            lagerraum_score > praxis_score
+        ), f"Lagerraum ({lagerraum_score:.4f}) should beat Praxis ({praxis_score:.4f})"
 
         # Lagerraum should have a good score despite 3dB deviation
         assert lagerraum_score > 0.6, f"Lagerraum score {lagerraum_score:.4f} too low for 3dB deviation"
@@ -631,6 +631,6 @@ class TestLagerraumScenario:
         adjacent_result = next(r for r in results if r[0] == "adjacent_room")
 
         # Scannerless room should match better (smaller deviation)
-        assert scannerless_result[2] > adjacent_result[2], (
-            f"Scannerless room ({scannerless_result[2]:.4f}) should beat adjacent room ({adjacent_result[2]:.4f})"
-        )
+        assert (
+            scannerless_result[2] > adjacent_result[2]
+        ), f"Scannerless room ({scannerless_result[2]:.4f}) should beat adjacent room ({adjacent_result[2]:.4f})"

@@ -325,7 +325,8 @@ class BermudaAdvert(dict[str, Any]):
         These are fundamentally different values. Only iBeacon beacon_power is a
         calibrated 1m RSSI value.
 
-        Returns:
+        Returns
+        -------
             Tuple of (ref_power value, source description string)
 
         """

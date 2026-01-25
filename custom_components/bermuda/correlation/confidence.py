@@ -22,12 +22,14 @@ def z_scores_to_confidence(
     - z->infinity -> confidence->0.0 (definitely wrong)
 
     Args:
+    ----
         z_scores: List of (scanner_address, z_score) tuples.
         threshold: Z-score at which confidence drops to 0.5.
                   Default 2.5 means ~98.8% of normal observations
                   would have higher confidence.
 
     Returns:
+    -------
         Confidence value between 0.0 and 1.0.
         Returns 1.0 if z_scores is empty (no data = no penalty).
 
@@ -53,10 +55,12 @@ def weighted_z_scores_to_confidence(
     have proportionally more influence on the confidence score.
 
     Args:
+    ----
         z_scores: List of (scanner_address, z_score, sample_count) tuples.
         threshold: Z-score at which confidence drops to 0.5.
 
     Returns:
+    -------
         Confidence value between 0.0 and 1.0.
         Returns 1.0 if z_scores is empty or total weight is zero.
 

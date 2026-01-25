@@ -63,9 +63,11 @@ def _convert_to_eid_match(raw_match: Any) -> EIDMatch | None:
     typed EIDMatch structure, handling missing fields gracefully with defaults.
 
     Args:
+    ----
         raw_match: The match object returned by the external resolver.
 
     Returns:
+    -------
         EIDMatch if conversion succeeds, None if the match is invalid.
 
     """
@@ -160,6 +162,7 @@ class FmdnIntegration:
         - Result: SEPARATE metadevices, correct device congealment!
 
         Args:
+        ----
             device_id: HA Device Registry ID (PRIMARY - unique per account)
             canonical_id: Native ID from GoogleFindMy API (fallback - shared across accounts)
 
@@ -238,7 +241,7 @@ class FmdnIntegration:
         if eid_data is None:
             return None
 
-        if isinstance(eid_data, (bytes, bytearray, memoryview)):
+        if isinstance(eid_data, bytes | bytearray | memoryview):
             return bytes(eid_data)
 
         if isinstance(eid_data, str):
@@ -267,7 +270,8 @@ class FmdnIntegration:
         """
         Resolve an EID payload and track the resolution status.
 
-        Returns:
+        Returns
+        -------
             Tuple of (EIDMatch result, resolution status)
 
         """
@@ -333,7 +337,8 @@ class FmdnIntegration:
         returns all matching devices so that Bermuda sensors can be created
         for each one.
 
-        Returns:
+        Returns
+        -------
             Tuple of (list of EIDMatch, resolution status)
 
         """

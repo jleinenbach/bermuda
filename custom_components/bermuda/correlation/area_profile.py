@@ -39,6 +39,7 @@ class AreaProfile:
     The absolute profiles enable fallback validation when primary goes offline.
 
     Example:
+    -------
         When device is confirmed in "Büro" (office):
         - Delta: Primary-to-Scanner5 typically +30dB (relative)
         - Absolute: Scanner5 typically sees -85dB (absolute)
@@ -47,6 +48,7 @@ class AreaProfile:
         the device is likely still in Büro (pattern match).
 
     Attributes:
+    ----------
         area_id: Home Assistant area ID (e.g., "area.living_room").
 
     """
@@ -77,6 +79,7 @@ class AreaProfile:
         Automatic samples are capped to prevent overwhelming button-trained data.
 
         Args:
+        ----
             primary_rssi: RSSI from the winning (primary) scanner.
             other_readings: Map of scanner_address to RSSI for other scanners.
                            Must NOT include the primary scanner.
@@ -119,6 +122,7 @@ class AreaProfile:
         automatic learning.
 
         Args:
+        ----
             primary_rssi: RSSI from the winning (primary) scanner.
             other_readings: Map of scanner_address to RSSI for other scanners.
                            Must NOT include the primary scanner.
@@ -231,10 +235,12 @@ class AreaProfile:
         Only includes correlations with enough samples to be reliable.
 
         Args:
+        ----
             primary_rssi: Current RSSI from primary scanner.
             other_readings: Current RSSI from other scanners.
 
         Returns:
+        -------
             List of (scanner_address, z_score) tuples.
             Empty if no mature correlations exist.
 
@@ -264,10 +270,12 @@ class AreaProfile:
         Calculate z-scores with sample counts for weighted confidence.
 
         Args:
+        ----
             primary_rssi: Current RSSI from primary scanner.
             other_readings: Current RSSI from other scanners.
 
         Returns:
+        -------
             List of (scanner_address, z_score, sample_count) tuples.
 
         """
@@ -292,9 +300,11 @@ class AreaProfile:
         Get the absolute RSSI profile for a specific scanner.
 
         Args:
+        ----
             scanner_addr: MAC address of the scanner.
 
         Returns:
+        -------
             ScannerAbsoluteRssi instance if it exists, None otherwise.
 
         """
@@ -311,9 +321,11 @@ class AreaProfile:
         Compares current RSSI readings against learned absolute expectations.
 
         Args:
+        ----
             readings: Map of scanner_address to RSSI for all visible scanners.
 
         Returns:
+        -------
             List of (scanner_address, z_score) tuples.
             Lower z-scores indicate better match with learned profile.
 
@@ -341,9 +353,11 @@ class AreaProfile:
         Calculate z-scores with sample counts for weighted confidence.
 
         Args:
+        ----
             readings: Map of scanner_address to RSSI for all visible scanners.
 
         Returns:
+        -------
             List of (scanner_address, z_score, sample_count) tuples.
 
         """
@@ -396,7 +410,8 @@ class AreaProfile:
         """
         Serialize for persistent storage.
 
-        Returns:
+        Returns
+        -------
             Dictionary with area_id and list of correlation dicts.
 
         """
@@ -412,9 +427,11 @@ class AreaProfile:
         Deserialize from storage.
 
         Args:
+        ----
             data: Dictionary from to_dict().
 
         Returns:
+        -------
             Restored AreaProfile instance.
 
         """
@@ -422,9 +439,9 @@ class AreaProfile:
         # Restore delta correlations
         for corr_data in data.get("correlations", []):
             corr = ScannerPairCorrelation.from_dict(corr_data)
-            profile._correlations[corr.scanner_address] = corr
+            profile._correlations[corr.scanner_address] = corr  # noqa: SLF001
         # Restore absolute profiles
         for profile_data in data.get("absolute_profiles", []):
             abs_profile = ScannerAbsoluteRssi.from_dict(profile_data)
-            profile._absolute_profiles[abs_profile.scanner_address] = abs_profile
+            profile._absolute_profiles[abs_profile.scanner_address] = abs_profile  # noqa: SLF001
         return profile

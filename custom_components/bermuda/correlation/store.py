@@ -54,6 +54,7 @@ class CorrelationStore:
         Initialize the correlation store.
 
         Args:
+        ----
             hass: Home Assistant instance.
 
         """
@@ -67,7 +68,8 @@ class CorrelationStore:
         For backward compatibility, returns only device profiles.
         Use async_load_all() to get both device and room profiles.
 
-        Returns:
+        Returns
+        -------
             Nested dict: {device_address: {area_id: AreaProfile}}.
             Empty dict on first run or if storage is empty.
 
@@ -79,12 +81,13 @@ class CorrelationStore:
         """
         Load all correlation data from persistent storage.
 
-        Returns:
+        Returns
+        -------
             CorrelationData with device_profiles and room_profiles.
 
         """
         # pylint: disable=import-outside-toplevel
-        from homeassistant.helpers.storage import Store  # noqa: PLC0415
+        from homeassistant.helpers.storage import Store
 
         self._store = Store(
             self._hass,
@@ -108,13 +111,14 @@ class CorrelationStore:
         Save correlations to persistent storage.
 
         Args:
+        ----
             correlations: Nested dict of device -> area -> profile.
             room_profiles: Optional dict of area_id -> RoomProfile.
 
         """
         if self._store is None:
             # pylint: disable=import-outside-toplevel
-            from homeassistant.helpers.storage import Store  # noqa: PLC0415
+            from homeassistant.helpers.storage import Store
 
             self._store = Store(
                 self._hass,
@@ -133,10 +137,12 @@ class CorrelationStore:
         Convert to JSON-serializable format.
 
         Args:
+        ----
             device_profiles: Nested dict of device -> area -> profile.
             room_profiles: Dict of area_id -> RoomProfile.
 
         Returns:
+        -------
             Dictionary suitable for JSON storage.
 
         """
@@ -163,9 +169,11 @@ class CorrelationStore:
         only a single profile is damaged (e.g., from power loss during write).
 
         Args:
+        ----
             data: Dictionary from storage.
 
         Returns:
+        -------
             CorrelationData with device and room profiles.
             Corrupt profiles are skipped (logged as warnings).
 

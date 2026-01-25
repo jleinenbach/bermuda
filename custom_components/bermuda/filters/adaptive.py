@@ -39,7 +39,8 @@ class AdaptiveStatistics:
     - EMA smoothing for adaptation to changing conditions
     - CUSUM changepoint detection for significant shifts
 
-    Attributes:
+    Attributes
+    ----------
         mean: Current estimated mean value
         variance: Current estimated variance
         sample_count: Total number of samples processed
@@ -71,9 +72,11 @@ class AdaptiveStatistics:
         Update statistics with a new observation.
 
         Args:
+        ----
             value: New RSSI measurement (typically negative dBm)
 
         Returns:
+        -------
             True if a changepoint was detected (significant shift in mean),
             False otherwise.
 
@@ -111,9 +114,11 @@ class AdaptiveStatistics:
         negative shifts (cusum_neg) independently.
 
         Args:
+        ----
             value: The current observation
 
         Returns:
+        -------
             True if a changepoint was detected, False otherwise.
 
         """
@@ -192,10 +197,12 @@ class AdaptiveRobustFilter(SignalFilter):
         Process a new measurement and update filter state.
 
         Args:
+        ----
             measurement: Raw RSSI value in dBm
             timestamp: Optional (unused, part of interface)
 
         Returns:
+        -------
             The filtered estimate (EMA mean)
 
         """

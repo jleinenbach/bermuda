@@ -63,6 +63,7 @@ class ScannerAbsoluteRssi:
     environmental changes) while preventing it from "drifting away" over time.
 
     Example:
+    -------
         User trains device in "Keller" (cellar) at -85dB:
         - Button filter: -85dB (the anchor, ~70-95% weight)
         - Auto filter drifts to -80dB over months
@@ -70,6 +71,7 @@ class ScannerAbsoluteRssi:
         - Room detection stays stable while adapting slightly
 
     Attributes:
+    ----------
         scanner_address: MAC address of the scanner being tracked.
 
     """
@@ -96,9 +98,11 @@ class ScannerAbsoluteRssi:
         Update with new observed absolute RSSI from automatic learning.
 
         Args:
+        ----
             rssi: Current absolute RSSI value from this scanner.
 
         Returns:
+        -------
             Updated fused estimate of expected RSSI.
 
         """
@@ -119,9 +123,11 @@ class ScannerAbsoluteRssi:
         claimed 500 samples worth of confidence!
 
         Args:
+        ----
             rssi: Current absolute RSSI value from this scanner.
 
         Returns:
+        -------
             The fused estimate (button + limited auto refinement).
 
         """
@@ -249,7 +255,8 @@ class ScannerAbsoluteRssi:
         BUG 12 FIX: Without this, scannerless room profiles were never mature
         (10 button samples < 20 maturity threshold) and were skipped by UKF matching.
 
-        Returns:
+        Returns
+        -------
             True if profile is mature or has button training.
 
         """
@@ -295,9 +302,11 @@ class ScannerAbsoluteRssi:
         Calculate deviation from expected value in standard deviations.
 
         Args:
+        ----
             observed_rssi: Currently observed RSSI to compare.
 
         Returns:
+        -------
             Absolute z-score. Lower values indicate better match.
             Returns 0.0 if variance is zero (prevents division by zero).
 
@@ -332,7 +341,8 @@ class ScannerAbsoluteRssi:
         Handles both old format (single Kalman) and new format (dual Kalman).
         Uses KalmanFilter.restore_state() for clean state restoration.
 
-        Raises:
+        Raises
+        ------
             TypeError: If scanner address is not a string.
             ValueError: If data contains invalid values (negative variance, etc.)
             KeyError: If required fields are missing.
@@ -359,12 +369,12 @@ class ScannerAbsoluteRssi:
                 msg = "sample_count must be non-negative"
                 raise ValueError(msg)
 
-            profile._kalman_auto.restore_state(
+            profile._kalman_auto.restore_state(  # noqa: SLF001
                 estimate=float(data["auto_estimate"]),
                 variance=auto_var,
                 sample_count=auto_samples,
             )
-            profile._kalman_button.restore_state(
+            profile._kalman_button.restore_state(  # noqa: SLF001
                 estimate=float(data["button_estimate"]),
                 variance=btn_var,
                 sample_count=btn_samples,
@@ -381,7 +391,7 @@ class ScannerAbsoluteRssi:
                 msg = "sample_count must be non-negative"
                 raise ValueError(msg)
 
-            profile._kalman_auto.restore_state(
+            profile._kalman_auto.restore_state(  # noqa: SLF001
                 estimate=float(data["estimate"]),
                 variance=variance,
                 sample_count=samples,

@@ -53,7 +53,8 @@ class MetadeviceManager:
     - Registration of iBeacon sources
     - Periodic updates to aggregate source device data
 
-    Attributes:
+    Attributes
+    ----------
         coordinator: Reference to the parent coordinator for state access.
 
     """
@@ -63,6 +64,7 @@ class MetadeviceManager:
         Initialize the metadevice manager.
 
         Args:
+        ----
             coordinator: The parent BermudaDataUpdateCoordinator instance.
 
         """
@@ -267,6 +269,7 @@ class MetadeviceManager:
         in the update_metadevices function after all data has been gathered.
 
         Args:
+        ----
             source_device: The BermudaDevice that is advertising the iBeacon.
 
         """

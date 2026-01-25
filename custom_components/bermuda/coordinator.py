@@ -93,7 +93,6 @@ from .const import (
     UPDATE_INTERVAL,
 )
 from .correlation import AreaProfile, CorrelationStore, RoomProfile
-from .filters import UnscentedKalmanFilter  # noqa: TC001 - needed for runtime type hint
 from .fmdn import FmdnIntegration
 from .metadevice_manager import MetadeviceManager
 from .scanner_calibration import ScannerCalibrationManager, update_scanner_calibration
@@ -112,6 +111,7 @@ if TYPE_CHECKING:
     from homeassistant.components.bluetooth.manager import HomeAssistantBluetoothManager
 
     from . import BermudaConfigEntry
+    from .filters import UnscentedKalmanFilter
 
 # Using "if" instead of "min/max" triggers PLR1730, but when
 # split over two lines, ruff removes it, then complains again.
@@ -780,7 +780,8 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         This handles the case where a device was previously registered with a different
         address format (e.g., FMDN canonical_id vs device_id) and now has a new address.
 
-        Returns:
+        Returns
+        -------
             The existing address if duplicate entities were found, None otherwise.
             If an existing address is returned, the caller should skip entity creation
             and instead clean up the old entities to let the new ones be created.
@@ -839,10 +840,12 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         Remove entities with an old address format to allow new entities to be created.
 
         Args:
+        ----
             old_address: The old device address (used in existing entity unique_ids)
             new_address: The new device address that will be used for new entities
 
         Returns:
+        -------
             Number of entities removed
 
         """
@@ -976,12 +979,14 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         from re-reading the same cached RSSI values multiple times.
 
         Args:
+        ----
             device_address: Address of the device to train
             target_area_id: Home Assistant area ID to train for
             last_stamps: Dict of scanner_addr -> last stamp from previous call.
                          If None or empty, any valid reading counts as "new".
 
         Returns:
+        -------
             Tuple of (success: bool, current_stamps: dict[str, float])
             - success: True if training was successful with NEW data
             - current_stamps: Current timestamps for all visible scanners
@@ -1151,9 +1156,11 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         The auto-filter data is preserved, providing immediate fallback.
 
         Args:
+        ----
             device_address: MAC address of the device to reset.
 
         Returns:
+        -------
             True if any training data was reset, False if device had no training.
 
         """

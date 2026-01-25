@@ -126,9 +126,9 @@ class TestFmdnPreCheck:
         service_data: Mapping[str | int, Any] = {SERVICE_UUID_FMDN: service_data_bytes}
 
         # Verify SERVICE_UUID_FMDN is in the service_data (Pre-Check detection)
-        assert SERVICE_UUID_FMDN in service_data, (
-            "Pre-Check should detect FMDN service data by checking for SERVICE_UUID_FMDN"
-        )
+        assert (
+            SERVICE_UUID_FMDN in service_data
+        ), "Pre-Check should detect FMDN service data by checking for SERVICE_UUID_FMDN"
 
         # Create the device (simulates _get_or_create_device)
         source_device = coordinator._get_or_create_device(random_mac)
@@ -184,9 +184,11 @@ class TestFmdnPreCheck:
         operation_order.append("resolver_called")
 
         # Verify the order
-        assert operation_order == ["device_created", "device_exists_verified", "resolver_called"], (
-            "Operations must occur in the correct order for Pre-Check to work"
-        )
+        assert operation_order == [
+            "device_created",
+            "device_exists_verified",
+            "resolver_called",
+        ], "Operations must occur in the correct order for Pre-Check to work"
 
     def test_fmdn_precheck_marks_device_as_fmdn_source(
         self, hass: HomeAssistant, coordinator: BermudaDataUpdateCoordinator
@@ -216,9 +218,9 @@ class TestFmdnPreCheck:
         coordinator.fmdn.handle_advertisement(device, service_data)
 
         # Verify device is tagged as FMDN source
-        assert METADEVICE_TYPE_FMDN_SOURCE in device.metadevice_type, (
-            "Device with FMDN service data should be tagged as FMDN source"
-        )
+        assert (
+            METADEVICE_TYPE_FMDN_SOURCE in device.metadevice_type
+        ), "Device with FMDN service data should be tagged as FMDN source"
 
     def test_fmdn_precheck_with_multiple_rotating_macs(
         self, hass: HomeAssistant, coordinator: BermudaDataUpdateCoordinator
@@ -301,9 +303,9 @@ class TestFmdnServiceUuidDetection:
 
     def test_service_uuid_fmdn_constant(self) -> None:
         """Verify the SERVICE_UUID_FMDN constant is correct."""
-        assert SERVICE_UUID_FMDN == "0000feaa-0000-1000-8000-00805f9b34fb", (
-            "SERVICE_UUID_FMDN should be the standard Bluetooth FMDN UUID"
-        )
+        assert (
+            SERVICE_UUID_FMDN == "0000feaa-0000-1000-8000-00805f9b34fb"
+        ), "SERVICE_UUID_FMDN should be the standard Bluetooth FMDN UUID"
 
     def test_service_data_with_fmdn_uuid(self) -> None:
         """Test detection of FMDN UUID in service data."""

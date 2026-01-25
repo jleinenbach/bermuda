@@ -50,12 +50,15 @@ class BermudaIrkManager:
         Add an IRK to the internal list. Returns matching MACs, if any.
 
         Args:
+        ----
             irk: The Identity Resolving Key as bytes. Must be exactly 16 bytes (128 bits).
 
         Returns:
+        -------
             List of MAC addresses that match this IRK.
 
         Raises:
+        ------
             ValueError: If the IRK is not exactly 16 bytes.
 
         """
@@ -143,9 +146,11 @@ class BermudaIrkManager:
         a match is found, which links the device to its metadevice.
 
         Args:
+        ----
             address: The MAC address to check.
 
         Returns:
+        -------
             Tuple of (matched: bool, result: bytes)
             - matched=True: result is the matching IRK (16 bytes)
             - matched=False: result is an IrkType value indicating status
@@ -177,10 +182,12 @@ class BermudaIrkManager:
         Insert a new IRK and MAC that have already been validated.
 
         Args:
+        ----
             address: The MAC address to associate with the IRK.
             irk: The Identity Resolving Key as bytes (must be 16 bytes).
 
         Returns:
+        -------
             The IRK if resolution succeeded, or an IrkType value if not.
 
         """

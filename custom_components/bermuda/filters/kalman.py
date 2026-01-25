@@ -47,7 +47,8 @@ class KalmanFilter(SignalFilter):
     State model: x(k) = x(k-1) + w, where w ~ N(0, R)
     Observation model: z(k) = x(k) + v, where v ~ N(0, Q)
 
-    Attributes:
+    Attributes
+    ----------
         estimate: Current state estimate (filtered RSSI)
         variance: Current error covariance (uncertainty)
         process_noise: R - variance of state transition noise
@@ -89,12 +90,14 @@ class KalmanFilter(SignalFilter):
             Formula: P_predicted = P + Q * dt (instead of P + Q)
 
         Args:
+        ----
             measurement: Raw RSSI value in dBm
             timestamp: Optional timestamp (seconds). When provided, enables
                        time-aware filtering with dt-scaled process noise.
                        When None, uses DEFAULT_UPDATE_DT (1.0s).
 
         Returns:
+        -------
             Filtered RSSI estimate
 
         """
@@ -170,14 +173,17 @@ class KalmanFilter(SignalFilter):
         - At -114 dBm (~6m): 1.5x noise
 
         Args:
+        ----
             measurement: New RSSI measurement in dBm
             ref_power: Device's calibrated RSSI at 1m (from beacon_power or config)
             timestamp: Optional (unused, but part of interface)
 
         Returns:
+        -------
             Filtered RSSI estimate in dBm
 
         References:
+        ----------
             - "Variational Bayesian Adaptive UKF for RSSI-based Indoor Localization"
             - PMC5461075: "An Improved BLE Indoor Localization with Kalman-Based Fusion"
 
@@ -258,6 +264,7 @@ class KalmanFilter(SignalFilter):
         overwritten by future automatic updates.
 
         Args:
+        ----
             value: The authoritative value to set as the estimate.
             variance: The variance to assign (lower = more confident).
                       Default 0.01 = extremely high confidence.
@@ -283,10 +290,12 @@ class KalmanFilter(SignalFilter):
         influence due to the already-low variance from previous training.
 
         Args:
+        ----
             target_variance: Variance to reset to. If None, uses measurement_noise.
                             Higher values = more trust in new measurements.
 
         Example:
+        -------
             Session 1: Train at position A → estimate=-75dB, variance=3
             Session 2: Without reset → new samples have ~10% influence (bad!)
             Session 2: With reset → variance=25, new samples have ~50% influence (good!)
@@ -317,11 +326,13 @@ class KalmanFilter(SignalFilter):
         access to _initialized from external code (see CLAUDE.md BUG 6 / Clean Code).
 
         Args:
+        ----
             estimate: Previously saved estimate value.
             variance: Previously saved variance value.
             sample_count: Previously saved sample count.
 
         Note:
+        ----
             The filter is marked as initialized if sample_count > 0.
             This matches the semantics: a filter with samples has data.
 
@@ -358,10 +369,12 @@ class KalmanFilter(SignalFilter):
         Serialize filter state for persistence.
 
         Returns:
+        -------
             Dictionary containing all state needed to restore the filter.
             Can be passed to from_dict() for deserialization.
 
         Example:
+        -------
             >>> kf = KalmanFilter()
             >>> kf.update(-70.0)
             >>> state = kf.to_dict()
@@ -384,12 +397,15 @@ class KalmanFilter(SignalFilter):
         Deserialize filter from dictionary.
 
         Args:
+        ----
             data: Dictionary from to_dict() containing filter state.
 
         Returns:
+        -------
             Restored KalmanFilter with previous state.
 
         Raises:
+        ------
             KeyError: If required fields are missing from data.
 
         """
@@ -403,5 +419,5 @@ class KalmanFilter(SignalFilter):
             sample_count=data.get("sample_count", 0),
         )
         # Restore timestamp for time-aware filtering
-        filter_instance._last_timestamp = data.get("last_timestamp")
+        filter_instance._last_timestamp = data.get("last_timestamp")  # noqa: SLF001
         return filter_instance
