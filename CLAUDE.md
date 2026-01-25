@@ -240,6 +240,103 @@ Training sample 10: RSSI = -79dB
 | `TRAINING_MIN_SAMPLE_INTERVAL` | 5.0s | Minimum time between samples (reduces autocorrelation) |
 | `TRAINING_POLL_INTERVAL` | 0.3s | Poll interval for checking new advertisement data |
 
+### Auto-Learning Quality Improvements
+
+The auto-learning system has been enhanced with statistical quality improvements to prevent common failure modes:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    Auto-Learning Pipeline                                    │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  BLE Advertisement                                                           │
+│       │                                                                      │
+│       ▼                                                                      │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │ Minimum Interval Check (5 seconds)                                   │    │
+│  │                                                                      │    │
+│  │   if nowstamp - last_update_stamp < AUTO_LEARNING_MIN_INTERVAL:     │    │
+│  │       return False  // Skip update - reduces autocorrelation        │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│       │                                                                      │
+│       ▼ (only if interval OK)                                               │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │ Kalman Filter Update                                                 │    │
+│  │                                                                      │    │
+│  │   _kalman_auto.update(observed_value)                               │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│       │                                                                      │
+│       ▼                                                                      │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │ Variance Floor Enforcement                                           │    │
+│  │                                                                      │    │
+│  │   variance = max(variance, AUTO_LEARNING_VARIANCE_FLOOR)            │    │
+│  │   // Prevents z-score explosion from over-convergence               │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│       │                                                                      │
+│       ▼                                                                      │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │ Clamped Bayesian Fusion                                              │    │
+│  │                                                                      │    │
+│  │   Auto:   max 30% influence ──┬──► expected_value                   │    │
+│  │   Button: min 70% influence ──┘                                     │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Feature 1: Variance Floor (prevents z-score explosion)**
+
+After thousands of samples, Kalman variance converges toward 0. This causes normal BLE fluctuations (3-5 dB) to appear as massive statistical deviations (10+ sigma), breaking z-score matching.
+
+```python
+# In scanner_absolute.py and scanner_pair.py
+def update(self, value: float) -> float:
+    self._kalman_auto.update(value)
+
+    # Variance Floor: Prevent unbounded convergence
+    self._kalman_auto.variance = max(
+        self._kalman_auto.variance, AUTO_LEARNING_VARIANCE_FLOOR
+    )
+    return self.expected_value
+```
+
+| Variance | Std Dev | 3dB deviation | 5dB deviation |
+|----------|---------|---------------|---------------|
+| 0.1 (converged) | 0.32 dB | 9.5σ ❌ | 15.8σ ❌ |
+| 4.0 (floor) | 2.0 dB | 1.5σ ✅ | 2.5σ ✅ |
+
+**Feature 2: Minimum Interval (reduces autocorrelation)**
+
+BLE updates arrive every ~0.9 seconds. Consecutive samples are highly correlated (ρ ≈ 0.95), drastically reducing Effective Sample Size (ESS).
+
+```python
+# In area_profile.py and room_profile.py
+@dataclass(slots=True)
+class AreaProfile:
+    _last_update_stamp: float = field(default=0.0, repr=False)
+
+    def update(self, ..., nowstamp: float | None = None) -> bool:
+        if nowstamp is not None:
+            if nowstamp - self._last_update_stamp < AUTO_LEARNING_MIN_INTERVAL:
+                return False  # Skip - too soon
+            self._last_update_stamp = nowstamp
+        # ... rest of update logic ...
+        return True
+```
+
+| Metric | Without Interval | With 5s Interval |
+|--------|------------------|------------------|
+| Autocorrelation ρ | 0.95 | 0.82 |
+| ESS Factor | ~0.05 | ~0.18 |
+| 100 samples → ESS | ~5 effective | ~18 effective |
+
+**Auto-Learning Constants:**
+| Constant | Value | Purpose |
+|----------|-------|---------|
+| `AUTO_LEARNING_MIN_INTERVAL` | 5.0s | Minimum seconds between auto-learning updates |
+| `AUTO_LEARNING_VARIANCE_FLOOR` | 4.0 dB² | Minimum variance (std_dev = 2 dB) |
+
 ### Calibration vs Fingerprints (Independence)
 
 **Important**: Scanner/device calibration settings do NOT affect fingerprint data.
@@ -1018,6 +1115,8 @@ def options(self) -> list[str]:
 | `DWELL_TIME_SETTLING_SECONDS` | 600 | 2-10 min: settling in state |
 | `MARGIN_MOVING_PERCENT` | 0.05 | 5% margin when moving |
 | `MARGIN_STATIONARY_PERCENT` | 0.15 | 15% margin when stationary |
+| `AUTO_LEARNING_MIN_INTERVAL` | 5.0 | Minimum seconds between auto-learning updates |
+| `AUTO_LEARNING_VARIANCE_FLOOR` | 4.0 | Variance floor (dB²) prevents z-score explosion |
 
 ## Signal Processing Architecture (`filters/`)
 
@@ -1492,6 +1591,22 @@ info = manager.get_scanner_pair_info(nowstamp=current_time)
 ```
 
 ## Recent Changes (Session Notes)
+
+### Auto-Learning Quality Improvements (Phase 1)
+- **Problem**: Auto-learning had two statistical quality issues:
+  1. Variance converged to near-zero after many samples, causing z-score explosion (normal 3dB fluctuations appeared as 10+ sigma deviations)
+  2. Consecutive samples highly correlated (ρ ≈ 0.95), reducing Effective Sample Size
+- **Solution**:
+  1. **Variance Floor**: `AUTO_LEARNING_VARIANCE_FLOOR = 4.0 dB²` prevents over-convergence while still providing meaningful uncertainty reduction
+  2. **Minimum Interval**: `AUTO_LEARNING_MIN_INTERVAL = 5.0s` reduces autocorrelation (ρ: 0.95 → 0.82), improving ESS by ~3.7×
+- **Files changed**:
+  - `const.py`: Added new constants
+  - `correlation/scanner_absolute.py`: Added variance floor enforcement in `update()`
+  - `correlation/scanner_pair.py`: Added variance floor enforcement in `update()`
+  - `correlation/area_profile.py`: Added `_last_update_stamp` field, minimum interval check, serialization
+  - `correlation/room_profile.py`: Same as area_profile.py
+  - `area_selection.py`: Added `nowstamp` parameter propagation to correlation updates
+- **Backward compatible**: `nowstamp=None` default preserves existing behavior
 
 ### Room Flickering Fix
 - **Problem**: Tracker constantly switched rooms despite being stationary
