@@ -1,0 +1,61 @@
+---
+name: Hassfest Auto-Fix
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: write
+
+jobs:
+  hassfest:
+    name: Hassfest Validation & Auto-Fix
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          # For PRs, checkout the PR head
+          ref: ${{ github.event.pull_request.head.ref || github.ref }}
+          # Need write access for auto-commit
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Initial hassfest validation
+        id: initial-check
+        uses: home-assistant/actions/hassfest@master
+        continue-on-error: true
+
+      - name: Auto-format manifest.json
+        if: steps.initial-check.outcome == 'failure'
+        run: |
+          # Sort manifest.json keys alphabetically (HA standard)
+          for manifest in custom_components/*/manifest.json; do
+            if [ -f "$manifest" ]; then
+              echo "Formatting: $manifest"
+              python3 -c "
+          import json
+          with open('$manifest', 'r') as f:
+              data = json.load(f)
+          with open('$manifest', 'w') as f:
+              json.dump(data, f, indent=2, sort_keys=True)
+              f.write('\n')
+          "
+            fi
+          done
+
+      - name: Commit auto-fixes
+        if: steps.initial-check.outcome == 'failure'
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "chore(hassfest): auto-sort manifest keys"
+          file_pattern: "custom_components/*/manifest.json"
+          commit_user_name: "github-actions[bot]"
+          commit_user_email: "github-actions[bot]@users.noreply.github.com"
+
+      - name: Final hassfest validation
+        uses: home-assistant/actions/hassfest@master

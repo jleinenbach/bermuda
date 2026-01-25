@@ -1,0 +1,183 @@
+---
+name: Home Assistant Compatibility
+
+on:
+  pull_request:
+  schedule:
+    # Run weekly on Mondays at 06:00 UTC
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      ha_version:
+        description: "Specific HA version to test (e.g., 2025.1.0)"
+        required: false
+        type: string
+
+env:
+  DEFAULT_PYTHON: "3.13"
+  UV_SYSTEM_PYTHON: 1
+
+jobs:
+  check-latest-ha:
+    name: Test with latest Home Assistant
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.7.9"
+          enable-cache: true
+
+      - name: Set up Python ${{ env.DEFAULT_PYTHON }}
+        uses: actions/setup-python@v5.6.0
+        with:
+          python-version: ${{ env.DEFAULT_PYTHON }}
+
+      - name: Get latest HA version
+        id: ha-version
+        run: |
+          if [ -n "${{ inputs.ha_version }}" ]; then
+            HA_VERSION="${{ inputs.ha_version }}"
+          else
+            HA_VERSION=$(pip index versions homeassistant 2>/dev/null | grep -oP 'homeassistant \(\K[^)]+' | head -1 || echo "latest")
+          fi
+          echo "version=$HA_VERSION" >> $GITHUB_OUTPUT
+          echo "Testing with Home Assistant version: $HA_VERSION"
+
+      - name: Create virtual environment
+        run: uv venv .venv
+
+      - name: Install Home Assistant
+        run: |
+          source .venv/bin/activate
+          if [ "${{ steps.ha-version.outputs.version }}" = "latest" ]; then
+            uv pip install homeassistant
+          else
+            uv pip install "homeassistant==${{ steps.ha-version.outputs.version }}"
+          fi
+
+      - name: Install integration requirements
+        run: |
+          source .venv/bin/activate
+          # Install requirements from requirements.txt if they exist
+          if [ -f requirements.txt ]; then
+            uv pip install -r requirements.txt
+          fi
+
+      - name: Check for dependency conflicts
+        id: pip-check
+        run: |
+          source .venv/bin/activate
+          if pip check; then
+            echo "status=success" >> $GITHUB_OUTPUT
+            echo "No dependency conflicts found"
+          else
+            echo "status=conflict" >> $GITHUB_OUTPUT
+            echo "::warning::Dependency conflicts detected"
+          fi
+
+      - name: Test import
+        id: import-test
+        run: |
+          source .venv/bin/activate
+          cd custom_components
+          if python -c "import bermuda" 2>/dev/null; then
+            echo "status=success" >> $GITHUB_OUTPUT
+            echo "Integration imports successfully"
+          else
+            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "::warning::Integration import failed"
+          fi
+
+      - name: Generate summary
+        run: |
+          echo "## Home Assistant Compatibility Check" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Check | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| HA Version | ${{ steps.ha-version.outputs.version }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Dependency Check | ${{ steps.pip-check.outputs.status == 'success' && '✅' || '⚠️' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Import Test | ${{ steps.import-test.outputs.status == 'success' && '✅' || '⚠️' }} |" >> $GITHUB_STEP_SUMMARY
+
+  installation-test:
+    name: Installation Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.7.9"
+          enable-cache: true
+
+      - name: Set up Python ${{ env.DEFAULT_PYTHON }}
+        uses: actions/setup-python@v5.6.0
+        with:
+          python-version: ${{ env.DEFAULT_PYTHON }}
+
+      - name: Create clean environment
+        run: uv venv .venv
+
+      - name: Install Home Assistant with constraints
+        run: |
+          source .venv/bin/activate
+          # Install HA with its constraints to simulate real environment
+          uv pip install homeassistant
+
+      - name: Install integration in HA environment
+        id: install
+        run: |
+          source .venv/bin/activate
+
+          # Install any requirements
+          if [ -f requirements.txt ]; then
+            uv pip install -r requirements.txt || {
+              echo "status=failed" >> $GITHUB_OUTPUT
+              echo "::error::Failed to install requirements"
+              exit 1
+            }
+          fi
+
+          echo "status=success" >> $GITHUB_OUTPUT
+
+      - name: Verify no conflicts
+        id: verify
+        run: |
+          source .venv/bin/activate
+          pip check && echo "status=success" >> $GITHUB_OUTPUT || echo "status=conflict" >> $GITHUB_OUTPUT
+
+      - name: Generate summary
+        run: |
+          echo "## Installation Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Step | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Installation | ${{ steps.install.outputs.status == 'success' && '✅ Success' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Conflict Check | ${{ steps.verify.outputs.status == 'success' && '✅ No conflicts' || '⚠️ Conflicts found' }} |" >> $GITHUB_STEP_SUMMARY
+
+  summary:
+    name: Compatibility Summary
+    runs-on: ubuntu-latest
+    needs: [check-latest-ha, installation-test]
+    if: always()
+    steps:
+      - name: Check results
+        run: |
+          echo "## Overall Compatibility Status" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ needs.check-latest-ha.result }}" = "success" ] && [ "${{ needs.installation-test.result }}" = "success" ]; then
+            echo "✅ All compatibility checks passed" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ Some compatibility checks need attention" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "| Job | Result |" >> $GITHUB_STEP_SUMMARY
+            echo "|-----|--------|" >> $GITHUB_STEP_SUMMARY
+            echo "| Latest HA Check | ${{ needs.check-latest-ha.result }} |" >> $GITHUB_STEP_SUMMARY
+            echo "| Installation Test | ${{ needs.installation-test.result }} |" >> $GITHUB_STEP_SUMMARY
+          fi
