@@ -159,15 +159,27 @@ class TestScannerCalibrationManager:
         # A sees B at -55, B sees A at -65
         # Difference is 10 dB, so A receives 5 dB stronger, B receives 5 dB weaker
         # A needs offset -5, B needs offset +5
-        # Need 3 pairs with consistent data to meet confidence threshold (70%)
+        # Need 4 scanners (3 pairs each) with CONSISTENT data to meet confidence threshold (70%)
+        # Consistent means: A is 5dB stronger than B, B is 5dB stronger than C, C is 5dB stronger than D
         for i in range(150):  # More samples for higher confidence
+            # A-B: A is 5dB stronger (diff=10)
             manager.update_cross_visibility("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb", -55.0, timestamp=nowstamp + i)
             manager.update_cross_visibility("bb:bb:bb:bb:bb:bb", "aa:aa:aa:aa:aa:aa", -65.0, timestamp=nowstamp + i)
-            # Add more pairs to increase pair_factor
+            # A-C: A is 5dB stronger (diff=10) - consistent with A-B
             manager.update_cross_visibility("aa:aa:aa:aa:aa:aa", "cc:cc:cc:cc:cc:cc", -55.0, timestamp=nowstamp + i)
             manager.update_cross_visibility("cc:cc:cc:cc:cc:cc", "aa:aa:aa:aa:aa:aa", -65.0, timestamp=nowstamp + i)
-            manager.update_cross_visibility("bb:bb:bb:bb:bb:bb", "cc:cc:cc:cc:cc:cc", -60.0, timestamp=nowstamp + i)
-            manager.update_cross_visibility("cc:cc:cc:cc:cc:cc", "bb:bb:bb:bb:bb:bb", -60.0, timestamp=nowstamp + i)
+            # A-D: A is 5dB stronger (diff=10) - consistent
+            manager.update_cross_visibility("aa:aa:aa:aa:aa:aa", "dd:dd:dd:dd:dd:dd", -55.0, timestamp=nowstamp + i)
+            manager.update_cross_visibility("dd:dd:dd:dd:dd:dd", "aa:aa:aa:aa:aa:aa", -65.0, timestamp=nowstamp + i)
+            # B-C: B is 5dB stronger than C (diff=10) - implies C is 10dB weaker than A
+            manager.update_cross_visibility("bb:bb:bb:bb:bb:bb", "cc:cc:cc:cc:cc:cc", -55.0, timestamp=nowstamp + i)
+            manager.update_cross_visibility("cc:cc:cc:cc:cc:cc", "bb:bb:bb:bb:bb:bb", -65.0, timestamp=nowstamp + i)
+            # B-D: B equal to D (diff=0)
+            manager.update_cross_visibility("bb:bb:bb:bb:bb:bb", "dd:dd:dd:dd:dd:dd", -60.0, timestamp=nowstamp + i)
+            manager.update_cross_visibility("dd:dd:dd:dd:dd:dd", "bb:bb:bb:bb:bb:bb", -60.0, timestamp=nowstamp + i)
+            # C-D: D is 5dB stronger than C (diff=10)
+            manager.update_cross_visibility("cc:cc:cc:cc:cc:cc", "dd:dd:dd:dd:dd:dd", -65.0, timestamp=nowstamp + i)
+            manager.update_cross_visibility("dd:dd:dd:dd:dd:dd", "cc:cc:cc:cc:cc:cc", -55.0, timestamp=nowstamp + i)
 
         offsets = manager.calculate_suggested_offsets(nowstamp=nowstamp + 150)
 
@@ -183,7 +195,7 @@ class TestScannerCalibrationManager:
         manager = ScannerCalibrationManager()
         nowstamp = 1000.0
 
-        # Scanner A, B, C - need enough samples and pairs for confidence threshold
+        # Scanner A, B, C, D - need 4 scanners for 3 pairs each (pair_factor = 1.0)
         for i in range(150):  # More samples for higher confidence
             # A sees B at -55, B sees A at -65 (diff +10, A is +5 stronger)
             manager.update_cross_visibility("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb", -55.0, timestamp=nowstamp + i)
@@ -191,18 +203,28 @@ class TestScannerCalibrationManager:
             # A sees C at -50, C sees A at -60 (diff +10, A is +5 stronger)
             manager.update_cross_visibility("aa:aa:aa:aa:aa:aa", "cc:cc:cc:cc:cc:cc", -50.0, timestamp=nowstamp + i)
             manager.update_cross_visibility("cc:cc:cc:cc:cc:cc", "aa:aa:aa:aa:aa:aa", -60.0, timestamp=nowstamp + i)
+            # A sees D at -55, D sees A at -65 (diff +10, A is +5 stronger)
+            manager.update_cross_visibility("aa:aa:aa:aa:aa:aa", "dd:dd:dd:dd:dd:dd", -55.0, timestamp=nowstamp + i)
+            manager.update_cross_visibility("dd:dd:dd:dd:dd:dd", "aa:aa:aa:aa:aa:aa", -65.0, timestamp=nowstamp + i)
             # B sees C at -58, C sees B at -58 (diff 0, both equal)
             manager.update_cross_visibility("bb:bb:bb:bb:bb:bb", "cc:cc:cc:cc:cc:cc", -58.0, timestamp=nowstamp + i)
             manager.update_cross_visibility("cc:cc:cc:cc:cc:cc", "bb:bb:bb:bb:bb:bb", -58.0, timestamp=nowstamp + i)
+            # B sees D at -60, D sees B at -60 (diff 0, both equal)
+            manager.update_cross_visibility("bb:bb:bb:bb:bb:bb", "dd:dd:dd:dd:dd:dd", -60.0, timestamp=nowstamp + i)
+            manager.update_cross_visibility("dd:dd:dd:dd:dd:dd", "bb:bb:bb:bb:bb:bb", -60.0, timestamp=nowstamp + i)
+            # C sees D at -60, D sees C at -60 (diff 0, both equal)
+            manager.update_cross_visibility("cc:cc:cc:cc:cc:cc", "dd:dd:dd:dd:dd:dd", -60.0, timestamp=nowstamp + i)
+            manager.update_cross_visibility("dd:dd:dd:dd:dd:dd", "cc:cc:cc:cc:cc:cc", -60.0, timestamp=nowstamp + i)
 
         offsets = manager.calculate_suggested_offsets(nowstamp=nowstamp + 150)
 
-        # A has two pairs, both showing +5 offset needed
+        # A has three pairs, all showing +5 offset needed
         assert offsets["aa:aa:aa:aa:aa:aa"] == -5
-        # B: from A pair: +5, from C pair: 0, median = 2.5 -> rounded to 2
-        # C: from A pair: +5, from B pair: 0, median = 2.5 -> rounded to 2
-        assert offsets["bb:bb:bb:bb:bb:bb"] == 2
-        assert offsets["cc:cc:cc:cc:cc:cc"] == 2
+        # B: from A pair: +5, from C pair: 0, from D pair: 0, median = 0
+        # C: from A pair: +5, from B pair: 0, from D pair: 0, median = 0
+        # D: from A pair: +5, from B pair: 0, from C pair: 0, median = 0
+        assert offsets["bb:bb:bb:bb:bb:bb"] == 0
+        assert offsets["cc:cc:cc:cc:cc:cc"] == 0
 
     def test_calculate_suggested_offsets_rounds_to_integer(self) -> None:
         """Test that offsets are rounded to integers."""
@@ -210,15 +232,26 @@ class TestScannerCalibrationManager:
         nowstamp = 1000.0
 
         # A sees B at -55, B sees A at -62 (diff +7, so offset = ±3.5)
-        # Need 3 pairs with enough samples to meet confidence threshold
+        # Need 4 scanners (3 pairs each) with CONSISTENT data to meet confidence threshold
         for i in range(150):
+            # A-B: diff=7, A is 3.5dB stronger
             manager.update_cross_visibility("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb", -55.0, timestamp=nowstamp + i)
             manager.update_cross_visibility("bb:bb:bb:bb:bb:bb", "aa:aa:aa:aa:aa:aa", -62.0, timestamp=nowstamp + i)
-            # Add more pairs for confidence
+            # A-C: diff=7, A is 3.5dB stronger (consistent)
             manager.update_cross_visibility("aa:aa:aa:aa:aa:aa", "cc:cc:cc:cc:cc:cc", -55.0, timestamp=nowstamp + i)
             manager.update_cross_visibility("cc:cc:cc:cc:cc:cc", "aa:aa:aa:aa:aa:aa", -62.0, timestamp=nowstamp + i)
+            # A-D: diff=7, A is 3.5dB stronger (consistent)
+            manager.update_cross_visibility("aa:aa:aa:aa:aa:aa", "dd:dd:dd:dd:dd:dd", -55.0, timestamp=nowstamp + i)
+            manager.update_cross_visibility("dd:dd:dd:dd:dd:dd", "aa:aa:aa:aa:aa:aa", -62.0, timestamp=nowstamp + i)
+            # B-C: diff=0, both equal (consistent: both are 3.5dB weaker than A)
             manager.update_cross_visibility("bb:bb:bb:bb:bb:bb", "cc:cc:cc:cc:cc:cc", -58.0, timestamp=nowstamp + i)
             manager.update_cross_visibility("cc:cc:cc:cc:cc:cc", "bb:bb:bb:bb:bb:bb", -58.0, timestamp=nowstamp + i)
+            # B-D: diff=0, both equal
+            manager.update_cross_visibility("bb:bb:bb:bb:bb:bb", "dd:dd:dd:dd:dd:dd", -58.0, timestamp=nowstamp + i)
+            manager.update_cross_visibility("dd:dd:dd:dd:dd:dd", "bb:bb:bb:bb:bb:bb", -58.0, timestamp=nowstamp + i)
+            # C-D: diff=0, both equal
+            manager.update_cross_visibility("cc:cc:cc:cc:cc:cc", "dd:dd:dd:dd:dd:dd", -58.0, timestamp=nowstamp + i)
+            manager.update_cross_visibility("dd:dd:dd:dd:dd:dd", "cc:cc:cc:cc:cc:cc", -58.0, timestamp=nowstamp + i)
 
         offsets = manager.calculate_suggested_offsets(nowstamp=nowstamp + 150)
 
@@ -351,20 +384,26 @@ class TestUpdateScannerCalibration:
     def test_two_scanners_bidirectional(self) -> None:
         """Test with two scanners that see each other."""
         manager = ScannerCalibrationManager()
-        # Need 3 scanners for confidence threshold (pair_factor)
-        scanner_list = {"aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb", "cc:cc:cc:cc:cc:cc"}
+        # Need 4 scanners for 3 pairs each (pair_factor = 1.0) with CONSISTENT data
+        scanner_list = {"aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb", "cc:cc:cc:cc:cc:cc", "dd:dd:dd:dd:dd:dd"}
 
         # Adverts are stored on the SENDING device with key (sender_mac, receiver_scanner)
         # A sees B at -55: advert stored on B's device with key (B, A)
         # Note: update_scanner_calibration uses raw rssi, not rssi_filtered
+        # Consistent data: A is 5dB stronger than all others
         advert_a_sees_b = MockAdvert(rssi=-55.0, rssi_filtered=-55.0, hist_rssi=[-55.0] * CALIBRATION_MIN_SAMPLES)
-        # B sees A at -65: advert stored on A's device with key (A, B)
         advert_b_sees_a = MockAdvert(rssi=-65.0, rssi_filtered=-65.0, hist_rssi=[-65.0] * CALIBRATION_MIN_SAMPLES)
-        # Additional pairs for confidence
         advert_a_sees_c = MockAdvert(rssi=-55.0, rssi_filtered=-55.0, hist_rssi=[-55.0] * CALIBRATION_MIN_SAMPLES)
         advert_c_sees_a = MockAdvert(rssi=-65.0, rssi_filtered=-65.0, hist_rssi=[-65.0] * CALIBRATION_MIN_SAMPLES)
+        advert_a_sees_d = MockAdvert(rssi=-55.0, rssi_filtered=-55.0, hist_rssi=[-55.0] * CALIBRATION_MIN_SAMPLES)
+        advert_d_sees_a = MockAdvert(rssi=-65.0, rssi_filtered=-65.0, hist_rssi=[-65.0] * CALIBRATION_MIN_SAMPLES)
+        # B, C, D are equal to each other (all 5dB weaker than A)
         advert_b_sees_c = MockAdvert(rssi=-60.0, rssi_filtered=-60.0, hist_rssi=[-60.0] * CALIBRATION_MIN_SAMPLES)
         advert_c_sees_b = MockAdvert(rssi=-60.0, rssi_filtered=-60.0, hist_rssi=[-60.0] * CALIBRATION_MIN_SAMPLES)
+        advert_b_sees_d = MockAdvert(rssi=-60.0, rssi_filtered=-60.0, hist_rssi=[-60.0] * CALIBRATION_MIN_SAMPLES)
+        advert_d_sees_b = MockAdvert(rssi=-60.0, rssi_filtered=-60.0, hist_rssi=[-60.0] * CALIBRATION_MIN_SAMPLES)
+        advert_c_sees_d = MockAdvert(rssi=-60.0, rssi_filtered=-60.0, hist_rssi=[-60.0] * CALIBRATION_MIN_SAMPLES)
+        advert_d_sees_c = MockAdvert(rssi=-60.0, rssi_filtered=-60.0, hist_rssi=[-60.0] * CALIBRATION_MIN_SAMPLES)
 
         devices: dict[str, Any] = {
             "aa:aa:aa:aa:aa:aa": MockDevice(
@@ -372,6 +411,7 @@ class TestUpdateScannerCalibration:
                 adverts={
                     ("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb"): advert_b_sees_a,
                     ("aa:aa:aa:aa:aa:aa", "cc:cc:cc:cc:cc:cc"): advert_c_sees_a,
+                    ("aa:aa:aa:aa:aa:aa", "dd:dd:dd:dd:dd:dd"): advert_d_sees_a,
                 },
             ),
             "bb:bb:bb:bb:bb:bb": MockDevice(
@@ -379,6 +419,7 @@ class TestUpdateScannerCalibration:
                 adverts={
                     ("bb:bb:bb:bb:bb:bb", "aa:aa:aa:aa:aa:aa"): advert_a_sees_b,
                     ("bb:bb:bb:bb:bb:bb", "cc:cc:cc:cc:cc:cc"): advert_c_sees_b,
+                    ("bb:bb:bb:bb:bb:bb", "dd:dd:dd:dd:dd:dd"): advert_d_sees_b,
                 },
             ),
             "cc:cc:cc:cc:cc:cc": MockDevice(
@@ -386,6 +427,15 @@ class TestUpdateScannerCalibration:
                 adverts={
                     ("cc:cc:cc:cc:cc:cc", "aa:aa:aa:aa:aa:aa"): advert_a_sees_c,
                     ("cc:cc:cc:cc:cc:cc", "bb:bb:bb:bb:bb:bb"): advert_b_sees_c,
+                    ("cc:cc:cc:cc:cc:cc", "dd:dd:dd:dd:dd:dd"): advert_d_sees_c,
+                },
+            ),
+            "dd:dd:dd:dd:dd:dd": MockDevice(
+                "dd:dd:dd:dd:dd:dd",
+                adverts={
+                    ("dd:dd:dd:dd:dd:dd", "aa:aa:aa:aa:aa:aa"): advert_a_sees_d,
+                    ("dd:dd:dd:dd:dd:dd", "bb:bb:bb:bb:bb:bb"): advert_b_sees_d,
+                    ("dd:dd:dd:dd:dd:dd", "cc:cc:cc:cc:cc:cc"): advert_c_sees_d,
                 },
             ),
         }
@@ -402,20 +452,26 @@ class TestUpdateScannerCalibration:
     def test_fallback_to_raw_rssi(self) -> None:
         """Test fallback to raw RSSI when filtered is not available."""
         manager = ScannerCalibrationManager()
-        # Need 3 scanners for confidence threshold
-        scanner_list = {"aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb", "cc:cc:cc:cc:cc:cc"}
+        # Need 4 scanners for 3 pairs each (pair_factor = 1.0) with CONSISTENT data
+        scanner_list = {"aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb", "cc:cc:cc:cc:cc:cc", "dd:dd:dd:dd:dd:dd"}
 
         # Adverts stored on SENDING device
         # A sees B (no filtered RSSI, use raw): stored on B with key (B, A)
         # Note: update_scanner_calibration uses raw rssi
+        # Consistent data: A is 5dB stronger than all others
         advert_a_sees_b = MockAdvert(rssi=-55.0, rssi_filtered=None, hist_rssi=[-55.0] * CALIBRATION_MIN_SAMPLES)
-        # B sees A: stored on A with key (A, B)
         advert_b_sees_a = MockAdvert(rssi=-65.0, rssi_filtered=-65.0, hist_rssi=[-65.0] * CALIBRATION_MIN_SAMPLES)
-        # Additional pairs for confidence
         advert_a_sees_c = MockAdvert(rssi=-55.0, rssi_filtered=-55.0, hist_rssi=[-55.0] * CALIBRATION_MIN_SAMPLES)
         advert_c_sees_a = MockAdvert(rssi=-65.0, rssi_filtered=-65.0, hist_rssi=[-65.0] * CALIBRATION_MIN_SAMPLES)
+        advert_a_sees_d = MockAdvert(rssi=-55.0, rssi_filtered=-55.0, hist_rssi=[-55.0] * CALIBRATION_MIN_SAMPLES)
+        advert_d_sees_a = MockAdvert(rssi=-65.0, rssi_filtered=-65.0, hist_rssi=[-65.0] * CALIBRATION_MIN_SAMPLES)
+        # B, C, D are equal to each other
         advert_b_sees_c = MockAdvert(rssi=-60.0, rssi_filtered=-60.0, hist_rssi=[-60.0] * CALIBRATION_MIN_SAMPLES)
         advert_c_sees_b = MockAdvert(rssi=-60.0, rssi_filtered=-60.0, hist_rssi=[-60.0] * CALIBRATION_MIN_SAMPLES)
+        advert_b_sees_d = MockAdvert(rssi=-60.0, rssi_filtered=-60.0, hist_rssi=[-60.0] * CALIBRATION_MIN_SAMPLES)
+        advert_d_sees_b = MockAdvert(rssi=-60.0, rssi_filtered=-60.0, hist_rssi=[-60.0] * CALIBRATION_MIN_SAMPLES)
+        advert_c_sees_d = MockAdvert(rssi=-60.0, rssi_filtered=-60.0, hist_rssi=[-60.0] * CALIBRATION_MIN_SAMPLES)
+        advert_d_sees_c = MockAdvert(rssi=-60.0, rssi_filtered=-60.0, hist_rssi=[-60.0] * CALIBRATION_MIN_SAMPLES)
 
         devices: dict[str, Any] = {
             "aa:aa:aa:aa:aa:aa": MockDevice(
@@ -423,6 +479,7 @@ class TestUpdateScannerCalibration:
                 adverts={
                     ("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb"): advert_b_sees_a,
                     ("aa:aa:aa:aa:aa:aa", "cc:cc:cc:cc:cc:cc"): advert_c_sees_a,
+                    ("aa:aa:aa:aa:aa:aa", "dd:dd:dd:dd:dd:dd"): advert_d_sees_a,
                 },
             ),
             "bb:bb:bb:bb:bb:bb": MockDevice(
@@ -430,6 +487,7 @@ class TestUpdateScannerCalibration:
                 adverts={
                     ("bb:bb:bb:bb:bb:bb", "aa:aa:aa:aa:aa:aa"): advert_a_sees_b,
                     ("bb:bb:bb:bb:bb:bb", "cc:cc:cc:cc:cc:cc"): advert_c_sees_b,
+                    ("bb:bb:bb:bb:bb:bb", "dd:dd:dd:dd:dd:dd"): advert_d_sees_b,
                 },
             ),
             "cc:cc:cc:cc:cc:cc": MockDevice(
@@ -437,6 +495,15 @@ class TestUpdateScannerCalibration:
                 adverts={
                     ("cc:cc:cc:cc:cc:cc", "aa:aa:aa:aa:aa:aa"): advert_a_sees_c,
                     ("cc:cc:cc:cc:cc:cc", "bb:bb:bb:bb:bb:bb"): advert_b_sees_c,
+                    ("cc:cc:cc:cc:cc:cc", "dd:dd:dd:dd:dd:dd"): advert_d_sees_c,
+                },
+            ),
+            "dd:dd:dd:dd:dd:dd": MockDevice(
+                "dd:dd:dd:dd:dd:dd",
+                adverts={
+                    ("dd:dd:dd:dd:dd:dd", "aa:aa:aa:aa:aa:aa"): advert_a_sees_d,
+                    ("dd:dd:dd:dd:dd:dd", "bb:bb:bb:bb:bb:bb"): advert_b_sees_d,
+                    ("dd:dd:dd:dd:dd:dd", "cc:cc:cc:cc:cc:cc"): advert_c_sees_d,
                 },
             ),
         }
@@ -452,22 +519,30 @@ class TestUpdateScannerCalibration:
     def test_metadevice_sources_lookup(self) -> None:
         """Test that metadevice_sources are checked for scanner visibility."""
         manager = ScannerCalibrationManager()
-        # Need 3 scanners for confidence threshold
-        scanner_list = {"aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb", "cc:cc:cc:cc:cc:cc"}
+        # Need 4 scanners for 3 pairs each (pair_factor = 1.0) with CONSISTENT data
+        scanner_list = {"aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb", "cc:cc:cc:cc:cc:cc", "dd:dd:dd:dd:dd:dd"}
 
-        # Scanner B broadcasts as iBeacon with different MAC "dd:dd:dd:dd:dd:dd"
-        # Advert stored on the iBeacon device (dd:dd) with key (dd, A)
+        # Scanner B broadcasts as iBeacon with different MAC "ee:ee:ee:ee:ee:ee"
+        # Advert stored on the iBeacon device (ee:ee) with key (B, A)
         # Note: update_scanner_calibration uses raw rssi
+        # Consistent data: A is 5dB stronger than all others
         advert_a_sees_b_via_ibeacon = MockAdvert(
             rssi=-55.0, rssi_filtered=-55.0, hist_rssi=[-55.0] * CALIBRATION_MIN_SAMPLES
         )
         # B sees A: stored on A with key (A, B)
         advert_b_sees_a = MockAdvert(rssi=-65.0, rssi_filtered=-65.0, hist_rssi=[-65.0] * CALIBRATION_MIN_SAMPLES)
-        # Additional pairs for confidence
+        # Additional pairs for confidence - all show A is 5dB stronger
         advert_a_sees_c = MockAdvert(rssi=-55.0, rssi_filtered=-55.0, hist_rssi=[-55.0] * CALIBRATION_MIN_SAMPLES)
         advert_c_sees_a = MockAdvert(rssi=-65.0, rssi_filtered=-65.0, hist_rssi=[-65.0] * CALIBRATION_MIN_SAMPLES)
+        advert_a_sees_d = MockAdvert(rssi=-55.0, rssi_filtered=-55.0, hist_rssi=[-55.0] * CALIBRATION_MIN_SAMPLES)
+        advert_d_sees_a = MockAdvert(rssi=-65.0, rssi_filtered=-65.0, hist_rssi=[-65.0] * CALIBRATION_MIN_SAMPLES)
+        # B, C, D are equal to each other (consistent with A being 5dB stronger)
         advert_b_sees_c = MockAdvert(rssi=-60.0, rssi_filtered=-60.0, hist_rssi=[-60.0] * CALIBRATION_MIN_SAMPLES)
         advert_c_sees_b = MockAdvert(rssi=-60.0, rssi_filtered=-60.0, hist_rssi=[-60.0] * CALIBRATION_MIN_SAMPLES)
+        advert_b_sees_d = MockAdvert(rssi=-60.0, rssi_filtered=-60.0, hist_rssi=[-60.0] * CALIBRATION_MIN_SAMPLES)
+        advert_d_sees_b = MockAdvert(rssi=-60.0, rssi_filtered=-60.0, hist_rssi=[-60.0] * CALIBRATION_MIN_SAMPLES)
+        advert_c_sees_d = MockAdvert(rssi=-60.0, rssi_filtered=-60.0, hist_rssi=[-60.0] * CALIBRATION_MIN_SAMPLES)
+        advert_d_sees_c = MockAdvert(rssi=-60.0, rssi_filtered=-60.0, hist_rssi=[-60.0] * CALIBRATION_MIN_SAMPLES)
 
         devices: dict[str, Any] = {
             "aa:aa:aa:aa:aa:aa": MockDevice(
@@ -475,6 +550,7 @@ class TestUpdateScannerCalibration:
                 adverts={
                     ("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb"): advert_b_sees_a,
                     ("aa:aa:aa:aa:aa:aa", "cc:cc:cc:cc:cc:cc"): advert_c_sees_a,
+                    ("aa:aa:aa:aa:aa:aa", "dd:dd:dd:dd:dd:dd"): advert_d_sees_a,
                 },
             ),
             "bb:bb:bb:bb:bb:bb": MockDevice(
@@ -482,14 +558,24 @@ class TestUpdateScannerCalibration:
                 adverts={
                     ("bb:bb:bb:bb:bb:bb", "aa:aa:aa:aa:aa:aa"): advert_a_sees_b_via_ibeacon,
                     ("bb:bb:bb:bb:bb:bb", "cc:cc:cc:cc:cc:cc"): advert_c_sees_b,
+                    ("bb:bb:bb:bb:bb:bb", "dd:dd:dd:dd:dd:dd"): advert_d_sees_b,
                 },
-                metadevice_sources=["dd:dd:dd:dd:dd:dd"],  # B's iBeacon MAC
+                metadevice_sources=["ee:ee:ee:ee:ee:ee"],  # B's iBeacon MAC
             ),
             "cc:cc:cc:cc:cc:cc": MockDevice(
                 "cc:cc:cc:cc:cc:cc",
                 adverts={
                     ("cc:cc:cc:cc:cc:cc", "aa:aa:aa:aa:aa:aa"): advert_a_sees_c,
                     ("cc:cc:cc:cc:cc:cc", "bb:bb:bb:bb:bb:bb"): advert_b_sees_c,
+                    ("cc:cc:cc:cc:cc:cc", "dd:dd:dd:dd:dd:dd"): advert_d_sees_c,
+                },
+            ),
+            "dd:dd:dd:dd:dd:dd": MockDevice(
+                "dd:dd:dd:dd:dd:dd",
+                adverts={
+                    ("dd:dd:dd:dd:dd:dd", "aa:aa:aa:aa:aa:aa"): advert_a_sees_d,
+                    ("dd:dd:dd:dd:dd:dd", "bb:bb:bb:bb:bb:bb"): advert_b_sees_d,
+                    ("dd:dd:dd:dd:dd:dd", "cc:cc:cc:cc:cc:cc"): advert_c_sees_d,
                 },
             ),
         }
@@ -1071,14 +1157,27 @@ class TestScannerOnlineDetection:
         manager = ScannerCalibrationManager()
         nowstamp = 1000.0
 
-        # Build calibration data with 3 pairs for confidence threshold
+        # Build calibration data with 4 scanners for 3 pairs each (pair_factor = 1.0)
+        # Consistent data: A is 5dB stronger than all others
         for i in range(150):
+            # A-B: A is 5dB stronger (diff=10)
             manager.update_cross_visibility("aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb", -55.0, timestamp=nowstamp + i)
             manager.update_cross_visibility("bb:bb:bb:bb:bb:bb", "aa:aa:aa:aa:aa:aa", -65.0, timestamp=nowstamp + i)
+            # A-C: A is 5dB stronger (diff=10)
             manager.update_cross_visibility("aa:aa:aa:aa:aa:aa", "cc:cc:cc:cc:cc:cc", -55.0, timestamp=nowstamp + i)
             manager.update_cross_visibility("cc:cc:cc:cc:cc:cc", "aa:aa:aa:aa:aa:aa", -65.0, timestamp=nowstamp + i)
+            # A-D: A is 5dB stronger (diff=10)
+            manager.update_cross_visibility("aa:aa:aa:aa:aa:aa", "dd:dd:dd:dd:dd:dd", -55.0, timestamp=nowstamp + i)
+            manager.update_cross_visibility("dd:dd:dd:dd:dd:dd", "aa:aa:aa:aa:aa:aa", -65.0, timestamp=nowstamp + i)
+            # B-C: equal (both 5dB weaker than A)
             manager.update_cross_visibility("bb:bb:bb:bb:bb:bb", "cc:cc:cc:cc:cc:cc", -60.0, timestamp=nowstamp + i)
             manager.update_cross_visibility("cc:cc:cc:cc:cc:cc", "bb:bb:bb:bb:bb:bb", -60.0, timestamp=nowstamp + i)
+            # B-D: equal
+            manager.update_cross_visibility("bb:bb:bb:bb:bb:bb", "dd:dd:dd:dd:dd:dd", -60.0, timestamp=nowstamp + i)
+            manager.update_cross_visibility("dd:dd:dd:dd:dd:dd", "bb:bb:bb:bb:bb:bb", -60.0, timestamp=nowstamp + i)
+            # C-D: equal
+            manager.update_cross_visibility("cc:cc:cc:cc:cc:cc", "dd:dd:dd:dd:dd:dd", -60.0, timestamp=nowstamp + i)
+            manager.update_cross_visibility("dd:dd:dd:dd:dd:dd", "cc:cc:cc:cc:cc:cc", -60.0, timestamp=nowstamp + i)
 
         # Current time just after last update - all scanners online
         check_time = nowstamp + 150
