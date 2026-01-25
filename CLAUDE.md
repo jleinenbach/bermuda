@@ -1227,9 +1227,84 @@ Automatic RSSI offset calibration using scanner cross-visibility measurements.
 
 | Component | Purpose |
 |-----------|---------|
-| `ScannerPairData` | Tracks bidirectional RSSI between two scanners with Kalman smoothing |
-| `ScannerCalibrationManager` | Manages all scanner pairs, calculates suggested offsets |
+| `ScannerPairData` | Tracks bidirectional RSSI between two scanners with Kalman smoothing + TX power |
+| `ScannerCalibrationManager` | Manages all scanner pairs, calculates suggested offsets with confidence scoring |
 | `update_scanner_calibration()` | Entry point called by coordinator each update cycle |
+
+### TX Power Compensation
+
+Different scanner hardware transmits at different power levels (-4 dBm to -20 dBm).
+Without compensation, a stronger transmitter would appear to have a weaker receiver.
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    TX Power Compensation Flow                                │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  Scanner A: tx_power = -4 dBm (strong transmitter)                          │
+│  Scanner B: tx_power = -12 dBm (weak transmitter)                           │
+│                                                                              │
+│  Measurements:                                                               │
+│    A sees B at -60 dBm (B transmits weakly)                                 │
+│    B sees A at -52 dBm (A transmits strongly)                               │
+│                                                                              │
+│  Raw difference = (-60) - (-52) = -8 dB                                     │
+│    → Naively: "A receives 8 dB weaker than B"                               │
+│                                                                              │
+│  TX power difference = (-4) - (-12) = +8 dB                                 │
+│    → "A transmits 8 dB stronger than B"                                     │
+│                                                                              │
+│  Corrected difference = raw - tx_diff = -8 - 8 = -16 dB                    │
+│    → Truth: "A's receiver is 16 dB less sensitive than B's"                │
+│                                                                              │
+│  This isolates RECEIVER sensitivity from TRANSMITTER power!                 │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Usage:**
+```python
+# TX power is automatically extracted from scanner devices
+# via ref_power attribute during update_scanner_calibration()
+
+# Manual override possible:
+manager.set_scanner_tx_power("scanner_a", -4.0)
+manager.set_scanner_tx_power("scanner_b", -12.0)
+```
+
+### Confidence Scoring
+
+Offset suggestions are scored with multi-factor confidence (0.0-1.0):
+
+| Factor | Weight | Description |
+|--------|--------|-------------|
+| Sample Saturation | 30% | More samples = more stable estimate (saturates at 100) |
+| Pair Count | 40% | More pairs = cross-validation possible (1=0.33, 2=0.67, 3+=1.0) |
+| Consistency | 30% | Lower stddev across pairs = more reliable |
+
+**Threshold Filtering:**
+- Only offsets with confidence ≥ 70% are shown in the UI
+- Low-confidence suggestions are calculated but not displayed
+- Prevents misleading the user with unreliable recommendations
+
+```python
+# Get detailed offset info including confidence
+info = manager.get_offset_info()
+# Returns: {
+#   "aa:aa:aa:aa:aa:aa": {
+#     "suggested_offset": -5,
+#     "confidence": 0.85,
+#     "confidence_percent": 85.0,
+#     "confidence_factors": {
+#       "sample_factor": 1.0,
+#       "pair_factor": 1.0,
+#       "consistency_factor": 0.55,
+#     },
+#     "meets_threshold": True,
+#     "threshold_percent": 70.0,
+#   }
+# }
+```
 
 ### Time-Aware Kalman Integration
 
@@ -1288,6 +1363,10 @@ Scanners that stop providing data are automatically excluded from calibration:
 | `CALIBRATION_MAX_HISTORY` | 100 | Maximum raw RSSI history per direction |
 | `CALIBRATION_HYSTERESIS_DB` | 3 | Prevents oscillation around rounding boundaries |
 | `CALIBRATION_SCANNER_TIMEOUT` | 300.0s | 5 minutes - scanner offline threshold |
+| `CALIBRATION_MIN_CONFIDENCE` | 0.70 | Minimum confidence for showing offset suggestions |
+| `CALIBRATION_DEFAULT_TX_POWER` | -12.0 dBm | Default TX power when ref_power is unknown |
+| `CALIBRATION_MAX_CONSISTENCY_STDDEV` | 6.0 dB | Maximum stddev for consistency factor |
+| `CALIBRATION_SAMPLE_SATURATION` | 100 | Sample count at which sample factor reaches 1.0 |
 
 ### Design Decisions
 
@@ -1308,6 +1387,16 @@ Scanners that stop providing data are automatically excluded from calibration:
    - Long enough: Temporary network issues don't trigger recalibration
    - Short enough: Actual scanner failures detected within reasonable time
 
+5. **TX Power Compensation**: Normalizes for different transmit powers
+   - Scanners with higher TX power appear louder to others
+   - Without compensation, would incorrectly appear as weaker receivers
+   - Uses `ref_power` attribute from scanner devices
+
+6. **Confidence Threshold**: Only shows reliable suggestions
+   - Requires ≥70% confidence to display offset suggestions
+   - Prevents user confusion from low-quality recommendations
+   - Multi-factor scoring ensures statistical significance
+
 ### Diagnostic Info
 
 ```python
@@ -1322,7 +1411,16 @@ info = manager.get_scanner_pair_info(nowstamp=current_time)
 #     "samples_ab": 50,
 #     "samples_ba": 48,
 #     "bidirectional": True,
-#     "difference": 9.9,
+#     # TX power fields (new)
+#     "tx_power_a": -4.0,
+#     "tx_power_b": -12.0,
+#     "tx_power_difference": 8.0,
+#     "difference_raw": 9.9,        # Before TX correction
+#     "difference_corrected": 1.9,  # After TX correction
+#     # Kalman filter diagnostics
+#     "kalman_ab": {...},
+#     "kalman_ba": {...},
+#     # Online status
 #     "scanner_a_online": True,
 #     "scanner_b_online": True,
 #     "last_update_ab": 1234567.89,

@@ -88,6 +88,27 @@ CALIBRATION_HYSTERESIS_DB: Final = 3
 # 5 minutes balances stability vs responsiveness to scanner changes.
 CALIBRATION_SCANNER_TIMEOUT: Final = 300.0
 
+# Minimum confidence threshold for suggesting RSSI offsets (0.0-1.0).
+# Below this threshold, no offset suggestion is displayed to avoid
+# misleading the user with low-quality recommendations.
+# 0.70 requires either multiple consistent pairs OR high sample counts.
+CALIBRATION_MIN_CONFIDENCE: Final = 0.70
+
+# Default TX power (dBm) when scanner's ref_power is unknown.
+# Used for TX power compensation in cross-visibility calculations.
+# -12 dBm is typical for standard BLE devices.
+CALIBRATION_DEFAULT_TX_POWER: Final = -12.0
+
+# Maximum expected standard deviation (dB) for consistency scoring.
+# If offset contributions from multiple pairs vary more than this,
+# the consistency factor approaches zero.
+CALIBRATION_MAX_CONSISTENCY_STDDEV: Final = 6.0
+
+# Sample count at which confidence reaches saturation (100%).
+# Beyond this point, more samples don't increase confidence.
+# 100 samples provides stable Kalman estimates without over-weighting.
+CALIBRATION_SAMPLE_SATURATION: Final = 100
+
 # =============================================================================
 # Adaptive Kalman Filter Parameters
 # =============================================================================
