@@ -1,0 +1,84 @@
+name: Upstream Sync Check
+
+on:
+  # Run daily at 6:00 UTC
+  schedule:
+    - cron: "0 6 * * *"
+  # Allow manual trigger
+  workflow_dispatch:
+  # Also run on PRs to main to warn about missing upstream changes
+  pull_request:
+    branches:
+      - main
+      - master
+
+env:
+  UPSTREAM_REPO: "agittins/bermuda"
+  UPSTREAM_BRANCH: "main"
+
+jobs:
+  check-upstream:
+    runs-on: ubuntu-latest
+    name: Check for upstream changes
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history needed for comparison
+
+      - name: Add upstream remote
+        run: |
+          git remote add upstream https://github.com/${{ env.UPSTREAM_REPO }}.git
+          git fetch upstream ${{ env.UPSTREAM_BRANCH }}
+
+      - name: Check for missing commits
+        id: check
+        run: |
+          # Count commits in upstream that are not in our branch
+          MISSING_COMMITS=$(git rev-list --count HEAD..upstream/${{ env.UPSTREAM_BRANCH }})
+          echo "missing_commits=$MISSING_COMMITS" >> $GITHUB_OUTPUT
+
+          if [ "$MISSING_COMMITS" -gt 0 ]; then
+            echo "::warning::Found $MISSING_COMMITS commits in upstream that are not in this branch"
+
+            echo "## Missing Upstream Commits" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "There are **$MISSING_COMMITS** commits in \`${{ env.UPSTREAM_REPO }}\` that have not been merged yet." >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### Recent upstream commits not in this branch:" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            git log --oneline HEAD..upstream/${{ env.UPSTREAM_BRANCH }} | head -20 >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Consider merging upstream changes:" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+            echo "git fetch upstream" >> $GITHUB_STEP_SUMMARY
+            echo "git merge upstream/${{ env.UPSTREAM_BRANCH }}" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+
+            # Also output to console
+            echo ""
+            echo "Recent upstream commits not in this branch:"
+            git log --oneline HEAD..upstream/${{ env.UPSTREAM_BRANCH }} | head -20
+          else
+            echo "## Upstream Sync Status" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "✅ This branch is up to date with \`${{ env.UPSTREAM_REPO }}\`" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Check commits ahead of upstream
+        run: |
+          # Count commits we have that upstream doesn't (our own changes)
+          AHEAD_COMMITS=$(git rev-list --count upstream/${{ env.UPSTREAM_BRANCH }}..HEAD)
+          echo ""
+          echo "### Fork Status" >> $GITHUB_STEP_SUMMARY
+          echo "- Commits ahead of upstream: **$AHEAD_COMMITS**" >> $GITHUB_STEP_SUMMARY
+          echo "- Commits behind upstream: **${{ steps.check.outputs.missing_commits }}**" >> $GITHUB_STEP_SUMMARY
+
+      - name: Fail if significantly behind (optional)
+        if: steps.check.outputs.missing_commits > 50
+        run: |
+          echo "::error::This branch is more than 50 commits behind upstream!"
+          echo "Please consider merging upstream changes soon."
+          # Uncomment the next line to make the workflow fail when too far behind
+          # exit 1
