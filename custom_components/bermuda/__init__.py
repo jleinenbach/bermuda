@@ -120,7 +120,11 @@ async def async_remove_config_entry_device(
     """Implements user-deletion of devices from device registry."""
     coordinator: BermudaDataUpdateCoordinator = config_entry.runtime_data.coordinator
     address = None
-    for domain, ident in device_entry.identifiers:
+    for identifier in device_entry.identifiers:
+        # Handle variable-length identifiers (some integrations like HomeKit use 3+ elements)
+        if len(identifier) < 2:
+            continue
+        domain, ident = identifier[0], identifier[1]
         try:
             if domain == DOMAIN:
                 # the identifier should be the base device address, and
