@@ -76,6 +76,7 @@ from .util import is_mac_address, mac_math_offset, normalize_address, normalize_
 if TYPE_CHECKING:
     from bleak.backends.scanner import AdvertisementData
 
+    from .area_selection import AreaTests
     from .coordinator import BermudaDataUpdateCoordinator
 
 
@@ -176,6 +177,7 @@ class BermudaDevice:
         self.last_no_winner_log: float = 0.0
         self.last_retained_log: float = 0.0
         self.diag_area_switch: str | None = None  # saves output of AreaTests
+        self.area_tests: AreaTests | None = None  # Full diagnostic object for extra_state_attributes
         self.adverts: dict[
             tuple[str, str], BermudaAdvert
         ] = {}  # str will be a scanner address OR a deviceaddress__scanneraddress

@@ -480,6 +480,13 @@ class BermudaSensorAreaSwitchReason(BermudaSensor):
             return self._device.diag_area_switch[:255]
         return None
 
+    @property
+    def extra_state_attributes(self) -> Mapping[str, Any] | None:
+        """Return structured diagnostic data as attributes."""
+        if self._device.area_tests is None:
+            return None
+        return self._device.area_tests.to_dict()
+
 
 class BermudaSensorAreaLastSeen(BermudaSensor, RestoreSensor):
     """Sensor for name of last seen area."""
