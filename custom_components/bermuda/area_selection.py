@@ -198,6 +198,9 @@ class AreaSelectionHandler:
         self.coordinator = coordinator
         # Auto-learning diagnostic stats (resets on HA restart, not persisted)
         self._auto_learning_stats = AutoLearningStats()
+        # Feature 1: Per-device storage for last advertisement timestamps
+        # Used to detect genuinely new data vs re-reading cached RSSI values
+        self._device_last_stamps: dict[str, dict[str, float]] = {}
 
     # =========================================================================
     # Property accessors for coordinator state
@@ -623,6 +626,18 @@ class AreaSelectionHandler:
         # All quality filters passed - proceed with learning
         # =====================================================================
 
+        # =====================================================================
+        # Feature 1: Collect current advertisement timestamps
+        # Used to detect genuinely new data vs re-reading cached RSSI values
+        # =====================================================================
+        current_stamps: dict[str, float] = {}
+        for advert in device.adverts.values():
+            if advert.scanner_address is not None and advert.stamp is not None:
+                current_stamps[advert.scanner_address] = advert.stamp
+
+        # Get last timestamps for this device (empty dict if first update)
+        last_stamps = self._device_last_stamps.get(device.address, {})
+
         # Ensure device has correlation entry
         if device.address not in self.correlations:
             self.correlations[device.address] = {}
@@ -633,12 +648,14 @@ class AreaSelectionHandler:
                 area_id=area_id,
             )
 
-        # Update device-specific profile (with minimum interval check)
+        # Update device-specific profile (with Feature 1 new data check + minimum interval)
         area_update_performed = self.correlations[device.address][area_id].update(
             primary_rssi=primary_rssi,
             other_readings=other_readings,
             primary_scanner_addr=primary_scanner_addr,
             nowstamp=nowstamp,
+            last_stamps=last_stamps,
+            current_stamps=current_stamps,
         )
 
         # Update room-wide profile (only if AreaProfile update was performed)
@@ -652,7 +669,15 @@ class AreaSelectionHandler:
 
             if area_id not in self.room_profiles:
                 self.room_profiles[area_id] = RoomProfile(area_id=area_id)
-            self.room_profiles[area_id].update(all_readings, nowstamp=nowstamp)
+            self.room_profiles[area_id].update(
+                all_readings,
+                nowstamp=nowstamp,
+                last_stamps=last_stamps,
+                current_stamps=current_stamps,
+            )
+
+            # Store current stamps for next call (only on successful update)
+            self._device_last_stamps[device.address] = current_stamps
 
         # Record stats for diagnostic purposes
         # Use area_update_performed as the primary indicator (both have the same interval logic)

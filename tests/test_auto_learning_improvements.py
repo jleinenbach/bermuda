@@ -424,7 +424,6 @@ class TestNewDataCheckAreaProfile:
 # =============================================================================
 
 
-@pytest.mark.xfail(reason="Feature 3: Confidence Filter not yet implemented")
 class TestConfidenceFilterAreaProfile:
     """
     Feature 3: Confidence Filter for AreaProfile.
@@ -827,3 +826,171 @@ class TestSerializationWithNewState:
             nowstamp=1000.0,
         )
         assert result is True, "First update after deserialization should succeed"
+
+
+# =============================================================================
+# Timestamp Property Coverage Tests
+# =============================================================================
+
+
+class TestAreaProfileTimestampProperties:
+    """Tests for AreaProfile timestamp properties to ensure full coverage."""
+
+    def test_first_sample_stamp_returns_earliest_timestamp(self) -> None:
+        """first_sample_stamp should return the earliest timestamp from all child profiles."""
+        from custom_components.bermuda.correlation.area_profile import AreaProfile
+
+        profile = AreaProfile(area_id="area.test")
+
+        # Add correlations and absolute profiles with different timestamps
+        profile.update(
+            primary_rssi=-50.0,
+            other_readings={"scanner_a": -60.0, "scanner_b": -70.0},
+            primary_scanner_addr="scanner_primary",
+            nowstamp=1000.0,
+        )
+
+        # Add more samples with later timestamp
+        profile.update(
+            primary_rssi=-52.0,
+            other_readings={"scanner_a": -62.0},
+            primary_scanner_addr="scanner_primary",
+            nowstamp=2000.0,
+        )
+
+        # first_sample_stamp should be 1000.0 (the earliest)
+        assert profile.first_sample_stamp == 1000.0
+
+    def test_first_sample_stamp_returns_none_when_empty(self) -> None:
+        """first_sample_stamp should return None when no samples exist."""
+        from custom_components.bermuda.correlation.area_profile import AreaProfile
+
+        profile = AreaProfile(area_id="area.empty")
+
+        assert profile.first_sample_stamp is None
+
+    def test_last_sample_stamp_returns_latest_timestamp(self) -> None:
+        """last_sample_stamp should return the latest timestamp from all child profiles."""
+        from custom_components.bermuda.correlation.area_profile import AreaProfile
+
+        profile = AreaProfile(area_id="area.test")
+
+        # Add correlations with first timestamp
+        profile.update(
+            primary_rssi=-50.0,
+            other_readings={"scanner_a": -60.0},
+            primary_scanner_addr="scanner_primary",
+            nowstamp=1000.0,
+        )
+
+        # Add more samples with later timestamp
+        profile.update(
+            primary_rssi=-52.0,
+            other_readings={"scanner_a": -62.0},
+            primary_scanner_addr="scanner_primary",
+            nowstamp=2000.0,
+        )
+
+        # last_sample_stamp should be 2000.0 (the latest)
+        assert profile.last_sample_stamp == 2000.0
+
+    def test_last_sample_stamp_returns_none_when_empty(self) -> None:
+        """last_sample_stamp should return None when no samples exist."""
+        from custom_components.bermuda.correlation.area_profile import AreaProfile
+
+        profile = AreaProfile(area_id="area.empty")
+
+        assert profile.last_sample_stamp is None
+
+
+class TestRoomProfileTimestampProperties:
+    """Tests for RoomProfile timestamp properties to ensure full coverage."""
+
+    def test_first_sample_stamp_returns_earliest_timestamp(self) -> None:
+        """first_sample_stamp should return the earliest timestamp from all scanner pairs."""
+        from custom_components.bermuda.correlation.room_profile import RoomProfile
+
+        profile = RoomProfile(area_id="area.test")
+
+        # Add samples with first timestamp
+        profile.update(
+            readings={"scanner_a": -50.0, "scanner_b": -60.0},
+            nowstamp=1000.0,
+        )
+
+        # Add more samples with later timestamp
+        profile.update(
+            readings={"scanner_a": -52.0, "scanner_b": -62.0},
+            nowstamp=2000.0,
+        )
+
+        # first_sample_stamp should be 1000.0 (the earliest)
+        assert profile.first_sample_stamp == 1000.0
+
+    def test_first_sample_stamp_returns_none_when_empty(self) -> None:
+        """first_sample_stamp should return None when no samples exist."""
+        from custom_components.bermuda.correlation.room_profile import RoomProfile
+
+        profile = RoomProfile(area_id="area.empty")
+
+        assert profile.first_sample_stamp is None
+
+    def test_last_sample_stamp_returns_latest_timestamp(self) -> None:
+        """last_sample_stamp should return the latest timestamp from all scanner pairs."""
+        from custom_components.bermuda.correlation.room_profile import RoomProfile
+
+        profile = RoomProfile(area_id="area.test")
+
+        # Add samples with first timestamp
+        profile.update(
+            readings={"scanner_a": -50.0, "scanner_b": -60.0},
+            nowstamp=1000.0,
+        )
+
+        # Add more samples with later timestamp
+        profile.update(
+            readings={"scanner_a": -52.0, "scanner_b": -62.0},
+            nowstamp=2000.0,
+        )
+
+        # last_sample_stamp should be 2000.0 (the latest)
+        assert profile.last_sample_stamp == 2000.0
+
+    def test_last_sample_stamp_returns_none_when_empty(self) -> None:
+        """last_sample_stamp should return None when no samples exist."""
+        from custom_components.bermuda.correlation.room_profile import RoomProfile
+
+        profile = RoomProfile(area_id="area.empty")
+
+        assert profile.last_sample_stamp is None
+
+
+class TestRoomProfileNewDataCheck:
+    """Tests for RoomProfile new data check to ensure full coverage."""
+
+    def test_new_data_check_rejects_unchanged_stamps(self) -> None:
+        """RoomProfile.update() should reject when stamps haven't changed."""
+        from custom_components.bermuda.correlation.room_profile import RoomProfile
+
+        profile = RoomProfile(area_id="area.test")
+
+        stamps = {"scanner_a": 1000.0, "scanner_b": 1000.0}
+
+        # First update should succeed
+        result = profile.update(
+            readings={"scanner_a": -50.0, "scanner_b": -60.0},
+            nowstamp=1000.0,
+            last_stamps={},  # No previous stamps
+            current_stamps=stamps,
+        )
+        assert result is True
+
+        # Second update with same stamps should be rejected
+        result = profile.update(
+            readings={"scanner_a": -52.0, "scanner_b": -62.0},
+            nowstamp=2000.0,  # Time passes but stamps are the same
+            last_stamps=stamps,  # Same as current
+            current_stamps=stamps,  # Same as last
+        )
+        # Note: This will return False due to "no new data"
+        assert result is False

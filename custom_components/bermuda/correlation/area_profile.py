@@ -19,7 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Self
 
-from custom_components.bermuda.const import AUTO_LEARNING_MIN_INTERVAL
+from custom_components.bermuda.const import AUTO_LEARNING_MIN_CONFIDENCE, AUTO_LEARNING_MIN_INTERVAL
 
 from .scanner_absolute import ScannerAbsoluteRssi
 from .scanner_pair import ScannerPairCorrelation
@@ -75,6 +75,7 @@ class AreaProfile:
         nowstamp: float | None = None,
         last_stamps: dict[str, float] | None = None,
         current_stamps: dict[str, float] | None = None,
+        confidence: float | None = None,
     ) -> bool:
         """
         Update correlations with new scanner readings (automatic learning).
@@ -98,13 +99,21 @@ class AreaProfile:
                          If None, update always proceeds (first update).
             current_stamps: Current advertisement timestamps per scanner (Feature 1).
                             Used with last_stamps to detect new data.
+            confidence: Area assignment confidence (0.0-1.0) for Feature 3.
+                       If None, confidence check is skipped (backward compatibility).
+                       If < AUTO_LEARNING_MIN_CONFIDENCE, update is rejected.
 
         Returns:
         -------
-            True if update was performed, False if skipped due to minimum interval
-            or no new advertisement data.
+            True if update was performed, False if skipped due to minimum interval,
+            no new advertisement data, or low confidence.
 
         """
+        # Feature 3: Confidence Filter
+        # Skip updates with low confidence to avoid polluting fingerprints with noise
+        if confidence is not None and confidence < AUTO_LEARNING_MIN_CONFIDENCE:
+            return False
+
         # Feature 1: New Data Check
         # Skip updates that re-read the same cached RSSI values (no new advertisements)
         if last_stamps is not None and current_stamps is not None:
