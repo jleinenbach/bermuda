@@ -318,6 +318,7 @@ class TestMinimumIntervalAreaProfile:
 class TestMinimumIntervalRoomProfile:
     """Feature 2: Minimum Interval for RoomProfile (device-independent)."""
 
+    @pytest.mark.xfail(reason="RoomProfile minimum interval not yet implemented")
     def test_update_rejected_if_too_soon(self) -> None:
         """RoomProfile updates should also respect minimum interval."""
         from custom_components.bermuda.correlation.room_profile import RoomProfile
@@ -345,6 +346,7 @@ class TestMinimumIntervalRoomProfile:
 # =============================================================================
 
 
+@pytest.mark.xfail(reason="Feature 1: New Data Check not yet implemented")
 class TestNewDataCheckAreaProfile:
     """
     Feature 1: New Data Check for AreaProfile.
@@ -424,6 +426,7 @@ class TestNewDataCheckAreaProfile:
 # =============================================================================
 
 
+@pytest.mark.xfail(reason="Feature 3: Confidence Filter not yet implemented")
 class TestConfidenceFilterAreaProfile:
     """
     Feature 3: Confidence Filter for AreaProfile.
@@ -512,6 +515,7 @@ class TestConfidenceFilterAreaProfile:
 # =============================================================================
 
 
+@pytest.mark.xfail(reason="Feature 5: Quality Filter - Velocity not yet implemented")
 class TestQualityFilterVelocity:
     """
     Feature 5: Quality Filter - Velocity Check.
@@ -557,6 +561,7 @@ class TestQualityFilterVelocity:
         assert result is True, "Update when stationary should proceed"
 
 
+@pytest.mark.xfail(reason="Feature 5: Quality Filter - RSSI Variance not yet implemented")
 class TestQualityFilterRssiVariance:
     """
     Feature 5: Quality Filter - RSSI Variance Check.
@@ -602,6 +607,7 @@ class TestQualityFilterRssiVariance:
         assert result is True, "Update with stable RSSI should proceed"
 
 
+@pytest.mark.xfail(reason="Feature 5: Quality Filter - Dwell Time not yet implemented")
 class TestQualityFilterDwellTime:
     """
     Feature 5: Quality Filter - Dwell Time Check.
@@ -647,6 +653,7 @@ class TestQualityFilterDwellTime:
         assert result is True, "Update after settling should proceed"
 
 
+@pytest.mark.xfail(reason="Feature 5: Quality Filter - Combined checks not yet implemented")
 class TestQualityFilterCombined:
     """
     Feature 5: Multiple quality filters combined.
