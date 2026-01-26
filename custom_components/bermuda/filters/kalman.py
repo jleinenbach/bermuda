@@ -199,11 +199,12 @@ class KalmanFilter(SignalFilter):
             - PMC5461075: "An Improved BLE Indoor Localization with Kalman-Based Fusion"
 
         """
-        # Validate ref_power (typical BLE range: -100 to 0 dBm)
+        # Validate ref_power (BLE TX power range: -100 to +20 dBm)
+        # ESP32 scanners can transmit at positive power levels (up to +9 dBm or higher)
         # Invalid values can cause incorrect noise scaling
-        if not (-100 <= ref_power <= 0):
+        if not (-100 <= ref_power <= 20):
             _LOGGER.warning(
-                "Invalid ref_power %.1f dBm (expected -100 to 0), using default -55",
+                "Invalid ref_power %.1f dBm (expected -100 to +20), using default -55",
                 ref_power,
             )
             ref_power = -55.0  # Safe default for most BLE devices
