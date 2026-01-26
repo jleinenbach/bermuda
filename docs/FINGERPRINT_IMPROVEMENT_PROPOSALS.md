@@ -11,8 +11,8 @@
                         Impact (Erkennungsgenauigkeit)
                         Hoch                    Niedrig
                     ┌─────────────────────────────────────┐
-          Niedrig   │  ★★★ P1: Log-Likelihood  │  P3: Docs │
-                    │      Normalisierung       │           │
+          Niedrig   │  ★★★ P1: Relative       │  P3: Docs │
+                    │      Margin              │           │
   Aufwand           ├─────────────────────────────────────┤
                     │  ★★  P2: Konfidenz-      │           │
           Hoch      │      gewichtetes Lernen  │  P4: Full │
@@ -22,150 +22,102 @@
 
 ---
 
-## P1: Log-Likelihood-Ratio Normalisierung ★★★
+## P1: Relative Margin ★★★ (Vereinfacht)
 
 ### Problem (Rating-Verlust: -1.5 Punkte)
 
-Aktuell werden absolute Scores verglichen:
+Aktuell werden absolute Scores verglichen ohne Unsicherheits-Indikator:
 
 ```
-Messung: RSSI = [-72, -78, -85]
+Küche:      Score = 0.75  ← "Gewinner"
+Wohnzimmer: Score = 0.72  ← Kaum unterschiedlich!
 
-Küche:     μ = [-70, -80, -85], Score = 0.75
-Wohnzimmer: μ = [-71, -79, -84], Score = 0.72  ← Fast identisch!
-Schlafzimmer: μ = [-90, -60, -70], Score = 0.15
-
-Problem: Küche und Wohnzimmer sind kaum unterscheidbar!
-         Der Score sagt nicht "wie viel besser ist Küche?"
+Problem: System wechselt bei minimaler RSSI-Änderung → Flackern
 ```
 
-### Lösung: Posterior-Wahrscheinlichkeiten
+### Lösung: Relative Margin (EINFACH)
 
 ```python
-# Vorher (absolut):
-scores = {"kitchen": 0.75, "living": 0.72, "bedroom": 0.15}
-winner = "kitchen"  # Knapper Sieg
+margin = (best_score - second_score) / best_score
 
-# Nachher (normalisiert):
-total = 0.75 + 0.72 + 0.15  # = 1.62
-posteriors = {
-    "kitchen": 0.75/1.62,   # = 0.463 (46.3%)
-    "living": 0.72/1.62,    # = 0.444 (44.4%)
-    "bedroom": 0.15/1.62    # = 0.093 (9.3%)
-}
-# Jetzt sichtbar: Küche vs Wohnzimmer ist unsicher!
-# → Höheren Threshold für Wechsel anwenden
+# Beispiel:
+# Küche: 0.75, Wohnzimmer: 0.72
+# margin = (0.75 - 0.72) / 0.75 = 4%
+# → Unsichere Entscheidung! Nicht wechseln wenn aktueller Raum in Top-2
 ```
 
 ### Implementierung
 
-**Datei:** `custom_components/bermuda/filters/ukf.py`
-
-```python
-def match_fingerprints(
-    self,
-    profiles: dict[str, AreaProfile],
-    current_area_id: str | None = None,
-) -> list[tuple[str, float, float]]:
-    """
-    Match current UKF state against area fingerprints.
-
-    Returns:
-        List of (area_id, raw_score, posterior_probability)
-        sorted by posterior descending.
-    """
-    raw_scores: list[tuple[str, float]] = []
-
-    for area_id, profile in profiles.items():
-        # ... existing Mahalanobis distance calculation ...
-        raw_scores.append((area_id, score))
-
-    # NEU: Normalize to posteriors
-    posteriors = self._normalize_to_posteriors(raw_scores)
-
-    # Combine raw and posterior for downstream decisions
-    results = [
-        (area_id, raw, posteriors.get(area_id, 0.0))
-        for area_id, raw in raw_scores
-    ]
-
-    return sorted(results, key=lambda x: x[2], reverse=True)
-
-def _normalize_to_posteriors(
-    self,
-    scores: list[tuple[str, float]]
-) -> dict[str, float]:
-    """
-    Convert raw likelihood scores to posterior probabilities.
-
-    Uses softmax-style normalization with temperature scaling
-    to handle score magnitude differences.
-    """
-    if not scores:
-        return {}
-
-    # Numerical stability: subtract max before exp
-    max_score = max(s for _, s in scores)
-    if max_score < 1e-10:
-        # All scores near zero - uniform distribution
-        n = len(scores)
-        return {area: 1.0/n for area, _ in scores}
-
-    # Temperature parameter controls "sharpness"
-    # Higher T = more uniform, Lower T = winner-take-all
-    T = 1.0  # Can be tuned
-
-    exp_scores = [(area, math.exp((s - max_score) / T)) for area, s in scores]
-    total = sum(e for _, e in exp_scores)
-
-    return {area: e / total for area, e in exp_scores}
-```
-
 **Datei:** `custom_components/bermuda/area_selection.py`
 
 ```python
+def _calculate_decision_margin(
+    self,
+    scores: list[tuple[str, float]],
+) -> tuple[float, bool]:
+    """
+    Berechne relative Margin zwischen Top-2 Kandidaten.
+
+    Returns:
+        (margin, is_confident)
+    """
+    if len(scores) < 2:
+        return (1.0, True)  # Nur ein Kandidat: volle Konfidenz
+
+    best_score = scores[0][1]
+    second_score = scores[1][1]
+
+    if best_score <= 0:
+        return (0.0, False)
+
+    margin = (best_score - second_score) / best_score
+    is_confident = margin >= UKF_MIN_DECISION_MARGIN  # 0.15
+
+    return (margin, is_confident)
+
+
 def _refresh_area_by_ukf(self, device: BermudaDevice) -> bool:
-    """UKF-based area selection with posterior probabilities."""
+    """UKF-basierte Raumauswahl mit Margin-Stabilisierung."""
 
-    # Get matches with posteriors
-    matches = ukf.match_fingerprints(profiles, device.area_id)
-
+    matches = ukf.match_fingerprints(profiles)
     if not matches:
         return False
 
-    best_area, raw_score, posterior = matches[0]
-    second_area, _, second_posterior = matches[1] if len(matches) > 1 else (None, 0, 0)
+    best_area, best_score = matches[0][0], matches[0][2]
 
-    # NEU: Entscheidungslogik basierend auf Posterior-Differenz
-    posterior_margin = posterior - second_posterior
+    # Margin berechnen
+    margin, is_confident = self._calculate_decision_margin(
+        [(m[0], m[2]) for m in matches]
+    )
 
-    # Unsichere Entscheidung? (< 20% Vorsprung)
-    if posterior_margin < 0.20:
-        # Höherer Threshold für Room-Wechsel
-        effective_threshold = UKF_MIN_MATCH_SCORE * 1.5  # 0.45 statt 0.30
-        device.area_tests.ukf_decision_uncertain = True
-        device.area_tests.ukf_posterior_margin = posterior_margin
+    if is_confident:
+        effective_threshold = UKF_MIN_MATCH_SCORE  # 0.30
     else:
-        effective_threshold = UKF_MIN_MATCH_SCORE
-        device.area_tests.ukf_decision_uncertain = False
+        # Unsichere Entscheidung
+        current_in_top2 = device.area_id in [matches[0][0], matches[1][0]]
+        if current_in_top2:
+            # Aktueller Raum in Top-2 → BEHALTEN
+            return True
+        else:
+            effective_threshold = UKF_UNCERTAIN_THRESHOLD  # 0.50
 
-    # Store for diagnostics
-    device.area_tests.ukf_posterior = posterior
-    device.area_tests.ukf_posterior_margin = posterior_margin
+    if best_score < effective_threshold:
+        return False  # Fallback zu Min-Distance
 
-    if raw_score < effective_threshold:
-        return False  # Fall back to min-distance
+    # Diagnostik
+    device.area_tests.ukf_margin = margin
+    device.area_tests.ukf_margin_confident = is_confident
 
-    # ... rest of existing logic ...
+    return self._apply_ukf_selection(device, best_area, best_score, ...)
 ```
 
 ### Erwarteter Impact
 
 | Szenario | Vorher | Nachher |
 |----------|--------|---------|
-| Ähnliche Räume (Küche/Wohnzimmer) | Häufiges Flackern | Stabiler (höherer Threshold bei Unsicherheit) |
-| Eindeutige Räume | Score 0.85 gewinnt | Posterior 0.75 zeigt Dominanz |
-| Drei-Raum-Entscheidung | Nur Top-2 sichtbar | Volle Wahrscheinlichkeitsverteilung |
+| Ähnliche Räume (Küche/Wohnzimmer) | Häufiges Flackern | Stabil (BEHALTEN bei unsicherer Margin) |
+| Eindeutige Räume (Margin > 15%) | Normal | Unverändert |
+| Aktueller Raum nicht in Top-2 | Sofortiger Wechsel | Erhöhter Threshold (0.50) |
 
 **Geschätzte Rating-Verbesserung:** +1.0 bis +1.5 Punkte
 
