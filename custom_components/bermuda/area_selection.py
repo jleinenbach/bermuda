@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from bluetooth_data_tools import monotonic_time_coarse
@@ -115,63 +115,258 @@ _LOGGER = logging.getLogger(__name__)
 @dataclass
 class AreaTests:
     """
-    Holds the results of Area-based tests.
+    Diagnostic information for area selection decisions.
 
-    Likely to become a stand-alone class for performing the whole area-selection
-    process.
+    This dataclass captures comprehensive diagnostic data from both the UKF
+    fingerprint matching path and the min-distance heuristic fallback. It enables
+    users and developers to understand WHY a particular room was selected.
+
+    The data is exposed via:
+    - `sensortext()`: Compact string for the sensor's native_value (max 255 chars)
+    - `to_dict()`: Structured dict for sensor's extra_state_attributes
+    - `__str__()`: Verbose format for debug logging
     """
 
+    # === IDENTITY ===
     device: str = ""
-    scannername: tuple[str, str] = ("", "")
-    areas: tuple[str, str] = ("", "")
-    pcnt_diff: float = 0  # distance percentage difference.
-    same_area: bool = False  # The old scanner is in the same area as us.
-    last_ad_age: tuple[float, float] = (0, 0)  # seconds since we last got *any* ad from scanner
-    this_ad_age: tuple[float, float] = (0, 0)  # how old the *current* advert is on this scanner
-    distance: tuple[float, float] = (0, 0)
-    hist_min_max: tuple[float, float] = (0, 0)  # min/max distance from history
-    floors: tuple[str | None, str | None] = (None, None)
-    floor_levels: tuple[str | int | None, str | int | None] = (None, None)
-    reason: str | None = None  # reason/result
+
+    # === DECISION PATH ===
+    # Which algorithm made the final decision
+    decision_path: str = "UNKNOWN"
+    # Values: "UKF", "MIN_DISTANCE", "VIRTUAL", "LOCKED", "RESCUE", "UNKNOWN"
+
+    # === AREA TRANSITION (existing, kept for compatibility) ===
+    scannername: tuple[str, str] = ("", "")  # (incumbent_scanner, challenger_scanner)
+    areas: tuple[str, str] = ("", "")  # (from_area, to_area)
+    same_area: bool = False  # The challenger is in the same area as incumbent
+
+    # === MIN-DISTANCE FIELDS (existing, kept for compatibility) ===
+    pcnt_diff: float = 0  # Distance percentage difference
+    last_ad_age: tuple[float, float] = (0, 0)  # Seconds since last *any* ad from scanner
+    this_ad_age: tuple[float, float] = (0, 0)  # How old the *current* advert is
+    distance: tuple[float, float] = (0, 0)  # (incumbent_distance, challenger_distance)
+    hist_min_max: tuple[float, float] = (0, 0)  # Min/max distance from history
+    floors: tuple[str | None, str | None] = (None, None)  # Floor names
+    floor_levels: tuple[str | int | None, str | int | None] = (None, None)  # Floor levels
+
+    # === UKF MATCHING (new) ===
+    ukf_match_score: float | None = None  # Best area's fingerprint match score (0-1)
+    ukf_current_area_score: float | None = None  # Current area's score (for comparison)
+    ukf_retention_mode: bool = False  # True = using lower retention threshold (0.15)
+    ukf_stickiness_applied: bool = False  # True = stickiness bonus prevented switch
+    ukf_threshold_used: float | None = None  # Actual threshold: 0.15 (retention) or 0.30 (switch)
+
+    # === FINGERPRINT PROFILE (new) ===
+    profile_source: str = "NONE"  # "BUTTON_TRAINED", "AUTO_LEARNED", "MIXED", "NONE"
+    profile_sample_count: int | None = None  # Number of samples in the profile
+    profile_has_button: bool = False  # True if profile has button training
+
+    # === SCANNERLESS ROOM (new) ===
+    is_scannerless_room: bool = False  # True if winner has no physical scanner
+    virtual_distance: float | None = None  # Calculated virtual distance from UKF score
+
+    # === SANITY CHECKS (new) ===
+    # None = not checked, True = passed, False = failed
+    passed_proximity_check: bool | None = None  # BUG 14: Device close to different scanner
+    passed_topological_check: bool | None = None  # BUG 21: Scanner exists on target floor
+    passed_rssi_sanity: bool | None = None  # RSSI vs strongest visible scanner
+    nearest_scanner_distance: float | None = None  # Distance to nearest scanner
+    nearest_scanner_area: str | None = None  # Area of nearest scanner
+
+    # === TIMING/STALENESS (new) ===
+    winner_advert_age: float | None = None  # Seconds since winner's last advertisement
+
+    # === TOP CANDIDATES (new) ===
+    # List of top candidates for debugging: [{"area": str, "score": float, "type": str}, ...]
+    top_candidates: list[dict[str, Any]] = field(default_factory=list)
+
+    # === RESULT ===
+    reason: str | None = None  # Human-readable reason/result string
 
     def sensortext(self) -> str:
-        """Return a text summary suitable for use in a sensor entity."""
-        out = ""
-        for var, val in vars(self).items():
-            out += f"{var}|"
-            if isinstance(val, tuple):
-                for v in val:
-                    if isinstance(v, float):
-                        out += f"{v:.2f}|"
-                    else:
-                        out += f"{v}"
-            elif var == "pcnt_diff":
-                out += f"{val:.3f}"
-            else:
-                out += f"{val}"
-            out += "\n"
-        return out[:255]
+        """
+        Return compact diagnostic text optimized for UI display.
+
+        Format: "[PATH] reason | 📍from→to | metrics..."
+        Maximum 255 characters (HA sensor limit).
+        """
+        parts: list[str] = []
+
+        # 1. Decision path with emoji and reason
+        path_indicator = {
+            "UKF": "🎯",
+            "MIN_DISTANCE": "📏",
+            "VIRTUAL": "👻",
+            "LOCKED": "🔒",
+            "RESCUE": "🛟",
+            "UNKNOWN": "❓",
+        }.get(self.decision_path, "❓")
+
+        reason_short = (self.reason or "pending")[:50]
+        parts.append(f"{path_indicator}{self.decision_path}: {reason_short}")
+
+        # 2. Area transition
+        from_area = (self.areas[0] or "?")[:12]
+        to_area = (self.areas[1] or "?")[:12]
+        if from_area != to_area and self.areas[0]:
+            parts.append(f"📍{from_area}→{to_area}")
+        elif to_area != "?":
+            parts.append(f"📍{to_area}")
+
+        # 3. UKF-specific metrics
+        if self.decision_path == "UKF" and self.ukf_match_score is not None:
+            mode = "R" if self.ukf_retention_mode else "S"
+            sticky = "+" if self.ukf_stickiness_applied else ""
+            parts.append(f"UKF:{self.ukf_match_score:.2f}{sticky}({mode})")
+
+        # 4. Distance info
+        if self.is_scannerless_room and self.virtual_distance is not None:
+            parts.append(f"Virt:{self.virtual_distance:.1f}m")
+        elif self.distance[1] > 0:
+            parts.append(f"Dist:{self.distance[1]:.1f}m({self.pcnt_diff:+.0%})")
+
+        # 5. Profile info (compact)
+        if self.profile_source != "NONE":
+            src = "BTN" if self.profile_has_button else "AUTO"
+            count = self.profile_sample_count or 0
+            parts.append(f"Prof:{src}({count})")
+
+        # 6. Sanity check failures (only show if failed)
+        failures = []
+        if self.passed_proximity_check is False:
+            failures.append("PROX")
+        if self.passed_topological_check is False:
+            failures.append("TOPO")
+        if self.passed_rssi_sanity is False:
+            failures.append("RSSI")
+        if failures:
+            parts.append(f"⚠️{','.join(failures)}")
+
+        # 7. Staleness warning (if significant)
+        if self.winner_advert_age is not None and self.winner_advert_age > 10:
+            parts.append(f"Age:{self.winner_advert_age:.0f}s")
+
+        return " | ".join(parts)[:255]
+
+    def to_dict(self) -> dict[str, Any]:
+        """
+        Return structured dictionary for sensor extra_state_attributes.
+
+        This provides detailed diagnostic data for HA automations and debugging.
+        """
+        attrs: dict[str, Any] = {
+            # Core decision info
+            "decision_path": self.decision_path,
+            "reason": self.reason,
+            "from_area": self.areas[0] or None,
+            "to_area": self.areas[1] or None,
+            "same_area": self.same_area,
+        }
+
+        # UKF-specific attributes
+        if self.ukf_match_score is not None:
+            attrs["ukf_score"] = round(self.ukf_match_score, 3)
+            if self.ukf_current_area_score is not None:
+                attrs["ukf_current_score"] = round(self.ukf_current_area_score, 3)
+            attrs["ukf_threshold"] = self.ukf_threshold_used
+            attrs["ukf_retention_mode"] = self.ukf_retention_mode
+            attrs["ukf_stickiness_applied"] = self.ukf_stickiness_applied
+
+        # Fingerprint profile
+        if self.profile_source != "NONE":
+            attrs["profile_source"] = self.profile_source
+            attrs["profile_samples"] = self.profile_sample_count
+            attrs["profile_has_button_training"] = self.profile_has_button
+
+        # Scannerless room
+        attrs["is_scannerless_room"] = self.is_scannerless_room
+        if self.virtual_distance is not None:
+            attrs["virtual_distance_m"] = round(self.virtual_distance, 2)
+
+        # Distance info (for min-distance path)
+        if self.distance[0] > 0 or self.distance[1] > 0:
+            attrs["distance_incumbent_m"] = round(self.distance[0], 2)
+            attrs["distance_challenger_m"] = round(self.distance[1], 2)
+            attrs["distance_diff_percent"] = round(self.pcnt_diff * 100, 1)
+
+        # Sanity checks (only include if checked)
+        if self.passed_proximity_check is not None:
+            attrs["sanity_proximity_passed"] = self.passed_proximity_check
+        if self.passed_topological_check is not None:
+            attrs["sanity_topological_passed"] = self.passed_topological_check
+        if self.passed_rssi_sanity is not None:
+            attrs["sanity_rssi_passed"] = self.passed_rssi_sanity
+
+        if self.nearest_scanner_distance is not None:
+            attrs["nearest_scanner_m"] = round(self.nearest_scanner_distance, 2)
+            attrs["nearest_scanner_area"] = self.nearest_scanner_area
+
+        # Timing
+        if self.winner_advert_age is not None:
+            attrs["winner_advert_age_s"] = round(self.winner_advert_age, 1)
+
+        # Top candidates (for debugging)
+        if self.top_candidates:
+            attrs["top_candidates"] = [
+                {
+                    "area": c.get("area"),
+                    "score": round(c.get("score", 0), 3) if c.get("score") else None,
+                    "distance": round(c.get("distance", 0), 2) if c.get("distance") else None,
+                    "type": c.get("type"),
+                }
+                for c in self.top_candidates[:5]
+            ]
+
+        # Floor info
+        if self.floors[0] or self.floors[1]:
+            attrs["from_floor"] = self.floors[0]
+            attrs["to_floor"] = self.floors[1]
+
+        return attrs
 
     def __str__(self) -> str:
         """
-        Create string representation for easy debug logging/dumping
-        and potentially a sensor for logging Area decisions.
+        Create verbose string representation for debug logging.
+
+        Shows all fields with clear formatting for log analysis.
         """
-        out = ""
-        for var, val in vars(self).items():
-            out += f"** {var:20} "
-            if isinstance(val, tuple):
-                for v in val:
-                    if isinstance(v, float):
-                        out += f"{v:.2f} "
-                    else:
-                        out += f"{v} "
-                out += "\n"
-            elif var == "pcnt_diff":
-                out += f"{val:.3f}\n"
-            else:
-                out += f"{val}\n"
-        return out
+        lines = [f"AreaTests for {self.device}:"]
+        lines.append(f"  Decision Path: {self.decision_path}")
+        lines.append(f"  Reason: {self.reason}")
+        lines.append(f"  Areas: {self.areas[0]} → {self.areas[1]}")
+
+        if self.ukf_match_score is not None:
+            lines.append(f"  UKF Score: {self.ukf_match_score:.3f} (threshold: {self.ukf_threshold_used})")
+            lines.append(f"  UKF Retention: {self.ukf_retention_mode}, Stickiness: {self.ukf_stickiness_applied}")
+
+        if self.is_scannerless_room:
+            lines.append(f"  Scannerless Room: Yes, Virtual Distance: {self.virtual_distance:.2f}m")
+
+        if self.profile_source != "NONE":
+            lines.append(f"  Profile: {self.profile_source} ({self.profile_sample_count} samples)")
+
+        if self.distance[0] > 0 or self.distance[1] > 0:
+            lines.append(f"  Distance: {self.distance[0]:.2f}m → {self.distance[1]:.2f}m ({self.pcnt_diff:+.1%})")
+
+        # Sanity checks
+        checks = []
+        if self.passed_proximity_check is not None:
+            checks.append(f"Proximity:{'✓' if self.passed_proximity_check else '✗'}")
+        if self.passed_topological_check is not None:
+            checks.append(f"Topo:{'✓' if self.passed_topological_check else '✗'}")
+        if self.passed_rssi_sanity is not None:
+            checks.append(f"RSSI:{'✓' if self.passed_rssi_sanity else '✗'}")
+        if checks:
+            lines.append(f"  Sanity Checks: {', '.join(checks)}")
+
+        if self.top_candidates:
+            lines.append(f"  Top Candidates: {len(self.top_candidates)}")
+            lines.extend(
+                f"    - {c.get('area')}: score={c.get('score', 'N/A')}, type={c.get('type')}"
+                for c in self.top_candidates[:3]
+            )
+
+        return "\n".join(lines)
 
 
 class AreaSelectionHandler:
@@ -1032,6 +1227,11 @@ class AreaSelectionHandler:
         """
         nowstamp = monotonic_time_coarse()
 
+        # Create AreaTests for diagnostic output
+        tests = AreaTests()
+        tests.device = device.name or device.address
+        tests.decision_path = "UKF"
+
         # Collect RSSI readings from all visible scanners
         rssi_readings: dict[str, float] = {}
         for advert in device.adverts.values():
@@ -1062,6 +1262,8 @@ class AreaSelectionHandler:
         )
 
         if len(rssi_readings) < UKF_MIN_SCANNERS and not can_retain_with_single_scanner:
+            tests.reason = f"SKIP - insufficient scanners ({len(rssi_readings)} < {UKF_MIN_SCANNERS})"
+            # Don't set device.area_tests here - let min_distance handle it
             return False
 
         # Single-scanner retention: verify RSSI against trained profile
@@ -1096,6 +1298,19 @@ class AreaSelectionHandler:
                         # Apply retention by updating the advert timestamp
                         if device.area_advert is not None:
                             device.apply_scanner_selection(device.area_advert, nowstamp=nowstamp)
+
+                        # Populate AreaTests for single-scanner retention
+                        tests.ukf_retention_mode = True
+                        tests.areas = (current_area_id or "", current_area_id or "")
+                        tests.same_area = True
+                        tests.profile_has_button = area_profile.has_button_training if area_profile else False
+                        tests.profile_sample_count = area_profile.sample_count if area_profile else None
+                        tests.reason = (
+                            f"WIN - single-scanner retention "
+                            f"(RSSI {current_rssi:.0f} ≈ {expected_rssi:.0f}±{rssi_threshold:.0f})"
+                        )
+                        device.area_tests = tests
+                        device.diag_area_switch = tests.sensortext()
                         return True
                     # RSSI doesn't match profile - fall back to min_distance
                     if _LOGGER.isEnabledFor(logging.DEBUG):
@@ -1106,7 +1321,13 @@ class AreaSelectionHandler:
                             expected_rssi,
                             rssi_threshold,
                         )
+                    tests.reason = (
+                        f"REJECT - single-scanner RSSI mismatch "
+                        f"({current_rssi:.0f} vs {expected_rssi:.0f}±{rssi_threshold:.0f})"
+                    )
             # No usable profile - fall back to min_distance
+            if tests.reason is None:
+                tests.reason = "SKIP - no usable profile for single-scanner retention"
             return False
 
         # Get or create UKF for this device
@@ -1123,16 +1344,23 @@ class AreaSelectionHandler:
 
         # Need either device profiles or room profiles
         if not device_profiles and not self.room_profiles:
+            tests.reason = "SKIP - no device or room profiles"
             return False
 
         # Match against both device-specific and room-level fingerprints
         matches = ukf.match_fingerprints(device_profiles, self.room_profiles)
 
         if not matches:
+            tests.reason = "SKIP - no fingerprint matches"
             return False
 
         # Get best match
         best_area_id, _d_squared, match_score = matches[0]
+
+        # Populate top candidates for diagnostics
+        tests.top_candidates = [
+            {"area": area_id, "score": round(score, 3), "type": "UKF"} for area_id, _, score in matches[:5]
+        ]
 
         # FIX: Sticky Virtual Rooms - Apply stickiness bonus for current area
         # When the device is already in an area (especially a scannerless one),
@@ -1165,6 +1393,7 @@ class AreaSelectionHandler:
                     # Current area wins with stickiness bonus
                     best_area_id = current_area_id
                     effective_match_score = current_area_match_score
+                    tests.ukf_stickiness_applied = True
                     if _LOGGER.isEnabledFor(logging.DEBUG):
                         _LOGGER.debug(
                             "UKF stickiness for %s: keeping %s (score=%.2f+%.2f bonus) over challenger (score=%.2f)",
@@ -1184,6 +1413,12 @@ class AreaSelectionHandler:
         is_retention = best_area_id == current_area_id and current_area_id is not None
         effective_threshold = UKF_RETENTION_THRESHOLD if is_retention else UKF_MIN_MATCH_SCORE
 
+        # Populate UKF diagnostic fields
+        tests.ukf_match_score = match_score
+        tests.ukf_current_area_score = current_area_match_score
+        tests.ukf_retention_mode = is_retention
+        tests.ukf_threshold_used = effective_threshold
+
         if effective_match_score < effective_threshold:
             if is_retention:
                 # FIX: FEHLER 3 - For retention case, return True even with low score
@@ -1200,7 +1435,15 @@ class AreaSelectionHandler:
                     )
                 if device.area_advert is not None:
                     device.apply_scanner_selection(device.area_advert, nowstamp=nowstamp)
+
+                # Populate AreaTests for low-score retention
+                tests.areas = (current_area_id or "", current_area_id or "")
+                tests.same_area = True
+                tests.reason = f"WIN - low-score retention ({effective_match_score:.2f} < {effective_threshold:.2f})"
+                device.area_tests = tests
+                device.diag_area_switch = tests.sensortext()
                 return True
+            tests.reason = f"REJECT - score too low ({effective_match_score:.2f} < {effective_threshold:.2f})"
             return False
 
         # Find the advert corresponding to the best area
@@ -1236,9 +1479,11 @@ class AreaSelectionHandler:
                     best_advert = advert
 
             if best_advert is None:
+                tests.reason = "REJECT - no advert available for scannerless room"
                 return False
 
             scanner_less_room = True
+            tests.is_scannerless_room = True
 
             # BUG 21 FIX: TOPOLOGICAL SANITY CHECK FOR SCANNERLESS ROOMS
             # When UKF picks a scannerless room on floor X, at least ONE scanner on floor X
@@ -1272,6 +1517,8 @@ class AreaSelectionHandler:
                             scanner_on_target_floor_sees_device = True
                             break
 
+                tests.passed_topological_check = scanner_on_target_floor_sees_device
+
                 if not scanner_on_target_floor_sees_device:
                     # UKF picked a scannerless room on a floor where NO scanner sees
                     # the device. This is topologically impossible.
@@ -1284,6 +1531,7 @@ class AreaSelectionHandler:
                             best_area_id,
                             target_area_floor_id,
                         )
+                    tests.reason = f"REJECT - topological check (no scanner on floor {target_area_floor_id})"
                     return False
 
         # Track whether current area is scannerless (for stickiness in future cycles)
@@ -1311,13 +1559,17 @@ class AreaSelectionHandler:
                     strongest_visible_rssi = advert.rssi
 
             # Only apply sanity check when UKF confidence is low AND signal is much weaker
-            if (
+            rssi_sanity_failed = (
                 effective_match_score < UKF_LOW_CONFIDENCE_THRESHOLD
                 and best_advert_rssi is not None
                 and strongest_visible_rssi > RSSI_INVALID_SENTINEL
                 and strongest_visible_rssi - best_advert_rssi > UKF_RSSI_SANITY_MARGIN
-            ):
+            )
+            tests.passed_rssi_sanity = not rssi_sanity_failed
+
+            if rssi_sanity_failed:
                 # Low confidence UKF picked a room with weak signal - suspicious
+                rssi_diff = strongest_visible_rssi - (best_advert_rssi or 0)
                 if _LOGGER.isEnabledFor(logging.DEBUG):
                     _LOGGER.debug(
                         "UKF sanity check failed for %s: UKF picked %s (score=%.2f, RSSI %.1f) but "
@@ -1326,8 +1578,9 @@ class AreaSelectionHandler:
                         best_area_id,
                         effective_match_score,
                         best_advert_rssi,
-                        strongest_visible_rssi - best_advert_rssi,
+                        rssi_diff,
                     )
+                tests.reason = f"REJECT - RSSI sanity (score {effective_match_score:.2f}, diff {rssi_diff:.0f}dB)"
                 return False
 
         # DISTANCE-BASED SANITY CHECK (BUG 14):
@@ -1358,6 +1611,13 @@ class AreaSelectionHandler:
                     nearest_scanner_area_id = scanner_area
                     nearest_scanner_floor_id = getattr(advert.scanner_device, "floor_id", None)
 
+        # Populate proximity info for diagnostics
+        if nearest_scanner_distance < DISTANCE_INFINITE_SENTINEL:
+            tests.nearest_scanner_distance = nearest_scanner_distance
+            tests.nearest_scanner_area = (
+                self.resolve_area_name(nearest_scanner_area_id) if nearest_scanner_area_id else None
+            )
+
         if (
             nearest_scanner_distance < UKF_PROXIMITY_THRESHOLD_METERS
             and nearest_scanner_area_id is not None
@@ -1375,6 +1635,7 @@ class AreaSelectionHandler:
             if is_cross_floor_ukf:
                 # UKF picked a room on a DIFFERENT floor while device is <2m from a scanner.
                 # This is almost certainly wrong - fall back to min-distance.
+                tests.passed_proximity_check = False
                 if _LOGGER.isEnabledFor(logging.DEBUG):
                     _LOGGER.debug(
                         "UKF distance sanity check FAILED for %s: Device is %.1fm from scanner "
@@ -1386,10 +1647,12 @@ class AreaSelectionHandler:
                         best_area_id,
                         ukf_floor_id,
                     )
+                tests.reason = f"REJECT - proximity cross-floor ({nearest_scanner_distance:.1f}m)"
                 return False
 
             # Same floor but different room while very close - allow only with very high confidence
             if effective_match_score < UKF_HIGH_CONFIDENCE_OVERRIDE:
+                tests.passed_proximity_check = False
                 if _LOGGER.isEnabledFor(logging.DEBUG):
                     _LOGGER.debug(
                         "UKF distance sanity check FAILED for %s: Device is %.1fm from scanner "
@@ -1401,7 +1664,16 @@ class AreaSelectionHandler:
                         effective_match_score,
                         UKF_HIGH_CONFIDENCE_OVERRIDE,
                     )
+                tests.reason = (
+                    f"REJECT - proximity low-conf ({nearest_scanner_distance:.1f}m, score {effective_match_score:.2f})"
+                )
                 return False
+
+            # Passed proximity check with high confidence
+            tests.passed_proximity_check = True
+        else:
+            # No proximity conflict
+            tests.passed_proximity_check = True
 
         # CROSS-FLOOR STREAK PROTECTION:
         # Prevent rapid flickering between floors by requiring multiple consecutive
@@ -1439,6 +1711,16 @@ class AreaSelectionHandler:
             current_floor_id is not None and winner_floor_id is not None and current_floor_id != winner_floor_id
         )
 
+        # Populate profile info from best area
+        best_profile = device_profiles.get(best_area_id)
+        if best_profile is not None:
+            tests.profile_has_button = best_profile.has_button_training
+            tests.profile_sample_count = best_profile.sample_count
+            if best_profile.has_button_training:
+                tests.profile_source = "BUTTON_TRAINED"
+            elif tests.profile_sample_count and tests.profile_sample_count > 0:
+                tests.profile_source = "AUTO_LEARNED"
+
         # If same area as current, just refresh the selection
         # FIX: FEHLER 1 (continued) - Compare with device.area_id, not current_area_advert.area_id
         if current_device_area_id is not None and best_area_id == current_device_area_id:
@@ -1451,6 +1733,14 @@ class AreaSelectionHandler:
                 match_score=effective_match_score,
                 nowstamp=nowstamp,
             )
+
+            # Populate AreaTests for same-area refresh
+            tests.areas = (current_device_area_id, best_area_id)
+            tests.same_area = True
+            scannerless_indicator = " (scannerless)" if scanner_less_room else ""
+            tests.reason = f"WIN - same area refresh{scannerless_indicator} (score {effective_match_score:.2f})"
+            device.area_tests = tests
+            device.diag_area_switch = tests.sensortext()
             return True
 
         # If no current area, bootstrap immediately
@@ -1465,6 +1755,14 @@ class AreaSelectionHandler:
                 match_score=effective_match_score,
                 nowstamp=nowstamp,
             )
+
+            # Populate AreaTests for bootstrap
+            tests.areas = ("", best_area_id)
+            tests.same_area = False
+            scannerless_indicator = " (scannerless)" if scanner_less_room else ""
+            tests.reason = f"WIN - bootstrap{scannerless_indicator} (score {effective_match_score:.2f})"
+            device.area_tests = tests
+            device.diag_area_switch = tests.sensortext()
             return True
 
         # Determine streak target based on floor change
@@ -1509,12 +1807,35 @@ class AreaSelectionHandler:
                 match_score=effective_match_score,
                 nowstamp=nowstamp,
             )
+
+            # Populate AreaTests for streak-complete switch
+            tests.areas = (current_device_area_id or "", best_area_id)
+            tests.same_area = False
+            floor_indicator = " cross-floor" if is_cross_floor else ""
+            scannerless_indicator = " (scannerless)" if scanner_less_room else ""
+            tests.reason = (
+                f"WIN -{floor_indicator} switch{scannerless_indicator} "
+                f"(streak {device.pending_streak}/{streak_target}, score {effective_match_score:.2f})"
+            )
+            device.area_tests = tests
+            device.diag_area_switch = tests.sensortext()
         # Streak not reached - keep current area
         # NOTE: Use device.area_advert here (the actual advert object), not current_device_area_id.
         # apply_scanner_selection needs an advert object. The area_id determination above
         # correctly uses device.area_id, but the actual selection still needs the advert.
         elif device.area_advert is not None:
             device.apply_scanner_selection(device.area_advert, nowstamp=nowstamp)
+
+            # Populate AreaTests for streak-pending (keeping current)
+            tests.areas = (current_device_area_id or "", best_area_id)
+            tests.same_area = current_device_area_id == best_area_id
+            floor_indicator = " cross-floor" if is_cross_floor else ""
+            tests.reason = (
+                f"PENDING -{floor_indicator} streak {device.pending_streak}/{streak_target} "
+                f"(score {effective_match_score:.2f})"
+            )
+            device.area_tests = tests
+            device.diag_area_switch = tests.sensortext()
 
         return True
 

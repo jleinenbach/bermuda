@@ -439,6 +439,19 @@ class AreaProfile:
         return sum(1 for c in self._correlations.values() if c.is_mature)
 
     @property
+    def sample_count(self) -> int:
+        """
+        Return total sample count across all profiles and correlations.
+
+        Aggregates sample counts from both delta correlations and absolute
+        RSSI profiles. This gives an indication of how much training data
+        has been collected for this area.
+        """
+        total = sum(c.sample_count for c in self._correlations.values())
+        total += sum(p.sample_count for p in self._absolute_profiles.values())
+        return total
+
+    @property
     def has_button_training(self) -> bool:
         """
         Check if this area profile has any button-trained data.
