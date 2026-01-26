@@ -202,10 +202,40 @@ MATURE_ABSOLUTE_MIN_COUNT: Final = 2  # Minimum absolute correlations for maturi
 ABSOLUTE_Z_SCORE_MAX: Final = 2.0  # Max average z-score for absolute profile confidence
 
 # Auto-learning quality improvements
-# Minimum interval between auto-learning updates to reduce autocorrelation (rho: 0.95 to 0.82)
+# =============================================================================
+# These constants control the quality filters for automatic fingerprint learning.
+# See CLAUDE.md "Auto-Learning Quality System" for documentation.
+#
+# Implemented:
+# - AUTO_LEARNING_MIN_INTERVAL: Reduces autocorrelation (Feature 2)
+# - AUTO_LEARNING_VARIANCE_FLOOR: Prevents z-score explosion (Feature 4)
+#
+# Reserved for future features:
+# - AUTO_LEARNING_MIN_CONFIDENCE: Confidence filter threshold (Feature 3)
+# - AUTO_LEARNING_MAX_VELOCITY: Movement filter threshold (Feature 5)
+# - AUTO_LEARNING_MAX_RSSI_VARIANCE: Signal stability filter (Feature 5)
+# - AUTO_LEARNING_MIN_DWELL_TIME: Stability requirement (Feature 5)
+# =============================================================================
+
+# Feature 2: Minimum interval between auto-learning updates
+# Reduces autocorrelation from rho=0.95 to rho=0.82, improving effective sample size
 AUTO_LEARNING_MIN_INTERVAL: Final = 5.0  # seconds
-# Variance floor prevents unbounded convergence that causes z-score explosion
+
+# Feature 4: Variance floor prevents unbounded convergence
+# Without this, z-scores explode after thousands of samples (Hyper-Precision Paradox)
 AUTO_LEARNING_VARIANCE_FLOOR: Final = 4.0  # dB^2 (std_dev = 2 dB)
+
+# Feature 3: Minimum confidence for room assignment before learning (NOT YET IMPLEMENTED)
+# Only learn from high-confidence assignments to avoid polluting fingerprints with noise
+AUTO_LEARNING_MIN_CONFIDENCE: Final = 0.5  # 50% minimum confidence
+
+# Feature 5: Quality filters for sample rejection (NOT YET IMPLEMENTED)
+# Skip learning during rapid movement (RSSI changes too quickly)
+AUTO_LEARNING_MAX_VELOCITY: Final = 1.0  # m/s - walking speed threshold
+# Skip learning if recent RSSI variance is too high (unstable signal)
+AUTO_LEARNING_MAX_RSSI_VARIANCE: Final = 16.0  # dB^2 (std_dev = 4 dB)
+# Minimum time in room before learning (device must be settled)
+AUTO_LEARNING_MIN_DWELL_TIME: Final = 30.0  # seconds
 
 # Sentinel values for distance/RSSI
 DISTANCE_INFINITE_SENTINEL: Final = 999.0  # Sentinel value for unknown/infinite distance

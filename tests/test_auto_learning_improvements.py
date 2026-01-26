@@ -18,14 +18,15 @@ from __future__ import annotations
 
 import pytest
 
-# Import will work after implementation
-# For now, define expected constants that will be added
-AUTO_LEARNING_MIN_INTERVAL = 5.0  # Expected constant
-AUTO_LEARNING_VARIANCE_FLOOR = 4.0  # Expected constant
-AUTO_LEARNING_MIN_CONFIDENCE = 0.5  # Expected constant
-AUTO_LEARNING_MAX_VELOCITY = 1.0  # Expected constant (m/s)
-AUTO_LEARNING_MAX_RSSI_VARIANCE = 16.0  # Expected constant (dB²)
-AUTO_LEARNING_MIN_DWELL_TIME = 30.0  # Expected constant (seconds)
+# Import constants from the actual implementation
+from custom_components.bermuda.const import (
+    AUTO_LEARNING_MIN_CONFIDENCE,
+    AUTO_LEARNING_MIN_DWELL_TIME,
+    AUTO_LEARNING_MIN_INTERVAL,
+    AUTO_LEARNING_MAX_RSSI_VARIANCE,
+    AUTO_LEARNING_MAX_VELOCITY,
+    AUTO_LEARNING_VARIANCE_FLOOR,
+)
 
 
 # =============================================================================
@@ -318,7 +319,6 @@ class TestMinimumIntervalAreaProfile:
 class TestMinimumIntervalRoomProfile:
     """Feature 2: Minimum Interval for RoomProfile (device-independent)."""
 
-    @pytest.mark.xfail(reason="RoomProfile minimum interval not yet implemented")
     def test_update_rejected_if_too_soon(self) -> None:
         """RoomProfile updates should also respect minimum interval."""
         from custom_components.bermuda.correlation.room_profile import RoomProfile
@@ -327,13 +327,13 @@ class TestMinimumIntervalRoomProfile:
 
         # First update
         result1 = profile.update(
-            rssi_readings={"scanner_a": -50.0, "scanner_b": -60.0},
+            readings={"scanner_a": -50.0, "scanner_b": -60.0},
             nowstamp=1000.0,
         )
 
         # Second update too soon
         result2 = profile.update(
-            rssi_readings={"scanner_a": -50.0, "scanner_b": -60.0},
+            readings={"scanner_a": -50.0, "scanner_b": -60.0},
             nowstamp=1002.0,
         )
 

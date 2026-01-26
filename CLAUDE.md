@@ -391,6 +391,109 @@ Timestamp Propagation Hierarchy:
 - Training age diagnostics (days since first training)
 - Backward compatible: `None` for profiles created before this feature
 
+### Auto-Learning Quality System
+
+The auto-learning system uses multiple quality controls to ensure statistically reliable fingerprint data:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                    Auto-Learning Quality Pipeline                                │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  Raw RSSI Data                                                                   │
+│       │                                                                          │
+│       ▼                                                                          │
+│  ┌─────────────────────────────────────────────────────────────────────────┐    │
+│  │ Feature 2: Minimum Interval Check (5 seconds)              ✅ IMPLEMENTED │    │
+│  │   if nowstamp - last_update_stamp < AUTO_LEARNING_MIN_INTERVAL:         │    │
+│  │       return False  # Skip to reduce autocorrelation (ρ: 0.95 → 0.82)   │    │
+│  └─────────────────────────────────────────────────────────────────────────┘    │
+│       │ Pass                                                                     │
+│       ▼                                                                          │
+│  ┌─────────────────────────────────────────────────────────────────────────┐    │
+│  │ Feature 1: New Data Check                                  ❌ NOT YET    │    │
+│  │   if no scanner has newer advertisement stamp:                          │    │
+│  │       return False  # Avoid duplicates from cached RSSI                 │    │
+│  └─────────────────────────────────────────────────────────────────────────┘    │
+│       │ Pass                                                                     │
+│       ▼                                                                          │
+│  ┌─────────────────────────────────────────────────────────────────────────┐    │
+│  │ Feature 3: Confidence Filter                               ❌ NOT YET    │    │
+│  │   if room_assignment_confidence < AUTO_LEARNING_MIN_CONFIDENCE:         │    │
+│  │       return False  # Only learn from confident assignments             │    │
+│  └─────────────────────────────────────────────────────────────────────────┘    │
+│       │ Pass                                                                     │
+│       ▼                                                                          │
+│  ┌─────────────────────────────────────────────────────────────────────────┐    │
+│  │ Feature 5: Quality Filters                                 ❌ NOT YET    │    │
+│  │   - Velocity check: device moving too fast?                             │    │
+│  │   - RSSI variance check: signal too unstable?                           │    │
+│  │   - Dwell time check: device settled in room long enough?               │    │
+│  └─────────────────────────────────────────────────────────────────────────┘    │
+│       │ Pass                                                                     │
+│       ▼                                                                          │
+│  ┌─────────────────────────────────────────────────────────────────────────┐    │
+│  │ Kalman Filter Update with Variance Floor              ✅ IMPLEMENTED     │    │
+│  │   kalman.update(rssi)                                                    │    │
+│  │   kalman.variance = max(kalman.variance, AUTO_LEARNING_VARIANCE_FLOOR)  │    │
+│  └─────────────────────────────────────────────────────────────────────────┘    │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Feature Implementation Status:**
+
+| Feature | Status | Constant | Description |
+|---------|--------|----------|-------------|
+| 1. New Data Check | ❌ Planned | - | Prevents duplicate sampling from cached RSSI |
+| 2. Minimum Interval | ✅ Complete | `AUTO_LEARNING_MIN_INTERVAL = 5.0s` | Reduces autocorrelation |
+| 3. Confidence Filter | ❌ Planned | `AUTO_LEARNING_MIN_CONFIDENCE = 0.5` | Only learns from confident assignments |
+| 4. Variance Floor | ✅ Complete | `AUTO_LEARNING_VARIANCE_FLOOR = 4.0 dB²` | Prevents z-score explosion |
+| 5. Quality Filters | ❌ Planned | Multiple | Movement, stability, dwell time checks |
+
+**AutoLearningStats (Diagnostics):**
+
+The `AutoLearningStats` class in `correlation/__init__.py` provides runtime diagnostics:
+
+```python
+@dataclass
+class AutoLearningStats:
+    updates_performed: int = 0           # Successful updates
+    updates_skipped_interval: int = 0    # Skipped due to minimum interval
+    last_update_stamp: float = 0.0       # Timestamp of last update
+    _device_stats: dict[str, dict] = {}  # Per-device breakdown
+
+    def record_update(self, *, performed: bool, stamp: float, device_address: str | None) -> None:
+        """Record an update attempt for diagnostics."""
+
+    def get_efficiency_ratio(self) -> float:
+        """Return ratio of performed / total updates (0.0-1.0)."""
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize for diagnostics output."""
+```
+
+**Usage in area_selection.py:**
+```python
+# Stats recorded after each auto-learning attempt
+self._auto_learning_stats.record_update(
+    performed=area_update_performed,
+    stamp=nowstamp,
+    device_address=device.address,
+)
+```
+
+**Key Constants (const.py):**
+
+| Constant | Value | Purpose |
+|----------|-------|---------|
+| `AUTO_LEARNING_MIN_INTERVAL` | 5.0s | Minimum time between updates |
+| `AUTO_LEARNING_VARIANCE_FLOOR` | 4.0 dB² | Prevents variance collapse |
+| `AUTO_LEARNING_MIN_CONFIDENCE` | 0.5 | Confidence threshold (planned) |
+| `AUTO_LEARNING_MAX_VELOCITY` | 1.0 m/s | Movement threshold (planned) |
+| `AUTO_LEARNING_MAX_RSSI_VARIANCE` | 16.0 dB² | Signal stability threshold (planned) |
+| `AUTO_LEARNING_MIN_DWELL_TIME` | 30.0s | Settle time requirement (planned) |
+
 ### Calibration vs Fingerprints (Independence)
 
 **Important**: Scanner/device calibration settings do NOT affect fingerprint data.

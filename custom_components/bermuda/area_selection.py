@@ -536,14 +536,18 @@ class AreaSelectionHandler:
             nowstamp=nowstamp,
         )
 
-        # Update room-wide profile (with minimum interval check)
-        all_readings = dict(other_readings)
-        if primary_scanner_addr is not None:
-            all_readings[primary_scanner_addr] = primary_rssi
+        # Update room-wide profile (only if AreaProfile update was performed)
+        # BUG FIX: Both profiles should use consistent interval enforcement.
+        # If AreaProfile rejects due to minimum interval, RoomProfile should also skip.
+        # This ensures device-specific and device-independent profiles stay in sync.
+        if area_update_performed:
+            all_readings = dict(other_readings)
+            if primary_scanner_addr is not None:
+                all_readings[primary_scanner_addr] = primary_rssi
 
-        if area_id not in self.room_profiles:
-            self.room_profiles[area_id] = RoomProfile(area_id=area_id)
-        self.room_profiles[area_id].update(all_readings, nowstamp=nowstamp)
+            if area_id not in self.room_profiles:
+                self.room_profiles[area_id] = RoomProfile(area_id=area_id)
+            self.room_profiles[area_id].update(all_readings, nowstamp=nowstamp)
 
         # Record stats for diagnostic purposes
         # Use area_update_performed as the primary indicator (both have the same interval logic)
