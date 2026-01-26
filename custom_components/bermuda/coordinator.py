@@ -495,7 +495,11 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             if device_entry := self.dr.async_get(ev.data["device_id"]):
                 # Work out if it's a device that interests us and respond appropriately.
                 # First check identifiers for googlefindmy devices
-                for ident_type, ident_id in device_entry.identifiers:
+                # Handle variable-length identifiers (some integrations like HomeKit use 3+ elements)
+                for identifier in device_entry.identifiers:
+                    if len(identifier) < 2:
+                        continue
+                    ident_type, ident_id = identifier[0], identifier[1]
                     if ident_type == DOMAIN_GOOGLEFINDMY:
                         _LOGGER.debug("Trigger updating of FMDN Devices (googlefindmy)")
                         self._do_fmdn_device_init = True
@@ -509,7 +513,10 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                         except KeyError:
                             pass
 
-                for conn_type, _conn_id in device_entry.connections:
+                for connection in device_entry.connections:
+                    if len(connection) < 2:
+                        continue
+                    conn_type = connection[0]
                     if conn_type == "private_ble_device":
                         _LOGGER.debug("Trigger updating of Private BLE Devices")
                         self._do_private_device_init = True
