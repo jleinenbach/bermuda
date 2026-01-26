@@ -60,6 +60,19 @@ class FakeScanner:
         self.last_seen: float = 0
 
 
+class FakeKalman:
+    """Minimal Kalman filter stub for quality filter tests."""
+
+    def __init__(self, variance: float = 5.0, is_initialized: bool = True) -> None:
+        self.variance = variance
+        self._is_initialized = is_initialized
+
+    @property
+    def is_initialized(self) -> bool:
+        """Return initialization state."""
+        return self._is_initialized
+
+
 class FakeAdvert:
     """Fake advert for testing."""
 
@@ -80,6 +93,9 @@ class FakeAdvert:
         self.area_name = area_id
         self.rssi_distance: float | None = 2.0
         self.hist_distance_by_interval: list[float] = []
+        # Quality filter attributes
+        self.hist_velocity: list[float] = []
+        self.rssi_kalman = FakeKalman()
 
     def median_rssi(self) -> float | None:
         return self.rssi
@@ -124,6 +140,10 @@ class FakeDevice:
     def get_movement_state(self, stamp_now: float = 0.0) -> str:
         """Return movement state."""
         return "stationary"
+
+    def get_dwell_time(self, *, stamp_now: float | None = None) -> float:
+        """Return dwell time for tests (high value so quality filters pass)."""
+        return 300.0  # 5 minutes - well above threshold
 
     def reset_pending_state(self) -> None:
         """Reset pending area selection state."""

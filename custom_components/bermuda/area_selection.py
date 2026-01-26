@@ -22,6 +22,10 @@ from .const import (
     ABSOLUTE_Z_SCORE_MAX,
     AREA_MAX_AD_AGE_DEFAULT,
     AREA_MAX_AD_AGE_LIMIT,
+    AUTO_LEARNING_MAX_RSSI_VARIANCE,
+    AUTO_LEARNING_MAX_VELOCITY,
+    AUTO_LEARNING_MIN_CONFIDENCE,
+    AUTO_LEARNING_MIN_DWELL_TIME,
     CONF_MAX_RADIUS,
     CONF_USE_PHYSICAL_RSSI_PRIORITY,
     CONFIDENCE_WINNER_MARGIN,
@@ -498,12 +502,20 @@ class AreaSelectionHandler:
         primary_scanner_addr: str | None,
         other_readings: dict[str, float],
         nowstamp: float | None = None,
+        *,
+        confidence: float | None = None,
     ) -> None:
         """
         Update device correlations for area learning.
 
         Used by both UKF and min-distance selection paths to maintain
         consistent correlation data.
+
+        Quality Filters (Features 1, 3, 5):
+        - Feature 3: Skip if confidence < AUTO_LEARNING_MIN_CONFIDENCE
+        - Feature 5: Skip if velocity > AUTO_LEARNING_MAX_VELOCITY
+        - Feature 5: Skip if RSSI variance > AUTO_LEARNING_MAX_RSSI_VARIANCE
+        - Feature 5: Skip if dwell_time < AUTO_LEARNING_MIN_DWELL_TIME
 
         Args:
         ----
@@ -513,10 +525,103 @@ class AreaSelectionHandler:
             primary_scanner_addr: Address of the primary scanner.
             other_readings: RSSI readings from other visible scanners.
             nowstamp: Current timestamp for minimum interval enforcement.
+            confidence: Area assignment confidence (0.0-1.0). If None, filter is skipped.
 
         """
         if not other_readings:
             return
+
+        # =====================================================================
+        # Quality Filter: Feature 3 - Confidence Filter
+        # Only learn from high-confidence area assignments to avoid polluting
+        # fingerprints with noise from uncertain decisions.
+        # =====================================================================
+        if confidence is not None and confidence < AUTO_LEARNING_MIN_CONFIDENCE:
+            if _LOGGER.isEnabledFor(logging.DEBUG):
+                _LOGGER.debug(
+                    "Auto-learning skip for %s: low confidence %.2f < %.2f",
+                    device.name,
+                    confidence,
+                    AUTO_LEARNING_MIN_CONFIDENCE,
+                )
+            if nowstamp is not None:
+                self._auto_learning_stats.record_update(
+                    performed=False,
+                    stamp=nowstamp,
+                    device_address=device.address,
+                    skip_reason="low_confidence",
+                )
+            return
+
+        # =====================================================================
+        # Quality Filter: Feature 5 - Dwell Time Filter
+        # Skip learning when device has just entered the room (still settling).
+        # =====================================================================
+        if nowstamp is not None:
+            dwell_time = device.get_dwell_time(stamp_now=nowstamp)
+            if dwell_time < AUTO_LEARNING_MIN_DWELL_TIME:
+                if _LOGGER.isEnabledFor(logging.DEBUG):
+                    _LOGGER.debug(
+                        "Auto-learning skip for %s: dwell time %.1fs < %.1fs",
+                        device.name,
+                        dwell_time,
+                        AUTO_LEARNING_MIN_DWELL_TIME,
+                    )
+                self._auto_learning_stats.record_update(
+                    performed=False,
+                    stamp=nowstamp,
+                    device_address=device.address,
+                    skip_reason="low_dwell_time",
+                )
+                return
+
+        # =====================================================================
+        # Quality Filter: Feature 5 - Velocity Filter
+        # Skip learning when device is moving rapidly (RSSI unstable).
+        # =====================================================================
+        max_velocity = self._get_device_max_velocity(device)
+        if max_velocity > AUTO_LEARNING_MAX_VELOCITY:
+            if _LOGGER.isEnabledFor(logging.DEBUG):
+                _LOGGER.debug(
+                    "Auto-learning skip for %s: velocity %.2f m/s > %.2f m/s",
+                    device.name,
+                    max_velocity,
+                    AUTO_LEARNING_MAX_VELOCITY,
+                )
+            if nowstamp is not None:
+                self._auto_learning_stats.record_update(
+                    performed=False,
+                    stamp=nowstamp,
+                    device_address=device.address,
+                    skip_reason="high_velocity",
+                )
+            return
+
+        # =====================================================================
+        # Quality Filter: Feature 5 - RSSI Variance Filter
+        # Skip learning when RSSI is highly variable (interference, multipath).
+        # =====================================================================
+        avg_rssi_variance = self._get_device_rssi_variance(device)
+        if avg_rssi_variance > AUTO_LEARNING_MAX_RSSI_VARIANCE:
+            if _LOGGER.isEnabledFor(logging.DEBUG):
+                _LOGGER.debug(
+                    "Auto-learning skip for %s: RSSI variance %.1f dB² > %.1f dB²",
+                    device.name,
+                    avg_rssi_variance,
+                    AUTO_LEARNING_MAX_RSSI_VARIANCE,
+                )
+            if nowstamp is not None:
+                self._auto_learning_stats.record_update(
+                    performed=False,
+                    stamp=nowstamp,
+                    device_address=device.address,
+                    skip_reason="high_rssi_variance",
+                )
+            return
+
+        # =====================================================================
+        # All quality filters passed - proceed with learning
+        # =====================================================================
 
         # Ensure device has correlation entry
         if device.address not in self.correlations:
@@ -557,6 +662,55 @@ class AreaSelectionHandler:
                 stamp=nowstamp,
                 device_address=device.address,
             )
+
+    def _get_device_max_velocity(self, device: BermudaDevice) -> float:
+        """
+        Get the maximum recent velocity across all device adverts.
+
+        Used by Feature 5: Velocity Filter to skip learning during rapid movement.
+
+        Args:
+        ----
+            device: The device to check.
+
+        Returns:
+        -------
+            Maximum absolute velocity in m/s from recent advert history.
+            Returns 0.0 if no velocity data is available.
+
+        """
+        max_velocity = 0.0
+        for advert in device.adverts.values():
+            if advert.hist_velocity:
+                # Get most recent velocity (index 0 is newest)
+                recent_velocity = abs(advert.hist_velocity[0])
+                if recent_velocity > max_velocity:
+                    max_velocity = recent_velocity
+        return max_velocity
+
+    def _get_device_rssi_variance(self, device: BermudaDevice) -> float:
+        """
+        Get the average RSSI variance across all device adverts.
+
+        Used by Feature 5: RSSI Variance Filter to skip learning during unstable signals.
+
+        Args:
+        ----
+            device: The device to check.
+
+        Returns:
+        -------
+            Average RSSI variance in dB² from Kalman filters.
+            Returns 0.0 if no variance data is available.
+
+        """
+        total_variance = 0.0
+        count = 0
+        for advert in device.adverts.values():
+            if advert.rssi_kalman.is_initialized:
+                total_variance += advert.rssi_kalman.variance
+                count += 1
+        return total_variance / count if count > 0 else 0.0
 
     # =========================================================================
     # Virtual distance for scannerless rooms
@@ -830,6 +984,7 @@ class AreaSelectionHandler:
                     other_readings[other_adv.scanner_address] = other_adv.rssi
 
             # Use shared method to update both device and room profiles
+            # Pass UKF match_score as confidence for Feature 3 quality filter
             self._update_device_correlations(
                 device=device,
                 area_id=best_area_id,
@@ -837,6 +992,7 @@ class AreaSelectionHandler:
                 primary_scanner_addr=best_advert.scanner_address,
                 other_readings=other_readings,
                 nowstamp=nowstamp,
+                confidence=match_score,
             )
 
     def _refresh_area_by_ukf(self, device: BermudaDevice) -> bool:  # noqa: PLR0911, C901
