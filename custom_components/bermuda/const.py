@@ -206,15 +206,14 @@ ABSOLUTE_Z_SCORE_MAX: Final = 2.0  # Max average z-score for absolute profile co
 # These constants control the quality filters for automatic fingerprint learning.
 # See CLAUDE.md "Auto-Learning Quality System" for documentation.
 #
-# Implemented:
-# - AUTO_LEARNING_MIN_INTERVAL: Reduces autocorrelation (Feature 2)
-# - AUTO_LEARNING_VARIANCE_FLOOR: Prevents z-score explosion (Feature 4)
+# All features are implemented at the COORDINATOR level in:
+#   AreaSelectionHandler._update_device_correlations() (area_selection.py)
 #
-# Reserved for future features:
-# - AUTO_LEARNING_MIN_CONFIDENCE: Confidence filter threshold (Feature 3)
-# - AUTO_LEARNING_MAX_VELOCITY: Movement filter threshold (Feature 5)
-# - AUTO_LEARNING_MAX_RSSI_VARIANCE: Signal stability filter (Feature 5)
-# - AUTO_LEARNING_MIN_DWELL_TIME: Stability requirement (Feature 5)
+# Feature 1: New Data Check - timestamp tracking (inline logic)
+# Feature 2: AUTO_LEARNING_MIN_INTERVAL - reduces autocorrelation
+# Feature 3: AUTO_LEARNING_MIN_CONFIDENCE - confidence filter threshold
+# Feature 4: AUTO_LEARNING_VARIANCE_FLOOR - prevents z-score explosion
+# Feature 5: Quality filters (velocity, RSSI variance, dwell time)
 # =============================================================================
 
 # Feature 2: Minimum interval between auto-learning updates
@@ -225,11 +224,13 @@ AUTO_LEARNING_MIN_INTERVAL: Final = 5.0  # seconds
 # Without this, z-scores explode after thousands of samples (Hyper-Precision Paradox)
 AUTO_LEARNING_VARIANCE_FLOOR: Final = 4.0  # dB^2 (std_dev = 2 dB)
 
-# Feature 3: Minimum confidence for room assignment before learning (NOT YET IMPLEMENTED)
+# Feature 3: Minimum confidence for room assignment before learning
 # Only learn from high-confidence assignments to avoid polluting fingerprints with noise
+# Implemented in: AreaSelectionHandler._update_device_correlations()
 AUTO_LEARNING_MIN_CONFIDENCE: Final = 0.5  # 50% minimum confidence
 
-# Feature 5: Quality filters for sample rejection (NOT YET IMPLEMENTED)
+# Feature 5: Quality filters for sample rejection
+# Implemented in: AreaSelectionHandler._update_device_correlations()
 # Skip learning during rapid movement (RSSI changes too quickly)
 AUTO_LEARNING_MAX_VELOCITY: Final = 1.0  # m/s - walking speed threshold
 # Skip learning if recent RSSI variance is too high (unstable signal)
