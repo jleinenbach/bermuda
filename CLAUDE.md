@@ -6733,3 +6733,43 @@ def get_key(device_id, resource_uuid):
 - `device_id` / `account_entry_id` - The HA or local system's ID for THIS account's view of the resource (unique)
 
 Always prefer the account-scoped ID for internal keying to prevent collisions when resources are shared.
+
+### 62. Time-Aware Filtering Requires Timestamp at Every Call Site
+
+When using time-aware Kalman filters (where process noise scales with dt), the timestamp MUST be passed at EVERY call site. A single missing timestamp breaks the entire time-awareness, causing stale measurements to be treated as fresh.
+
+**Bug Pattern:**
+```python
+# BAD - Kalman filter supports timestamps, but call site doesn't pass them!
+def process_measurement(rssi, stamp):
+    # stamp is available but NOT passed to the filter!
+    filtered = self.rssi_kalman.update_adaptive(rssi, ref_power)
+    # Result: Stale scanners (10s old) treated same as fresh (0.1s old)
+    # Effect: Distant stale scanner "wins" over close fresh scanner!
+```
+
+**Fix Pattern:**
+```python
+# GOOD - Always pass timestamp for time-aware filtering
+def process_measurement(rssi, stamp):
+    filtered = self.rssi_kalman.update_adaptive(rssi, ref_power, timestamp=stamp)
+    # Result: Stale scanners have higher uncertainty (P + Q×dt)
+    # Effect: Fresh close scanner correctly "wins" over stale distant scanner
+```
+
+**Why This Matters for Min-Distance:**
+```
+Scanner A: 2m away, last seen 0.5s ago → Low uncertainty → High trust
+Scanner B: 5m away, last seen 10s ago  → High uncertainty → Low trust
+
+Without timestamp: Both have SAME uncertainty → B might "win" due to noise!
+With timestamp:    A has LOWER uncertainty → A correctly wins
+```
+
+**Checklist when using time-aware filters:**
+1. Verify the filter method accepts a timestamp parameter
+2. Find ALL call sites of that method
+3. Ensure timestamp is passed at EVERY call site
+4. Test with scenarios where stale/fresh measurements compete
+
+**Rule of Thumb**: A time-aware filter without timestamps at every call site is worse than useless—it gives a false sense of correctness while silently ignoring staleness.
