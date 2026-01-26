@@ -1416,6 +1416,98 @@ pair.kalman_ab.update(rssi_raw, timestamp=monotonic_time_coarse())
 2. Longer gaps indicate more uncertainty (device moved, scanner offline)
 3. Cross-correlation between time-spaced measurements matters
 
+### UKF Decision Margin (Room Flickering Prevention)
+
+When the top-2 fingerprint match candidates have similar scores, small RSSI fluctuations
+can cause the device to constantly switch between rooms ("flickering"). The Decision
+Margin feature prevents this by detecting uncertain decisions and applying hysteresis.
+
+**Formula:**
+```python
+margin = (best_score - second_score) / best_score
+```
+
+**Decision Logic:**
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                    UKF Decision Margin Flow                                      │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  UKF match_fingerprints() returns:                                              │
+│    [(Kitchen, 0.75), (Living Room, 0.72), (Bedroom, 0.15)]                      │
+│                                                                                  │
+│                              │                                                   │
+│                              ▼                                                   │
+│               ┌──────────────────────────────┐                                  │
+│               │  Calculate Margin            │                                  │
+│               │  margin = (0.75 - 0.72)      │                                  │
+│               │           ─────────────      │                                  │
+│               │              0.75            │                                  │
+│               │        = 0.04 (4%)           │                                  │
+│               └──────────────┬───────────────┘                                  │
+│                              │                                                   │
+│                              ▼                                                   │
+│               ┌──────────────────────────────┐                                  │
+│               │  margin ≥ 15%?               │                                  │
+│               └──────────────┬───────────────┘                                  │
+│                      │               │                                          │
+│                 YES  │               │  NO (uncertain)                          │
+│                      ▼               ▼                                          │
+│         ┌─────────────────┐  ┌─────────────────────────────────┐               │
+│         │ CONFIDENT       │  │ UNCERTAIN Decision              │               │
+│         │ Normal          │  │                                 │               │
+│         │ Threshold:      │  │ Is current room in top-2?       │               │
+│         │ 0.30            │  └─────────────┬───────────────────┘               │
+│         └────────┬────────┘          │             │                           │
+│                  │              YES  │             │  NO                       │
+│                  │                   ▼             ▼                           │
+│                  │         ┌─────────────┐  ┌─────────────────┐                │
+│                  │         │ KEEP        │  │ Raised          │                │
+│                  │         │ (Hysteresis)│  │ Threshold: 0.50 │                │
+│                  │         └─────────────┘  └────────┬────────┘                │
+│                  │                                   │                         │
+│                  └───────────────┬───────────────────┘                         │
+│                                  │                                             │
+│                                  ▼                                             │
+│                   ┌──────────────────────────────┐                             │
+│                   │  Score ≥ Threshold?          │                             │
+│                   └──────────────┬───────────────┘                             │
+│                          │               │                                     │
+│                     YES  │               │  NO                                 │
+│                          ▼               ▼                                     │
+│                   ┌─────────────┐  ┌─────────────┐                             │
+│                   │ UKF Winner  │  │ Fallback:   │                             │
+│                   │ Applied     │  │ Min-Distance│                             │
+│                   └─────────────┘  └─────────────┘                             │
+│                                                                                 │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Constants:**
+| Constant | Value | Purpose |
+|----------|-------|---------|
+| `UKF_MIN_DECISION_MARGIN` | 0.15 | Minimum margin for confident decision (15%) |
+| `UKF_UNCERTAIN_THRESHOLD` | 0.50 | Raised threshold when uncertain and current not in top-2 |
+
+**Example Scenarios:**
+
+| Scenario | Margin | Current in Top-2? | Result |
+|----------|--------|-------------------|--------|
+| Kitchen 0.75, Living 0.50 | 33% | - | CONFIDENT → Normal threshold (0.30) |
+| Kitchen 0.75, Living 0.72 | 4% | Yes (Living) | UNCERTAIN → KEEP Living |
+| Kitchen 0.75, Living 0.72 | 4% | No (Bedroom) | UNCERTAIN → Raised threshold (0.50) |
+
+**Benefits:**
+- Prevents room flickering when top candidates are similar
+- Preserves quick switching when the decision is clear (margin > 15%)
+- Falls back gracefully when uncertain AND current room isn't competitive
+
+**Diagnostics:**
+The margin is exposed via `AreaTests`:
+- `ukf_margin`: The calculated margin (0.0-1.0)
+- `ukf_margin_confident`: True if margin >= 15%
+- `sensortext()`: Shows "Δ33%" (confident) or "Δ4%⚠" (uncertain)
+
 ### UKF Performance Optimization (20+ Scanners)
 
 For installations with NumPy available, the UKF uses optional NumPy acceleration:

@@ -157,6 +157,13 @@ UKF_LOW_CONFIDENCE_THRESHOLD: Final = 0.6  # Only apply sanity check when score 
 VIRTUAL_DISTANCE_SCALE: Final = 0.7  # Scaling factor (0.7 = 30% shorter than pure quadratic)
 VIRTUAL_DISTANCE_MIN_SCORE: Final = 0.05  # Minimum score to consider (below = no virtual distance)
 
+# UKF Decision Margin: Stabilizes decisions when top candidates have similar scores
+# margin = (best_score - second_score) / best_score
+# If margin < UKF_MIN_DECISION_MARGIN, the decision is considered "uncertain"
+# Uncertain decisions: keep current room if it's in top-2, or use higher threshold
+UKF_MIN_DECISION_MARGIN: Final = 0.15  # 15% - minimum margin for confident decision
+UKF_UNCERTAIN_THRESHOLD: Final = 0.50  # Raised threshold when decision is uncertain
+
 # Cross-floor hysteresis protection constants
 # These control how strict the protection is against false cross-floor switches
 CROSS_FLOOR_MARGIN_BASE: Final = 0.25  # Base percentage margin for cross-floor switching

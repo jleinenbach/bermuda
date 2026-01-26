@@ -86,6 +86,7 @@ from .const import (
     STREAK_LOW_CONFIDENCE_THRESHOLD,
     UKF_HIGH_CONFIDENCE_OVERRIDE,
     UKF_LOW_CONFIDENCE_THRESHOLD,
+    UKF_MIN_DECISION_MARGIN,
     UKF_MIN_MATCH_SCORE,
     UKF_MIN_RSSI_VARIANCE,
     UKF_MIN_SCANNERS,
@@ -94,6 +95,7 @@ from .const import (
     UKF_RSSI_SANITY_MARGIN,
     UKF_RSSI_SIGMA_MULTIPLIER,
     UKF_STICKINESS_BONUS,
+    UKF_UNCERTAIN_THRESHOLD,
     UKF_WEAK_SCANNER_MIN_DISTANCE,
     UPDATE_INTERVAL,
     VIRTUAL_DISTANCE_MIN_SCORE,
@@ -156,6 +158,12 @@ class AreaTests:
     ukf_stickiness_applied: bool = False  # True = stickiness bonus prevented switch
     ukf_threshold_used: float | None = None  # Actual threshold: 0.15 (retention) or 0.30 (switch)
 
+    # === UKF DECISION MARGIN (P1 improvement) ===
+    # margin = (best_score - second_score) / best_score
+    # If margin < 15%, the decision is considered "uncertain" → hysteresis applies
+    ukf_margin: float | None = None  # Relative margin between #1 and #2 (0.0-1.0)
+    ukf_margin_confident: bool | None = None  # True if margin >= 15% (confident decision)
+
     # === FINGERPRINT PROFILE (new) ===
     profile_source: str = "NONE"  # "BUTTON_TRAINED", "AUTO_LEARNED", "MIXED", "NONE"
     profile_sample_count: int | None = None  # Number of samples in the profile
@@ -217,7 +225,13 @@ class AreaTests:
         if self.decision_path == "UKF" and self.ukf_match_score is not None:
             mode = "R" if self.ukf_retention_mode else "S"
             sticky = "+" if self.ukf_stickiness_applied else ""
-            parts.append(f"UKF:{self.ukf_match_score:.2f}{sticky}({mode})")
+            # P1: Add margin info with uncertainty indicator
+            margin_str = ""
+            if self.ukf_margin is not None:
+                margin_pct = int(self.ukf_margin * 100)
+                uncertain = "" if self.ukf_margin_confident else "⚠"
+                margin_str = f" Δ{margin_pct}%{uncertain}"
+            parts.append(f"UKF:{self.ukf_match_score:.2f}{sticky}({mode}){margin_str}")
 
         # 4. Distance info
         if self.is_scannerless_room and self.virtual_distance is not None:
@@ -271,6 +285,10 @@ class AreaTests:
             attrs["ukf_threshold"] = self.ukf_threshold_used
             attrs["ukf_retention_mode"] = self.ukf_retention_mode
             attrs["ukf_stickiness_applied"] = self.ukf_stickiness_applied
+            # P1 Margin diagnostics
+            if self.ukf_margin is not None:
+                attrs["ukf_margin"] = round(self.ukf_margin, 3)
+                attrs["ukf_margin_confident"] = self.ukf_margin_confident
 
         # Fingerprint profile
         if self.profile_source != "NONE":
@@ -932,6 +950,49 @@ class AreaSelectionHandler:
         return total_variance / count if count > 0 else 0.0
 
     # =========================================================================
+    # UKF Decision Margin (P1 Improvement)
+    # =========================================================================
+
+    def _calculate_decision_margin(
+        self,
+        scores: list[tuple[str, float]],
+    ) -> tuple[float, bool]:
+        """
+        Calculate relative margin between top-2 candidates.
+
+        The margin indicates how much better the best candidate is compared to
+        the second-best. A small margin (< 15%) indicates an uncertain decision
+        where the system should prefer stability over switching.
+
+        Formula: margin = (best_score - second_score) / best_score
+
+        Args:
+        ----
+            scores: List of (area_id, score) tuples, sorted by score descending.
+
+        Returns:
+        -------
+            (margin, is_confident) tuple where:
+            - margin: Float 0.0-1.0, relative difference between #1 and #2
+            - is_confident: True if margin >= UKF_MIN_DECISION_MARGIN (15%)
+
+        """
+        if len(scores) < 2:
+            # Only one candidate: full confidence (no alternative)
+            return (1.0, True)
+
+        best_score = scores[0][1]
+        second_score = scores[1][1]
+
+        if best_score <= 0:
+            return (0.0, False)
+
+        margin = (best_score - second_score) / best_score
+        is_confident = margin >= UKF_MIN_DECISION_MARGIN
+
+        return (margin, is_confident)
+
+    # =========================================================================
     # Virtual distance for scannerless rooms
     # =========================================================================
 
@@ -1362,6 +1423,41 @@ class AreaSelectionHandler:
             {"area": area_id, "score": round(score, 3), "type": "UKF"} for area_id, _, score in matches[:5]
         ]
 
+        # =========================================================================
+        # P1: Decision Margin Calculation
+        # margin = (best_score - second_score) / best_score
+        # If margin < 15%, the decision is "uncertain" → apply hysteresis
+        # =========================================================================
+        scores_for_margin = [(area_id, score) for area_id, _, score in matches]
+        margin, is_margin_confident = self._calculate_decision_margin(scores_for_margin)
+
+        # Store margin in diagnostics
+        tests.ukf_margin = margin
+        tests.ukf_margin_confident = is_margin_confident
+
+        # P1: Uncertain decision handling
+        # If margin is low and current area is one of the top-2 candidates, KEEP current area
+        if not is_margin_confident and current_area_id is not None and len(matches) >= 2:
+            top_2_areas = {matches[0][0], matches[1][0]}
+            if current_area_id in top_2_areas:
+                # Current area is in top-2 with uncertain margin → KEEP (hysteresis)
+                if _LOGGER.isEnabledFor(logging.DEBUG):
+                    _LOGGER.debug(
+                        "UKF margin hysteresis for %s: margin=%.1f%% < 15%%, current area %s in top-2 → keeping",
+                        device.name,
+                        margin * 100,
+                        current_area_id,
+                    )
+                if device.area_advert is not None:
+                    device.apply_scanner_selection(device.area_advert, nowstamp=nowstamp)
+
+                tests.areas = (current_area_id, current_area_id)
+                tests.same_area = True
+                tests.reason = f"WIN - margin hysteresis ({margin * 100:.0f}% < 15%, in top-2)"
+                device.area_tests = tests
+                device.diag_area_switch = tests.sensortext()
+                return True
+
         # FIX: Sticky Virtual Rooms - Apply stickiness bonus for current area
         # When the device is already in an area (especially a scannerless one),
         # give that area a bonus to prevent marginal flickering.
@@ -1405,13 +1501,22 @@ class AreaSelectionHandler:
                         )
 
         # Check if match score meets minimum threshold (after stickiness adjustment)
-        # FIX: FEHLER 3 - Use LOWER threshold for RETENTION (keeping current area)
-        # When best_area_id == current_area_id (device would stay in same room), use a much
-        # lower threshold (UKF_RETENTION_THRESHOLD) to prevent fallback to min-distance.
-        # This keeps scannerless rooms "sticky" even with noisy/weak signals.
-        # For SWITCHING to a NEW area, use the normal UKF_MIN_MATCH_SCORE threshold.
+        # Threshold selection logic:
+        # 1. RETENTION (keeping current area): Use lower threshold (0.15)
+        # 2. UNCERTAIN (margin < 15%, current NOT in top-2): Use higher threshold (0.50)
+        # 3. CONFIDENT: Use normal threshold (0.30)
         is_retention = best_area_id == current_area_id and current_area_id is not None
-        effective_threshold = UKF_RETENTION_THRESHOLD if is_retention else UKF_MIN_MATCH_SCORE
+
+        if is_retention:
+            # FIX: FEHLER 3 - Lower threshold for retention
+            effective_threshold = UKF_RETENTION_THRESHOLD
+        elif not is_margin_confident:
+            # P1: Uncertain decision (margin < 15%), current area NOT in top-2
+            # Require higher confidence to switch to a new area
+            effective_threshold = UKF_UNCERTAIN_THRESHOLD
+        else:
+            # Confident decision: use normal threshold
+            effective_threshold = UKF_MIN_MATCH_SCORE
 
         # Populate UKF diagnostic fields
         tests.ukf_match_score = match_score
