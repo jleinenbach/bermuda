@@ -346,7 +346,6 @@ class TestMinimumIntervalRoomProfile:
 # =============================================================================
 
 
-@pytest.mark.xfail(reason="Feature 1: New Data Check not yet implemented")
 class TestNewDataCheckAreaProfile:
     """
     Feature 1: New Data Check for AreaProfile.
@@ -400,8 +399,7 @@ class TestNewDataCheckAreaProfile:
         )
 
         assert result is True, (
-            "Update with at least one new advertisement should proceed. "
-            "Partial updates still provide new information."
+            "Update with at least one new advertisement should proceed. Partial updates still provide new information."
         )
 
     def test_first_update_always_succeeds(self) -> None:
@@ -471,8 +469,7 @@ class TestConfidenceFilterAreaProfile:
         )
 
         assert result is True, (
-            "Update with high confidence should proceed. "
-            "We want to learn from reliable room assignments."
+            "Update with high confidence should proceed. We want to learn from reliable room assignments."
         )
 
     def test_confidence_at_threshold_accepted(self) -> None:
@@ -505,9 +502,7 @@ class TestConfidenceFilterAreaProfile:
         )
 
         # Should succeed for backward compatibility
-        assert result is True, (
-            "Update without confidence should work for backward compatibility."
-        )
+        assert result is True, "Update without confidence should work for backward compatibility."
 
 
 # =============================================================================
@@ -678,10 +673,7 @@ class TestQualityFilterCombined:
             dwell_time=60.0,  # Good
         )
 
-        assert result is False, (
-            "Update should be rejected if ANY quality check fails. "
-            "All filters are AND conditions."
-        )
+        assert result is False, "Update should be rejected if ANY quality check fails. All filters are AND conditions."
 
     def test_all_quality_checks_pass(self) -> None:
         """Update accepted when all quality checks pass."""

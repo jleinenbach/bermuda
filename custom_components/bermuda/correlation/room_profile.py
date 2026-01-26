@@ -66,7 +66,13 @@ class RoomProfile:
     # Timestamp of last auto-learning update (for minimum interval enforcement)
     _last_update_stamp: float = field(default=0.0, repr=False)
 
-    def update(self, readings: dict[str, float], nowstamp: float | None = None) -> bool:
+    def update(
+        self,
+        readings: dict[str, float],
+        nowstamp: float | None = None,
+        last_stamps: dict[str, float] | None = None,
+        current_stamps: dict[str, float] | None = None,
+    ) -> bool:
         """
         Update room profile with RSSI readings from automatic learning.
 
@@ -79,12 +85,26 @@ class RoomProfile:
             readings: Map of scanner_address to RSSI value.
             nowstamp: Current timestamp for minimum interval enforcement.
                       If None, update always proceeds (backward compatibility).
+            last_stamps: Previous advertisement timestamps per scanner (Feature 1).
+                         If None, update always proceeds (first update).
+            current_stamps: Current advertisement timestamps per scanner (Feature 1).
+                            Used with last_stamps to detect new data.
 
         Returns:
         -------
-            True if update was performed, False if skipped due to minimum interval.
+            True if update was performed, False if skipped due to minimum interval
+            or no new advertisement data.
 
         """
+        # Feature 1: New Data Check
+        # Skip updates that re-read the same cached RSSI values (no new advertisements)
+        if last_stamps is not None and current_stamps is not None:
+            has_new_data = any(
+                current_stamps.get(scanner, 0.0) > last_stamps.get(scanner, 0.0) for scanner in current_stamps
+            )
+            if not has_new_data:
+                return False
+
         # Minimum Interval Check: Skip updates that are too frequent
         # This reduces autocorrelation from rho=0.95 to rho=0.82, improving ESS
         if nowstamp is not None:

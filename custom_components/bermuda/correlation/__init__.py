@@ -116,19 +116,18 @@ class AutoLearningStats:
         if performed:
             self.updates_performed += 1
             self.last_update_stamp = stamp
+        # Track skip reason for detailed diagnostics
+        elif skip_reason == "low_confidence":
+            self.updates_skipped_confidence += 1
+        elif skip_reason == "low_dwell_time":
+            self.updates_skipped_dwell_time += 1
+        elif skip_reason == "high_velocity":
+            self.updates_skipped_velocity += 1
+        elif skip_reason == "high_rssi_variance":
+            self.updates_skipped_rssi_variance += 1
         else:
-            # Track skip reason for detailed diagnostics
-            if skip_reason == "low_confidence":
-                self.updates_skipped_confidence += 1
-            elif skip_reason == "low_dwell_time":
-                self.updates_skipped_dwell_time += 1
-            elif skip_reason == "high_velocity":
-                self.updates_skipped_velocity += 1
-            elif skip_reason == "high_rssi_variance":
-                self.updates_skipped_rssi_variance += 1
-            else:
-                # Default: interval or unspecified
-                self.updates_skipped_interval += 1
+            # Default: interval or unspecified
+            self.updates_skipped_interval += 1
 
         # Per-device tracking
         if device_address is not None:

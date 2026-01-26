@@ -684,8 +684,7 @@ class AreaSelectionHandler:
             if advert.hist_velocity:
                 # Get most recent velocity (index 0 is newest)
                 recent_velocity = abs(advert.hist_velocity[0])
-                if recent_velocity > max_velocity:
-                    max_velocity = recent_velocity
+                max_velocity = max(max_velocity, recent_velocity)
         return max_velocity
 
     def _get_device_rssi_variance(self, device: BermudaDevice) -> float:
