@@ -21,10 +21,7 @@ import pytest
 # Import constants from the actual implementation
 from custom_components.bermuda.const import (
     AUTO_LEARNING_MIN_CONFIDENCE,
-    AUTO_LEARNING_MIN_DWELL_TIME,
     AUTO_LEARNING_MIN_INTERVAL,
-    AUTO_LEARNING_MAX_RSSI_VARIANCE,
-    AUTO_LEARNING_MAX_VELOCITY,
     AUTO_LEARNING_VARIANCE_FLOOR,
 )
 
@@ -507,190 +504,22 @@ class TestConfidenceFilterAreaProfile:
 # =============================================================================
 # Feature 5: Quality Filter Tests
 # =============================================================================
-
-
-@pytest.mark.xfail(reason="Feature 5: Quality Filter - Velocity not yet implemented")
-class TestQualityFilterVelocity:
-    """
-    Feature 5: Quality Filter - Velocity Check.
-
-    Problem: Samples taken while the device is moving rapidly are unreliable
-    because the RSSI changes significantly during the measurement period.
-
-    Solution: Skip learning when calculated velocity exceeds threshold.
-    """
-
-    def test_update_rejected_if_high_velocity(self) -> None:
-        """Updates during rapid movement should be skipped."""
-        from custom_components.bermuda.correlation.area_profile import AreaProfile
-
-        profile = AreaProfile(area_id="area.living_room")
-
-        result = profile.update(
-            primary_rssi=-50.0,
-            other_readings={"scanner_a": -60.0},
-            nowstamp=1000.0,
-            velocity=2.5,  # Above threshold (1.0 m/s)
-        )
-
-        assert result is False, (
-            f"Update with velocity=2.5 m/s should be rejected "
-            f"(threshold={AUTO_LEARNING_MAX_VELOCITY} m/s). "
-            f"Learning during movement captures transient, unreliable data."
-        )
-
-    def test_update_accepted_if_stationary(self) -> None:
-        """Updates when stationary should proceed."""
-        from custom_components.bermuda.correlation.area_profile import AreaProfile
-
-        profile = AreaProfile(area_id="area.living_room")
-
-        result = profile.update(
-            primary_rssi=-50.0,
-            other_readings={"scanner_a": -60.0},
-            nowstamp=1000.0,
-            velocity=0.2,  # Below threshold
-        )
-
-        assert result is True, "Update when stationary should proceed"
-
-
-@pytest.mark.xfail(reason="Feature 5: Quality Filter - RSSI Variance not yet implemented")
-class TestQualityFilterRssiVariance:
-    """
-    Feature 5: Quality Filter - RSSI Variance Check.
-
-    Problem: When RSSI is highly variable (e.g., interference, multipath),
-    the samples are unreliable and shouldn't contribute to learning.
-
-    Solution: Skip learning when RSSI variance exceeds threshold.
-    """
-
-    def test_update_rejected_if_high_rssi_variance(self) -> None:
-        """Updates with unstable RSSI should be skipped."""
-        from custom_components.bermuda.correlation.area_profile import AreaProfile
-
-        profile = AreaProfile(area_id="area.living_room")
-
-        result = profile.update(
-            primary_rssi=-50.0,
-            other_readings={"scanner_a": -60.0},
-            nowstamp=1000.0,
-            rssi_variance=25.0,  # Above threshold (16.0 dB²)
-        )
-
-        assert result is False, (
-            f"Update with rssi_variance=25 dB² should be rejected "
-            f"(threshold={AUTO_LEARNING_MAX_RSSI_VARIANCE} dB²). "
-            f"Learning from unstable signal introduces noise into profiles."
-        )
-
-    def test_update_accepted_if_stable_rssi(self) -> None:
-        """Updates with stable RSSI should proceed."""
-        from custom_components.bermuda.correlation.area_profile import AreaProfile
-
-        profile = AreaProfile(area_id="area.living_room")
-
-        result = profile.update(
-            primary_rssi=-50.0,
-            other_readings={"scanner_a": -60.0},
-            nowstamp=1000.0,
-            rssi_variance=8.0,  # Below threshold
-        )
-
-        assert result is True, "Update with stable RSSI should proceed"
-
-
-@pytest.mark.xfail(reason="Feature 5: Quality Filter - Dwell Time not yet implemented")
-class TestQualityFilterDwellTime:
-    """
-    Feature 5: Quality Filter - Dwell Time Check.
-
-    Problem: Samples taken shortly after entering a room may not be
-    representative of the room's fingerprint (still settling in).
-
-    Solution: Only learn after device has been in room for minimum time.
-    """
-
-    def test_update_rejected_if_just_entered(self) -> None:
-        """Updates shortly after entering room should be skipped."""
-        from custom_components.bermuda.correlation.area_profile import AreaProfile
-
-        profile = AreaProfile(area_id="area.living_room")
-
-        result = profile.update(
-            primary_rssi=-50.0,
-            other_readings={"scanner_a": -60.0},
-            nowstamp=1000.0,
-            dwell_time=10.0,  # Below threshold (30s)
-        )
-
-        assert result is False, (
-            f"Update with dwell_time=10s should be rejected "
-            f"(threshold={AUTO_LEARNING_MIN_DWELL_TIME}s). "
-            f"Learning immediately after room entry captures transition data."
-        )
-
-    def test_update_accepted_if_settled_in_room(self) -> None:
-        """Updates after settling in room should proceed."""
-        from custom_components.bermuda.correlation.area_profile import AreaProfile
-
-        profile = AreaProfile(area_id="area.living_room")
-
-        result = profile.update(
-            primary_rssi=-50.0,
-            other_readings={"scanner_a": -60.0},
-            nowstamp=1000.0,
-            dwell_time=60.0,  # Above threshold
-        )
-
-        assert result is True, "Update after settling should proceed"
-
-
-@pytest.mark.xfail(reason="Feature 5: Quality Filter - Combined checks not yet implemented")
-class TestQualityFilterCombined:
-    """
-    Feature 5: Multiple quality filters combined.
-
-    All quality checks must pass for learning to proceed.
-    """
-
-    def test_all_quality_checks_must_pass(self) -> None:
-        """Update rejected if ANY quality check fails."""
-        from custom_components.bermuda.correlation.area_profile import AreaProfile
-
-        profile = AreaProfile(area_id="area.living_room")
-
-        # All parameters good except velocity
-        result = profile.update(
-            primary_rssi=-50.0,
-            other_readings={"scanner_a": -60.0},
-            nowstamp=1000.0,
-            confidence=0.8,  # Good
-            velocity=2.0,  # Bad
-            rssi_variance=5.0,  # Good
-            dwell_time=60.0,  # Good
-        )
-
-        assert result is False, "Update should be rejected if ANY quality check fails. All filters are AND conditions."
-
-    def test_all_quality_checks_pass(self) -> None:
-        """Update accepted when all quality checks pass."""
-        from custom_components.bermuda.correlation.area_profile import AreaProfile
-
-        profile = AreaProfile(area_id="area.living_room")
-
-        result = profile.update(
-            primary_rssi=-50.0,
-            other_readings={"scanner_a": -60.0},
-            nowstamp=1000.0,
-            confidence=0.8,
-            velocity=0.1,
-            rssi_variance=5.0,
-            dwell_time=60.0,
-        )
-
-        assert result is True, "Update should succeed when all quality checks pass"
+#
+# NOTE: Feature 5 (Quality Filters) is implemented at the COORDINATOR level,
+# not the profile level. The quality checks (velocity, RSSI variance, dwell time)
+# are performed in AreaSelectionHandler._update_device_correlations() before
+# calling AreaProfile.update().
+#
+# Integration tests for Feature 5 are located in:
+#   tests/test_area_selection_auto_learning.py
+#
+# The tests there verify:
+#   - High velocity (>1.0 m/s) blocks updates
+#   - High RSSI variance (>16.0 dB²) blocks updates
+#   - Low dwell time (<30s) blocks updates
+#   - All quality filters combined
+#
+# =============================================================================
 
 
 # =============================================================================
