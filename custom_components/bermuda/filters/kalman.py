@@ -199,12 +199,19 @@ class KalmanFilter(SignalFilter):
             - PMC5461075: "An Improved BLE Indoor Localization with Kalman-Based Fusion"
 
         """
-        # Validate ref_power (BLE TX power range: -100 to +20 dBm)
-        # ESP32 scanners can transmit at positive power levels (up to +9 dBm or higher)
-        # Invalid values can cause incorrect noise scaling
-        if not (-100 <= ref_power <= 20):
+        # Validate ref_power (calibrated RSSI at 1m, NOT TX power!)
+        # Valid range: -100 to 0 dBm (always negative for RSSI measurements)
+        # Note: BLE TX power (transmit strength) can be positive (+3 dBm for ESP32),
+        # but ref_power represents the received signal strength at 1 meter, which is
+        # always negative. If you see positive values here, the device is likely
+        # reporting TX power instead of calibrated RSSI - check beacon_power or
+        # device configuration.
+        # Invalid values cause incorrect adaptive noise scaling.
+        if not (-100 <= ref_power <= 0):
             _LOGGER.warning(
-                "Invalid ref_power %.1f dBm (expected -100 to +20), using default -55",
+                "Invalid ref_power %.1f dBm (expected -100 to 0). "
+                "ref_power should be calibrated RSSI at 1m (always negative), not TX power. "
+                "Check device's beacon_power or ref_power configuration. Using default -55",
                 ref_power,
             )
             ref_power = -55.0  # Safe default for most BLE devices

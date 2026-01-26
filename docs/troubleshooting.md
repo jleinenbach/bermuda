@@ -27,35 +27,43 @@ This document covers common issues, warnings, and their solutions when using the
 
 **Symptom:**
 ```
-WARNING [custom_components.bermuda.filters.kalman] Invalid ref_power X.X dBm (expected -100 to +20), using default -55
+WARNING [custom_components.bermuda.filters.kalman] Invalid ref_power X.X dBm (expected -100 to 0)
+WARNING [custom_components.bermuda.bermuda_advert] Device XXX has invalid ref_power X.X dBm (from YYY)
 ```
 
+**Understanding ref_power vs TX Power:**
+
+These are two **different** values that are often confused:
+
+| Term | Description | Typical Range | Example |
+|------|-------------|---------------|---------|
+| **ref_power** | Calibrated RSSI at 1 meter distance | -40 to -70 dBm | -55 dBm |
+| **TX Power** | Transmit power (how loud the device broadcasts) | -20 to +20 dBm | +3 dBm |
+
+- **ref_power** is always **negative** because it's a received signal strength
+- **TX Power** can be **positive** for powerful transmitters (ESP32, Class 1 Bluetooth)
+
 **Cause:**
-The scanner is reporting a TX power (reference power) value outside the expected BLE range. This can happen with:
-- Misconfigured scanner firmware
-- Custom TX power settings
-- Hardware reporting errors
-
-**Valid TX Power Ranges:**
-
-| Device Type | Typical TX Power Range |
-|-------------|----------------------|
-| ESP32 (AtomS3, M5Stack, etc.) | -12 dBm to +9 dBm |
-| ESP32-S3/C3 variants | -12 dBm to +21 dBm |
-| Bluetooth Class 1 | up to +20 dBm |
-| Bluetooth Class 2 | up to +4 dBm |
-| Bluetooth Class 3 | up to 0 dBm |
-| Most BLE trackers | -20 dBm to -4 dBm |
-| iBeacons | -30 dBm to 0 dBm |
-
-**Note:** Positive TX power values (e.g., +3 dBm) are **completely valid** for ESP32-based scanners like AtomS3. These are high-power transmitters commonly used in ESPHome scanner setups.
+A positive `ref_power` value (e.g., +3 dBm) indicates that somewhere TX power is being incorrectly used as the calibrated RSSI-at-1m value. This can happen with:
+- iBeacon devices reporting incorrect `beacon_power` (measured power field)
+- Misconfigured device firmware
+- Custom integrations passing wrong values
 
 **Solution:**
-1. If the reported value is within the valid BLE range (-100 to +20 dBm), this warning indicates a bug that has been fixed in recent versions. Update Bermuda.
-2. If the value is truly invalid (e.g., +50 dBm or -150 dBm), check your scanner's firmware configuration.
+
+1. **Identify the device** - Check the log message for the device name
+2. **Check beacon_power** - If it's an iBeacon, verify the manufacturer data is correct
+3. **Manually calibrate** - Set a proper `ref_power` value in device settings:
+   - Place the device exactly 1 meter from a scanner
+   - Note the RSSI value shown
+   - Use that value (e.g., -55 dBm) as ref_power
 
 **Technical Background:**
-The `ref_power` (reference power / TX power) is used by the adaptive Kalman filter to adjust measurement noise based on signal strength. Invalid values can cause incorrect distance calculations.
+The `ref_power` is used by the adaptive Kalman filter to determine signal quality:
+- Signals close to ref_power = strong signal = low noise = high trust
+- Signals much weaker than ref_power = weak signal = high noise = low trust
+
+If ref_power is positive (+3 dBm) and actual RSSI is -60 dBm, the filter incorrectly thinks the signal is 63 dB below threshold, causing extreme noise inflation and frozen estimates.
 
 ---
 

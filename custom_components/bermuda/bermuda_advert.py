@@ -373,6 +373,16 @@ class BermudaAdvert(dict[str, Any]):
         # BUG FIX: Pass timestamp for time-aware process noise scaling.
         # Without this, stale scanners don't have increased uncertainty,
         # causing distant (stale) scanners to incorrectly "win" over close (fresh) ones.
+        # Log invalid ref_power with device context for debugging
+        if ref_power > 0:
+            _LOGGER.warning(
+                "Device %s has invalid ref_power %.1f dBm (from %s). "
+                "This is likely TX power being used as RSSI-at-1m. "
+                "Check beacon_power field or device configuration.",
+                self._device.name or self._device.address,
+                ref_power,
+                ref_power_source,
+            )
         if reading_is_new:
             self.rssi_filtered = self.rssi_kalman.update_adaptive(adjusted_rssi, ref_power, timestamp=timestamp)
         elif self.rssi_kalman.is_initialized:
