@@ -72,6 +72,11 @@ class KalmanFilter(SignalFilter):
     # Time-aware filtering: track last timestamp for dt calculation
     _last_timestamp: float | None = field(default=None, repr=False)
 
+    # Profile Age Tracking: when first and last samples were received
+    # Used for diagnostic purposes (stale profile detection, training age)
+    first_sample_stamp: float | None = field(default=None, repr=False)
+    last_sample_stamp: float | None = field(default=None, repr=False)
+
     def update(self, measurement: float, timestamp: float | None = None) -> float:
         """
         Process a new RSSI measurement using Kalman filter equations.
@@ -102,6 +107,12 @@ class KalmanFilter(SignalFilter):
 
         """
         self.sample_count += 1
+
+        # Profile Age Tracking: record first and last sample timestamps
+        if timestamp is not None:
+            if self.first_sample_stamp is None:
+                self.first_sample_stamp = timestamp
+            self.last_sample_stamp = timestamp
 
         # Calculate dt for time-aware process noise scaling
         dt = DEFAULT_UPDATE_DT
@@ -246,6 +257,8 @@ class KalmanFilter(SignalFilter):
         self.sample_count = 0
         self._initialized = False
         self._last_timestamp = None
+        self.first_sample_stamp = None
+        self.last_sample_stamp = None
 
     def reset_to_value(
         self,
@@ -353,6 +366,8 @@ class KalmanFilter(SignalFilter):
             if self._initialized
             else 0.0,
             "initialized": self._initialized,
+            "first_sample_stamp": self.first_sample_stamp,
+            "last_sample_stamp": self.last_sample_stamp,
         }
 
     @classmethod
@@ -389,6 +404,8 @@ class KalmanFilter(SignalFilter):
             "process_noise": self.process_noise,
             "measurement_noise": self.measurement_noise,
             "last_timestamp": self._last_timestamp,
+            "first_sample_stamp": self.first_sample_stamp,
+            "last_sample_stamp": self.last_sample_stamp,
         }
 
     @classmethod
@@ -420,4 +437,7 @@ class KalmanFilter(SignalFilter):
         )
         # Restore timestamp for time-aware filtering
         filter_instance._last_timestamp = data.get("last_timestamp")
+        # Restore profile age timestamps
+        filter_instance.first_sample_stamp = data.get("first_sample_stamp")
+        filter_instance.last_sample_stamp = data.get("last_sample_stamp")
         return filter_instance

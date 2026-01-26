@@ -32,6 +32,9 @@ async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: Bermuda
         "fmdn_manager": coordinator.service_handler.redact_data(
             coordinator.fmdn.manager.get_diagnostics_no_redactions()
         ),
+        "auto_learning": coordinator.service_handler.redact_data(
+            coordinator.area_selection.get_auto_learning_diagnostics()
+        ),
         "devices": await coordinator.service_dump_devices(call),
         "bt_manager": coordinator.service_handler.redact_data(bt_diags),
     }

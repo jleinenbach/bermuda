@@ -24,6 +24,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Self
 
+from custom_components.bermuda.const import AUTO_LEARNING_VARIANCE_FLOOR
 from custom_components.bermuda.filters.kalman import KalmanFilter
 
 # Kalman parameters tuned for RSSI delta tracking.
@@ -90,7 +91,7 @@ class ScannerPairCorrelation:
         repr=False,
     )
 
-    def update(self, observed_delta: float) -> float:
+    def update(self, observed_delta: float, timestamp: float | None = None) -> float:
         """
         Update correlation with new observed delta from automatic learning.
 
@@ -100,16 +101,24 @@ class ScannerPairCorrelation:
         Args:
         ----
             observed_delta: Current (primary_rssi - other_rssi) value.
+            timestamp: Optional timestamp for profile age tracking.
+                      When provided, enables first/last sample tracking.
 
         Returns:
         -------
             Updated fused estimate of the expected delta.
 
         """
-        self._kalman_auto.update(observed_delta)
+        self._kalman_auto.update(observed_delta, timestamp=timestamp)
+
+        # Variance Floor: Prevent unbounded convergence that causes z-score explosion.
+        # Without this, after thousands of samples variance approaches 0, making normal
+        # BLE fluctuations (3-5dB) appear as 10+ sigma deviations.
+        self._kalman_auto.variance = max(self._kalman_auto.variance, AUTO_LEARNING_VARIANCE_FLOOR)
+
         return self.expected_delta
 
-    def update_button(self, observed_delta: float) -> float:
+    def update_button(self, observed_delta: float, timestamp: float | None = None) -> float:
         """
         Update correlation with button-trained delta.
 
@@ -125,6 +134,8 @@ class ScannerPairCorrelation:
         Args:
         ----
             observed_delta: Current (primary_rssi - other_rssi) value.
+            timestamp: Optional timestamp for profile age tracking.
+                      When provided, enables first/last sample tracking.
 
         Returns:
         -------
@@ -133,7 +144,7 @@ class ScannerPairCorrelation:
         """
         # Use update() to ADD this sample to the button filter
         # This way all 10 training samples contribute to the average
-        self._kalman_button.update(observed_delta)
+        self._kalman_button.update(observed_delta, timestamp=timestamp)
         return self.expected_delta
 
     @property
@@ -244,6 +255,44 @@ class ScannerPairCorrelation:
         return self._kalman_button.is_initialized
 
     @property
+    def first_sample_stamp(self) -> float | None:
+        """
+        Return earliest timestamp from either filter.
+
+        Used for profile age tracking - when was this profile first created.
+        Returns None if no samples have timestamps.
+        """
+        auto_first = self._kalman_auto.first_sample_stamp
+        btn_first = self._kalman_button.first_sample_stamp
+
+        if auto_first is None and btn_first is None:
+            return None
+        if auto_first is None:
+            return btn_first
+        if btn_first is None:
+            return auto_first
+        return min(auto_first, btn_first)
+
+    @property
+    def last_sample_stamp(self) -> float | None:
+        """
+        Return latest timestamp from either filter.
+
+        Used for profile age tracking - when was this profile last updated.
+        Returns None if no samples have timestamps.
+        """
+        auto_last = self._kalman_auto.last_sample_stamp
+        btn_last = self._kalman_button.last_sample_stamp
+
+        if auto_last is None and btn_last is None:
+            return None
+        if auto_last is None:
+            return btn_last
+        if btn_last is None:
+            return auto_last
+        return max(auto_last, btn_last)
+
+    @property
     def is_mature(self) -> bool:
         """
         Check if correlation has enough data to be trusted.
@@ -331,10 +380,14 @@ class ScannerPairCorrelation:
             "auto_estimate": self._kalman_auto.estimate,
             "auto_variance": self._kalman_auto.variance,
             "auto_samples": self._kalman_auto.sample_count,
+            "auto_first_stamp": self._kalman_auto.first_sample_stamp,
+            "auto_last_stamp": self._kalman_auto.last_sample_stamp,
             # Button filter state
             "button_estimate": self._kalman_button.estimate,
             "button_variance": self._kalman_button.variance,
             "button_samples": self._kalman_button.sample_count,
+            "button_first_stamp": self._kalman_button.first_sample_stamp,
+            "button_last_stamp": self._kalman_button.last_sample_stamp,
             # Legacy fields for backward compatibility
             "estimate": self.expected_delta,
             "variance": self.variance,
@@ -392,11 +445,18 @@ class ScannerPairCorrelation:
                 variance=auto_var,
                 sample_count=auto_samples,
             )
+            # Restore profile age timestamps
+            corr._kalman_auto.first_sample_stamp = data.get("auto_first_stamp")
+            corr._kalman_auto.last_sample_stamp = data.get("auto_last_stamp")
+
             corr._kalman_button.restore_state(
                 estimate=float(data["button_estimate"]),
                 variance=btn_var,
                 sample_count=btn_samples,
             )
+            # Restore profile age timestamps
+            corr._kalman_button.first_sample_stamp = data.get("button_first_stamp")
+            corr._kalman_button.last_sample_stamp = data.get("button_last_stamp")
         else:
             # Old format: validate and migrate to auto filter only
             variance = float(data["variance"])

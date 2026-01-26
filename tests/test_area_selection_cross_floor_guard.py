@@ -63,6 +63,19 @@ class FakeScanner:
             self.address = f"AA:BB:CC:DD:{hash(self.name) % 256:02X}:{hash(self.name + 'x') % 256:02X}"
 
 
+class FakeKalman:
+    """Minimal Kalman filter stub for quality filter tests."""
+
+    def __init__(self, variance: float = 5.0, is_initialized: bool = True) -> None:
+        self.variance = variance
+        self._is_initialized = is_initialized
+
+    @property
+    def is_initialized(self) -> bool:
+        """Return initialization state."""
+        return self._is_initialized
+
+
 class FakeAdvert:
     """Minimal advert stub."""
 
@@ -87,6 +100,9 @@ class FakeAdvert:
         self.rssi = rssi
         self.stamp = stamp
         self.hist_distance_by_interval = hist
+        # Quality filter attributes
+        self.hist_velocity: list[float] = []  # Empty = no velocity data
+        self.rssi_kalman = FakeKalman()  # Default low variance for stable signal
 
     def median_rssi(self) -> int:
         """Return RSSI for physical RSSI priority feature."""
@@ -133,6 +149,13 @@ class FakeDevice:
     def get_movement_state(self, *, stamp_now: float | None = None) -> str:
         """Stub for movement state - returns stationary for tests (hardest to switch)."""
         return MOVEMENT_STATE_STATIONARY
+
+    def get_dwell_time(self, *, stamp_now: float | None = None) -> float:
+        """Stub for dwell time - returns high value for tests (fully settled)."""
+        # Return a high dwell time so quality filters pass by default
+        if stamp_now is None:
+            return 300.0  # 5 minutes - well above AUTO_LEARNING_MIN_DWELL_TIME
+        return stamp_now - self.area_changed_at if self.area_changed_at > 0 else 300.0
 
     def update_co_visibility(self, area_id: str, visible_scanners: set[str], all_scanners: set[str]) -> None:
         """Stub for co-visibility update - just track stats for testing."""

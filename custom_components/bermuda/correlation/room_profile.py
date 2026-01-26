@@ -24,6 +24,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Self
 
+from custom_components.bermuda.const import AUTO_LEARNING_MIN_INTERVAL
+
 from .scanner_pair import ScannerPairCorrelation
 
 # Memory limit: keep only the most useful scanner pairs.
@@ -61,19 +63,55 @@ class RoomProfile:
         default_factory=dict,
         repr=False,
     )
+    # Timestamp of last auto-learning update (for minimum interval enforcement)
+    _last_update_stamp: float = field(default=0.0, repr=False)
 
-    def update(self, readings: dict[str, float]) -> None:
+    def update(
+        self,
+        readings: dict[str, float],
+        nowstamp: float | None = None,
+        last_stamps: dict[str, float] | None = None,
+        current_stamps: dict[str, float] | None = None,
+    ) -> bool:
         """
         Update room profile with RSSI readings from automatic learning.
 
         Automatic samples are capped at AUTO_SAMPLE_CAP per scanner pair
         to prevent overwhelming button-trained data.
+        Minimum interval enforcement reduces autocorrelation (rho: 0.95 to 0.82).
 
         Args:
         ----
             readings: Map of scanner_address to RSSI value.
+            nowstamp: Current timestamp for minimum interval enforcement.
+                      If None, update always proceeds (backward compatibility).
+            last_stamps: Previous advertisement timestamps per scanner (Feature 1).
+                         If None, update always proceeds (first update).
+            current_stamps: Current advertisement timestamps per scanner (Feature 1).
+                            Used with last_stamps to detect new data.
+
+        Returns:
+        -------
+            True if update was performed, False if skipped due to minimum interval
+            or no new advertisement data.
 
         """
+        # Feature 1: New Data Check
+        # Skip updates that re-read the same cached RSSI values (no new advertisements)
+        if last_stamps is not None and current_stamps is not None:
+            has_new_data = any(
+                current_stamps.get(scanner, 0.0) > last_stamps.get(scanner, 0.0) for scanner in current_stamps
+            )
+            if not has_new_data:
+                return False
+
+        # Minimum Interval Check: Skip updates that are too frequent
+        # This reduces autocorrelation from rho=0.95 to rho=0.82, improving ESS
+        if nowstamp is not None:
+            if nowstamp - self._last_update_stamp < AUTO_LEARNING_MIN_INTERVAL:
+                return False
+            self._last_update_stamp = nowstamp
+
         scanner_list = list(readings.keys())
 
         for i, first in enumerate(scanner_list):
@@ -89,11 +127,16 @@ class RoomProfile:
 
                 # Delta: first alphabetically - second alphabetically
                 delta = readings[addr_a] - readings[addr_b]
-                self._scanner_pairs[pair_key].update(delta)
+                self._scanner_pairs[pair_key].update(delta, timestamp=nowstamp)
 
         self._enforce_memory_limit()
+        return True
 
-    def update_button(self, readings: dict[str, float]) -> None:
+    def update_button(
+        self,
+        readings: dict[str, float],
+        timestamp: float | None = None,
+    ) -> None:
         """
         Update room profile with RSSI readings from button training (stronger weight).
 
@@ -104,6 +147,7 @@ class RoomProfile:
         Args:
         ----
             readings: Map of scanner_address to RSSI value.
+            timestamp: Optional timestamp for profile age tracking.
 
         """
         scanner_list = list(readings.keys())
@@ -121,7 +165,7 @@ class RoomProfile:
 
                 # Delta: first alphabetically - second alphabetically
                 delta = readings[addr_a] - readings[addr_b]
-                self._scanner_pairs[pair_key].update_button(delta)
+                self._scanner_pairs[pair_key].update_button(delta, timestamp=timestamp)
 
         self._enforce_memory_limit()
 
@@ -167,6 +211,38 @@ class RoomProfile:
         by the user. This indicates explicit user intent for this room.
         """
         return any(pair.has_button_training for pair in self._scanner_pairs.values())
+
+    @property
+    def first_sample_stamp(self) -> float | None:
+        """
+        Return earliest timestamp from all scanner pairs.
+
+        Aggregates the minimum first_sample_stamp from all scanner pairs.
+        Returns None if no timestamps are available.
+
+        Used for profile age tracking - when was this room profile first created.
+        """
+        timestamps: list[float] = [
+            pair.first_sample_stamp for pair in self._scanner_pairs.values() if pair.first_sample_stamp is not None
+        ]
+
+        return min(timestamps) if timestamps else None
+
+    @property
+    def last_sample_stamp(self) -> float | None:
+        """
+        Return latest timestamp from all scanner pairs.
+
+        Aggregates the maximum last_sample_stamp from all scanner pairs.
+        Returns None if no timestamps are available.
+
+        Used for profile age tracking - when was this room profile last updated.
+        """
+        timestamps: list[float] = [
+            pair.last_sample_stamp for pair in self._scanner_pairs.values() if pair.last_sample_stamp is not None
+        ]
+
+        return max(timestamps) if timestamps else None
 
     def get_match_score(self, readings: dict[str, float]) -> float:
         """
@@ -221,6 +297,7 @@ class RoomProfile:
         return {
             "area_id": self.area_id,
             "scanner_pairs": [p.to_dict() for p in self._scanner_pairs.values()],
+            "last_update_stamp": self._last_update_stamp,
         }
 
     @classmethod
@@ -230,4 +307,6 @@ class RoomProfile:
         for pair_data in data.get("scanner_pairs", []):
             pair = ScannerPairCorrelation.from_dict(pair_data)
             profile._scanner_pairs[pair.scanner_address] = pair
+        # Restore last update timestamp (default 0.0 for backward compatibility)
+        profile._last_update_stamp = data.get("last_update_stamp", 0.0)
         return profile

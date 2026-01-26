@@ -266,7 +266,7 @@ class BermudaAdvert(dict[str, Any]):
             self.rssi = advertisementdata.rssi
             self.hist_rssi.insert(0, self.rssi)
 
-            self._update_raw_distance(reading_is_new=True)
+            self._update_raw_distance(reading_is_new=True, timestamp=new_stamp)
 
             if new_stamp is not None and self.stamp is not None:
                 _interval = new_stamp - self.stamp
@@ -340,7 +340,7 @@ class BermudaAdvert(dict[str, Any]):
             ref_power = DEFAULT_REF_POWER
         return ref_power, "global config default"
 
-    def _update_raw_distance(self, *, reading_is_new: bool = True) -> float:
+    def _update_raw_distance(self, *, reading_is_new: bool = True, timestamp: float | None = None) -> float:
         """
         Converts rssi to raw distance and updates history stack and
         returns the new raw distance.
@@ -350,6 +350,14 @@ class BermudaAdvert(dict[str, Any]):
         false if you just need to set / override distance measurements
         immediately, perhaps between cycles, in order to reflect a
         setting change (such as altering a device's ref_power setting).
+
+        Args:
+        ----
+            reading_is_new: True if this is a new reading, False for overrides.
+            timestamp: Measurement timestamp for time-aware Kalman filtering.
+                       When provided, process noise scales with time delta,
+                       so stale scanners have higher uncertainty.
+
         """
         ref_power, ref_power_source = self._get_effective_ref_power()
         if self.rssi is None:
@@ -362,8 +370,11 @@ class BermudaAdvert(dict[str, Any]):
         # This ensures correct behavior regardless of device TX power setting.
         # Scientific basis: SNR degrades with distance, so weaker signals have
         # higher variance and should influence the estimate less.
+        # BUG FIX: Pass timestamp for time-aware process noise scaling.
+        # Without this, stale scanners don't have increased uncertainty,
+        # causing distant (stale) scanners to incorrectly "win" over close (fresh) ones.
         if reading_is_new:
-            self.rssi_filtered = self.rssi_kalman.update_adaptive(adjusted_rssi, ref_power)
+            self.rssi_filtered = self.rssi_kalman.update_adaptive(adjusted_rssi, ref_power, timestamp=timestamp)
         elif self.rssi_kalman.is_initialized:
             self.rssi_filtered = self.rssi_kalman.estimate
 

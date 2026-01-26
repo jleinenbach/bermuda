@@ -19,6 +19,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Self
 
+from custom_components.bermuda.const import AUTO_LEARNING_MIN_CONFIDENCE, AUTO_LEARNING_MIN_INTERVAL
+
 from .scanner_absolute import ScannerAbsoluteRssi
 from .scanner_pair import ScannerPairCorrelation
 
@@ -62,13 +64,19 @@ class AreaProfile:
         default_factory=dict,
         repr=False,
     )
+    # Timestamp of last auto-learning update (for minimum interval enforcement)
+    _last_update_stamp: float = field(default=0.0, repr=False)
 
     def update(
         self,
         primary_rssi: float,
         other_readings: dict[str, float],
         primary_scanner_addr: str | None = None,
-    ) -> None:
+        nowstamp: float | None = None,
+        last_stamps: dict[str, float] | None = None,
+        current_stamps: dict[str, float] | None = None,
+        confidence: float | None = None,
+    ) -> bool:
         """
         Update correlations with new scanner readings (automatic learning).
 
@@ -77,6 +85,7 @@ class AreaProfile:
         2. Absolute RSSI profiles for ALL visible scanners (including primary)
 
         Automatic samples are capped to prevent overwhelming button-trained data.
+        Minimum interval enforcement reduces autocorrelation (rho: 0.95 to 0.82).
 
         Args:
         ----
@@ -84,8 +93,43 @@ class AreaProfile:
             other_readings: Map of scanner_address to RSSI for other scanners.
                            Must NOT include the primary scanner.
             primary_scanner_addr: Address of the primary scanner (for absolute tracking).
+            nowstamp: Current timestamp for minimum interval enforcement.
+                      If None, update always proceeds (backward compatibility).
+            last_stamps: Previous advertisement timestamps per scanner (Feature 1).
+                         If None, update always proceeds (first update).
+            current_stamps: Current advertisement timestamps per scanner (Feature 1).
+                            Used with last_stamps to detect new data.
+            confidence: Area assignment confidence (0.0-1.0) for Feature 3.
+                       If None, confidence check is skipped (backward compatibility).
+                       If < AUTO_LEARNING_MIN_CONFIDENCE, update is rejected.
+
+        Returns:
+        -------
+            True if update was performed, False if skipped due to minimum interval,
+            no new advertisement data, or low confidence.
 
         """
+        # Feature 3: Confidence Filter
+        # Skip updates with low confidence to avoid polluting fingerprints with noise
+        if confidence is not None and confidence < AUTO_LEARNING_MIN_CONFIDENCE:
+            return False
+
+        # Feature 1: New Data Check
+        # Skip updates that re-read the same cached RSSI values (no new advertisements)
+        if last_stamps is not None and current_stamps is not None:
+            has_new_data = any(
+                current_stamps.get(scanner, 0.0) > last_stamps.get(scanner, 0.0) for scanner in current_stamps
+            )
+            if not has_new_data:
+                return False
+
+        # Minimum Interval Check: Skip updates that are too frequent
+        # This reduces autocorrelation from rho=0.95 to rho=0.82, improving ESS
+        if nowstamp is not None:
+            if nowstamp - self._last_update_stamp < AUTO_LEARNING_MIN_INTERVAL:
+                return False
+            self._last_update_stamp = nowstamp
+
         # Update delta correlations (existing behavior)
         for scanner_addr, rssi in other_readings.items():
             delta = primary_rssi - rssi
@@ -93,7 +137,7 @@ class AreaProfile:
             if scanner_addr not in self._correlations:
                 self._correlations[scanner_addr] = ScannerPairCorrelation(scanner_address=scanner_addr)
 
-            self._correlations[scanner_addr].update(delta)
+            self._correlations[scanner_addr].update(delta, timestamp=nowstamp)
 
         # Update absolute RSSI profiles for ALL visible scanners
         # This enables fallback validation when primary goes offline
@@ -104,15 +148,17 @@ class AreaProfile:
         for scanner_addr, rssi in all_readings.items():
             if scanner_addr not in self._absolute_profiles:
                 self._absolute_profiles[scanner_addr] = ScannerAbsoluteRssi(scanner_address=scanner_addr)
-            self._absolute_profiles[scanner_addr].update(rssi)
+            self._absolute_profiles[scanner_addr].update(rssi, timestamp=nowstamp)
 
         self._enforce_memory_limit()
+        return True
 
     def update_button(
         self,
         primary_rssi: float,
         other_readings: dict[str, float],
         primary_scanner_addr: str | None = None,
+        timestamp: float | None = None,
     ) -> None:
         """
         Update correlations with button-trained readings (stronger weight).
@@ -127,6 +173,7 @@ class AreaProfile:
             other_readings: Map of scanner_address to RSSI for other scanners.
                            Must NOT include the primary scanner.
             primary_scanner_addr: Address of the primary scanner (for absolute tracking).
+            timestamp: Optional timestamp for profile age tracking.
 
         """
         # Update delta correlations with button weight
@@ -136,7 +183,7 @@ class AreaProfile:
             if scanner_addr not in self._correlations:
                 self._correlations[scanner_addr] = ScannerPairCorrelation(scanner_address=scanner_addr)
 
-            self._correlations[scanner_addr].update_button(delta)
+            self._correlations[scanner_addr].update_button(delta, timestamp=timestamp)
 
         # Update absolute RSSI profiles with button weight
         all_readings: dict[str, float] = dict(other_readings)
@@ -146,7 +193,7 @@ class AreaProfile:
         for scanner_addr, rssi in all_readings.items():
             if scanner_addr not in self._absolute_profiles:
                 self._absolute_profiles[scanner_addr] = ScannerAbsoluteRssi(scanner_address=scanner_addr)
-            self._absolute_profiles[scanner_addr].update_button(rssi)
+            self._absolute_profiles[scanner_addr].update_button(rssi, timestamp=timestamp)
 
         self._enforce_memory_limit()
 
@@ -406,6 +453,48 @@ class AreaProfile:
         # Check delta correlations
         return any(corr.has_button_training for corr in self._correlations.values())
 
+    @property
+    def first_sample_stamp(self) -> float | None:
+        """
+        Return earliest timestamp from all child profiles.
+
+        Aggregates the minimum first_sample_stamp from both correlations
+        and absolute profiles. Returns None if no timestamps are available.
+
+        Used for profile age tracking - when was this area profile first created.
+        """
+        timestamps: list[float] = [
+            corr.first_sample_stamp for corr in self._correlations.values() if corr.first_sample_stamp is not None
+        ]
+        timestamps.extend(
+            profile.first_sample_stamp
+            for profile in self._absolute_profiles.values()
+            if profile.first_sample_stamp is not None
+        )
+
+        return min(timestamps) if timestamps else None
+
+    @property
+    def last_sample_stamp(self) -> float | None:
+        """
+        Return latest timestamp from all child profiles.
+
+        Aggregates the maximum last_sample_stamp from both correlations
+        and absolute profiles. Returns None if no timestamps are available.
+
+        Used for profile age tracking - when was this area profile last updated.
+        """
+        timestamps: list[float] = [
+            corr.last_sample_stamp for corr in self._correlations.values() if corr.last_sample_stamp is not None
+        ]
+        timestamps.extend(
+            profile.last_sample_stamp
+            for profile in self._absolute_profiles.values()
+            if profile.last_sample_stamp is not None
+        )
+
+        return max(timestamps) if timestamps else None
+
     def to_dict(self) -> dict[str, Any]:
         """
         Serialize for persistent storage.
@@ -419,6 +508,7 @@ class AreaProfile:
             "area_id": self.area_id,
             "correlations": [c.to_dict() for c in self._correlations.values()],
             "absolute_profiles": [p.to_dict() for p in self._absolute_profiles.values()],
+            "last_update_stamp": self._last_update_stamp,
         }
 
     @classmethod
@@ -444,4 +534,6 @@ class AreaProfile:
         for profile_data in data.get("absolute_profiles", []):
             abs_profile = ScannerAbsoluteRssi.from_dict(profile_data)
             profile._absolute_profiles[abs_profile.scanner_address] = abs_profile
+        # Restore last update timestamp (default 0.0 for backward compatibility)
+        profile._last_update_stamp = data.get("last_update_stamp", 0.0)
         return profile
