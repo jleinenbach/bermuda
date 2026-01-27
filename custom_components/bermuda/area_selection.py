@@ -81,6 +81,7 @@ from .const import (
     RSSI_INVALID_SENTINEL,
     SAME_FLOOR_MIN_HISTORY,
     SAME_FLOOR_STREAK,
+    SCANNER_ACTIVITY_TIMEOUT,
     SOFT_INC_MIN_DISTANCE_ADVANTAGE,
     SOFT_INC_MIN_HISTORY_DIVISOR,
     STREAK_LOW_CONFIDENCE_THRESHOLD,
@@ -591,6 +592,50 @@ class AreaSelectionHandler:
 
         """
         return any(scanner.area_id == area_id for scanner in self._scanners)
+
+    def _area_has_active_scanner(self, area_id: str, nowstamp: float) -> bool:
+        """
+        Check if an area has at least one ACTIVE scanner (recently seen).
+
+        This is more strict than _area_has_scanner() - it also verifies that
+        at least one scanner in the area has been active within the activity timeout.
+
+        This distinction is important for BUG 22 fix: if a scanner is registered
+        but offline (proxy rebooted, network loss), we should NOT reject UKF
+        decisions for that area. Instead, treat it like a scannerless room and
+        let UKF decide based on other scanners.
+
+        NOTE: Uses SCANNER_ACTIVITY_TIMEOUT (30s) not EVIDENCE_WINDOW_SECONDS (15min)!
+        This is intentional - we want to quickly detect scanner outages so we can
+        fall back to UKF-based decisions rather than rejecting valid room selections
+        for 15 minutes while waiting for evidence to expire.
+
+        Args:
+        ----
+            area_id: The Home Assistant area ID to check.
+            nowstamp: Current monotonic timestamp for freshness check.
+
+        Returns:
+        -------
+            True if the area contains at least one scanner that has been
+            seen within SCANNER_ACTIVITY_TIMEOUT (30 seconds).
+
+        """
+        for scanner in self._scanners:
+            if scanner.area_id == area_id:
+                # Check if this scanner is active (has recent data)
+                scanner_last_seen = getattr(scanner, "last_seen", None)
+                # NOTE: last_seen defaults to 0 for new scanners, so we must check
+                # that it's > 0 to ensure the scanner has actually reported data.
+                # Otherwise, during startup (nowstamp < 30s) or for newly-registered
+                # scanners, we'd incorrectly treat them as "active".
+                if (
+                    scanner_last_seen is not None
+                    and scanner_last_seen > 0
+                    and nowstamp - scanner_last_seen < SCANNER_ACTIVITY_TIMEOUT
+                ):
+                    return True
+        return False
 
     def resolve_area_name(self, area_id: str | None) -> str | None:
         """
@@ -1465,7 +1510,38 @@ class AreaSelectionHandler:
 
         scanner_less_room = False
         if best_advert is None:
-            # Scanner-less room: UKF matched an area with no scanner.
+            # FIX: BUG 22 - CRITICAL: Check if the area has a REGISTERED scanner!
+            # If the area HAS a scanner but we have no advert from it, the scanner
+            # simply doesn't see the device. This is DIFFERENT from a true scannerless room.
+            #
+            # IMPORTANT (Codex review feedback): We use registration check, NOT activity check.
+            # Reason: scanner.last_seen only updates when adverts are received. In quiet rooms
+            # with little BLE traffic, an online scanner may not receive any adverts for 30+
+            # seconds, making it appear "inactive". Using an activity-based check would cause
+            # the original bug to reappear after the timeout expires.
+            #
+            # Trade-off: If a scanner is genuinely offline (proxy crashed), its room won't be
+            # selectable via UKF virtual assignment. However, min-distance fallback will still
+            # work using other scanners. This is safer than risking incorrect placements.
+            #
+            # Decision matrix:
+            # - Area has REGISTERED scanner, no advert → REJECT (scanner doesn't see device)
+            # - Area truly has no scanner → proceed with scannerless room logic
+            if self._area_has_scanner(best_area_id):
+                # Area HAS a registered scanner, but that scanner doesn't see this device!
+                # This means the device is too far from the scanner to be in this area.
+                # DO NOT treat this as a "scannerless room" - reject the UKF decision.
+                if _LOGGER.isEnabledFor(logging.DEBUG):
+                    _LOGGER.debug(
+                        "BUG 22 FIX: UKF picked %s for %s, but the area's scanner "
+                        "doesn't see the device - falling back to min-distance",
+                        best_area_id,
+                        device.name,
+                    )
+                tests.reason = f"REJECT - scanner in {self.resolve_area_name(best_area_id)} doesn't see device"
+                return False
+
+            # True scannerless room: UKF matched an area with no registered scanner.
             # Use the best available advert (strongest RSSI) and override its area.
             strongest_rssi = RSSI_INVALID_SENTINEL
             for advert in device.adverts.values():
