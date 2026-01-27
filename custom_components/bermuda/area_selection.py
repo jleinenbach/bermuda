@@ -625,7 +625,15 @@ class AreaSelectionHandler:
             if scanner.area_id == area_id:
                 # Check if this scanner is active (has recent data)
                 scanner_last_seen = getattr(scanner, "last_seen", None)
-                if scanner_last_seen is not None and nowstamp - scanner_last_seen < SCANNER_ACTIVITY_TIMEOUT:
+                # NOTE: last_seen defaults to 0 for new scanners, so we must check
+                # that it's > 0 to ensure the scanner has actually reported data.
+                # Otherwise, during startup (nowstamp < 30s) or for newly-registered
+                # scanners, we'd incorrectly treat them as "active".
+                if (
+                    scanner_last_seen is not None
+                    and scanner_last_seen > 0
+                    and nowstamp - scanner_last_seen < SCANNER_ACTIVITY_TIMEOUT
+                ):
                     return True
         return False
 
