@@ -38,7 +38,9 @@ from .const import (
     MAX_DISTANCE_VARIANCE,
     MIN_DISTANCE_FOR_VARIANCE,
     NEAR_FIELD_DISTANCE_VARIANCE,
+    PATH_LOSS_EXPONENT_NEAR,
     RSSI_HISTORY_SAMPLES,
+    TWO_SLOPE_BREAKPOINT_METRES,
     VARIANCE_COLD_START_SAMPLES,
     VARIANCE_FALLBACK_UNINIT,
     VARIANCE_FLOOR_COLD_START,
@@ -862,15 +864,23 @@ class BermudaAdvert(dict[str, Any]):
         if distance < MIN_DISTANCE_FOR_VARIANCE:
             return NEAR_FIELD_DISTANCE_VARIANCE
 
-        # 4. Get attenuation (path loss exponent)
-        attenuation = self.conf_attenuation
-        if attenuation is None or attenuation <= 0:
-            attenuation = DEFAULT_ATTENUATION
+        # 4. Get path loss exponent using TWO-SLOPE MODEL (matches rssi_to_metres)
+        # P2 fix: Near-field uses PATH_LOSS_EXPONENT_NEAR (~1.8), not configured attenuation
+        # This is critical because the derivative dd/dRSSI depends on the exponent used
+        # for distance calculation, not just the configured far-field attenuation.
+        if distance < TWO_SLOPE_BREAKPOINT_METRES:
+            # Near-field: use scientifically-derived exponent (matches rssi_to_metres)
+            path_loss_exponent = PATH_LOSS_EXPONENT_NEAR
+        else:
+            # Far-field: use user-configured attenuation
+            path_loss_exponent = self.conf_attenuation
+            if path_loss_exponent is None or path_loss_exponent <= 0:
+                path_loss_exponent = DEFAULT_ATTENUATION
 
         # 5. Calculate variance using correct error propagation
         # CORRECTED FORMULA (peer review): ln(10) is in the NUMERATOR
         # factor = dd/dRSSI = d * ln(10) / (10 * n)
-        factor = (distance * math.log(10)) / (10.0 * attenuation)
+        factor = (distance * math.log(10)) / (10.0 * path_loss_exponent)
 
         # var_d = factor^2 * var_RSSI
         distance_variance = (factor**2) * rssi_variance
