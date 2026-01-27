@@ -983,10 +983,13 @@ class TestDistanceVariance:
 
     def test_get_distance_variance_uninitialized_filter(self, bermuda_advert: BermudaAdvert) -> None:
         """Test get_distance_variance with uninitialized Kalman filter."""
-        from custom_components.bermuda.const import VARIANCE_FALLBACK_UNINIT
+        from custom_components.bermuda.const import (
+            PATH_LOSS_EXPONENT_NEAR,
+            VARIANCE_FALLBACK_UNINIT,
+        )
 
         # Don't initialize Kalman filter, but set distance
-        # Use 2.0m to stay under MAX_DISTANCE_VARIANCE cap
+        # Use 2.0m (near-field, uses PATH_LOSS_EXPONENT_NEAR per two-slope model)
         bermuda_advert.rssi_kalman.reset()
         bermuda_advert.rssi_distance = 2.0
         bermuda_advert.rssi_distance_raw = 2.0
@@ -994,9 +997,10 @@ class TestDistanceVariance:
         variance = bermuda_advert.get_distance_variance()
 
         # Uninitialized filter should use fallback variance (25.0 dBm²)
+        # Near-field uses PATH_LOSS_EXPONENT_NEAR (~1.8) per two-slope model
         import math
 
-        expected_factor = (2.0 * math.log(10)) / (10.0 * 2.0)
+        expected_factor = (2.0 * math.log(10)) / (10.0 * PATH_LOSS_EXPONENT_NEAR)
         expected_var = (expected_factor**2) * VARIANCE_FALLBACK_UNINIT
         assert abs(variance - expected_var) < 0.1
 
@@ -1082,7 +1086,7 @@ class TestDistanceVariance:
         mock_advertisement_data: MagicMock,
         mock_scanner_device: MagicMock,
     ) -> None:
-        """Test get_distance_variance with different attenuation values."""
+        """Test get_distance_variance with different attenuation values in far-field."""
         import math
 
         from custom_components.bermuda.const import VARIANCE_FLOOR_CONVERGED
@@ -1091,7 +1095,7 @@ class TestDistanceVariance:
         options: dict[str, Any] = {
             CONF_RSSI_OFFSETS: {},
             CONF_REF_POWER: -59,
-            CONF_ATTENUATION: 3.5,  # Higher attenuation
+            CONF_ATTENUATION: 3.5,  # Higher attenuation (used in far-field)
             CONF_MAX_VELOCITY: 3.0,
             CONF_SMOOTHING_SAMPLES: 5,
         }
@@ -1110,15 +1114,17 @@ class TestDistanceVariance:
         for _ in range(10):
             advert.rssi_kalman.update(-70.0)
 
-        advert.rssi_distance = 5.0
-        advert.rssi_distance_raw = 5.0
+        # Use 7.0m to be in far-field (>= TWO_SLOPE_BREAKPOINT_METRES = 6m)
+        # This ensures the configured attenuation (3.5) is actually used
+        advert.rssi_distance = 7.0
+        advert.rssi_distance_raw = 7.0
 
         variance = advert.get_distance_variance()
 
-        # Higher attenuation = smaller factor = smaller variance
-        # factor = 5 * ln(10) / 35 ≈ 0.329
-        # var_d ≈ 0.329² * 4.0 ≈ 0.43
-        expected_factor = (5.0 * math.log(10)) / (10.0 * 3.5)
+        # Far-field uses configured attenuation (3.5)
+        # factor = 7 * ln(10) / 35 ≈ 0.461
+        # var_d ≈ 0.461² * 4.0 ≈ 0.85
+        expected_factor = (7.0 * math.log(10)) / (10.0 * 3.5)
         expected_var = (expected_factor**2) * VARIANCE_FLOOR_CONVERGED
         assert abs(variance - expected_var) < 0.2
 
@@ -1126,7 +1132,10 @@ class TestDistanceVariance:
         """Test get_distance_variance with no distance available falls back to 1m."""
         import math
 
-        from custom_components.bermuda.const import VARIANCE_FALLBACK_UNINIT
+        from custom_components.bermuda.const import (
+            PATH_LOSS_EXPONENT_NEAR,
+            VARIANCE_FALLBACK_UNINIT,
+        )
 
         bermuda_advert.rssi_kalman.reset()
         bermuda_advert.rssi_distance = None
@@ -1134,10 +1143,76 @@ class TestDistanceVariance:
 
         variance = bermuda_advert.get_distance_variance()
 
-        # Should use fallback distance of 1m and fallback variance
-        expected_factor = (1.0 * math.log(10)) / (10.0 * 2.0)
+        # Should use fallback distance of 1m (near-field) and fallback variance
+        # Near-field uses PATH_LOSS_EXPONENT_NEAR per two-slope model
+        expected_factor = (1.0 * math.log(10)) / (10.0 * PATH_LOSS_EXPONENT_NEAR)
         expected_var = (expected_factor**2) * VARIANCE_FALLBACK_UNINIT
         assert abs(variance - expected_var) < 0.2
+
+    def test_get_distance_variance_two_slope_boundary(
+        self,
+        mock_parent_device: MagicMock,
+        mock_advertisement_data: MagicMock,
+        mock_scanner_device: MagicMock,
+    ) -> None:
+        """Test variance calculation uses two-slope model at boundary.
+
+        Verifies that:
+        - Below TWO_SLOPE_BREAKPOINT_METRES (6m): uses PATH_LOSS_EXPONENT_NEAR
+        - At or above TWO_SLOPE_BREAKPOINT_METRES: uses configured attenuation
+        """
+        import math
+
+        from custom_components.bermuda.const import (
+            PATH_LOSS_EXPONENT_NEAR,
+            TWO_SLOPE_BREAKPOINT_METRES,
+            VARIANCE_FLOOR_CONVERGED,
+        )
+
+        # Create advert with specific attenuation
+        options: dict[str, Any] = {
+            CONF_RSSI_OFFSETS: {},
+            CONF_REF_POWER: -59,
+            CONF_ATTENUATION: 4.0,  # Different from PATH_LOSS_EXPONENT_NEAR (1.8)
+            CONF_MAX_VELOCITY: 3.0,
+            CONF_SMOOTHING_SAMPLES: 5,
+        }
+        with patch(
+            "custom_components.bermuda.bermuda_advert.monotonic_time_coarse",
+            return_value=125.0,
+        ):
+            advert = BermudaAdvert(
+                parent_device=mock_parent_device,
+                advertisementdata=mock_advertisement_data,
+                options=options,
+                scanner_device=mock_scanner_device,
+            )
+
+        # Initialize filter
+        for _ in range(10):
+            advert.rssi_kalman.update(-70.0)
+
+        # Test just below breakpoint (5.9m) - should use near-field exponent
+        advert.rssi_distance = 5.9
+        advert.rssi_distance_raw = 5.9
+        variance_near = advert.get_distance_variance()
+        expected_near = ((5.9 * math.log(10)) / (10.0 * PATH_LOSS_EXPONENT_NEAR)) ** 2 * VARIANCE_FLOOR_CONVERGED
+
+        # Test at breakpoint (6.0m) - should use configured attenuation
+        advert.rssi_distance = TWO_SLOPE_BREAKPOINT_METRES
+        advert.rssi_distance_raw = TWO_SLOPE_BREAKPOINT_METRES
+        variance_far = advert.get_distance_variance()
+        expected_far = ((6.0 * math.log(10)) / (10.0 * 4.0)) ** 2 * VARIANCE_FLOOR_CONVERGED
+
+        # Verify near-field uses PATH_LOSS_EXPONENT_NEAR (1.8)
+        assert abs(variance_near - expected_near) < 0.1
+
+        # Verify far-field uses configured attenuation (4.0)
+        assert abs(variance_far - expected_far) < 0.1
+
+        # Near-field variance should be higher due to lower exponent (1.8 vs 4.0)
+        # Higher exponent = smaller factor = smaller variance
+        assert variance_near > variance_far
 
     def test_effective_rssi_variance_cold_start_floor(self, bermuda_advert: BermudaAdvert) -> None:
         """Test _get_effective_rssi_variance applies cold start floor."""
