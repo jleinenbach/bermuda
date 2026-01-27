@@ -1754,12 +1754,14 @@ info = manager.get_scanner_pair_info(nowstamp=current_time)
   - Example: Device in "Büro" (0.36m from Büro scanner), but placed in "Bibliothek" (whose scanner shows "Unbekannt")
   - The code confused "area has no scanner" (true scannerless room) with "area's scanner doesn't see device" (too far away)
 - **Root Cause**: When searching for an advert matching the UKF-selected area, finding none led to scannerless-room logic, even if the area actually had a scanner
-- **Fix**: Before treating an area as "scannerless", check `_area_has_active_scanner(best_area_id, nowstamp)`:
-  - If area HAS **active** scanner but no advert → REJECT (scanner doesn't see device, device too far)
-  - If area has **offline** scanner only → treat as scannerless room (let UKF decide)
+- **Fix**: Before treating an area as "scannerless", check `_area_has_scanner(best_area_id)`:
+  - If area HAS **registered** scanner but no advert → REJECT (scanner doesn't see device)
   - If area truly has no scanner → proceed with scannerless room logic
-- **Codex Review Feedback**: Original fix used `_area_has_scanner()` which only checks registration. This would incorrectly reject UKF decisions when the area's scanner is temporarily offline (proxy reboot, network loss). The improved fix uses `_area_has_active_scanner()` which checks both registration AND freshness (last_seen within `SCANNER_ACTIVITY_TIMEOUT` = 30 seconds).
-- **Files**: `area_selection.py:1500-1530`, `area_selection.py:595-627`
+- **Design Decision (Codex Review Iterations)**:
+  1. Initial fix used `_area_has_active_scanner()` with timeout to distinguish online vs offline scanners
+  2. Problem: `scanner.last_seen` only updates when adverts arrive. In quiet rooms with little BLE traffic, an online scanner appears "inactive" after timeout, causing the bug to reappear
+  3. Final solution: Use registration check only (`_area_has_scanner()`). This is safer because it avoids the race condition. Trade-off: if scanner is genuinely offline, its room won't be selectable via UKF virtual assignment, but min-distance fallback will still work
+- **Files**: `area_selection.py:1511-1545`
 - **See**: Lesson Learned #63
 
 ### Auto-Learning Statistical Quality Improvements
@@ -6818,37 +6820,42 @@ Without fix:
   → Device shows in Bibliothek with 0.20m virtual distance!
 
 With fix:
-  → Code checks: _area_has_active_scanner("Bibliothek") → True
-  → Area HAS active scanner, but no advert → Scanner doesn't see device
+  → Code checks: _area_has_scanner("Bibliothek") → True
+  → Area HAS a registered scanner, but no advert → Scanner doesn't see device
   → REJECT UKF decision → Fall back to min-distance
   → Device correctly placed in Büro
 ```
 
 **Fix Pattern:**
 ```python
-# GOOD - Check if area has an ACTIVE scanner before treating as scannerless
+# GOOD - Check if area has a REGISTERED scanner before treating as scannerless
 best_advert = find_advert_from_area(best_area_id)
 
 if best_advert is None:
-    # CRITICAL: Does this area have an ACTIVE scanner?
-    # Important: Check ACTIVE, not just registered! If scanner is offline
-    # (proxy reboot, network loss), treat like scannerless room instead.
-    if self._area_has_active_scanner(best_area_id, nowstamp):
-        # Area HAS an active scanner, but it doesn't see the device!
+    # CRITICAL: Does this area have a REGISTERED scanner?
+    # NOTE: We use registration check, NOT activity check!
+    # Reason: scanner.last_seen only updates on adverts. In quiet rooms,
+    # an online scanner may appear "inactive" after 30s, causing this bug
+    # to reappear. Registration check is safer.
+    if self._area_has_scanner(best_area_id):
+        # Area HAS a registered scanner, but it doesn't see the device!
         # Device is too far away - REJECT this area selection
         return False  # Fall back to min-distance
 
-    # Scannerless room OR scanner offline: area has no active scanner
+    # True scannerless room: area has no registered scanner
     scanner_less_room = True
     use_strongest_advert_and_assign_to_area()  # OK for real scannerless rooms
 ```
 
-**Key Insight**: There are THREE reasons why `best_advert` might be `None`:
+**Key Insight**: There are TWO reasons why `best_advert` might be `None`:
 1. **Scannerless room**: Area has no scanner → OK to use virtual assignment
-2. **Scanner offline**: Area has scanner but it's offline → treat like scannerless room
-3. **Scanner blind spot**: Area HAS active scanner but it doesn't see device → REJECT
+2. **Scanner blind spot**: Area HAS scanner but it doesn't see device → REJECT
 
-The fix distinguishes these cases using `_area_has_active_scanner()` which checks both
-registration AND freshness (last_seen within `SCANNER_ACTIVITY_TIMEOUT` = 30 seconds).
+**Design Decision (after multiple Codex review iterations):**
+An activity-based check (`_area_has_active_scanner()`) was initially considered to handle
+offline scanners gracefully. However, `scanner.last_seen` only updates when adverts arrive.
+In quiet rooms with little BLE traffic, an online scanner appears "inactive" after 30s,
+causing the bug to reappear. Registration check is safer—the trade-off (scanner offline =
+room not selectable via UKF) is acceptable because min-distance fallback still works.
 
-**Rule of Thumb**: Before treating an area as "scannerless", verify it truly has no ACTIVE scanner. If it has an active scanner that simply can't see the device, the device is too far away to be in that room. But if the scanner is offline, let UKF decide based on other available scanners.
+**Rule of Thumb**: Before treating an area as "scannerless", verify it truly has no registered scanner. If it has a scanner that can't see the device, the device is too far away to be in that room.
