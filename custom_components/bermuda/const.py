@@ -152,11 +152,6 @@ VARIANCE_COLD_START_SAMPLES: Final = 5  # Samples below which cold start floor a
 MIN_DISTANCE_FOR_VARIANCE: Final = 0.5  # Below this: use fixed variance
 NEAR_FIELD_DISTANCE_VARIANCE: Final = 0.1  # m^2, fixed variance for near-field
 MAX_DISTANCE_VARIANCE: Final = 4.0  # m^2, cap for far-field (std=2m max)
-MIN_VIRTUAL_VARIANCE: Final = 0.25  # m^2, floor for virtual distances (std=0.5m)
-
-# Virtual distance variance base (for scannerless rooms)
-# Formula: virtual_variance = BASE * (2 - score)^2 ensures variance > 0 even at score=1.0
-VIRTUAL_DISTANCE_BASE_VARIANCE: Final = 0.25  # m^2, minimum even for perfect score
 
 # Default attenuation (path loss exponent) when not configured
 DEFAULT_ATTENUATION: Final = 2.0  # Typical for line-of-sight indoor

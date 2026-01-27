@@ -290,7 +290,6 @@ distance_variance = (factor ** 2) * rssi_variance
 | `STABILITY_SIGMA_MOVING` | 2.0 | - | Sigma factor for MOVING/SETTLING states (95% confidence) |
 | `STABILITY_SIGMA_STATIONARY` | 3.0 | - | Sigma factor for STATIONARY state (99.7% confidence) |
 | `VARIANCE_FLOOR_COLD_START` | 9.0 | m^2 | Initial variance (std=3m) before Kalman converges |
-| `MIN_VIRTUAL_VARIANCE` | 0.25 | m^2 | Floor for virtual distances (std=0.5m) |
 | `NEAR_FIELD_DISTANCE_VARIANCE` | 0.1 | m^2 | Fixed variance for near-field distances (std=0.32m) |
 | `MAX_DISTANCE_VARIANCE` | 4.0 | m^2 | Cap for far-field variance (std=2m) |
 | `MIN_DISTANCE_FOR_VARIANCE` | 0.5 | m | Below this, use near-field variance |
@@ -2087,7 +2086,6 @@ info = manager.get_scanner_pair_info(nowstamp=current_time)
   | `STABILITY_SIGMA_MOVING` | 2.0 | Sigma factor for MOVING/SETTLING states |
   | `STABILITY_SIGMA_STATIONARY` | 3.0 | Sigma factor for STATIONARY state |
   | `VARIANCE_FLOOR_COLD_START` | 9.0 | Initial variance (σ=3m) before Kalman converges |
-  | `MIN_VIRTUAL_VARIANCE` | 0.25 | Floor for score=1.0 edge case in virtual distance |
 - **Files**: `bermuda_advert.py`, `area_selection.py`, `const.py`
 - **Test Coverage**: Tests updated with `distance_variance=0.001` to bypass variance check when testing other features
 

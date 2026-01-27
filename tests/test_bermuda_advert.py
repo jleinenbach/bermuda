@@ -1196,7 +1196,6 @@ class TestVarianceConstants:
         from custom_components.bermuda.const import (
             MAX_DISTANCE_VARIANCE,
             MIN_DISTANCE_FOR_VARIANCE,
-            MIN_VIRTUAL_VARIANCE,
             NEAR_FIELD_DISTANCE_VARIANCE,
             STABILITY_SIGMA_MOVING,
             STABILITY_SIGMA_SETTLING,
@@ -1222,7 +1221,6 @@ class TestVarianceConstants:
         assert MIN_DISTANCE_FOR_VARIANCE == 0.5
         assert NEAR_FIELD_DISTANCE_VARIANCE == 0.1
         assert MAX_DISTANCE_VARIANCE == 4.0
-        assert MIN_VIRTUAL_VARIANCE == 0.25
 
     def test_variance_floor_cold_start_represents_3db_sigma(self) -> None:
         """Test that VARIANCE_FLOOR_COLD_START gives σ=3dB."""
