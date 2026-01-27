@@ -873,7 +873,7 @@ class BermudaAdvert(dict[str, Any]):
         factor = (distance * math.log(10)) / (10.0 * attenuation)
 
         # var_d = factor^2 * var_RSSI
-        distance_variance = (factor ** 2) * rssi_variance
+        distance_variance = (factor**2) * rssi_variance
 
         # 6. Cap far-field variance to prevent unrealistic values
         return min(distance_variance, MAX_DISTANCE_VARIANCE)

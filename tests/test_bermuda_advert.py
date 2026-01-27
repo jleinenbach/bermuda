@@ -955,7 +955,7 @@ class TestDistanceVariance:
         # factor = 5 * ln(10) / 20 ≈ 0.576
         # var_d ≈ 0.576² * 4.0 ≈ 1.32
         expected_factor = (5.0 * math.log(10)) / (10.0 * 2.0)
-        expected_var = (expected_factor ** 2) * 4.0  # Using converged floor
+        expected_var = (expected_factor**2) * 4.0  # Using converged floor
         assert abs(variance - expected_var) < 0.5  # Allow some tolerance
 
     def test_get_distance_variance_cold_start(self, bermuda_advert: BermudaAdvert) -> None:
@@ -977,7 +977,7 @@ class TestDistanceVariance:
         import math
 
         expected_factor = (5.0 * math.log(10)) / (10.0 * 2.0)
-        expected_var = (expected_factor ** 2) * VARIANCE_FLOOR_COLD_START
+        expected_var = (expected_factor**2) * VARIANCE_FLOOR_COLD_START
         # Cold start variance should be higher than converged
         assert variance >= expected_var * 0.9  # Allow 10% tolerance
 
@@ -997,7 +997,7 @@ class TestDistanceVariance:
         import math
 
         expected_factor = (2.0 * math.log(10)) / (10.0 * 2.0)
-        expected_var = (expected_factor ** 2) * VARIANCE_FALLBACK_UNINIT
+        expected_var = (expected_factor**2) * VARIANCE_FALLBACK_UNINIT
         assert abs(variance - expected_var) < 0.1
 
     def test_get_distance_variance_near_field(self, bermuda_advert: BermudaAdvert) -> None:
@@ -1070,7 +1070,7 @@ class TestDistanceVariance:
         # factor = 10 * ln(10) / 20 ≈ 1.151
         # var_d ≈ 1.151² * 4.0 ≈ 5.3 → capped at 4.0
         expected_factor = (10.0 * math.log(10)) / (10.0 * 2.0)
-        expected_var = (expected_factor ** 2) * 4.0
+        expected_var = (expected_factor**2) * 4.0
         # Should be capped at MAX_DISTANCE_VARIANCE
         from custom_components.bermuda.const import MAX_DISTANCE_VARIANCE
 
@@ -1119,7 +1119,7 @@ class TestDistanceVariance:
         # factor = 5 * ln(10) / 35 ≈ 0.329
         # var_d ≈ 0.329² * 4.0 ≈ 0.43
         expected_factor = (5.0 * math.log(10)) / (10.0 * 3.5)
-        expected_var = (expected_factor ** 2) * VARIANCE_FLOOR_CONVERGED
+        expected_var = (expected_factor**2) * VARIANCE_FLOOR_CONVERGED
         assert abs(variance - expected_var) < 0.2
 
     def test_get_distance_variance_no_distance(self, bermuda_advert: BermudaAdvert) -> None:
@@ -1136,7 +1136,7 @@ class TestDistanceVariance:
 
         # Should use fallback distance of 1m and fallback variance
         expected_factor = (1.0 * math.log(10)) / (10.0 * 2.0)
-        expected_var = (expected_factor ** 2) * VARIANCE_FALLBACK_UNINIT
+        expected_var = (expected_factor**2) * VARIANCE_FALLBACK_UNINIT
         assert abs(variance - expected_var) < 0.2
 
     def test_effective_rssi_variance_cold_start_floor(self, bermuda_advert: BermudaAdvert) -> None:
