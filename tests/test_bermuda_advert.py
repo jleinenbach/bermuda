@@ -1158,8 +1158,10 @@ class TestDistanceVariance:
         """Test variance calculation uses two-slope model at boundary.
 
         Verifies that:
-        - Below TWO_SLOPE_BREAKPOINT_METRES (6m): uses PATH_LOSS_EXPONENT_NEAR
-        - At or above TWO_SLOPE_BREAKPOINT_METRES: uses configured attenuation
+        - At or below TWO_SLOPE_BREAKPOINT_METRES (6m): uses PATH_LOSS_EXPONENT_NEAR
+        - Above TWO_SLOPE_BREAKPOINT_METRES: uses configured attenuation
+
+        P3 fix: Use <= to match rssi_to_metres boundary condition (util.py:204)
         """
         import math
 
@@ -1198,11 +1200,12 @@ class TestDistanceVariance:
         variance_near = advert.get_distance_variance()
         expected_near = ((5.9 * math.log(10)) / (10.0 * PATH_LOSS_EXPONENT_NEAR)) ** 2 * VARIANCE_FLOOR_CONVERGED
 
-        # Test at breakpoint (6.0m) - should use configured attenuation
-        advert.rssi_distance = TWO_SLOPE_BREAKPOINT_METRES
-        advert.rssi_distance_raw = TWO_SLOPE_BREAKPOINT_METRES
+        # Test above breakpoint (6.1m) - should use configured attenuation
+        # P3 fix: At exactly 6.0m, near-field is used (matches util.py:204)
+        advert.rssi_distance = 6.1
+        advert.rssi_distance_raw = 6.1
         variance_far = advert.get_distance_variance()
-        expected_far = ((6.0 * math.log(10)) / (10.0 * 4.0)) ** 2 * VARIANCE_FLOOR_CONVERGED
+        expected_far = ((6.1 * math.log(10)) / (10.0 * 4.0)) ** 2 * VARIANCE_FLOOR_CONVERGED
 
         # Verify near-field uses PATH_LOSS_EXPONENT_NEAR (1.8)
         assert abs(variance_near - expected_near) < 0.1

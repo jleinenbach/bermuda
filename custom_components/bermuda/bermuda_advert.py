@@ -868,7 +868,8 @@ class BermudaAdvert(dict[str, Any]):
         # P2 fix: Near-field uses PATH_LOSS_EXPONENT_NEAR (~1.8), not configured attenuation
         # This is critical because the derivative dd/dRSSI depends on the exponent used
         # for distance calculation, not just the configured far-field attenuation.
-        if distance < TWO_SLOPE_BREAKPOINT_METRES:
+        # P3 fix: Use <= to match rssi_to_metres boundary (util.py:204)
+        if distance <= TWO_SLOPE_BREAKPOINT_METRES:
             # Near-field: use scientifically-derived exponent (matches rssi_to_metres)
             path_loss_exponent = PATH_LOSS_EXPONENT_NEAR
         else:
