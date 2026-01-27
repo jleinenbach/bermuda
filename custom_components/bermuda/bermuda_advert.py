@@ -14,6 +14,7 @@ to the combination of the scanner and the device it is reporting.
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING, Any, Final
 
 from bluetooth_data_tools import monotonic_time_coarse
@@ -28,12 +29,20 @@ from .const import (
     CONF_REF_POWER,
     CONF_RSSI_OFFSETS,
     CONF_SMOOTHING_SAMPLES,
+    DEFAULT_ATTENUATION,
     DEFAULT_MAX_VELOCITY,
     DEFAULT_REF_POWER,
     DEFAULT_SMOOTHING_SAMPLES,
     DISTANCE_INFINITE,
     HIST_KEEP_COUNT,
+    MAX_DISTANCE_VARIANCE,
+    MIN_DISTANCE_FOR_VARIANCE,
+    NEAR_FIELD_DISTANCE_VARIANCE,
     RSSI_HISTORY_SAMPLES,
+    VARIANCE_COLD_START_SAMPLES,
+    VARIANCE_FALLBACK_UNINIT,
+    VARIANCE_FLOOR_COLD_START,
+    VARIANCE_FLOOR_CONVERGED,
     VELOCITY_NOISE_MULTIPLIER,
     VELOCITY_TELEPORT_THRESHOLD,
 )
@@ -766,3 +775,105 @@ class BermudaAdvert(dict[str, Any]):
         if n % 2 == 0:
             return (sorted_rssi[mid - 1] + sorted_rssi[mid]) / 2
         return sorted_rssi[mid]
+
+    def _get_effective_rssi_variance(self, nowstamp: float | None = None) -> float:
+        """
+        Get effective RSSI variance with edge-case handling.
+
+        Applies floors for cold start and converged states, and inflates
+        variance based on measurement staleness.
+
+        Args:
+            nowstamp: Current timestamp for staleness calculation.
+                      If None, no staleness inflation is applied.
+
+        Returns:
+            Effective RSSI variance in dBm².
+
+        """
+        # Edge case: Kalman filter not initialized
+        if not self.rssi_kalman.is_initialized:
+            return VARIANCE_FALLBACK_UNINIT
+
+        variance = self.rssi_kalman.variance
+
+        # Apply floor based on sample count (cold start vs converged)
+        if self.rssi_kalman.sample_count < VARIANCE_COLD_START_SAMPLES:
+            # Cold start: use higher floor to prevent premature decisions
+            variance = max(variance, VARIANCE_FLOOR_COLD_START)
+        else:
+            # Converged: use standard floor to prevent over-confidence
+            variance = max(variance, VARIANCE_FLOOR_CONVERGED)
+
+        # Time-based variance inflation for stale measurements
+        # Uses public property to avoid accessing private member
+        if nowstamp is not None:
+            last_update = self.rssi_kalman.last_update_time
+            if last_update is not None:
+                staleness = nowstamp - last_update
+                if staleness > 0:
+                    # Inflate variance by process_noise * staleness
+                    variance += self.rssi_kalman.process_noise * staleness
+
+        return variance
+
+    def get_distance_variance(self, nowstamp: float | None = None) -> float:
+        """
+        Calculate distance variance using Gaussian Error Propagation.
+
+        Converts RSSI variance (dBm^2) to distance variance (m^2) using the
+        derivative of the log-distance path loss model.
+
+        Mathematical derivation:
+            RSSI = ref_power - 10 * n * log10(d)
+            d = 10^((ref_power - RSSI) / (10 * n))
+
+            dd/dRSSI = -d * ln(10) / (10 * n)
+
+            var_d = (dd/dRSSI)^2 * var_RSSI
+                  = (d * ln(10) / (10 * n))^2 * var_RSSI
+
+        Handles edge cases:
+            - Cold start (high RSSI variance floor)
+            - Converged filter (RSSI variance floor)
+            - Stale measurements (time-inflated RSSI variance)
+            - Uninitialized filter (fallback RSSI variance)
+            - Near-field (fixed distance variance)
+            - Far-field (capped distance variance)
+
+        Args:
+            nowstamp: Current timestamp for staleness calculation.
+
+        Returns:
+            Distance variance in m^2.
+
+        """
+        # 1. Get effective RSSI variance with all floors and inflation
+        rssi_variance = self._get_effective_rssi_variance(nowstamp)
+
+        # 2. Get current distance estimate
+        distance = self.rssi_distance
+        if distance is None:
+            distance = self.rssi_distance_raw
+        if distance is None or distance <= 0:
+            distance = 1.0  # Fallback to 1m if no distance available
+
+        # 3. Handle near-field: use fixed variance to avoid instability
+        if distance < MIN_DISTANCE_FOR_VARIANCE:
+            return NEAR_FIELD_DISTANCE_VARIANCE
+
+        # 4. Get attenuation (path loss exponent)
+        attenuation = self.conf_attenuation
+        if attenuation is None or attenuation <= 0:
+            attenuation = DEFAULT_ATTENUATION
+
+        # 5. Calculate variance using correct error propagation
+        # CORRECTED FORMULA (peer review): ln(10) is in the NUMERATOR
+        # factor = dd/dRSSI = d * ln(10) / (10 * n)
+        factor = (distance * math.log(10)) / (10.0 * attenuation)
+
+        # var_d = factor^2 * var_RSSI
+        distance_variance = (factor ** 2) * rssi_variance
+
+        # 6. Cap far-field variance to prevent unrealistic values
+        return min(distance_variance, MAX_DISTANCE_VARIANCE)

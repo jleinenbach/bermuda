@@ -136,9 +136,10 @@ The area selection logic (in `area_selection.py` and `coordinator.py`) determine
 
 1. **Distance contender check**: Adverts must have valid distance within max_radius
 2. **Stability margin**: Challenger must be significantly closer (8% or 0.2m) to compete
-3. **Streak requirement**: Multiple consecutive wins needed (4 same-floor, 6 cross-floor)
-4. **Cross-floor protection**: Stricter requirements for floor changes
-5. **Absolute profile rescue**: When primary scanner offline, secondary patterns can protect area
+3. **Variance-based stability**: Uses Gaussian Error Propagation (RSSI variance → distance variance) to require statistically significant improvements (2-3σ based on movement state)
+4. **Streak requirement**: Multiple consecutive wins needed (4 same-floor, 6 cross-floor)
+5. **Cross-floor protection**: Stricter requirements for floor changes
+6. **Absolute profile rescue**: When primary scanner offline, secondary patterns can protect area
 
 ### Scanner Correlation Learning (`correlation/`)
 
@@ -1763,6 +1764,25 @@ info = manager.get_scanner_pair_info(nowstamp=current_time)
   3. Final solution: Use registration check only (`_area_has_scanner()`). This is safer because it avoids the race condition. Trade-off: if scanner is genuinely offline, its room won't be selectable via UKF virtual assignment, but min-distance fallback will still work
 - **Files**: `area_selection.py:1511-1545`
 - **See**: Lesson Learned #63
+
+### Variance-Based Stability Margin (Post-BUG 22 Enhancement)
+- **Problem**: Fixed threshold stability margins (0.2m, 0.3m) don't account for measurement uncertainty. A 0.3m improvement from a high-variance measurement may be indistinguishable from noise.
+- **Solution**: Calculate significance threshold from combined Kalman variance using Gaussian Error Propagation
+- **Implementation**:
+  1. Convert RSSI variance to distance variance: `var_d = (d × ln(10) / (10 × n))² × var_RSSI`
+  2. Combine incumbent and challenger variances: `combined_std = sqrt(var_inc + var_chal)`
+  3. Apply sigma factor based on movement state: 2.0σ (MOVING/SETTLING) or 3.0σ (STATIONARY)
+  4. Threshold is `max(sigma × combined_std, min_threshold)` where min_threshold is legacy floor
+- **Key Method**: `BermudaAdvert.get_distance_variance(nowstamp)` uses Kalman filter variance and Gaussian Error Propagation
+- **Constants**:
+  | Constant | Value | Purpose |
+  |----------|-------|---------|
+  | `STABILITY_SIGMA_MOVING` | 2.0 | Sigma factor for MOVING/SETTLING states |
+  | `STABILITY_SIGMA_STATIONARY` | 3.0 | Sigma factor for STATIONARY state |
+  | `VARIANCE_FLOOR_COLD_START` | 9.0 | Initial variance (σ=3m) before Kalman converges |
+  | `MIN_VIRTUAL_VARIANCE` | 0.01 | Floor for score=1.0 edge case in virtual distance |
+- **Files**: `bermuda_advert.py`, `area_selection.py`, `const.py`
+- **Test Coverage**: Tests updated with `distance_variance=0.001` to bypass variance check when testing other features
 
 ### Auto-Learning Statistical Quality Improvements
 - Added variance floor (`AUTO_LEARNING_VARIANCE_FLOOR = 4.0 dB²`) to prevent z-score explosion
@@ -6859,3 +6879,44 @@ causing the bug to reappear. Registration check is safer—the trade-off (scanne
 room not selectable via UKF) is acceptable because min-distance fallback still works.
 
 **Rule of Thumb**: Before treating an area as "scannerless", verify it truly has no registered scanner. If it has a scanner that can't see the device, the device is too far away to be in that room.
+
+### 64. Use Gaussian Error Propagation for Distance Variance
+
+When converting RSSI measurements to distance, the uncertainty must also be propagated. The log-distance path loss formula creates a non-linear relationship, requiring the derivative to compute distance variance.
+
+**Bug Pattern:**
+```python
+# BAD - Uses fixed thresholds ignoring measurement uncertainty
+if distance_improvement > 0.2:  # Meters
+    allow_switch()
+# Problem: 0.3m improvement may be noise if variance is high
+```
+
+**Fix Pattern:**
+```python
+# GOOD - Variance-aware threshold
+# Gaussian Error Propagation: var_d = (∂d/∂RSSI)² × var_RSSI
+# Where ∂d/∂RSSI = d × ln(10) / (10 × n) for log-distance model
+def get_distance_variance(self, nowstamp) -> float:
+    rssi_variance = self.rssi_kalman.variance  # From Kalman filter
+    if self.rssi_distance is None or self.rssi_distance <= 0:
+        return VARIANCE_FLOOR_COLD_START
+    n = attenuation  # Path loss exponent (typically 2.0)
+    factor = (self.rssi_distance * math.log(10)) / (10.0 * n)
+    return max(factor * factor * rssi_variance, MIN_VARIANCE)
+
+# Combine variances and require statistically significant improvement
+combined_std = math.sqrt(incumbent_variance + challenger_variance)
+significance_threshold = sigma_factor * combined_std  # 2-3σ
+if distance_improvement >= significance_threshold:
+    allow_switch()
+```
+
+**Key Constants:**
+| Constant | Value | Purpose |
+|----------|-------|---------|
+| `STABILITY_SIGMA_MOVING` | 2.0 | 95% confidence for moving devices |
+| `STABILITY_SIGMA_STATIONARY` | 3.0 | 99.7% confidence for stationary devices |
+| `VARIANCE_FLOOR_COLD_START` | 9.0 | σ=3m before Kalman converges |
+
+**Rule of Thumb**: When converting between measurement domains (RSSI → distance), propagate uncertainty using the derivative. Fixed thresholds ignore measurement quality.

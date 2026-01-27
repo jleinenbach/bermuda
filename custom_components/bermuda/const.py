@@ -122,11 +122,44 @@ MOVEMENT_STATE_MOVING: Final = "moving"  # Recently changed rooms
 MOVEMENT_STATE_SETTLING: Final = "settling"  # Been in room a while
 MOVEMENT_STATE_STATIONARY: Final = "stationary"  # Been in room long time
 
-# Stability margins for each movement state
+# Stability margins for each movement state (LEGACY - replaced by variance-based)
 MARGIN_MOVING_PERCENT: Final = 0.05  # 5% - easier to switch when moving
 MARGIN_SETTLING_PERCENT: Final = 0.08  # 8% - normal threshold (same as base)
 MARGIN_STATIONARY_PERCENT: Final = 0.15  # 15% - harder to switch when stationary
 MARGIN_STATIONARY_METERS: Final = 0.30  # 0.3m - also increase absolute threshold
+
+# =============================================================================
+# Variance-Based Stability Margin (replaces fixed percentage margins)
+# =============================================================================
+# Uses Kalman filter variance propagation for scientifically correct thresholds.
+# Distance improvement must exceed combined uncertainty * sigma factor.
+# Formula: threshold = sigma_factor * sqrt(var_incumbent + var_challenger)
+
+# Sigma factors (movement-aware) - how many standard deviations required
+# Peer Review: MOVING set to 2.0 sigma (not 1.5 sigma) because Q isn't dynamically scaled
+STABILITY_SIGMA_MOVING: Final = 2.0  # 2 sigma - allows switching while moving
+STABILITY_SIGMA_SETTLING: Final = 2.0  # 2 sigma - standard threshold
+STABILITY_SIGMA_STATIONARY: Final = 3.0  # 3 sigma - very stable (99.7% confidence)
+
+# RSSI Variance floors (dBm^2) - prevent over/under-confidence
+# Based on BLE_RSSI_TYPICAL_STDDEV ~ 3-4 dBm in indoor environments
+VARIANCE_FLOOR_COLD_START: Final = 9.0  # std=3dB, for sample_count < 5
+VARIANCE_FLOOR_CONVERGED: Final = 4.0  # std=2dB, after Kalman convergence
+VARIANCE_FALLBACK_UNINIT: Final = 25.0  # std=5dB, if Kalman not initialized
+VARIANCE_COLD_START_SAMPLES: Final = 5  # Samples below which cold start floor applies
+
+# Distance variance bounds (m^2) - prevent numerical issues
+MIN_DISTANCE_FOR_VARIANCE: Final = 0.5  # Below this: use fixed variance
+NEAR_FIELD_DISTANCE_VARIANCE: Final = 0.1  # m^2, fixed variance for near-field
+MAX_DISTANCE_VARIANCE: Final = 4.0  # m^2, cap for far-field (std=2m max)
+MIN_VIRTUAL_VARIANCE: Final = 0.25  # m^2, floor for virtual distances (std=0.5m)
+
+# Virtual distance variance base (for scannerless rooms)
+# Formula: virtual_variance = BASE * (2 - score)^2 ensures variance > 0 even at score=1.0
+VIRTUAL_DISTANCE_BASE_VARIANCE: Final = 0.25  # m^2, minimum even for perfect score
+
+# Default attenuation (path loss exponent) when not configured
+DEFAULT_ATTENUATION: Final = 2.0  # Typical for line-of-sight indoor
 
 # Physical RSSI Priority - prevents offset-boosted signals from winning over physically closer sensors
 MIN_DISTANCE: Final = 0.1  # Minimum distance in metres (prevents multiple sensors at "0m")

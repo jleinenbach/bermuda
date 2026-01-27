@@ -111,8 +111,11 @@ def _make_advert(
     floor_id: str | None = None,
     floor_level: int | None = None,
     rssi: float | None = -50.0,
+    distance_variance: float | None = None,
 ) -> SimpleNamespace:
     """Create a minimal advert-like object with distance and RSSI metadata."""
+    import math
+
     now = monotonic_time_coarse()
     stamp = now - age
     hist_dist = list(hist_distance_by_interval) if hist_distance_by_interval is not None else []
@@ -130,6 +133,21 @@ def _make_advert(
             return sorted_rssi[mid]
         return rssi
 
+    # Calculate default distance variance if not specified
+    # Uses simplified Gaussian Error Propagation: var ∝ d²
+    if distance_variance is None:
+        if distance is None or distance <= 0:
+            distance_variance = 1.0  # Default fallback
+        elif distance < 0.5:
+            distance_variance = 0.1  # Near-field variance
+        else:
+            # Simplified: factor = d × ln(10) / (10 × n), var = factor² × RSSI_var
+            factor = (distance * math.log(10)) / (10.0 * 2.0)
+            distance_variance = min((factor**2) * 4.0, 4.0)  # Cap at 4.0
+
+    # Capture in closure for the lambda
+    _distance_variance = distance_variance
+
     advert = SimpleNamespace(
         name=name,
         area_id=area_id,
@@ -144,6 +162,8 @@ def _make_advert(
         conf_rssi_offset=0,
     )
     advert.median_rssi = median_rssi_func
+    # Add get_distance_variance method for variance-based stability check
+    advert.get_distance_variance = lambda nowstamp=None: _distance_variance
     return advert
 
 
@@ -278,9 +298,9 @@ class TestRssiConsistencyCheck:
         device = _configure_device(coordinator_with_rssi_priority, "AA:BB:CC:DD:EE:03")
 
         # Incumbent: further away, weaker signal
-        incumbent = _make_advert("inc", "area-inc", distance=2.0, rssi=-65.0)
+        incumbent = _make_advert("inc", "area-inc", distance=2.0, rssi=-65.0, distance_variance=0.001)
         # Challenger: closer, stronger signal (consistent)
-        challenger = _make_advert("chal", "area-chal", distance=1.0, rssi=-55.0)
+        challenger = _make_advert("chal", "area-chal", distance=1.0, rssi=-55.0, distance_variance=0.001)
 
         device.area_advert = incumbent  # type: ignore[assignment]
         device.adverts = {"inc": incumbent, "chal": challenger}  # type: ignore[dict-item]
@@ -335,20 +355,24 @@ class TestRssiConsistencyCheck:
         device = _configure_device(coordinator_with_rssi_priority, "AA:BB:CC:DD:EE:05")
 
         # Incumbent with slightly stronger signal (within 8dB margin)
+        # Use larger distances so improvement (0.5m) exceeds INCUMBENT_MARGIN_METERS (0.2m)
         incumbent = _make_advert(
             "inc",
             "area-inc",
-            distance=0.6,
+            distance=1.0,
             rssi=-50.0,
-            hist_distance_by_interval=[0.6, 0.6, 0.6],
+            hist_distance_by_interval=[1.0, 1.0, 1.0],
+            distance_variance=0.001,
         )
-        # Challenger closer, only 5dB weaker (within margin)
+        # Challenger closer, only 5dB weaker (within RSSI margin)
+        # Improvement: 1.0m - 0.5m = 0.5m > 0.2m incumbent margin
         challenger = _make_advert(
             "chal",
             "area-chal",
             distance=0.5,
-            rssi=-55.0,  # Only 5dB weaker
+            rssi=-55.0,  # Only 5dB weaker (within 8dB margin)
             hist_distance_by_interval=[0.5, 0.5, 0.5],
+            distance_variance=0.001,
         )
 
         device.area_advert = incumbent  # type: ignore[assignment]
@@ -510,8 +534,8 @@ class TestEdgeCases:
         """When both have no RSSI, pure distance comparison should work."""
         device = _configure_device(coordinator_with_rssi_priority, "AA:BB:CC:DD:EE:09")
 
-        incumbent = _make_advert("inc", "area-inc", distance=2.0, rssi=None)
-        challenger = _make_advert("chal", "area-chal", distance=1.0, rssi=None)
+        incumbent = _make_advert("inc", "area-inc", distance=2.0, rssi=None, distance_variance=0.001)
+        challenger = _make_advert("chal", "area-chal", distance=1.0, rssi=None, distance_variance=0.001)
 
         device.area_advert = incumbent  # type: ignore[assignment]
         device.adverts = {"inc": incumbent, "chal": challenger}  # type: ignore[dict-item]
@@ -533,6 +557,7 @@ class TestEdgeCases:
             distance=5.0,
             rssi=-70.0,
             hist_distance_by_interval=[5.0, 5.0, 5.0],
+            distance_variance=0.001,
         )
         challenger = _make_advert(
             "chal",
@@ -540,6 +565,7 @@ class TestEdgeCases:
             distance=1.5,
             rssi=-55.0,
             hist_distance_by_interval=[1.5, 1.5, 1.5],
+            distance_variance=0.001,
         )
 
         device.area_advert = incumbent  # type: ignore[assignment]

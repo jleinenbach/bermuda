@@ -60,10 +60,7 @@ from .const import (
     FLOOR_WITNESS_MARGIN_INCREMENT,
     HISTORY_WINDOW,
     INCUMBENT_MARGIN_METERS,
-    MARGIN_MOVING_PERCENT,
-    MARGIN_SETTLING_PERCENT,
     MARGIN_STATIONARY_METERS,
-    MARGIN_STATIONARY_PERCENT,
     MATURE_ABSOLUTE_MIN_COUNT,
     MATURE_PROFILE_MIN_PAIRS,
     MINDIST_PENDING_IMPROVEMENT,
@@ -84,6 +81,9 @@ from .const import (
     SCANNER_ACTIVITY_TIMEOUT,
     SOFT_INC_MIN_DISTANCE_ADVANTAGE,
     SOFT_INC_MIN_HISTORY_DIVISOR,
+    STABILITY_SIGMA_MOVING,
+    STABILITY_SIGMA_SETTLING,
+    STABILITY_SIGMA_STATIONARY,
     STREAK_LOW_CONFIDENCE_THRESHOLD,
     UKF_HIGH_CONFIDENCE_OVERRIDE,
     UKF_LOW_CONFIDENCE_THRESHOLD,
@@ -2172,36 +2172,51 @@ class AreaSelectionHandler:
                 else:
                     continue
 
-            # STABILITY CHECK
+            # STABILITY CHECK (Variance-Based)
+            # Uses Kalman filter variance propagation for scientifically correct thresholds.
+            # Distance improvement must exceed combined uncertainty * sigma factor.
             if not passed_via_rssi_override:
                 distance_improvement = incumbent_distance - challenger_distance
                 if distance_improvement > 0:
-                    percent_improvement = distance_improvement / incumbent_distance if incumbent_distance > 0 else 0
+                    # Get distance variances from both adverts
+                    incumbent_variance = current_incumbent.get_distance_variance(nowstamp)
+                    challenger_variance = challenger.get_distance_variance(nowstamp)
 
+                    # Combined standard deviation (Gaussian addition of variances)
+                    combined_std = math.sqrt(incumbent_variance + challenger_variance)
+
+                    # Movement-aware sigma factor
                     movement_state = device.get_movement_state(stamp_now=nowstamp)
                     if movement_state == MOVEMENT_STATE_MOVING:
-                        required_percent = MARGIN_MOVING_PERCENT
-                        required_meters = INCUMBENT_MARGIN_METERS
+                        sigma_factor = STABILITY_SIGMA_MOVING  # 2.0 sigma
                     elif movement_state == MOVEMENT_STATE_SETTLING:
-                        required_percent = MARGIN_SETTLING_PERCENT
-                        required_meters = INCUMBENT_MARGIN_METERS
+                        sigma_factor = STABILITY_SIGMA_SETTLING  # 2.0 sigma
                     else:  # STATIONARY
-                        required_percent = MARGIN_STATIONARY_PERCENT
-                        required_meters = MARGIN_STATIONARY_METERS
+                        sigma_factor = STABILITY_SIGMA_STATIONARY  # 3.0 sigma
 
-                    meets_stability_margin = (
-                        percent_improvement >= required_percent or distance_improvement >= required_meters
-                    )
+                    # Threshold: improvement must exceed sigma_factor * combined_std
+                    significance_threshold = sigma_factor * combined_std
+
+                    # Fallback to legacy meters threshold if variance-based is too small
+                    # This handles edge cases where both variances are very small
+                    if movement_state in (MOVEMENT_STATE_MOVING, MOVEMENT_STATE_SETTLING):
+                        min_threshold = INCUMBENT_MARGIN_METERS
+                    else:
+                        min_threshold = MARGIN_STATIONARY_METERS
+                    significance_threshold = max(significance_threshold, min_threshold)
+
+                    meets_stability_margin = distance_improvement >= significance_threshold
                     if not meets_stability_margin:
                         if _superchatty:
                             _LOGGER.debug(
-                                "Stability margin (%s): %s rejected (%.2fm, %.1f%% < %.1f%% or %.2fm)",
+                                "Stability margin (%s): %s rejected "
+                                "(%.2fm improvement < %.2fm threshold = %.1f sigma * %.2fm std)",
                                 movement_state,
                                 challenger.name,
                                 distance_improvement,
-                                percent_improvement * 100,
-                                required_percent * 100,
-                                required_meters,
+                                significance_threshold,
+                                sigma_factor,
+                                combined_std,
                             )
                         continue
 
