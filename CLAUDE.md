@@ -229,13 +229,17 @@ distance_variance = (factor ** 2) * rssi_variance
 │  ┌────────────────────────────────────────────────────────────────────────────┐ │
 │  │ BermudaAdvert.get_distance_variance(nowstamp)                              │ │
 │  │                                                                             │ │
-│  │   factor = (distance * ln(10)) / (10 * attenuation)                        │ │
+│  │   TWO-SLOPE MODEL (matches rssi_to_metres):                                │ │
+│  │   - distance <= 6m: n = PATH_LOSS_EXPONENT_NEAR (1.8)                      │ │
+│  │   - distance > 6m:  n = configured attenuation (default 2.0)              │ │
+│  │                                                                             │ │
+│  │   factor = (distance * ln(10)) / (10 * n)                                  │ │
 │  │   var_distance = factor^2 * var_rssi                                       │ │
 │  │                                                                             │ │
 │  │   Edge cases handled:                                                       │ │
 │  │   - Cold start (no Kalman data): return VARIANCE_FLOOR_COLD_START (9.0)   │ │
-│  │   - Near-field (< 0.5m): return NEAR_FIELD_DISTANCE_VARIANCE (0.04)       │ │
-│  │   - Very far (> 20m): cap at MAX_DISTANCE_VARIANCE (25.0)                 │ │
+│  │   - Near-field (< 0.5m): return NEAR_FIELD_DISTANCE_VARIANCE (0.1)        │ │
+│  │   - Far-field cap: return min(var, MAX_DISTANCE_VARIANCE (4.0))           │ │
 │  └────────────────────────────────────────────────────────────────────────────┘ │
 │                              │                                                   │
 │                              ▼                                                   │
@@ -369,13 +373,13 @@ Before the Kalman filter has any data, use a conservative high variance.
 **2. Near-Field (< 0.5m):**
 ```python
 if distance < MIN_DISTANCE_FOR_VARIANCE:
-    return NEAR_FIELD_DISTANCE_VARIANCE  # 0.04 m^2 (std = 0.2m)
+    return NEAR_FIELD_DISTANCE_VARIANCE  # 0.1 m^2 (std = 0.32m)
 ```
 Very close distances have non-linear RSSI behavior; use fixed low variance.
 
 **3. Far-Field Cap:**
 ```python
-return min(distance_variance, MAX_DISTANCE_VARIANCE)  # Cap at 25 m^2
+return min(distance_variance, MAX_DISTANCE_VARIANCE)  # Cap at 4.0 m^2
 ```
 Prevent unrealistically high variances at extreme distances.
 
