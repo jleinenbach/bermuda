@@ -1758,7 +1758,7 @@ info = manager.get_scanner_pair_info(nowstamp=current_time)
   - If area HAS **active** scanner but no advert → REJECT (scanner doesn't see device, device too far)
   - If area has **offline** scanner only → treat as scannerless room (let UKF decide)
   - If area truly has no scanner → proceed with scannerless room logic
-- **Codex Review Feedback**: Original fix used `_area_has_scanner()` which only checks registration. This would incorrectly reject UKF decisions when the area's scanner is temporarily offline (proxy reboot, network loss). The improved fix uses `_area_has_active_scanner()` which checks both registration AND freshness (last_seen within EVIDENCE_WINDOW_SECONDS).
+- **Codex Review Feedback**: Original fix used `_area_has_scanner()` which only checks registration. This would incorrectly reject UKF decisions when the area's scanner is temporarily offline (proxy reboot, network loss). The improved fix uses `_area_has_active_scanner()` which checks both registration AND freshness (last_seen within `SCANNER_ACTIVITY_TIMEOUT` = 30 seconds).
 - **Files**: `area_selection.py:1500-1530`, `area_selection.py:595-627`
 - **See**: Lesson Learned #63
 
@@ -6849,6 +6849,6 @@ if best_advert is None:
 3. **Scanner blind spot**: Area HAS active scanner but it doesn't see device → REJECT
 
 The fix distinguishes these cases using `_area_has_active_scanner()` which checks both
-registration AND freshness (last_seen within EVIDENCE_WINDOW_SECONDS).
+registration AND freshness (last_seen within `SCANNER_ACTIVITY_TIMEOUT` = 30 seconds).
 
 **Rule of Thumb**: Before treating an area as "scannerless", verify it truly has no ACTIVE scanner. If it has an active scanner that simply can't see the device, the device is too far away to be in that room. But if the scanner is offline, let UKF decide based on other available scanners.

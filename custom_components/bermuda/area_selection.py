@@ -81,6 +81,7 @@ from .const import (
     RSSI_INVALID_SENTINEL,
     SAME_FLOOR_MIN_HISTORY,
     SAME_FLOOR_STREAK,
+    SCANNER_ACTIVITY_TIMEOUT,
     SOFT_INC_MIN_DISTANCE_ADVANTAGE,
     SOFT_INC_MIN_HISTORY_DIVISOR,
     STREAK_LOW_CONFIDENCE_THRESHOLD,
@@ -597,12 +598,17 @@ class AreaSelectionHandler:
         Check if an area has at least one ACTIVE scanner (recently seen).
 
         This is more strict than _area_has_scanner() - it also verifies that
-        at least one scanner in the area has been active within the evidence window.
+        at least one scanner in the area has been active within the activity timeout.
 
         This distinction is important for BUG 22 fix: if a scanner is registered
         but offline (proxy rebooted, network loss), we should NOT reject UKF
         decisions for that area. Instead, treat it like a scannerless room and
         let UKF decide based on other scanners.
+
+        NOTE: Uses SCANNER_ACTIVITY_TIMEOUT (30s) not EVIDENCE_WINDOW_SECONDS (15min)!
+        This is intentional - we want to quickly detect scanner outages so we can
+        fall back to UKF-based decisions rather than rejecting valid room selections
+        for 15 minutes while waiting for evidence to expire.
 
         Args:
         ----
@@ -612,14 +618,14 @@ class AreaSelectionHandler:
         Returns:
         -------
             True if the area contains at least one scanner that has been
-            seen within EVIDENCE_WINDOW_SECONDS.
+            seen within SCANNER_ACTIVITY_TIMEOUT (30 seconds).
 
         """
         for scanner in self._scanners:
             if scanner.area_id == area_id:
                 # Check if this scanner is active (has recent data)
                 scanner_last_seen = getattr(scanner, "last_seen", None)
-                if scanner_last_seen is not None and nowstamp - scanner_last_seen < EVIDENCE_WINDOW_SECONDS:
+                if scanner_last_seen is not None and nowstamp - scanner_last_seen < SCANNER_ACTIVITY_TIMEOUT:
                     return True
         return False
 

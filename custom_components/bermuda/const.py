@@ -106,6 +106,15 @@ DWELL_TIME_SETTLING_SECONDS: Final = 600  # 2-10 min: settling in, normal thresh
 # Area lock auto-unlock - if the locked scanner hasn't seen the device for this long,
 # the lock is released and auto-detection resumes (device probably left the room)
 AREA_LOCK_TIMEOUT_SECONDS: Final = 60  # 60 seconds without signal from locked scanner
+
+# Scanner activity timeout - used by _area_has_active_scanner() to determine if a scanner
+# is actively providing data. This is much shorter than EVIDENCE_WINDOW_SECONDS (15 min)
+# because we want to quickly detect when a scanner goes offline (proxy reboot, network loss)
+# and treat its area as "scannerless" so UKF can make decisions based on other scanners.
+# 30 seconds is long enough to bridge brief network hiccups but short enough to react
+# quickly to actual scanner outages.
+SCANNER_ACTIVITY_TIMEOUT: Final = 30.0  # seconds
+
 # After SETTLING: stationary, higher threshold
 
 # Movement state constants
