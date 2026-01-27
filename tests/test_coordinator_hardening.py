@@ -122,6 +122,9 @@ def test_refresh_area_by_min_distance_handles_empty_incumbent_history(
         hist_distance_by_interval=[],
     )
     incumbent.median_rssi = lambda: -60.0
+    # Add get_distance_variance method for variance-based stability check
+    # Use low variance to bypass variance-based stability margin in this test
+    incumbent.get_distance_variance = lambda nowstamp=None: 0.001
     challenger = SimpleNamespace(
         name="challenger",
         area_id="area-new",
@@ -134,6 +137,9 @@ def test_refresh_area_by_min_distance_handles_empty_incumbent_history(
         hist_distance_by_interval=[2.1, 2.0, 1.9, 1.8],
     )
     challenger.median_rssi = lambda: -55.0
+    # Add get_distance_variance method for variance-based stability check
+    # Use low variance to bypass variance-based stability margin in this test
+    challenger.get_distance_variance = lambda nowstamp=None: 0.001
 
     device.area_advert = incumbent  # type: ignore[assignment]
     device.adverts = {"incumbent": incumbent, "challenger": challenger}  # type: ignore[dict-item]

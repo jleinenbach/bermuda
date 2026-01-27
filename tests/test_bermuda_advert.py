@@ -921,3 +921,405 @@ class TestComputeSmoothedDistance:
         result = bermuda_advert._compute_smoothed_distance()
         # Median of [4.0, 5.0, 6.0, 7.0] is (5.0 + 6.0) / 2 = 5.5
         assert result == 5.5
+
+
+class TestDistanceVariance:
+    """Tests for variance-based stability margin calculations.
+
+    These tests verify the Gaussian Error Propagation formula for converting
+    RSSI variance (dBm²) to distance variance (m²), including:
+    - Correct formula: var_d = (d × ln(10) / (10 × n))² × var_RSSI
+    - Edge cases: cold start, converged, uninitialized, near-field, far-field
+    - Time-based staleness inflation
+    """
+
+    def test_get_distance_variance_normal_case(self, bermuda_advert: BermudaAdvert) -> None:
+        """Test get_distance_variance with normal initialized filter."""
+        import math
+
+        # Initialize Kalman filter with some samples
+        for _ in range(10):
+            bermuda_advert.rssi_kalman.update(-70.0)
+
+        bermuda_advert.rssi_distance = 5.0
+        bermuda_advert.rssi_distance_raw = 5.0
+
+        variance = bermuda_advert.get_distance_variance()
+
+        # Verify result is positive and reasonable
+        assert variance > 0
+        assert variance < 10.0  # Should be bounded
+
+        # Verify formula: var_d = (d × ln(10) / (10 × n))² × var_RSSI
+        # With d=5m, n=2.0, var_RSSI~4.0 (converged floor):
+        # factor = 5 * ln(10) / 20 ≈ 0.576
+        # var_d ≈ 0.576² * 4.0 ≈ 1.32
+        expected_factor = (5.0 * math.log(10)) / (10.0 * 2.0)
+        expected_var = (expected_factor**2) * 4.0  # Using converged floor
+        assert abs(variance - expected_var) < 0.5  # Allow some tolerance
+
+    def test_get_distance_variance_cold_start(self, bermuda_advert: BermudaAdvert) -> None:
+        """Test get_distance_variance during cold start (< 5 samples)."""
+        from custom_components.bermuda.const import VARIANCE_FLOOR_COLD_START
+
+        # Initialize Kalman filter with only 3 samples (cold start)
+        for _ in range(3):
+            bermuda_advert.rssi_kalman.update(-70.0)
+
+        bermuda_advert.rssi_distance = 5.0
+        bermuda_advert.rssi_distance_raw = 5.0
+
+        variance = bermuda_advert.get_distance_variance()
+
+        # Cold start should use higher variance floor (9.0)
+        # factor = 5 * ln(10) / 20 ≈ 0.576
+        # var_d ≈ 0.576² * 9.0 ≈ 2.98
+        import math
+
+        expected_factor = (5.0 * math.log(10)) / (10.0 * 2.0)
+        expected_var = (expected_factor**2) * VARIANCE_FLOOR_COLD_START
+        # Cold start variance should be higher than converged
+        assert variance >= expected_var * 0.9  # Allow 10% tolerance
+
+    def test_get_distance_variance_uninitialized_filter(self, bermuda_advert: BermudaAdvert) -> None:
+        """Test get_distance_variance with uninitialized Kalman filter."""
+        from custom_components.bermuda.const import (
+            PATH_LOSS_EXPONENT_NEAR,
+            VARIANCE_FALLBACK_UNINIT,
+        )
+
+        # Don't initialize Kalman filter, but set distance
+        # Use 2.0m (near-field, uses PATH_LOSS_EXPONENT_NEAR per two-slope model)
+        bermuda_advert.rssi_kalman.reset()
+        bermuda_advert.rssi_distance = 2.0
+        bermuda_advert.rssi_distance_raw = 2.0
+
+        variance = bermuda_advert.get_distance_variance()
+
+        # Uninitialized filter should use fallback variance (25.0 dBm²)
+        # Near-field uses PATH_LOSS_EXPONENT_NEAR (~1.8) per two-slope model
+        import math
+
+        expected_factor = (2.0 * math.log(10)) / (10.0 * PATH_LOSS_EXPONENT_NEAR)
+        expected_var = (expected_factor**2) * VARIANCE_FALLBACK_UNINIT
+        assert abs(variance - expected_var) < 0.1
+
+    def test_get_distance_variance_near_field(self, bermuda_advert: BermudaAdvert) -> None:
+        """Test get_distance_variance returns fixed value for near-field (<0.5m)."""
+        from custom_components.bermuda.const import NEAR_FIELD_DISTANCE_VARIANCE
+
+        # Initialize filter
+        for _ in range(10):
+            bermuda_advert.rssi_kalman.update(-50.0)
+
+        # Set very close distance
+        bermuda_advert.rssi_distance = 0.3
+        bermuda_advert.rssi_distance_raw = 0.3
+
+        variance = bermuda_advert.get_distance_variance()
+
+        # Near-field should return fixed variance (0.1 m²)
+        assert variance == NEAR_FIELD_DISTANCE_VARIANCE
+
+    def test_get_distance_variance_far_field_cap(self, bermuda_advert: BermudaAdvert) -> None:
+        """Test get_distance_variance is capped for far-field distances."""
+        from custom_components.bermuda.const import MAX_DISTANCE_VARIANCE
+
+        # Initialize filter with high variance
+        bermuda_advert.rssi_kalman.update(-95.0)
+
+        # Set very large distance
+        bermuda_advert.rssi_distance = 50.0
+        bermuda_advert.rssi_distance_raw = 50.0
+
+        variance = bermuda_advert.get_distance_variance()
+
+        # Far-field should be capped at MAX_DISTANCE_VARIANCE (4.0 m²)
+        assert variance <= MAX_DISTANCE_VARIANCE
+
+    def test_get_distance_variance_staleness_inflation(self, bermuda_advert: BermudaAdvert) -> None:
+        """Test get_distance_variance inflates variance for stale measurements."""
+        import math
+
+        # Initialize filter with some samples and set timestamp
+        for i in range(10):
+            bermuda_advert.rssi_kalman.update(-70.0, timestamp=100.0 + i)
+
+        bermuda_advert.rssi_distance = 5.0
+        bermuda_advert.rssi_distance_raw = 5.0
+
+        # Get variance at current time (not stale)
+        variance_fresh = bermuda_advert.get_distance_variance(nowstamp=110.0)
+
+        # Get variance 30 seconds later (stale)
+        variance_stale = bermuda_advert.get_distance_variance(nowstamp=140.0)
+
+        # Stale variance should be higher due to time-based inflation
+        assert variance_stale > variance_fresh
+
+    def test_get_distance_variance_at_10m(self, bermuda_advert: BermudaAdvert) -> None:
+        """Test get_distance_variance at 10m distance (peer review edge case)."""
+        import math
+
+        # Initialize filter
+        for _ in range(10):
+            bermuda_advert.rssi_kalman.update(-80.0)
+
+        bermuda_advert.rssi_distance = 10.0
+        bermuda_advert.rssi_distance_raw = 10.0
+
+        variance = bermuda_advert.get_distance_variance()
+
+        # At d=10m, n=2.0, var_RSSI=4.0:
+        # factor = 10 * ln(10) / 20 ≈ 1.151
+        # var_d ≈ 1.151² * 4.0 ≈ 5.3 → capped at 4.0
+        expected_factor = (10.0 * math.log(10)) / (10.0 * 2.0)
+        expected_var = (expected_factor**2) * 4.0
+        # Should be capped at MAX_DISTANCE_VARIANCE
+        from custom_components.bermuda.const import MAX_DISTANCE_VARIANCE
+
+        assert variance == min(expected_var, MAX_DISTANCE_VARIANCE)
+
+    def test_get_distance_variance_different_attenuation(
+        self,
+        mock_parent_device: MagicMock,
+        mock_advertisement_data: MagicMock,
+        mock_scanner_device: MagicMock,
+    ) -> None:
+        """Test get_distance_variance with different attenuation values in far-field."""
+        import math
+
+        from custom_components.bermuda.const import VARIANCE_FLOOR_CONVERGED
+
+        # Create advert with higher attenuation (3.5)
+        options: dict[str, Any] = {
+            CONF_RSSI_OFFSETS: {},
+            CONF_REF_POWER: -59,
+            CONF_ATTENUATION: 3.5,  # Higher attenuation (used in far-field)
+            CONF_MAX_VELOCITY: 3.0,
+            CONF_SMOOTHING_SAMPLES: 5,
+        }
+        with patch(
+            "custom_components.bermuda.bermuda_advert.monotonic_time_coarse",
+            return_value=125.0,
+        ):
+            advert = BermudaAdvert(
+                parent_device=mock_parent_device,
+                advertisementdata=mock_advertisement_data,
+                options=options,
+                scanner_device=mock_scanner_device,
+            )
+
+        # Initialize filter
+        for _ in range(10):
+            advert.rssi_kalman.update(-70.0)
+
+        # Use 7.0m to be in far-field (>= TWO_SLOPE_BREAKPOINT_METRES = 6m)
+        # This ensures the configured attenuation (3.5) is actually used
+        advert.rssi_distance = 7.0
+        advert.rssi_distance_raw = 7.0
+
+        variance = advert.get_distance_variance()
+
+        # Far-field uses configured attenuation (3.5)
+        # factor = 7 * ln(10) / 35 ≈ 0.461
+        # var_d ≈ 0.461² * 4.0 ≈ 0.85
+        expected_factor = (7.0 * math.log(10)) / (10.0 * 3.5)
+        expected_var = (expected_factor**2) * VARIANCE_FLOOR_CONVERGED
+        assert abs(variance - expected_var) < 0.2
+
+    def test_get_distance_variance_no_distance(self, bermuda_advert: BermudaAdvert) -> None:
+        """Test get_distance_variance with no distance available falls back to 1m."""
+        import math
+
+        from custom_components.bermuda.const import (
+            PATH_LOSS_EXPONENT_NEAR,
+            VARIANCE_FALLBACK_UNINIT,
+        )
+
+        bermuda_advert.rssi_kalman.reset()
+        bermuda_advert.rssi_distance = None
+        bermuda_advert.rssi_distance_raw = None
+
+        variance = bermuda_advert.get_distance_variance()
+
+        # Should use fallback distance of 1m (near-field) and fallback variance
+        # Near-field uses PATH_LOSS_EXPONENT_NEAR per two-slope model
+        expected_factor = (1.0 * math.log(10)) / (10.0 * PATH_LOSS_EXPONENT_NEAR)
+        expected_var = (expected_factor**2) * VARIANCE_FALLBACK_UNINIT
+        assert abs(variance - expected_var) < 0.2
+
+    def test_get_distance_variance_two_slope_boundary(
+        self,
+        mock_parent_device: MagicMock,
+        mock_advertisement_data: MagicMock,
+        mock_scanner_device: MagicMock,
+    ) -> None:
+        """Test variance calculation uses two-slope model at boundary.
+
+        Verifies that:
+        - At or below TWO_SLOPE_BREAKPOINT_METRES (6m): uses PATH_LOSS_EXPONENT_NEAR
+        - Above TWO_SLOPE_BREAKPOINT_METRES: uses configured attenuation
+
+        P3 fix: Use <= to match rssi_to_metres boundary condition (util.py:204)
+        """
+        import math
+
+        from custom_components.bermuda.const import (
+            PATH_LOSS_EXPONENT_NEAR,
+            TWO_SLOPE_BREAKPOINT_METRES,
+            VARIANCE_FLOOR_CONVERGED,
+        )
+
+        # Create advert with specific attenuation
+        options: dict[str, Any] = {
+            CONF_RSSI_OFFSETS: {},
+            CONF_REF_POWER: -59,
+            CONF_ATTENUATION: 4.0,  # Different from PATH_LOSS_EXPONENT_NEAR (1.8)
+            CONF_MAX_VELOCITY: 3.0,
+            CONF_SMOOTHING_SAMPLES: 5,
+        }
+        with patch(
+            "custom_components.bermuda.bermuda_advert.monotonic_time_coarse",
+            return_value=125.0,
+        ):
+            advert = BermudaAdvert(
+                parent_device=mock_parent_device,
+                advertisementdata=mock_advertisement_data,
+                options=options,
+                scanner_device=mock_scanner_device,
+            )
+
+        # Initialize filter
+        for _ in range(10):
+            advert.rssi_kalman.update(-70.0)
+
+        # Test just below breakpoint (5.9m) - should use near-field exponent
+        advert.rssi_distance = 5.9
+        advert.rssi_distance_raw = 5.9
+        variance_near = advert.get_distance_variance()
+        expected_near = ((5.9 * math.log(10)) / (10.0 * PATH_LOSS_EXPONENT_NEAR)) ** 2 * VARIANCE_FLOOR_CONVERGED
+
+        # Test above breakpoint (6.1m) - should use configured attenuation
+        # P3 fix: At exactly 6.0m, near-field is used (matches util.py:204)
+        advert.rssi_distance = 6.1
+        advert.rssi_distance_raw = 6.1
+        variance_far = advert.get_distance_variance()
+        expected_far = ((6.1 * math.log(10)) / (10.0 * 4.0)) ** 2 * VARIANCE_FLOOR_CONVERGED
+
+        # Verify near-field uses PATH_LOSS_EXPONENT_NEAR (1.8)
+        assert abs(variance_near - expected_near) < 0.1
+
+        # Verify far-field uses configured attenuation (4.0)
+        assert abs(variance_far - expected_far) < 0.1
+
+        # Near-field variance should be higher due to lower exponent (1.8 vs 4.0)
+        # Higher exponent = smaller factor = smaller variance
+        assert variance_near > variance_far
+
+    def test_effective_rssi_variance_cold_start_floor(self, bermuda_advert: BermudaAdvert) -> None:
+        """Test _get_effective_rssi_variance applies cold start floor."""
+        from custom_components.bermuda.const import VARIANCE_FLOOR_COLD_START
+
+        # Initialize with 2 samples (cold start)
+        bermuda_advert.rssi_kalman.update(-70.0)
+        bermuda_advert.rssi_kalman.update(-70.0)
+
+        variance = bermuda_advert._get_effective_rssi_variance()
+
+        # Cold start floor should be applied
+        assert variance >= VARIANCE_FLOOR_COLD_START
+
+    def test_effective_rssi_variance_converged_floor(self, bermuda_advert: BermudaAdvert) -> None:
+        """Test _get_effective_rssi_variance applies converged floor."""
+        from custom_components.bermuda.const import VARIANCE_FLOOR_CONVERGED
+
+        # Initialize with many samples to converge
+        for _ in range(50):
+            bermuda_advert.rssi_kalman.update(-70.0)
+
+        variance = bermuda_advert._get_effective_rssi_variance()
+
+        # Converged floor should be applied
+        assert variance >= VARIANCE_FLOOR_CONVERGED
+
+    def test_effective_rssi_variance_time_inflation(self, bermuda_advert: BermudaAdvert) -> None:
+        """Test _get_effective_rssi_variance applies time-based inflation."""
+        # Initialize with timestamps
+        for i in range(10):
+            bermuda_advert.rssi_kalman.update(-70.0, timestamp=100.0 + i)
+
+        # Last update was at timestamp 109.0
+        variance_fresh = bermuda_advert._get_effective_rssi_variance(nowstamp=110.0)
+        variance_stale = bermuda_advert._get_effective_rssi_variance(nowstamp=200.0)
+
+        # Stale measurement should have higher variance
+        assert variance_stale > variance_fresh
+
+        # Check inflation amount: should be process_noise × DIFFERENCE in staleness
+        # Fresh: staleness = 110.0 - 109.0 = 1.0s
+        # Stale: staleness = 200.0 - 109.0 = 91.0s
+        # Difference: 91.0 - 1.0 = 90.0s
+        staleness_diff = (200.0 - 109.0) - (110.0 - 109.0)  # 90 seconds difference
+        expected_inflation = bermuda_advert.rssi_kalman.process_noise * staleness_diff
+        actual_inflation = variance_stale - variance_fresh
+        assert abs(actual_inflation - expected_inflation) < 0.1
+
+
+class TestVarianceConstants:
+    """Tests to verify variance-related constants are correctly defined."""
+
+    def test_variance_constants_values(self) -> None:
+        """Test that variance constants have expected values."""
+        from custom_components.bermuda.const import (
+            MAX_DISTANCE_VARIANCE,
+            MIN_DISTANCE_FOR_VARIANCE,
+            NEAR_FIELD_DISTANCE_VARIANCE,
+            STABILITY_SIGMA_MOVING,
+            STABILITY_SIGMA_SETTLING,
+            STABILITY_SIGMA_STATIONARY,
+            VARIANCE_COLD_START_SAMPLES,
+            VARIANCE_FALLBACK_UNINIT,
+            VARIANCE_FLOOR_COLD_START,
+            VARIANCE_FLOOR_CONVERGED,
+        )
+
+        # Sigma factors
+        assert STABILITY_SIGMA_MOVING == 2.0
+        assert STABILITY_SIGMA_SETTLING == 2.0
+        assert STABILITY_SIGMA_STATIONARY == 3.0
+
+        # Variance floors (dBm²)
+        assert VARIANCE_FLOOR_COLD_START == 9.0  # σ=3dB
+        assert VARIANCE_FLOOR_CONVERGED == 4.0  # σ=2dB
+        assert VARIANCE_FALLBACK_UNINIT == 25.0  # σ=5dB
+        assert VARIANCE_COLD_START_SAMPLES == 5
+
+        # Distance variance bounds (m²)
+        assert MIN_DISTANCE_FOR_VARIANCE == 0.5
+        assert NEAR_FIELD_DISTANCE_VARIANCE == 0.1
+        assert MAX_DISTANCE_VARIANCE == 4.0
+
+    def test_variance_floor_cold_start_represents_3db_sigma(self) -> None:
+        """Test that VARIANCE_FLOOR_COLD_START gives σ=3dB."""
+        from custom_components.bermuda.const import VARIANCE_FLOOR_COLD_START
+        import math
+
+        sigma = math.sqrt(VARIANCE_FLOOR_COLD_START)
+        assert abs(sigma - 3.0) < 0.01
+
+    def test_variance_floor_converged_represents_2db_sigma(self) -> None:
+        """Test that VARIANCE_FLOOR_CONVERGED gives σ=2dB."""
+        from custom_components.bermuda.const import VARIANCE_FLOOR_CONVERGED
+        import math
+
+        sigma = math.sqrt(VARIANCE_FLOOR_CONVERGED)
+        assert abs(sigma - 2.0) < 0.01
+
+    def test_variance_fallback_represents_5db_sigma(self) -> None:
+        """Test that VARIANCE_FALLBACK_UNINIT gives σ=5dB."""
+        from custom_components.bermuda.const import VARIANCE_FALLBACK_UNINIT
+        import math
+
+        sigma = math.sqrt(VARIANCE_FALLBACK_UNINIT)
+        assert abs(sigma - 5.0) < 0.01

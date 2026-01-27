@@ -90,6 +90,7 @@ class FakeAdvert:
         rssi: int,
         stamp: float,
         hist: list[float],
+        distance_variance: float | None = None,
     ) -> None:
         self.name = name
         self.scanner_device = scanner_device
@@ -103,10 +104,34 @@ class FakeAdvert:
         # Quality filter attributes
         self.hist_velocity: list[float] = []  # Empty = no velocity data
         self.rssi_kalman = FakeKalman()  # Default low variance for stable signal
+        # Store explicit distance_variance if provided
+        self._explicit_distance_variance = distance_variance
 
     def median_rssi(self) -> int:
         """Return RSSI for physical RSSI priority feature."""
         return self.rssi
+
+    def get_distance_variance(self, nowstamp: float | None = None) -> float:
+        """Return distance variance for stability check.
+
+        Uses explicit value if provided, otherwise calculates using
+        simplified Gaussian Error Propagation: var ∝ d².
+        """
+        import math
+
+        # Return explicit variance if provided
+        if self._explicit_distance_variance is not None:
+            return self._explicit_distance_variance
+
+        distance = self.rssi_distance
+        if distance is None or distance <= 0:
+            return 1.0  # Fallback
+        elif distance < 0.5:
+            return 0.1  # Near-field variance
+        else:
+            # Simplified: factor = d × ln(10) / (10 × n), var = factor² × RSSI_var
+            factor = (distance * math.log(10)) / (10.0 * 2.0)
+            return min((factor**2) * 4.0, 4.0)  # Cap at 4.0
 
 
 class FakeDevice:
@@ -353,6 +378,7 @@ def test_cross_floor_switch_allowed_with_long_history(monkeypatch: pytest.Monkey
         rssi=-90,
         stamp=now[0] - 0.05,
         hist=[5.1, 5.0, 5.2, 5.3, 5.1, 5.2, 5.1, 5.0, 5.0, 5.1],
+        distance_variance=0.001,
     )
     challenger = FakeAdvert(
         name=scanner_floor_b.name,
@@ -363,6 +389,7 @@ def test_cross_floor_switch_allowed_with_long_history(monkeypatch: pytest.Monkey
         rssi=-82,
         stamp=now[0] - 0.04,
         hist=[1.9, 1.8, 1.8, 1.9, 1.8, 1.8, 1.9, 1.8, 1.8, 1.8],
+        distance_variance=0.001,
     )
 
     device = FakeDevice(
@@ -425,6 +452,7 @@ def test_transient_gap_still_allows_cross_floor_switch(monkeypatch: pytest.Monke
         rssi=-88,
         stamp=_fake_time(),
         hist=[3.0] * 10,
+        distance_variance=0.001,
     )
     challenger = FakeAdvert(
         name=scanner_floor_b.name,
@@ -435,6 +463,7 @@ def test_transient_gap_still_allows_cross_floor_switch(monkeypatch: pytest.Monke
         rssi=-84,
         stamp=_fake_time(),
         hist=[1.7, 1.65, 1.6, 1.6, 1.6, 1.65, 1.62, 1.61, 1.6, 1.6],
+        distance_variance=0.001,
     )
 
     device = FakeDevice(

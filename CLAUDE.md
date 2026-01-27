@@ -136,9 +136,320 @@ The area selection logic (in `area_selection.py` and `coordinator.py`) determine
 
 1. **Distance contender check**: Adverts must have valid distance within max_radius
 2. **Stability margin**: Challenger must be significantly closer (8% or 0.2m) to compete
-3. **Streak requirement**: Multiple consecutive wins needed (4 same-floor, 6 cross-floor)
-4. **Cross-floor protection**: Stricter requirements for floor changes
-5. **Absolute profile rescue**: When primary scanner offline, secondary patterns can protect area
+3. **Variance-based stability**: Uses Gaussian Error Propagation (RSSI variance → distance variance) to require statistically significant improvements (2-3σ based on movement state)
+4. **Streak requirement**: Multiple consecutive wins needed (4 same-floor, 6 cross-floor)
+5. **Cross-floor protection**: Stricter requirements for floor changes
+6. **Absolute profile rescue**: When primary scanner offline, secondary patterns can protect area
+
+### Variance-Based Stability Margin System
+
+The variance-based stability margin system uses statistical methods to prevent area flickering caused by measurement noise. Instead of fixed distance thresholds, it calculates whether a distance improvement is statistically significant given the measurement uncertainty.
+
+#### Problem: Fixed Thresholds Ignore Measurement Quality
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                    The Fixed Threshold Problem                                   │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  Scenario A: High-Quality Measurement (close to scanner)                         │
+│  ┌────────────────────────────────────────────────────────────────────────────┐ │
+│  │ RSSI: -55 dBm (strong signal, low variance ~2 dB^2)                        │ │
+│  │ Distance: 2.0m with std_dev ~0.15m                                         │ │
+│  │ Improvement: 0.25m                                                          │ │
+│  │ Fixed threshold (0.2m): PASS - but is this really significant?             │ │
+│  │ Variance-based (2 * 0.15m = 0.30m): FAIL - within noise range!             │ │
+│  └────────────────────────────────────────────────────────────────────────────┘ │
+│                                                                                  │
+│  Scenario B: Low-Quality Measurement (far from scanner)                          │
+│  ┌────────────────────────────────────────────────────────────────────────────┐ │
+│  │ RSSI: -85 dBm (weak signal, high variance ~8 dB^2)                         │ │
+│  │ Distance: 8.0m with std_dev ~1.2m                                          │ │
+│  │ Improvement: 0.25m                                                          │ │
+│  │ Fixed threshold (0.2m): PASS - but this is definitely noise!               │ │
+│  │ Variance-based (2 * 1.2m = 2.4m): FAIL - correctly identified as noise     │ │
+│  └────────────────────────────────────────────────────────────────────────────┘ │
+│                                                                                  │
+│  Key Insight: The same 0.25m improvement is significant at 2m but not at 8m!    │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Solution: Gaussian Error Propagation
+
+The log-distance path loss model converts RSSI to distance:
+
+```
+RSSI = ref_power - 10 * n * log10(d)
+
+Solving for distance:
+d = 10^((ref_power - RSSI) / (10 * n))
+```
+
+To propagate uncertainty, we need the derivative (sensitivity of distance to RSSI changes):
+
+```
+Mathematical Derivation:
+─────────────────────────────────────────────────────────────────
+Let: d = 10^((P - R) / (10n))   where P = ref_power, R = RSSI, n = attenuation
+
+Taking the derivative with respect to RSSI (R):
+dd/dR = d * ln(10) / (10 * n) * (-1)
+
+The magnitude (ignoring sign, since we care about variance):
+|dd/dR| = d * ln(10) / (10 * n)
+
+Applying Gaussian Error Propagation:
+var_d = (dd/dR)^2 * var_RSSI
+var_d = (d * ln(10) / (10 * n))^2 * var_RSSI
+
+In code (bermuda_advert.py):
+factor = (distance * math.log(10)) / (10.0 * attenuation)
+distance_variance = (factor ** 2) * rssi_variance
+─────────────────────────────────────────────────────────────────
+```
+
+#### Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                    Variance-Based Stability Margin Flow                          │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  STEP 1: Get RSSI Variance from Kalman Filter                                    │
+│  ┌────────────────────────────────────────────────────────────────────────────┐ │
+│  │ BermudaAdvert.rssi_kalman.variance                                         │ │
+│  │   - Tracks estimation uncertainty in RSSI domain (dBm^2)                   │ │
+│  │   - Converges after ~20 samples to steady state                            │ │
+│  │   - Higher variance = less certain measurement                              │ │
+│  └────────────────────────────────────────────────────────────────────────────┘ │
+│                              │                                                   │
+│                              ▼                                                   │
+│  STEP 2: Convert to Distance Variance (Gaussian Error Propagation)              │
+│  ┌────────────────────────────────────────────────────────────────────────────┐ │
+│  │ BermudaAdvert.get_distance_variance(nowstamp)                              │ │
+│  │                                                                             │ │
+│  │   TWO-SLOPE MODEL (matches rssi_to_metres):                                │ │
+│  │   - distance <= 6m: n = PATH_LOSS_EXPONENT_NEAR (1.8)                      │ │
+│  │   - distance > 6m:  n = configured attenuation (default 2.0)              │ │
+│  │                                                                             │ │
+│  │   factor = (distance * ln(10)) / (10 * n)                                  │ │
+│  │   var_distance = factor^2 * var_rssi                                       │ │
+│  │                                                                             │ │
+│  │   Edge cases handled:                                                       │ │
+│  │   - Cold start (no Kalman data): return VARIANCE_FLOOR_COLD_START (9.0)   │ │
+│  │   - Near-field (< 0.5m): return NEAR_FIELD_DISTANCE_VARIANCE (0.1)        │ │
+│  │   - Far-field cap: return min(var, MAX_DISTANCE_VARIANCE (4.0))           │ │
+│  └────────────────────────────────────────────────────────────────────────────┘ │
+│                              │                                                   │
+│                              ▼                                                   │
+│  STEP 3: Combine Incumbent and Challenger Variances                             │
+│  ┌────────────────────────────────────────────────────────────────────────────┐ │
+│  │ In area_selection.py (_refresh_area_by_min_distance):                      │ │
+│  │                                                                             │ │
+│  │   inc_variance = incumbent_advert.get_distance_variance(nowstamp)          │ │
+│  │   chal_variance = challenger_advert.get_distance_variance(nowstamp)        │ │
+│  │   combined_std = sqrt(inc_variance + chal_variance)                        │ │
+│  │                                                                             │ │
+│  │   Why sum variances? Both measurements are independent, so their           │ │
+│  │   uncertainties add when comparing (difference of two random variables).   │ │
+│  └────────────────────────────────────────────────────────────────────────────┘ │
+│                              │                                                   │
+│                              ▼                                                   │
+│  STEP 4: Apply Movement-Aware Sigma Factor                                      │
+│  ┌────────────────────────────────────────────────────────────────────────────┐ │
+│  │ movement_state = device.get_movement_state()                               │ │
+│  │                                                                             │ │
+│  │ if movement_state in (MOVING, SETTLING):                                   │ │
+│  │     sigma_factor = STABILITY_SIGMA_MOVING (2.0)      # 95% confidence      │ │
+│  │     min_threshold = INCUMBENT_MARGIN_METERS (0.20m)                        │ │
+│  │ else:  # STATIONARY                                                        │ │
+│  │     sigma_factor = STABILITY_SIGMA_STATIONARY (3.0)  # 99.7% confidence    │ │
+│  │     min_threshold = MARGIN_STATIONARY_METERS (0.30m)                       │ │
+│  │                                                                             │ │
+│  │ variance_threshold = sigma_factor * combined_std                           │ │
+│  │ effective_threshold = max(variance_threshold, min_threshold)               │ │
+│  └────────────────────────────────────────────────────────────────────────────┘ │
+│                              │                                                   │
+│                              ▼                                                   │
+│  STEP 5: Compare Distance Improvement Against Threshold                         │
+│  ┌────────────────────────────────────────────────────────────────────────────┐ │
+│  │ distance_improvement = incumbent_distance - challenger_distance            │ │
+│  │                                                                             │ │
+│  │ if distance_improvement >= effective_threshold:                            │ │
+│  │     # Statistically significant improvement!                               │ │
+│  │     challenger_wins()                                                       │ │
+│  │ else:                                                                       │ │
+│  │     # Within noise range, keep incumbent                                   │ │
+│  │     incumbent_stays()                                                       │ │
+│  └────────────────────────────────────────────────────────────────────────────┘ │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Constants and Their Purpose
+
+| Constant | Value | Unit | Purpose |
+|----------|-------|------|---------|
+| `STABILITY_SIGMA_MOVING` | 2.0 | - | Sigma factor for MOVING/SETTLING states (95% confidence) |
+| `STABILITY_SIGMA_STATIONARY` | 3.0 | - | Sigma factor for STATIONARY state (99.7% confidence) |
+| `VARIANCE_FLOOR_COLD_START` | 9.0 | m^2 | Initial variance (std=3m) before Kalman converges |
+| `NEAR_FIELD_DISTANCE_VARIANCE` | 0.1 | m^2 | Fixed variance for near-field distances (std=0.32m) |
+| `MAX_DISTANCE_VARIANCE` | 4.0 | m^2 | Cap for far-field variance (std=2m) |
+| `MIN_DISTANCE_FOR_VARIANCE` | 0.5 | m | Below this, use near-field variance |
+| `INCUMBENT_MARGIN_METERS` | 0.20 | m | Minimum threshold for MOVING/SETTLING |
+| `MARGIN_STATIONARY_METERS` | 0.30 | m | Minimum threshold for STATIONARY |
+
+#### Why Different Sigma Factors for Movement States?
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                    Movement State and Confidence Levels                          │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  MOVING (0-2 min since area change):                                             │
+│    - Device is actively transitioning between areas                              │
+│    - We WANT responsiveness to real movement                                     │
+│    - Use 2σ (95% confidence) - accept more changes                              │
+│    - Threshold: max(2σ * combined_std, 0.20m)                                   │
+│                                                                                  │
+│  SETTLING (2-10 min since area change):                                          │
+│    - Device recently moved, now stabilizing                                      │
+│    - Balance between responsiveness and stability                                │
+│    - Use 2σ (95% confidence) - same as MOVING                                   │
+│    - Threshold: max(2σ * combined_std, 0.20m)                                   │
+│                                                                                  │
+│  STATIONARY (10+ min since area change):                                         │
+│    - Device has been in same area for a while                                    │
+│    - Prioritize STABILITY over responsiveness                                    │
+│    - Use 3σ (99.7% confidence) - reject more noise                              │
+│    - Threshold: max(3σ * combined_std, 0.30m)                                   │
+│                                                                                  │
+│  Statistical Interpretation:                                                     │
+│    2σ: Only 5% chance this is random noise → accept real movement              │
+│    3σ: Only 0.3% chance this is random noise → very conservative               │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Variance Scaling with Distance
+
+The key insight is that distance variance scales with distance squared:
+
+```
+Example calculations (attenuation n=2.0, RSSI variance = 4 dB^2):
+─────────────────────────────────────────────────────────────────
+Distance: 1m
+  factor = 1.0 * ln(10) / (10 * 2.0) = 0.115
+  var_d = 0.115^2 * 4 = 0.053 m^2
+  std_d = 0.23m
+
+Distance: 5m
+  factor = 5.0 * ln(10) / (10 * 2.0) = 0.576
+  var_d = 0.576^2 * 4 = 1.33 m^2
+  std_d = 1.15m
+
+Distance: 10m
+  factor = 10.0 * ln(10) / (10 * 2.0) = 1.151
+  var_d = 1.151^2 * 4 = 5.30 m^2
+  std_d = 2.30m
+─────────────────────────────────────────────────────────────────
+```
+
+This means:
+- At 1m: Need ~0.5m improvement (2σ) to be significant
+- At 5m: Need ~2.3m improvement (2σ) to be significant
+- At 10m: Need ~4.6m improvement (2σ) to be significant
+
+#### Edge Cases and Guards
+
+**1. Cold Start (No Kalman Data):**
+```python
+if not self.rssi_kalman.is_initialized:
+    return VARIANCE_FLOOR_COLD_START  # 9.0 m^2 (std = 3m)
+```
+Before the Kalman filter has any data, use a conservative high variance.
+
+**2. Near-Field (< 0.5m):**
+```python
+if distance < MIN_DISTANCE_FOR_VARIANCE:
+    return NEAR_FIELD_DISTANCE_VARIANCE  # 0.1 m^2 (std = 0.32m)
+```
+Very close distances have non-linear RSSI behavior; use fixed low variance.
+
+**3. Far-Field Cap:**
+```python
+return min(distance_variance, MAX_DISTANCE_VARIANCE)  # Cap at 4.0 m^2
+```
+Prevent unrealistically high variances at extreme distances.
+
+**4. Zero/Negative Distance:**
+```python
+if self.rssi_distance is None or self.rssi_distance <= 0:
+    return VARIANCE_FLOOR_COLD_START
+```
+Invalid distances get high variance to minimize their influence.
+
+#### Integration with Existing Stability Checks
+
+The variance-based margin is ONE of multiple stability checks:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                    Stability Check Hierarchy                                     │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  1. Percentage Margin (INCUMBENT_MARGIN_PERCENT = 8%)                           │
+│     └── Challenger must be 8% closer than incumbent                             │
+│                                                                                  │
+│  2. Variance-Based Margin (this system)                                          │
+│     └── Challenger improvement must exceed sigma * combined_std                 │
+│                                                                                  │
+│  3. Minimum Absolute Margin (0.20m or 0.30m)                                    │
+│     └── Floor ensures minimum threshold even with low variance                  │
+│                                                                                  │
+│  4. Streak Requirement (4 same-floor, 6 cross-floor)                            │
+│     └── Multiple consecutive wins required                                       │
+│                                                                                  │
+│  5. Cross-Floor Protection (additional history checks)                          │
+│     └── Extra verification for floor changes                                    │
+│                                                                                  │
+│  All checks must pass for area switch to occur!                                 │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Files and Methods
+
+| File | Method/Class | Purpose |
+|------|--------------|---------|
+| `bermuda_advert.py` | `get_distance_variance(nowstamp)` | Core variance calculation |
+| `area_selection.py` | `_refresh_area_by_min_distance()` | Uses variance for stability check |
+| `filters/kalman.py` | `KalmanFilter.variance` | Source of RSSI variance |
+| `filters/kalman.py` | `KalmanFilter.last_update_time` | For staleness detection |
+| `const.py` | Various constants | Thresholds and floors |
+
+#### Test Coverage
+
+Tests are in `tests/test_bermuda_advert.py` and `tests/test_area_selection.py`:
+
+| Test | Purpose |
+|------|---------|
+| `test_get_distance_variance_basic` | Basic calculation correctness |
+| `test_get_distance_variance_scales_with_distance` | Variance increases with distance |
+| `test_get_distance_variance_cold_start` | Returns floor when Kalman uninitialized |
+| `test_get_distance_variance_near_field` | Uses fixed variance for close distances |
+| `test_get_distance_variance_capped_far_field` | Caps variance at maximum |
+| `test_variance_margin_blocks_noisy_challenger` | High-variance challenger blocked |
+| `test_low_variance_allows_smaller_improvement` | Low-variance allows smaller margin |
+
+**Test Fixture Pattern:**
+When testing other features, bypass variance check with low variance:
+```python
+# Use low variance to bypass variance-based stability margin
+incumbent = _make_advert("inc", "area-old", distance=0.7, distance_variance=0.001)
+challenger = _make_advert("chal", "area-new", distance=0.35, distance_variance=0.001)
+```
 
 ### Scanner Correlation Learning (`correlation/`)
 
@@ -1763,6 +2074,24 @@ info = manager.get_scanner_pair_info(nowstamp=current_time)
   3. Final solution: Use registration check only (`_area_has_scanner()`). This is safer because it avoids the race condition. Trade-off: if scanner is genuinely offline, its room won't be selectable via UKF virtual assignment, but min-distance fallback will still work
 - **Files**: `area_selection.py:1511-1545`
 - **See**: Lesson Learned #63
+
+### Variance-Based Stability Margin (Post-BUG 22 Enhancement)
+- **Problem**: Fixed threshold stability margins (0.2m, 0.3m) don't account for measurement uncertainty. A 0.3m improvement from a high-variance measurement may be indistinguishable from noise.
+- **Solution**: Calculate significance threshold from combined Kalman variance using Gaussian Error Propagation
+- **Implementation**:
+  1. Convert RSSI variance to distance variance: `var_d = (d × ln(10) / (10 × n))² × var_RSSI`
+  2. Combine incumbent and challenger variances: `combined_std = sqrt(var_inc + var_chal)`
+  3. Apply sigma factor based on movement state: 2.0σ (MOVING/SETTLING) or 3.0σ (STATIONARY)
+  4. Threshold is `max(sigma × combined_std, min_threshold)` where min_threshold is legacy floor
+- **Key Method**: `BermudaAdvert.get_distance_variance(nowstamp)` uses Kalman filter variance and Gaussian Error Propagation
+- **Constants**:
+  | Constant | Value | Purpose |
+  |----------|-------|---------|
+  | `STABILITY_SIGMA_MOVING` | 2.0 | Sigma factor for MOVING/SETTLING states |
+  | `STABILITY_SIGMA_STATIONARY` | 3.0 | Sigma factor for STATIONARY state |
+  | `VARIANCE_FLOOR_COLD_START` | 9.0 | Initial variance (σ=3m) before Kalman converges |
+- **Files**: `bermuda_advert.py`, `area_selection.py`, `const.py`
+- **Test Coverage**: Tests updated with `distance_variance=0.001` to bypass variance check when testing other features
 
 ### Auto-Learning Statistical Quality Improvements
 - Added variance floor (`AUTO_LEARNING_VARIANCE_FLOOR = 4.0 dB²`) to prevent z-score explosion
@@ -6859,3 +7188,44 @@ causing the bug to reappear. Registration check is safer—the trade-off (scanne
 room not selectable via UKF) is acceptable because min-distance fallback still works.
 
 **Rule of Thumb**: Before treating an area as "scannerless", verify it truly has no registered scanner. If it has a scanner that can't see the device, the device is too far away to be in that room.
+
+### 64. Use Gaussian Error Propagation for Distance Variance
+
+When converting RSSI measurements to distance, the uncertainty must also be propagated. The log-distance path loss formula creates a non-linear relationship, requiring the derivative to compute distance variance.
+
+**Bug Pattern:**
+```python
+# BAD - Uses fixed thresholds ignoring measurement uncertainty
+if distance_improvement > 0.2:  # Meters
+    allow_switch()
+# Problem: 0.3m improvement may be noise if variance is high
+```
+
+**Fix Pattern:**
+```python
+# GOOD - Variance-aware threshold
+# Gaussian Error Propagation: var_d = (∂d/∂RSSI)² × var_RSSI
+# Where ∂d/∂RSSI = d × ln(10) / (10 × n) for log-distance model
+def get_distance_variance(self, nowstamp) -> float:
+    rssi_variance = self.rssi_kalman.variance  # From Kalman filter
+    if self.rssi_distance is None or self.rssi_distance <= 0:
+        return VARIANCE_FLOOR_COLD_START
+    n = attenuation  # Path loss exponent (typically 2.0)
+    factor = (self.rssi_distance * math.log(10)) / (10.0 * n)
+    return max(factor * factor * rssi_variance, MIN_VARIANCE)
+
+# Combine variances and require statistically significant improvement
+combined_std = math.sqrt(incumbent_variance + challenger_variance)
+significance_threshold = sigma_factor * combined_std  # 2-3σ
+if distance_improvement >= significance_threshold:
+    allow_switch()
+```
+
+**Key Constants:**
+| Constant | Value | Purpose |
+|----------|-------|---------|
+| `STABILITY_SIGMA_MOVING` | 2.0 | 95% confidence for moving devices |
+| `STABILITY_SIGMA_STATIONARY` | 3.0 | 99.7% confidence for stationary devices |
+| `VARIANCE_FLOOR_COLD_START` | 9.0 | σ=3m before Kalman converges |
+
+**Rule of Thumb**: When converting between measurement domains (RSSI → distance), propagate uncertainty using the derivative. Fixed thresholds ignore measurement quality.
