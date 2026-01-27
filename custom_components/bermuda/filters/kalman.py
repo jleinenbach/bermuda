@@ -250,6 +250,20 @@ class KalmanFilter(SignalFilter):
         """Whether the filter has received at least one measurement."""
         return self._initialized
 
+    @property
+    def last_update_time(self) -> float | None:
+        """
+        Return the timestamp of the last measurement update.
+
+        This property provides safe access to the internal timestamp tracking,
+        used for calculating staleness and time-based variance inflation.
+
+        Returns:
+            The timestamp of the last update, or None if no timestamp was provided.
+
+        """
+        return self._last_timestamp
+
     def get_estimate(self) -> float:
         """Return current filtered RSSI estimate."""
         return self.estimate

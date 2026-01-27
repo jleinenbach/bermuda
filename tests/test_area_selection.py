@@ -89,12 +89,29 @@ def _make_advert(
     floor_id: str | None = None,
     floor_level: int | None = None,
     rssi: float | None = -50.0,
+    distance_variance: float | None = None,
 ) -> SimpleNamespace:
     """Create a minimal advert-like object with distance metadata."""
     now = monotonic_time_coarse()
     stamp = now - age
     hist = list(hist_distance_by_interval) if hist_distance_by_interval is not None else []
     scanner_device = _make_scanner(name, area_id, stamp, floor_id=floor_id, floor_level=floor_level)
+
+    # Calculate default distance variance if not specified
+    # Uses simplified formula based on distance (similar to real implementation)
+    if distance_variance is None:
+        if distance is None or distance <= 0:
+            distance_variance = 1.0  # Default fallback
+        elif distance < 0.5:
+            distance_variance = 0.1  # Near-field variance
+        else:
+            # Simplified Gaussian Error Propagation: var ∝ d²
+            # Uses default attenuation of 2.0 and RSSI variance of 4.0
+            import math
+
+            factor = (distance * math.log(10)) / (10.0 * 2.0)
+            distance_variance = min((factor**2) * 4.0, 4.0)  # Cap at 4.0
+
     advert = SimpleNamespace(
         name=name,
         area_id=area_id,
@@ -108,6 +125,8 @@ def _make_advert(
     )
     # Add median_rssi method for physical RSSI priority feature
     advert.median_rssi = lambda: rssi
+    # Add get_distance_variance method for variance-based stability check
+    advert.get_distance_variance = lambda nowstamp=None: distance_variance
     return advert
 
 
@@ -218,8 +237,12 @@ def test_near_field_absolute_improvement_wins(
     coordinator.options[CONF_MAX_RADIUS] = 10.0
     device = _configure_device(coordinator, "22:33:44:55:66:77")
 
-    incumbent = _make_advert("inc", "area-old", distance=0.5)
-    challenger = _make_advert("chal", "area-new", distance=0.4)
+    # Use low variance to bypass variance-based stability margin for this test
+    # (this test is about near-field absolute improvement, not variance checking)
+    # Distances chosen so improvement (0.35m) exceeds MARGIN_STATIONARY_METERS (0.30m)
+    # Note: device starts in STATIONARY state (no movement history), so need 0.30m+ margin
+    incumbent = _make_advert("inc", "area-old", distance=0.7, distance_variance=0.001)
+    challenger = _make_advert("chal", "area-new", distance=0.35, distance_variance=0.001)
 
     device.area_advert = incumbent  # type: ignore[assignment]
     device.adverts = {"incumbent": incumbent, "challenger": challenger}  # type: ignore[dict-item]
@@ -292,13 +315,15 @@ def test_history_distance_used_when_rssi_distance_none(coordinator: BermudaDataU
     """Historical distance should allow a challenger to win when live distance is missing."""
     device = _configure_device(coordinator, "55:66:77:88:99:AD")
 
-    incumbent = _make_advert("inc", "area-old", distance=6.0, hist_distance_by_interval=[6.0])
+    # Use low variance to bypass variance-based stability margin for this test
+    incumbent = _make_advert("inc", "area-old", distance=6.0, hist_distance_by_interval=[6.0], distance_variance=0.001)
     challenger = _make_advert(
         "chal",
         "area-new",
         distance=None,
         hist_distance_by_interval=[3.0],
         rssi=-45.0,
+        distance_variance=0.001,
     )
 
     device.area_advert = incumbent  # type: ignore[assignment]
@@ -381,8 +406,9 @@ def test_stale_incumbent_allows_switch(coordinator: BermudaDataUpdateCoordinator
     device = _configure_device(coordinator, "66:77:88:99:AA:BB")
 
     stale_age = AREA_MAX_AD_AGE + 1
-    stale_incumbent = _make_advert("inc", "area-old", distance=2.0, age=stale_age)
-    challenger = _make_advert("chal", "area-new", distance=1.0)
+    # Use low variance to bypass variance-based stability margin for this test
+    stale_incumbent = _make_advert("inc", "area-old", distance=2.0, age=stale_age, distance_variance=0.001)
+    challenger = _make_advert("chal", "area-new", distance=1.0, distance_variance=0.001)
 
     device.area_advert = stale_incumbent  # type: ignore[assignment]
     device.adverts = {"incumbent": stale_incumbent, "challenger": challenger}  # type: ignore[dict-item]
@@ -417,8 +443,9 @@ def test_legitimate_move_switches_to_better_challenger(
 
     device = _configure_device(coordinator, "77:88:99:AA:BB:CC")
 
-    incumbent = _make_advert("inc", "area-old", distance=6.0)
-    challenger = _make_advert("chal", "area-new", distance=2.5)
+    # Use low variance to bypass variance-based stability margin for this test
+    incumbent = _make_advert("inc", "area-old", distance=6.0, distance_variance=0.001)
+    challenger = _make_advert("chal", "area-new", distance=2.5, distance_variance=0.001)
 
     device.area_advert = incumbent  # type: ignore[assignment]
     device.adverts = {"incumbent": incumbent, "challenger": challenger}  # type: ignore[dict-item]
@@ -470,12 +497,14 @@ def test_same_floor_switch_behaviour_unaffected(
 
     device = _configure_device(coordinator, "99:AA:BB:CC:DD:EE")
 
+    # Use low variance to bypass variance-based stability margin for this test
     incumbent = _make_advert(
         "inc",
         "area-same",
         distance=6.0,
         hist_distance_by_interval=[6.2, 6.1, 6.3, 6.0, 6.1],
         floor_id="floor-same",
+        distance_variance=0.001,
     )
     challenger = _make_advert(
         "chal",
@@ -483,6 +512,7 @@ def test_same_floor_switch_behaviour_unaffected(
         distance=4.0,
         hist_distance_by_interval=[4.3, 4.1, 4.2, 4.0, 4.2],
         floor_id="floor-same",
+        distance_variance=0.001,
     )
 
     device.area_advert = incumbent  # type: ignore[assignment]
@@ -533,12 +563,14 @@ def test_cross_floor_switch_requires_sustained_advantage(
 
     device = _configure_device(coordinator, "BB:CC:DD:EE:FF:00")
 
+    # Use low variance to bypass variance-based stability margin for this test
     incumbent = _make_advert(
         "inc",
         "area-floor-a",
         distance=5.0,
         hist_distance_by_interval=[5.0, 5.1, 5.2, 5.1, 5.0, 5.2, 5.1, 5.0, 5.0, 5.1],
         floor_id="floor-a",
+        distance_variance=0.001,
     )
     challenger = _make_advert(
         "chal",
@@ -546,6 +578,7 @@ def test_cross_floor_switch_requires_sustained_advantage(
         distance=2.5,
         hist_distance_by_interval=[2.4, 2.5, 2.5, 2.6, 2.4, 2.5, 2.4, 2.6, 2.5, 2.4],
         floor_id="floor-b",
+        distance_variance=0.001,
     )
 
     device.area_advert = incumbent  # type: ignore[assignment]
@@ -612,7 +645,8 @@ def test_fresh_advert_replaces_retained_state(
     _patch_monotonic_time(monkeypatch, current_time)
     device = _configure_device(coordinator, "FF:00:11:22:33:44")
 
-    incumbent = _make_advert("inc", "area-old", distance=4.0)
+    # Use low variance to bypass variance-based stability margin for this test
+    incumbent = _make_advert("inc", "area-old", distance=4.0, distance_variance=0.001)
     device.adverts = {"incumbent": incumbent}  # type: ignore[dict-item]
     coordinator._refresh_area_by_min_distance(device)
 
@@ -620,7 +654,7 @@ def test_fresh_advert_replaces_retained_state(
     coordinator._refresh_area_by_min_distance(device)
     assert device.area_state_metadata()["area_retained"] is True
 
-    challenger = _make_advert("chal", "area-new", distance=1.2)
+    challenger = _make_advert("chal", "area-new", distance=1.2, distance_variance=0.001)
     device.adverts = {"incumbent": incumbent, "challenger": challenger}  # type: ignore[dict-item]
     coordinator._refresh_area_by_min_distance(device)
 
