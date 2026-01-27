@@ -153,9 +153,6 @@ MIN_DISTANCE_FOR_VARIANCE: Final = 0.5  # Below this: use fixed variance
 NEAR_FIELD_DISTANCE_VARIANCE: Final = 0.1  # m^2, fixed variance for near-field
 MAX_DISTANCE_VARIANCE: Final = 4.0  # m^2, cap for far-field (std=2m max)
 
-# Default attenuation (path loss exponent) when not configured
-DEFAULT_ATTENUATION: Final = 2.0  # Typical for line-of-sight indoor
-
 # Physical RSSI Priority - prevents offset-boosted signals from winning over physically closer sensors
 MIN_DISTANCE: Final = 0.1  # Minimum distance in metres (prevents multiple sensors at "0m")
 CONF_USE_PHYSICAL_RSSI_PRIORITY = "use_physical_rssi_priority"
