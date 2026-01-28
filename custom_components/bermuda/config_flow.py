@@ -655,7 +655,7 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
                     meets_threshold = info.get("meets_threshold", False)
 
                     if meets_threshold and suggested_offset is not None:
-                        diff = suggested_offset - current_offset
+                        diff = int(suggested_offset - current_offset)
                         diff_str = f" ({diff:+d})" if diff != 0 else ""
                         results_str += (
                             f"|{scanner_name}| `{current_offset:>3}`| "
