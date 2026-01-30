@@ -25,7 +25,7 @@ from custom_components.bermuda.const import (
     SERVICE_UUID_FMDN,
 )
 from custom_components.bermuda.coordinator import BermudaDataUpdateCoordinator
-from custom_components.bermuda.fmdn import extract_fmdn_eids
+from custom_components.bermuda.fmdn import extract_fmdn_eids, extract_raw_fmdn_payloads
 from custom_components.bermuda.util import normalize_address, normalize_mac
 
 
@@ -91,7 +91,8 @@ def test_fmdn_resolution_registers_metadevice(hass: HomeAssistant, coordinator: 
     source_device = coordinator._get_or_create_device("aa:bb:cc:dd:ee:ff")
     coordinator.fmdn.handle_advertisement(source_device, service_data)
 
-    resolver.resolve_eid_all.assert_called_once_with(b"\x01" * 20)
+    # Raw payload is tried first (includes frame byte 0x40 for hashed flags support)
+    resolver.resolve_eid_all.assert_called_once_with(bytes([0x40]) + b"\x01" * 20)
 
     metadevice_key = coordinator.fmdn.format_metadevice_address(match.device_id, match.canonical_id)
     metadevice = coordinator.metadevices[metadevice_key]
@@ -202,6 +203,41 @@ def test_extract_fmdn_eids_sliding_window_without_frame() -> None:
     assert eid20 in candidates
 
 
+def test_extract_raw_fmdn_payloads_returns_unmodified_bytes() -> None:
+    """Return the raw payload bytes without any parsing or stripping."""
+    payload = bytes([0x40]) + b"\x01" * 20 + bytes([0xAB])  # 22 bytes with hashed flags
+    result = extract_raw_fmdn_payloads({SERVICE_UUID_FMDN: payload})
+    assert len(result) == 1
+    assert result[0] == payload  # Unmodified
+
+
+def test_extract_raw_fmdn_payloads_empty_for_non_fmdn() -> None:
+    """Return empty list when no FMDN service UUID is present."""
+    result = extract_raw_fmdn_payloads({"non-fmdn-uuid": b"\x01" * 20})
+    assert result == []
+
+
+def test_extract_raw_fmdn_payloads_skips_non_bytes() -> None:
+    """Skip payloads that are not bytes/bytearray/memoryview."""
+    result = extract_raw_fmdn_payloads({SERVICE_UUID_FMDN: "not-bytes"})
+    assert result == []
+
+
+def test_extract_raw_fmdn_payloads_handles_empty_service_data() -> None:
+    """Return empty list for empty service data."""
+    result = extract_raw_fmdn_payloads({})
+    assert result == []
+
+
+def test_extract_raw_fmdn_payloads_accepts_bytearray() -> None:
+    """Accept bytearray payloads and convert to bytes."""
+    payload = bytearray([0x40]) + bytearray(b"\x02" * 20)
+    result = extract_raw_fmdn_payloads({SERVICE_UUID_FMDN: payload})
+    assert len(result) == 1
+    assert isinstance(result[0], bytes)
+    assert result[0] == bytes([0x40]) + b"\x02" * 20
+
+
 def test_match_without_device_id_skipped(hass: HomeAssistant, coordinator: BermudaDataUpdateCoordinator) -> None:
     """Matches lacking device_id should not create metadevices.
 
@@ -276,7 +312,8 @@ def test_shared_tracker_creates_metadevices_for_all_accounts(
     coordinator.fmdn.handle_advertisement(source_device, service_data)
 
     # Should use resolve_eid_all, not resolve_eid
-    resolver.resolve_eid_all.assert_called_once_with(b"\x01" * 20)
+    # Raw payload is tried first (includes frame byte 0x40 for hashed flags support)
+    resolver.resolve_eid_all.assert_called_once_with(bytes([0x40]) + b"\x01" * 20)
     resolver.resolve_eid.assert_not_called()
 
     # Should create metadevices for BOTH accounts
@@ -312,7 +349,8 @@ def test_shared_tracker_fallback_to_resolve_eid(hass: HomeAssistant, coordinator
     coordinator.fmdn.handle_advertisement(source_device, service_data)
 
     # Should fall back to resolve_eid
-    resolver.resolve_eid.assert_called_once_with(b"\x02" * 20)
+    # Raw payload is tried first (includes frame byte 0x40 for hashed flags support)
+    resolver.resolve_eid.assert_called_once_with(bytes([0x40]) + b"\x02" * 20)
 
     # Should create single metadevice (legacy behavior)
     assert len(coordinator.metadevices) == 1

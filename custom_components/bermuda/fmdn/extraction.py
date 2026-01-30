@@ -378,6 +378,38 @@ def extract_fmdn_eids(
     return candidates
 
 
+def extract_raw_fmdn_payloads(service_data: Mapping[str | int, Any]) -> list[bytes]:
+    """
+    Extract raw FMDN service data payloads without any parsing or stripping.
+
+    Returns the unmodified payload bytes for each FMDN service UUID found
+    in the service_data dictionary. This allows the EID resolver to receive
+    the full payload including frame_type and optional hashed flags byte,
+    which contains battery status and unwanted-tracking-mode information.
+
+    The GoogleFindMy-HA resolver auto-detects the payload format based on
+    length (20, 21, 22, 28, or 29 bytes) and can extract the hashed flags
+    byte when present.
+
+    Args:
+    ----
+        service_data: BLE service data dictionary keyed by UUID.
+
+    Returns:
+    -------
+        List of raw payload bytes for each FMDN service UUID found.
+
+    """
+    payloads: list[bytes] = []
+    for service_uuid, payload in service_data.items():
+        if not is_fmdn_service_uuid(service_uuid):
+            continue
+        if not isinstance(payload, bytes | bytearray | memoryview):
+            continue
+        payloads.append(bytes(payload))
+    return payloads
+
+
 def extract_fmdn_eid(service_data: Mapping[str | int, Any], mode: str | None = None) -> bytes | None:
     """
     Legacy helper returning the first extracted EID candidate, if any.
