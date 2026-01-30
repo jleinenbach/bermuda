@@ -42,11 +42,14 @@ jobs:
           zip bermuda.zip -r ./
 
       - name: 🔏 Sign release package
-        uses: sigstore/gh-action-sigstore-python@v3.0.1
+        uses: sigstore/gh-action-sigstore-python@v3.2.0
         with:
           inputs: "${{ env.BERMUDA_ROOT_DIR }}/bermuda.zip"
+          release-signing-artifacts: true
 
       - name: "Upload the ZIP file to the release"
-        uses: softprops/action-gh-release@v2.3.2
+        uses: softprops/action-gh-release@v2.5.0
         with:
-          files: ${{ env.BERMUDA_ROOT_DIR }}/bermuda.zip
+          files: |
+            ${{ env.BERMUDA_ROOT_DIR }}/bermuda.zip
+            ${{ env.BERMUDA_ROOT_DIR }}/bermuda.zip.sigstore.json
