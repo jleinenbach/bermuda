@@ -20,7 +20,7 @@ from custom_components.bermuda.const import (
 )
 from custom_components.bermuda.util import normalize_identifier
 
-from .extraction import extract_fmdn_eids
+from .extraction import extract_fmdn_eids, extract_raw_fmdn_payloads
 from .manager import BermudaFmdnManager, EidResolutionStatus
 
 if TYPE_CHECKING:
@@ -507,20 +507,39 @@ class FmdnIntegration:
 
         For shared trackers (same physical device registered in multiple Google accounts),
         this method creates/updates sensors for ALL matching devices, not just the first one.
+
+        Resolution order: raw payloads are tried first because they include the
+        optional hashed flags byte (battery status, unwanted-tracking mode).
+        Parsed candidates serve as fallback when raw payloads don't resolve.
         """
         if not service_data:
             return
 
+        # Extract raw FMDN payloads (full bytes including frame_type and hashed flags)
+        raw_payloads = extract_raw_fmdn_payloads(service_data)
+        # Also extract parsed candidates (bare EIDs) as fallback
         candidates = self.extract_eids(service_data)
-        if not candidates:
+
+        if not raw_payloads and not candidates:
             return
 
         device.metadevice_type.add(METADEVICE_TYPE_FMDN_SOURCE)
 
+        # Build ordered resolution list: raw payloads first (preserves hashed flags
+        # byte for the resolver), then parsed candidates as fallback.
+        # The GoogleFindMy-HA resolver auto-detects the payload format based on
+        # length and can extract the hashed flags when present.
+        resolution_payloads: list[bytes] = list(raw_payloads)
+        seen: set[bytes] = set(raw_payloads)
+        for candidate in candidates:
+            if candidate not in seen:
+                resolution_payloads.append(candidate)
+                seen.add(candidate)
+
         # Track whether we found any match for this advertisement
         any_resolved = False
 
-        for eid_bytes in candidates:
+        for eid_bytes in resolution_payloads:
             # Use resolve_eid_all to get ALL matches (important for shared trackers)
             matches, _resolution_status = self.process_resolution_all_with_status(eid_bytes, device.address)
 
@@ -555,9 +574,9 @@ class FmdnIntegration:
             if any_resolved:
                 break
 
-        # If no candidates resolved, record the first one as unresolved for diagnostics
-        if not any_resolved and candidates:
-            first_eid = next(iter(candidates))
+        # If no payloads resolved, record the first one as unresolved for diagnostics
+        if not any_resolved and resolution_payloads:
+            first_eid = resolution_payloads[0]
             # Only record if not already tracked by process_resolution_all_with_status
             if self.manager.get_resolution_status(first_eid) is None:
                 self.manager.record_resolution_failure(
