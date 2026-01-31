@@ -231,7 +231,7 @@ If your issue isn't covered here:
    - Review the diagnostics file for clues
 
 3. **Report Issues:**
-   - GitHub: https://github.com/agittins/bermuda/issues
+   - GitHub: https://github.com/jleinenbach/bermuda/issues
    - Include diagnostics (with sensitive data redacted)
    - Describe expected vs. actual behavior
 

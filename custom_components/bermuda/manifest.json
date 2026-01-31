@@ -11,7 +11,7 @@
     }
   ],
   "codeowners": [
-    "@agittins"
+    "@jleinenbach"
   ],
   "config_flow": true,
   "dependencies": [
@@ -19,10 +19,10 @@
     "device_tracker",
     "private_ble_device"
   ],
-  "documentation": "https://github.com/agittins/bermuda",
+  "documentation": "https://github.com/jleinenbach/bermuda",
   "integration_type": "device",
   "iot_class": "calculated",
-  "issue_tracker": "https://github.com/agittins/bermuda/issues",
+  "issue_tracker": "https://github.com/jleinenbach/bermuda/issues",
   "requirements": [],
   "version": "0.0.0"
 }

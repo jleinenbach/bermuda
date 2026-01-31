@@ -8,7 +8,6 @@ import pytest
 from homeassistant.components.sensor.const import SensorDeviceClass, SensorStateClass
 from homeassistant.const import (
     SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
-    STATE_UNAVAILABLE,
     EntityCategory,
     UnitOfLength,
 )
@@ -175,6 +174,8 @@ class TestBermudaSensor:
     def test_extra_state_attributes_for_area(self) -> None:
         """Test extra_state_attributes for Area sensor."""
         sensor = self._create_sensor()
+        # current_mac is now pre-computed in BermudaDevice.calculate_data()
+        sensor._device.current_mac = "aa:bb:cc:dd:ee:ff"
         attrs = sensor.extra_state_attributes
 
         assert attrs["area_id"] == "living_room"
@@ -187,23 +188,20 @@ class TestBermudaSensor:
     def test_extra_state_attributes_for_metadevice(self) -> None:
         """Test extra_state_attributes returns current MAC for metadevice."""
         sensor = self._create_sensor(address_type=ADDR_TYPE_IBEACON)
-
-        # Add an advert with a stamp
-        mock_advert = MagicMock()
-        mock_advert.stamp = 100.0
-        mock_advert.device_address = "11:22:33:44:55:66"
-        sensor._device.adverts = {"scanner1": mock_advert}
+        # current_mac is pre-computed by calculate_data() from the most recent advert
+        sensor._device.current_mac = "11:22:33:44:55:66"
 
         attrs = sensor.extra_state_attributes
         assert attrs["current_mac"] == "11:22:33:44:55:66"
 
     def test_extra_state_attributes_metadevice_unavailable(self) -> None:
-        """Test extra_state_attributes returns unavailable when no adverts."""
+        """Test extra_state_attributes returns device address when no adverts."""
         sensor = self._create_sensor(address_type=ADDR_TYPE_PRIVATE_BLE_DEVICE)
-        sensor._device.adverts = {}
+        # When no adverts, current_mac defaults to the device address
+        sensor._device.current_mac = "aa:bb:cc:dd:ee:ff"
 
         attrs = sensor.extra_state_attributes
-        assert attrs["current_mac"] == STATE_UNAVAILABLE
+        assert attrs["current_mac"] == "aa:bb:cc:dd:ee:ff"
 
 
 class TestBermudaSensorFloor:
