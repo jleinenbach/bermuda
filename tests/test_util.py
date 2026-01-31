@@ -290,7 +290,7 @@ class TestGetScanner:
         assert result is None
 
     def test_get_scanner_returns_matching_advert(self) -> None:
-        """Test get_scanner returns matching advert."""
+        """Test get_scanner returns matching advert via _adverts_by_scanner cache."""
         from unittest.mock import MagicMock
         from custom_components.bermuda.bermuda_device import BermudaDevice
 
@@ -307,9 +307,10 @@ class TestGetScanner:
         mock_advert2.scanner_address = "77:88:99:aa:bb:cc"
         mock_advert2.stamp = 200.0
 
-        device.adverts = {
-            ("aa:bb:cc:dd:ee:ff", "11:22:33:44:55:66"): mock_advert1,
-            ("aa:bb:cc:dd:ee:ff", "77:88:99:aa:bb:cc"): mock_advert2,
+        # Populate the scanner cache directly (normally done by calculate_data())
+        device._adverts_by_scanner = {
+            "11:22:33:44:55:66": mock_advert1,
+            "77:88:99:aa:bb:cc": mock_advert2,
         }
 
         result = device.get_scanner("11:22:33:44:55:66")
@@ -317,7 +318,7 @@ class TestGetScanner:
         assert result == mock_advert1
 
     def test_get_scanner_returns_most_recent_advert(self) -> None:
-        """Test get_scanner returns most recent advert when multiple match."""
+        """Test get_scanner returns most recent advert when cache has latest."""
         from unittest.mock import MagicMock
         from custom_components.bermuda.bermuda_device import BermudaDevice
 
@@ -326,17 +327,14 @@ class TestGetScanner:
         device = BermudaDevice(address="AA:BB:CC:DD:EE:FF", coordinator=mock_coordinator)
 
         # Create mock adverts with same scanner but different timestamps
-        mock_advert1 = MagicMock()
-        mock_advert1.scanner_address = "11:22:33:44:55:66"
-        mock_advert1.stamp = 100.0
-
         mock_advert2 = MagicMock()
         mock_advert2.scanner_address = "11:22:33:44:55:66"
         mock_advert2.stamp = 200.0  # More recent
 
-        device.adverts = {
-            ("aa:bb:cc:dd:ee:ff", "11:22:33:44:55:66"): mock_advert1,
-            ("aa:bb:cc:dd:ee:00", "11:22:33:44:55:66"): mock_advert2,
+        # The cache stores only the most recent advert per scanner
+        # (calculate_data() builds this by comparing stamps)
+        device._adverts_by_scanner = {
+            "11:22:33:44:55:66": mock_advert2,
         }
 
         result = device.get_scanner("11:22:33:44:55:66")
@@ -344,7 +342,7 @@ class TestGetScanner:
         assert result == mock_advert2
 
     def test_get_scanner_handles_none_stamp(self) -> None:
-        """Test get_scanner handles advert with None stamp."""
+        """Test get_scanner handles advert with None stamp via cache."""
         from unittest.mock import MagicMock
         from custom_components.bermuda.bermuda_device import BermudaDevice
 
@@ -356,7 +354,8 @@ class TestGetScanner:
         mock_advert.scanner_address = "11:22:33:44:55:66"
         mock_advert.stamp = None
 
-        device.adverts = {("aa:bb:cc:dd:ee:ff", "11:22:33:44:55:66"): mock_advert}
+        # Cache populated even for adverts with None stamp
+        device._adverts_by_scanner = {"11:22:33:44:55:66": mock_advert}
 
         result = device.get_scanner("11:22:33:44:55:66")
 

@@ -8,7 +8,6 @@ from homeassistant.components.sensor import RestoreSensor, SensorEntity
 from homeassistant.components.sensor.const import SensorDeviceClass, SensorStateClass
 from homeassistant.const import (
     SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
-    STATE_UNAVAILABLE,
     EntityCategory,
     UnitOfLength,
 )
@@ -17,8 +16,6 @@ from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
 from .const import (
     _LOGGER,
-    ADDR_TYPE_IBEACON,
-    ADDR_TYPE_PRIVATE_BLE_DEVICE,
     SIGNAL_DEVICE_NEW,
     SIGNAL_SCANNERS_CHANGED,
 )
@@ -213,20 +210,9 @@ class BermudaSensor(BermudaEntity, SensorEntity):
     @property
     def extra_state_attributes(self) -> Mapping[str, Any] | None:
         """Provide state_attributes for the sensor entity."""
-        # By default, it's the device's MAC
-        current_mac: str = self._device.address
-        # But metadevices have source_devices
-        if self._device.address_type in [
-            ADDR_TYPE_IBEACON,
-            ADDR_TYPE_PRIVATE_BLE_DEVICE,
-        ]:
-            # Check the current sources and find the latest
-            current_mac = STATE_UNAVAILABLE
-            _best_stamp: float = 0.0
-            for source_ad in self._device.adverts.values():
-                if source_ad.stamp > _best_stamp:  # It's a valid ad
-                    current_mac = source_ad.device_address
-                    _best_stamp = source_ad.stamp
+        # current_mac is pre-computed in BermudaDevice.calculate_data() for O(1) access.
+        # For metadevices (iBeacon, Private BLE, FMDN), it tracks the most recent source MAC.
+        # For regular devices, it's the device address itself.
 
         # Limit how many attributes we list - prefer new sensors instead
         # since oft-changing attribs cause more db writes than sensors
@@ -240,7 +226,7 @@ class BermudaSensor(BermudaEntity, SensorEntity):
             attribs["floor_level"] = self._device.floor_level
         if self.name in ["Area", "Floor", "Distance"]:
             attribs.update(self._device.area_state_metadata())
-        attribs["current_mac"] = current_mac
+        attribs["current_mac"] = self._device.current_mac
 
         return attribs
 

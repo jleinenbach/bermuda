@@ -16,7 +16,7 @@ here, it will hopefully help me find the source of the problem more quickly.
 
 Many people bump into the same issues when they first start, so please take a
 look through the Wiki where I try to address most of those FAQ's. Particularly
-the "Troubleshooting" page at https://github.com/agittins/bermuda/wiki/Troubleshooting
+the "Troubleshooting" page at https://github.com/jleinenbach/bermuda/wiki/Troubleshooting
 
 Bear in mind the Wiki has sub-pages as well. These are usually listed in a menu
 on the right-hand side, but might be collapsed into a sub-menu on mobile devices.

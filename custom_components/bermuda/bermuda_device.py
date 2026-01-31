@@ -181,6 +181,8 @@ class BermudaDevice:
         self.adverts: dict[
             tuple[str, str], BermudaAdvert
         ] = {}  # str will be a scanner address OR a deviceaddress__scanneraddress
+        self._adverts_by_scanner: dict[str, BermudaAdvert] = {}  # scanner_address → most recent advert
+        self.current_mac: str = _address  # Most recent source MAC (for metadevices with rotating addresses)
         self.pending_area_id: str | None = None
         self.pending_floor_id: str | None = None
         self.pending_streak: int = 0
@@ -1210,23 +1212,14 @@ class BermudaDevice:
                 self.area_name,
             )
 
-    def get_scanner(self, scanner_address) -> BermudaAdvert | None:
+    def get_scanner(self, scanner_address: str) -> BermudaAdvert | None:
         """
         Given a scanner address, return the most recent BermudaDeviceScanner (advert) that matches.
 
-        This is required as the list of device.scanners is keyed by [address, scanner], and
-        a device might switch back and forth between multiple addresses.
+        Uses a pre-built cache (_adverts_by_scanner) that is rebuilt in calculate_data()
+        for O(1) lookup instead of O(n) linear search through all adverts.
         """
-        _stamp: float = 0.0
-        _found_scanner = None
-        for advert in self.adverts.values():
-            if advert.scanner_address == scanner_address:
-                # we have matched the scanner, but is it the most recent address?
-                if _stamp == 0.0 or (advert.stamp is not None and advert.stamp > _stamp):
-                    _found_scanner = advert
-                    _stamp = _found_scanner.stamp if _found_scanner.stamp is not None else 0.0
-
-        return _found_scanner
+        return self._adverts_by_scanner.get(scanner_address)
 
     def calculate_data(self) -> None:
         """
@@ -1234,13 +1227,28 @@ class BermudaDevice:
         etc can be freshly smoothed and filtered.
 
         """
-        # Run calculate_data on each child scanner of this device:
+        # Rebuild scanner lookup cache and current_mac for O(1) access.
+        # This must run before anything that calls get_scanner(), and also
+        # handles metadevices where adverts are copied directly by update_metadevices().
+        self._adverts_by_scanner.clear()
+        _best_mac_stamp: float = 0.0
         for advert in self.adverts.values():
             if isinstance(advert, BermudaAdvert):
                 # in issue #355 someone had an empty dict instead of a scanner object.
                 # it may be due to a race condition during startup, but we check now
                 # just in case. Was not able to reproduce.
                 advert.calculate_data()
+                # Build scanner lookup cache: keep only the most recent advert per scanner
+                scanner_addr = advert.scanner_address
+                existing = self._adverts_by_scanner.get(scanner_addr)
+                if existing is None or (
+                    advert.stamp is not None and (existing.stamp is None or advert.stamp > existing.stamp)
+                ):
+                    self._adverts_by_scanner[scanner_addr] = advert
+                # Track most recent source MAC for current_mac (used by metadevices)
+                if advert.stamp is not None and advert.stamp > _best_mac_stamp:
+                    self.current_mac = advert.device_address
+                    _best_mac_stamp = advert.stamp
             else:
                 _LOGGER_SPAM_LESS.error(
                     "scanner_not_instance", "Scanner device is not a BermudaDevice instance, skipping."
