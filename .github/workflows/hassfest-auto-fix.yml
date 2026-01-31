@@ -33,16 +33,29 @@ jobs:
       - name: Auto-format manifest.json
         if: steps.initial-check.outcome == 'failure'
         run: |
-          # Sort manifest.json keys alphabetically (HA standard)
+          # Sort manifest.json keys per hassfest requirement:
+          # "domain" first, "name" second, then remaining keys alphabetically
           for manifest in custom_components/*/manifest.json; do
             if [ -f "$manifest" ]; then
               echo "Formatting: $manifest"
               python3 -c "
           import json
+
           with open('$manifest', 'r') as f:
               data = json.load(f)
+
+          # hassfest requires: domain first, name second, then alphabetical
+          priority_keys = ['domain', 'name']
+          remaining_keys = sorted(k for k in data if k not in priority_keys)
+          ordered = {}
+          for k in priority_keys:
+              if k in data:
+                  ordered[k] = data[k]
+          for k in remaining_keys:
+              ordered[k] = data[k]
+
           with open('$manifest', 'w') as f:
-              json.dump(data, f, indent=2, sort_keys=True)
+              json.dump(ordered, f, indent=2)
               f.write('\n')
           "
             fi
