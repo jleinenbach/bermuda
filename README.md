@@ -1,5 +1,10 @@
 ![Bermuda Logo](img/logo@2x.png)
 
+> **This is a fork of [agittins/bermuda](https://github.com/agittins/bermuda).**
+> All credit for the original Bermuda BLE Trilateration integration goes to [@agittins](https://github.com/agittins).
+> This fork is maintained by [@jleinenbach](https://github.com/jleinenbach).
+> Please report issues for this fork at [jleinenbach/bermuda/issues](https://github.com/jleinenbach/bermuda/issues).
+
 [![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=jleinenbach&repository=bermuda&category=Integration)
 
 # Bermuda BLE Trilateration
