@@ -39,7 +39,8 @@
           "attenuation": "Dämpfung - Fernfeld-Pfadverlust-Exponent (gilt ab ~6m). Typisch: 3.0-4.5.",
           "ref_power": "Referenzleistung - Standard-RSSI bei 1 Meter Entfernung, für Entfernungskalibrierung.",
           "configured_devices": "Konfigurierte Geräte - Wählen Sie, welche Bluetooth-Geräte oder Beacons mit Sensoren verfolgt werden sollen.",
-          "use_ukf_area_selection": "UKF-Bereichsauswahl verwenden (Experimentell) - Multi-Scanner RSSI-Fusion für verbesserte Raumerkennung."
+          "use_ukf_area_selection": "UKF-Bereichsauswahl verwenden (Experimentell) - Multi-Scanner RSSI-Fusion für verbesserte Raumerkennung.",
+          "recorder_friendly": "Recorder-freundlicher Modus - Reduziert das Datenbankwachstum durch Deaktivierung von Statistiken und Ausschluss von Per-Scanner-Attributen aus der History."
         },
         "data_description": {
           "max_area_radius": "Bei der einfachen `BEREICH`-Funktion wird ein Gerät als im BEREICH des nächsten Empfängers markiert, wenn es sich innerhalb dieses Radius befindet. Wenn Sie ihn klein einstellen, werden Geräte zwischen Empfängern als `unbekannt` angezeigt, aber wenn er groß ist, erscheinen Geräte immer in ihrem nächsten Bereich.",
@@ -49,7 +50,8 @@
           "smoothing_samples": "Wie viele Samples für die Durchschnitts-Entfernungsglättung. Größere Zahlen bedeuten langsamere Entfernungszunahmen. Verkürzende Entfernungen werden nicht beeinflusst. 10 oder 20 scheint gut.",
           "attenuation": "Zwei-Steigungen-Modell: Nahfeld (<6m) verwendet festen Exponenten 1.8. Passen Sie diesen Fernfeld-Exponenten für Entfernungen über 6m an.",
           "ref_power": "Platzieren Sie Ihren häufigsten Beacon 1 Meter von Ihrem häufigsten Proxy/Scanner entfernt. Passen Sie ref_power an, bis der Entfernungssensor eine niedrigste (nicht durchschnittliche) Entfernung von 1 Meter anzeigt.",
-          "use_ukf_area_selection": "Aktivieren Sie den Unscented Kalman Filter für die Bereichsauswahl. Diese experimentelle Funktion fusioniert RSSI von mehreren Scannern mit gelernten Raum-Fingerabdrücken. Fällt auf standardmäßige entfernungsbasierte Auswahl zurück, wenn nicht genügend Daten verfügbar sind."
+          "use_ukf_area_selection": "Aktivieren Sie den Unscented Kalman Filter für die Bereichsauswahl. Diese experimentelle Funktion fusioniert RSSI von mehreren Scannern mit gelernten Raum-Fingerabdrücken. Fällt auf standardmäßige entfernungsbasierte Auswahl zurück, wenn nicht genügend Daten verfügbar sind.",
+          "recorder_friendly": "Wenn aktiviert (Standard), erzeugen Entfernungs- und RSSI-Sensoren keine Langzeitstatistiken und Per-Scanner-Attribute werden aus der Recorder-Datenbank ausgeschlossen. Dies reduziert die Datenbankgröße drastisch. Deaktivieren Sie dies für vollständige History-Graphen und Langzeitstatistiken (nützlich für Kalibrierung und Fehlersuche)."
         }
       },
       "selectdevices": {

@@ -65,6 +65,7 @@ from .const import (
     CONF_FMDN_MODE,
     CONF_MAX_RADIUS,
     CONF_MAX_VELOCITY,
+    CONF_RECORDER_FRIENDLY,
     CONF_REF_POWER,
     CONF_RSSI_OFFSETS,
     CONF_SMOOTHING_SAMPLES,
@@ -74,6 +75,7 @@ from .const import (
     DEFAULT_DEVTRACK_TIMEOUT,
     DEFAULT_MAX_RADIUS,
     DEFAULT_MAX_VELOCITY,
+    DEFAULT_RECORDER_FRIENDLY,
     DEFAULT_REF_POWER,
     DEFAULT_SMOOTHING_SAMPLES,
     DEFAULT_UPDATE_INTERVAL,
@@ -264,6 +266,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         self.options[CONF_REF_POWER] = DEFAULT_REF_POWER
         self.options[CONF_SMOOTHING_SAMPLES] = DEFAULT_SMOOTHING_SAMPLES
         self.options[CONF_UPDATE_INTERVAL] = DEFAULT_UPDATE_INTERVAL
+        self.options[CONF_RECORDER_FRIENDLY] = DEFAULT_RECORDER_FRIENDLY
         self.options[CONF_RSSI_OFFSETS] = {}
         self.options[CONF_USE_UKF_AREA_SELECTION] = DEFAULT_USE_UKF_AREA_SELECTION
 
@@ -281,6 +284,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                     CONF_FMDN_MODE,
                     CONF_MAX_RADIUS,
                     CONF_MAX_VELOCITY,
+                    CONF_RECORDER_FRIENDLY,
                     CONF_REF_POWER,
                     CONF_SMOOTHING_SAMPLES,
                     CONF_RSSI_OFFSETS,
@@ -370,6 +374,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                 CONF_FMDN_MODE,
                 CONF_MAX_RADIUS,
                 CONF_MAX_VELOCITY,
+                CONF_RECORDER_FRIENDLY,
                 CONF_REF_POWER,
                 CONF_SMOOTHING_SAMPLES,
                 CONF_RSSI_OFFSETS,

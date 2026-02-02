@@ -30,6 +30,7 @@ from .const import (
     CONF_DEVTRACK_TIMEOUT,
     CONF_MAX_RADIUS,
     CONF_MAX_VELOCITY,
+    CONF_RECORDER_FRIENDLY,
     CONF_REF_POWER,
     CONF_RSSI_OFFSETS,
     CONF_SAVE_AND_CLOSE,
@@ -43,6 +44,7 @@ from .const import (
     DEFAULT_FMDN_MODE,
     DEFAULT_MAX_RADIUS,
     DEFAULT_MAX_VELOCITY,
+    DEFAULT_RECORDER_FRIENDLY,
     DEFAULT_REF_POWER,
     DEFAULT_SMOOTHING_SAMPLES,
     DEFAULT_UPDATE_INTERVAL,
@@ -249,6 +251,10 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
             vol.Optional(
                 CONF_USE_UKF_AREA_SELECTION,
                 default=self.options.get(CONF_USE_UKF_AREA_SELECTION, DEFAULT_USE_UKF_AREA_SELECTION),
+            ): bool,
+            vol.Optional(
+                CONF_RECORDER_FRIENDLY,
+                default=self.options.get(CONF_RECORDER_FRIENDLY, DEFAULT_RECORDER_FRIENDLY),
             ): bool,
         }
 

@@ -161,6 +161,10 @@ RSSI_CONSISTENCY_MARGIN_DB: Final = 8.0  # dB - max allowed RSSI disadvantage fo
 RSSI_HISTORY_SAMPLES: Final = 5  # Samples for median calculation
 RSSI_CONSECUTIVE_WINS: Final = 2  # Consecutive cycles required before switching
 
+# Recorder-Friendly Mode - reduces database bloat by excluding volatile attributes and statistics
+CONF_RECORDER_FRIENDLY = "recorder_friendly"
+DEFAULT_RECORDER_FRIENDLY: Final = True  # Enabled by default; reduces DB writes significantly
+
 # UKF (Unscented Kalman Filter) Area Selection - experimental multi-scanner fusion
 CONF_USE_UKF_AREA_SELECTION = "use_ukf_area_selection"
 DEFAULT_USE_UKF_AREA_SELECTION: Final = True  # Enabled by default; uses fingerprints when available

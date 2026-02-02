@@ -39,7 +39,8 @@
           "smoothing_samples": "Smoothing Samples - Hoeveel samples er gebruikt worden voor het afvlakken van afstandsmetingen.",
           "attenuation": "Attenuation - Omgevingsdempingsfactor voor afstandsberekening/kalibratie.",
           "ref_power": "Referentievermogen - Standaard RSSI-waarde op 1 meter afstand, voor afstandskalibratie.",
-          "configured_devices": "Geconfigureerde apparaten - Selecteer welke Bluetooth-apparaten of beacons moeten worden gevolgd met sensoren."
+          "configured_devices": "Geconfigureerde apparaten - Selecteer welke Bluetooth-apparaten of beacons moeten worden gevolgd met sensoren.",
+          "recorder_friendly": "Recorder-vriendelijke modus - Vermindert de databasegroei door statistieken uit te schakelen en per-scanner attributen uit te sluiten van de history."
         },
         "data_description": {
           "max_area_radius": "Met de eenvoudige `RUIMTE` functie wordt een apparaat gemarkeerd alszijnde in de ruimte van de dichtsbijzijnde scanner, als het zich binnen deze straal bevindt. \nAls deze waarde te te klein wordt ingesteld zullen apparaten als `Onbekend` gemarkeerd worden bij verplaatsing tussen scanners. \nAls deze waarde te groot wordt ingesteld zullen apparaten altijd verschijnen als in hun dichtsbijzijnde ruimte.",
@@ -48,7 +49,8 @@
           "update_interval": "Afstandsafnames worden nog steeds onmiddellijk worden geactiveerd, maar afstandstoenames worden hiermee beperkt om de groei van de database te verminderen.",
           "smoothing_samples": "Hoeveel samples worden gebruikt om de gemiddelde afvlakking te berekenen. Een groter getal zorgt voor langzamere afstandstoename. Afstandsafnames worden hierdoor niet beïnvloed. 10 of 20 lijkt goed.",
           "attenuation": "Na het instellen van het referentievermogen op 1 meter afstand, kan de dempingsfactor aangepast worden zodat andere afstanden, min of meer, correct gelezen worden.",
-          "ref_power": "Plaats het meest gebruikelijke Bluetooth-apparaat of beacon op 1 meter (3,28') afstand van de meest gebruikelijke scanner/proxy. Pas het referentievermogen aan totdat de afstandssensor een laagste (niet gemiddelde) afstand van 1 meter aangeeft."
+          "ref_power": "Plaats het meest gebruikelijke Bluetooth-apparaat of beacon op 1 meter (3,28') afstand van de meest gebruikelijke scanner/proxy. Pas het referentievermogen aan totdat de afstandssensor een laagste (niet gemiddelde) afstand van 1 meter aangeeft.",
+          "recorder_friendly": "Wanneer ingeschakeld (standaard), genereren afstands- en RSSI-sensoren geen langetermijnstatistieken en worden per-scanner attributen uitgesloten van de recorder-database. Dit vermindert de databasegrootte aanzienlijk. Schakel dit uit voor volledige history-grafieken en langetermijnstatistieken (nuttig voor kalibratie en foutopsporing)."
         }
       },
       "selectdevices": {

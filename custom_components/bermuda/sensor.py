@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 from homeassistant.components.sensor import RestoreSensor, SensorEntity
 from homeassistant.components.sensor.const import SensorDeviceClass, SensorStateClass
 from homeassistant.const import (
+    MATCH_ALL,
     SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
     EntityCategory,
     UnitOfLength,
@@ -16,6 +17,8 @@ from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
 from .const import (
     _LOGGER,
+    CONF_RECORDER_FRIENDLY,
+    DEFAULT_RECORDER_FRIENDLY,
     SIGNAL_DEVICE_NEW,
     SIGNAL_SCANNERS_CHANGED,
 )
@@ -152,6 +155,19 @@ async def async_setup_entry(
 
 class BermudaSensor(BermudaEntity, SensorEntity):
     """bermuda Sensor class."""
+
+    # Exclude time-based metadata from HA recorder database.
+    # These 3 float attributes change every coordinator cycle (~1.05s),
+    # forcing a new DB row per cycle per entity (Area, Floor, Distance).
+    # They are pure real-time diagnostics with no historical value.
+    # Live state, UI, automations and templates are NOT affected.
+    _unrecorded_attributes = frozenset(
+        {
+            "last_good_area_age_s",
+            "last_good_distance_age_s",
+            "area_retention_seconds_remaining",
+        }
+    )
 
     @property
     def unique_id(self) -> str:
@@ -315,10 +331,14 @@ class BermudaSensorRssi(BermudaSensor):
     def native_unit_of_measurement(self) -> str:
         return SIGNAL_STRENGTH_DECIBELS_MILLIWATT
 
-    @property
-    def state_class(self) -> str:
-        """These are graphable measurements."""
-        return SensorStateClass.MEASUREMENT
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Sync _attr_state_class with recorder-friendly option on every cycle."""
+        if self.coordinator.options.get(CONF_RECORDER_FRIENDLY, DEFAULT_RECORDER_FRIENDLY):
+            self._attr_state_class = None
+        else:
+            self._attr_state_class = SensorStateClass.MEASUREMENT
+        super()._handle_coordinator_update()
 
 
 class BermudaSensorRange(BermudaSensor):
@@ -353,10 +373,14 @@ class BermudaSensorRange(BermudaSensor):
         """Results are in metres."""
         return UnitOfLength.METERS
 
-    @property
-    def state_class(self) -> str:
-        """Measurement should result in graphed results."""
-        return SensorStateClass.MEASUREMENT
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Sync _attr_state_class with recorder-friendly option on every cycle."""
+        if self.coordinator.options.get(CONF_RECORDER_FRIENDLY, DEFAULT_RECORDER_FRIENDLY):
+            self._attr_state_class = None
+        else:
+            self._attr_state_class = SensorStateClass.MEASUREMENT
+        super()._handle_coordinator_update()
 
 
 class BermudaSensorScannerRange(BermudaSensorRange):
@@ -374,6 +398,38 @@ class BermudaSensorScannerRange(BermudaSensorRange):
         self.config_entry = config_entry
         self._device = coordinator.devices[address]
         self._scanner = coordinator.devices[scanner_address]
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """
+        Sync _unrecorded_attributes with recorder-friendly option on every cycle.
+
+        Extends parent's state_class sync with per-scanner attribute exclusion.
+        MATCH_ALL excludes ALL extra_state_attributes from the recorder DB.
+
+        The recorder reads unrecorded_attributes from _state_info (a mutable dict
+        set once in async_internal_added_to_hass). We mutate it here so the
+        recorder sees the updated value on the next state write.
+
+        When recorder-friendly is OFF, we restore the class-level defaults
+        computed by Entity.__init_subclass__ (entity component exclusions like
+        "options" from SensorEntity + base class exclusions like the 3 time-based
+        attrs from BermudaSensor). Using type(self) accesses the CLASS-level
+        attributes, bypassing any instance-level overrides.
+        """
+        if self.coordinator.options.get(CONF_RECORDER_FRIENDLY, DEFAULT_RECORDER_FRIENDLY):
+            new_unrecorded: frozenset[str] = frozenset({MATCH_ALL})
+        else:
+            # Restore class-level defaults (entity component + base class exclusions).
+            # type(self).attr accesses the CLASS attribute via MRO, not the
+            # instance attribute we may have set on a previous cycle.
+            new_unrecorded = type(self)._entity_component_unrecorded_attributes | type(self)._unrecorded_attributes
+        self._unrecorded_attributes = new_unrecorded
+        # Propagate to _state_info so the recorder sees the change immediately.
+        # _state_info is None before async_internal_added_to_hass runs.
+        if self._state_info is not None:
+            self._state_info["unrecorded_attributes"] = new_unrecorded
+        super()._handle_coordinator_update()
 
     @property
     def unique_id(self) -> str:
@@ -433,11 +489,15 @@ class BermudaSensorScannerRangeRaw(BermudaSensorScannerRange):
         Expose distance to given scanner.
 
         Don't break if that scanner's never heard of us!
+        When recorder-friendly mode is enabled, apply rate limiting to reduce DB writes.
         """
         devscanner = self._device.get_scanner(self._scanner.address)
         distance = getattr(devscanner, "rssi_distance_raw", None)
         if distance is not None:
-            return round(distance, 3)  # type: ignore[no-any-return]
+            rounded = round(distance, 3)
+            if self.coordinator.options.get(CONF_RECORDER_FRIENDLY, DEFAULT_RECORDER_FRIENDLY):
+                return self._cached_ratelimit(rounded)  # type: ignore[no-any-return]
+            return rounded  # type: ignore[no-any-return]
         return None
 
 
@@ -517,7 +577,6 @@ class BermudaTotalProxyCount(BermudaGlobalSensor):
     """Counts the total number of proxies we have access to."""
 
     _attr_entity_category = EntityCategory.DIAGNOSTIC
-    _attr_state_class = SensorStateClass.MEASUREMENT
 
     @property
     def unique_id(self) -> str:
@@ -542,7 +601,6 @@ class BermudaActiveProxyCount(BermudaGlobalSensor):
     """Counts the number of proxies that are active."""
 
     _attr_entity_category = EntityCategory.DIAGNOSTIC
-    _attr_state_class = SensorStateClass.MEASUREMENT
 
     @property
     def unique_id(self) -> str:
@@ -567,7 +625,6 @@ class BermudaTotalDeviceCount(BermudaGlobalSensor):
     """Counts the total number of devices we can see."""
 
     _attr_entity_category = EntityCategory.DIAGNOSTIC
-    _attr_state_class = SensorStateClass.MEASUREMENT
 
     @property
     def unique_id(self) -> str:
@@ -592,7 +649,6 @@ class BermudaVisibleDeviceCount(BermudaGlobalSensor):
     """Counts the number of devices that are active."""
 
     _attr_entity_category = EntityCategory.DIAGNOSTIC
-    _attr_state_class = SensorStateClass.MEASUREMENT
 
     @property
     def unique_id(self) -> str:

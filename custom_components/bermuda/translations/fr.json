@@ -25,6 +25,15 @@
           "sensor": "Capteur activé",
           "switch": "Interrupteur activé"
         }
+      },
+      "globalopts": {
+        "title": "Options globales",
+        "data": {
+          "recorder_friendly": "Mode Recorder-Friendly - Réduit la croissance de la base de données en désactivant les statistiques et en excluant les attributs par scanner de l'historique."
+        },
+        "data_description": {
+          "recorder_friendly": "Lorsqu'activé (par défaut), les capteurs de distance et RSSI ne génèrent pas de statistiques à long terme et les attributs par scanner sont exclus de la base de données du recorder. Cela réduit considérablement la taille de la base de données. Désactivez pour des graphiques d'historique complets et des statistiques à long terme (utile pour la calibration et le débogage)."
+        }
       }
     }
   },

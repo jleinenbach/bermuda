@@ -39,7 +39,8 @@
           "attenuation": "Attenuation - Far-field path loss exponent (applies beyond ~6m). Typical: 3.0-4.5.",
           "ref_power": "Reference Power - Default rssi at 1 metre distance, for distance calibration.",
           "configured_devices": "Configured Devices - Select which Bluetooth devices or Beacons to track with Sensors.",
-          "use_ukf_area_selection": "Use UKF Area Selection (Experimental) - Multi-scanner RSSI fusion for improved room detection."
+          "use_ukf_area_selection": "Use UKF Area Selection (Experimental) - Multi-scanner RSSI fusion for improved room detection.",
+          "recorder_friendly": "Recorder-Friendly Mode - Reduces database bloat by disabling statistics and excluding per-scanner attributes from history."
         },
         "data_description": {
           "max_area_radius": "In the simple `AREA` feature, a device will be marked as being in the AREA of it's closest receiver, if inside this radius. If you set it small, devices will go to `unknown` between receivers, but if large devices will always appear as in their closest Area.",
@@ -49,7 +50,8 @@
           "smoothing_samples": "How many samples to average distance smoothing. Bigger numbers make for slower distance increases. Shortening distances are not affected. 10 or 20 seems good.",
           "attenuation": "Two-Slope model: Near-field (<6m) uses fixed exponent 1.8. Adjust this far-field exponent for distances beyond 6m.",
           "ref_power": "Put your most-common beacon 1 metre (3.28') away from your most-common proxy / scanner. Adjust ref_power until the distance sensor shows a lowest (not average) distance of 1 metre.",
-          "use_ukf_area_selection": "Enable Unscented Kalman Filter for area selection. This experimental feature fuses RSSI from multiple scanners using learned room fingerprints. Falls back to standard distance-based selection when insufficient data is available."
+          "use_ukf_area_selection": "Enable Unscented Kalman Filter for area selection. This experimental feature fuses RSSI from multiple scanners using learned room fingerprints. Falls back to standard distance-based selection when insufficient data is available.",
+          "recorder_friendly": "When enabled (default), distance and RSSI sensors will not generate long-term statistics and per-scanner attributes are excluded from the recorder database. This dramatically reduces database size. Disable this for full history graphs and long-term statistics (useful for calibration and debugging)."
         }
       },
       "selectdevices": {
