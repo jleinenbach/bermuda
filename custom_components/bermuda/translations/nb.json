@@ -25,6 +25,15 @@
           "sensor": "Sensor aktivert",
           "switch": "Bryter aktivert"
         }
+      },
+      "globalopts": {
+        "title": "Globale alternativer",
+        "data": {
+          "recorder_friendly": "Recorder-vennlig modus - Reduserer databasevekst ved å deaktivere statistikk og ekskludere per-skanner-attributter fra historikk."
+        },
+        "data_description": {
+          "recorder_friendly": "Når aktivert (standard), genererer avstands- og RSSI-sensorer ikke langtidsstatistikk og per-skanner-attributter ekskluderes fra recorder-databasen. Dette reduserer databasestørrelsen dramatisk. Deaktiver for fullstendige historikkgrafer og langtidsstatistikk (nyttig for kalibrering og feilsøking)."
+        }
       }
     }
   },

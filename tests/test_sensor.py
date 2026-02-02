@@ -16,6 +16,7 @@ from homeassistant.core import HomeAssistant
 from custom_components.bermuda.const import (
     ADDR_TYPE_IBEACON,
     ADDR_TYPE_PRIVATE_BLE_DEVICE,
+    CONF_RECORDER_FRIENDLY,
 )
 from custom_components.bermuda.sensor import (
     BermudaActiveProxyCount,
@@ -347,6 +348,7 @@ class TestBermudaSensorRssi:
         """Create a BermudaSensorRssi instance for testing."""
         mock_coordinator = MagicMock()
         mock_coordinator.last_update_success = True
+        mock_coordinator.options = {CONF_RECORDER_FRIENDLY: False}
 
         mock_device = MagicMock()
         mock_device.name = "Test Device"
@@ -413,6 +415,7 @@ class TestBermudaSensorRange:
         """Create a BermudaSensorRange instance for testing."""
         mock_coordinator = MagicMock()
         mock_coordinator.last_update_success = True
+        mock_coordinator.options = {CONF_RECORDER_FRIENDLY: False}
 
         mock_device = MagicMock()
         mock_device.name = "Test Device"
@@ -676,17 +679,21 @@ class TestGlobalSensors:
         assert total_device.entity_category == EntityCategory.DIAGNOSTIC
         assert visible_device.entity_category == EntityCategory.DIAGNOSTIC
 
-    def test_global_sensors_have_measurement_state_class(self) -> None:
-        """Test that global sensors have measurement state class."""
-        # Create instances to test attributes (HA metaclass converts class attrs to properties)
+    def test_global_sensors_have_no_state_class(self) -> None:
+        """Test that global sensors have no state class (no long-term statistics).
+
+        S3c: Global counter sensors (proxy/device counts) are unconditionally
+        excluded from HA long-term statistics. These values change every update
+        cycle and generate excessive DB writes with no analytical value.
+        """
         total_proxy = self._create_global_sensor(BermudaTotalProxyCount)
         active_proxy = self._create_global_sensor(BermudaActiveProxyCount)
         total_device = self._create_global_sensor(BermudaTotalDeviceCount)
         visible_device = self._create_global_sensor(BermudaVisibleDeviceCount)
-        assert total_proxy.state_class == SensorStateClass.MEASUREMENT
-        assert active_proxy.state_class == SensorStateClass.MEASUREMENT
-        assert total_device.state_class == SensorStateClass.MEASUREMENT
-        assert visible_device.state_class == SensorStateClass.MEASUREMENT
+        assert total_proxy.state_class is None
+        assert active_proxy.state_class is None
+        assert total_device.state_class is None
+        assert visible_device.state_class is None
 
 
 class TestBermudaSensorScannerRange:
@@ -1128,10 +1135,13 @@ class TestRecorderBaseline:
 
     # --- Helpers ---
 
-    def _create_area_sensor(self, name_override: str = "Area") -> BermudaSensor:
+    def _create_area_sensor(
+        self, name_override: str = "Area", recorder_friendly: bool = False
+    ) -> BermudaSensor:
         """Create a BermudaSensor (or subclass) for baseline testing."""
         mock_coordinator = MagicMock()
         mock_coordinator.last_update_success = True
+        mock_coordinator.options = {CONF_RECORDER_FRIENDLY: recorder_friendly}
 
         mock_device = MagicMock()
         mock_device.name = "Test Device"
@@ -1193,10 +1203,12 @@ class TestRecorderBaseline:
     def _create_scanner_range_sensor(
         self,
         rssi_distance: float = 5.123,
+        recorder_friendly: bool = False,
     ) -> BermudaSensorScannerRange:
         """Create a BermudaSensorScannerRange for baseline testing."""
         mock_coordinator = MagicMock()
         mock_coordinator.last_update_success = True
+        mock_coordinator.options = {CONF_RECORDER_FRIENDLY: recorder_friendly}
 
         mock_device = MagicMock()
         mock_device.name = "Test Device"
@@ -1249,10 +1261,12 @@ class TestRecorderBaseline:
     def _create_scanner_range_raw_sensor(
         self,
         rssi_distance_raw: float = 5.123,
+        recorder_friendly: bool = False,
     ) -> BermudaSensorScannerRangeRaw:
         """Create a BermudaSensorScannerRangeRaw for baseline testing."""
         mock_coordinator = MagicMock()
         mock_coordinator.last_update_success = True
+        mock_coordinator.options = {CONF_RECORDER_FRIENDLY: recorder_friendly}
 
         mock_device = MagicMock()
         mock_device.name = "Test Device"
@@ -1302,7 +1316,9 @@ class TestRecorderBaseline:
 
         return sensor
 
-    def _create_global_sensor(self, sensor_class: type) -> object:
+    def _create_global_sensor(
+        self, sensor_class: type, recorder_friendly: bool = False
+    ) -> object:
         """Create a global sensor for baseline testing."""
         mock_coordinator = MagicMock()
         mock_coordinator.last_update_success = True
@@ -1310,6 +1326,7 @@ class TestRecorderBaseline:
         mock_coordinator.devices = {"dev1": MagicMock()}
         mock_coordinator.count_active_scanners = MagicMock(return_value=2)
         mock_coordinator.count_active_devices = MagicMock(return_value=5)
+        mock_coordinator.options = {CONF_RECORDER_FRIENDLY: recorder_friendly}
 
         mock_entry = MagicMock()
         mock_entry.entry_id = "test_entry_id"
@@ -1481,45 +1498,65 @@ class TestRecorderBaseline:
         value = sensor.native_value
         assert value == 1.0, "ScannerRange should return cached value when rate-limited"
 
-    def test_scanner_range_raw_does_not_use_rate_limiting(self) -> None:
-        """BASELINE: ScannerRangeRaw does NOT use _cached_ratelimit().
+    def test_scanner_range_raw_no_rate_limiting_when_not_recorder_friendly(self) -> None:
+        """S2b: ScannerRangeRaw does NOT use rate-limiting when recorder_friendly=False.
 
-        Even with a cached value set, Raw returns the actual raw distance.
+        In debug mode (recorder_friendly=False), raw values pass through unfiltered.
         """
-        sensor = self._create_scanner_range_raw_sensor(rssi_distance_raw=5.123)
+        sensor = self._create_scanner_range_raw_sensor(
+            rssi_distance_raw=5.123, recorder_friendly=False
+        )
         # Same cache setup that would return 1.0 if rate-limited
         sensor.bermuda_last_state = 1.0
         sensor.bermuda_last_stamp = 1e18
         sensor._device.ref_power_changed = 0
 
         value = sensor.native_value
-        assert value == 5.123, "ScannerRangeRaw should return actual value, not cached"
+        assert value == 5.123, "ScannerRangeRaw should return actual value when not recorder_friendly"
+
+    def test_scanner_range_raw_uses_rate_limiting_when_recorder_friendly(self) -> None:
+        """S2b: ScannerRangeRaw uses _cached_ratelimit() when recorder_friendly=True.
+
+        With recorder_friendly enabled, rate-limiting reduces DB writes for raw sensors.
+        """
+        sensor = self._create_scanner_range_raw_sensor(
+            rssi_distance_raw=5.123, recorder_friendly=True
+        )
+        # Pre-set cache: value=1.0, timestamp far future (never stale)
+        sensor.bermuda_last_state = 1.0
+        sensor.bermuda_last_stamp = 1e18
+        sensor._device.ref_power_changed = 0
+
+        value = sensor.native_value
+        assert value == 1.0, "ScannerRangeRaw should return cached value when recorder_friendly"
 
     # --- Stage 3 Baselines: state_class is currently MEASUREMENT ---
 
-    def test_scanner_range_state_class_is_measurement(self) -> None:
-        """BASELINE: ScannerRange inherits MEASUREMENT from BermudaSensorRange.
-
-        After Stage 3 (recorder_friendly=True): Will be None.
-        """
-        sensor = self._create_scanner_range_sensor()
+    def test_scanner_range_state_class_is_measurement_when_not_recorder_friendly(self) -> None:
+        """S3d: ScannerRange has MEASUREMENT state_class when recorder_friendly=False."""
+        sensor = self._create_scanner_range_sensor(recorder_friendly=False)
         assert sensor.state_class == SensorStateClass.MEASUREMENT
 
-    def test_scanner_range_raw_state_class_is_measurement(self) -> None:
-        """BASELINE: ScannerRangeRaw inherits MEASUREMENT.
+    def test_scanner_range_state_class_is_none_when_recorder_friendly(self) -> None:
+        """S3d: ScannerRange has no state_class when recorder_friendly=True."""
+        sensor = self._create_scanner_range_sensor(recorder_friendly=True)
+        assert sensor.state_class is None
 
-        After Stage 3 (recorder_friendly=True): Will be None.
-        """
-        sensor = self._create_scanner_range_raw_sensor()
+    def test_scanner_range_raw_state_class_is_measurement_when_not_recorder_friendly(self) -> None:
+        """S3d: ScannerRangeRaw has MEASUREMENT state_class when recorder_friendly=False."""
+        sensor = self._create_scanner_range_raw_sensor(recorder_friendly=False)
         assert sensor.state_class == SensorStateClass.MEASUREMENT
 
-    def test_rssi_sensor_state_class_is_measurement(self) -> None:
-        """BASELINE: RSSI sensor has MEASUREMENT state_class.
+    def test_scanner_range_raw_state_class_is_none_when_recorder_friendly(self) -> None:
+        """S3d: ScannerRangeRaw has no state_class when recorder_friendly=True."""
+        sensor = self._create_scanner_range_raw_sensor(recorder_friendly=True)
+        assert sensor.state_class is None
 
-        After Stage 3 (recorder_friendly=True): Will be None.
-        """
+    def test_rssi_sensor_state_class_is_measurement_when_not_recorder_friendly(self) -> None:
+        """S3b: RSSI sensor has MEASUREMENT state_class when recorder_friendly=False."""
         mock_coordinator = MagicMock()
         mock_coordinator.last_update_success = True
+        mock_coordinator.options = {CONF_RECORDER_FRIENDLY: False}
         mock_device = MagicMock()
         mock_device.name = "Test"
         mock_device.unique_id = "uid"
@@ -1541,30 +1578,58 @@ class TestRecorderBaseline:
 
         assert sensor.state_class == SensorStateClass.MEASUREMENT
 
-    def test_range_sensor_state_class_is_measurement(self) -> None:
-        """BASELINE: Distance sensor has MEASUREMENT state_class.
+    def test_rssi_sensor_state_class_is_none_when_recorder_friendly(self) -> None:
+        """S3b: RSSI sensor has no state_class when recorder_friendly=True."""
+        mock_coordinator = MagicMock()
+        mock_coordinator.last_update_success = True
+        mock_coordinator.options = {CONF_RECORDER_FRIENDLY: True}
+        mock_device = MagicMock()
+        mock_device.name = "Test"
+        mock_device.unique_id = "uid"
+        mock_device.address = "aa:bb:cc:dd:ee:ff"
+        mock_coordinator.devices = {"aa:bb:cc:dd:ee:ff": mock_device}
+        mock_config_entry = MagicMock()
+        mock_config_entry.options = {}
 
-        After Stage 3 (recorder_friendly=True): Will be None.
-        """
-        sensor = self._create_area_sensor("Distance")
+        with (
+            patch("custom_components.bermuda.entity.ar.async_get") as mock_ar,
+            patch("custom_components.bermuda.entity.dr.async_get") as mock_dr,
+        ):
+            mock_ar.return_value = MagicMock()
+            mock_dr.return_value = MagicMock()
+            sensor = object.__new__(BermudaSensorRssi)
+            sensor.coordinator = mock_coordinator
+            sensor.config_entry = mock_config_entry
+            sensor._device = mock_device
+
+        assert sensor.state_class is None
+
+    def test_range_sensor_state_class_is_measurement_when_not_recorder_friendly(self) -> None:
+        """S3a: Distance sensor has MEASUREMENT state_class when recorder_friendly=False."""
+        sensor = self._create_area_sensor("Distance", recorder_friendly=False)
         assert sensor.state_class == SensorStateClass.MEASUREMENT
 
-    def test_global_total_proxy_state_class_is_measurement(self) -> None:
-        """BASELINE: Total proxy count has MEASUREMENT state_class."""
+    def test_range_sensor_state_class_is_none_when_recorder_friendly(self) -> None:
+        """S3a: Distance sensor has no state_class when recorder_friendly=True."""
+        sensor = self._create_area_sensor("Distance", recorder_friendly=True)
+        assert sensor.state_class is None
+
+    def test_global_total_proxy_state_class_is_none(self) -> None:
+        """S3c: Total proxy count has no state_class (unconditional, no long-term statistics)."""
         sensor = self._create_global_sensor(BermudaTotalProxyCount)
-        assert sensor.state_class == SensorStateClass.MEASUREMENT
+        assert sensor.state_class is None
 
-    def test_global_active_proxy_state_class_is_measurement(self) -> None:
-        """BASELINE: Active proxy count has MEASUREMENT state_class."""
+    def test_global_active_proxy_state_class_is_none(self) -> None:
+        """S3c: Active proxy count has no state_class (unconditional, no long-term statistics)."""
         sensor = self._create_global_sensor(BermudaActiveProxyCount)
-        assert sensor.state_class == SensorStateClass.MEASUREMENT
+        assert sensor.state_class is None
 
-    def test_global_total_device_state_class_is_measurement(self) -> None:
-        """BASELINE: Total device count has MEASUREMENT state_class."""
+    def test_global_total_device_state_class_is_none(self) -> None:
+        """S3c: Total device count has no state_class (unconditional, no long-term statistics)."""
         sensor = self._create_global_sensor(BermudaTotalDeviceCount)
-        assert sensor.state_class == SensorStateClass.MEASUREMENT
+        assert sensor.state_class is None
 
-    def test_global_visible_device_state_class_is_measurement(self) -> None:
-        """BASELINE: Visible device count has MEASUREMENT state_class."""
+    def test_global_visible_device_state_class_is_none(self) -> None:
+        """S3c: Visible device count has no state_class (unconditional, no long-term statistics)."""
         sensor = self._create_global_sensor(BermudaVisibleDeviceCount)
-        assert sensor.state_class == SensorStateClass.MEASUREMENT
+        assert sensor.state_class is None

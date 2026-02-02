@@ -38,7 +38,8 @@
           "smoothing_samples": "Amostras de suavização - número de amostras usadas para suavizar as leituras de distância.",
           "attenuation": "Atenuação - fator de atenuação do ambiente para cálculo/calibração de distância.",
           "ref_power": "Potência de referência - RSSI padrão a 1 metro de distância, para calibração de distância.",
-          "configured_devices": "Dispositivos configurados - selecione os dispositivos ou beacons Bluetooth a monitorizar com sensores."
+          "configured_devices": "Dispositivos configurados - selecione os dispositivos ou beacons Bluetooth a monitorizar com sensores.",
+          "recorder_friendly": "Modo amigável ao Recorder - Reduz o crescimento da base de dados ao desativar estatísticas e excluir atributos por scanner do histórico."
         },
         "data_description": {
           "max_area_radius": "Na funcionalidade simples `ÁREA`, um dispositivo será marcado como estando na ÁREA do recetor mais próximo, se estiver dentro deste raio. Se definir um valor pequeno, os dispositivos podem ficar como `desconhecido` entre recetores; valores grandes sempre os mostrarão na ÁREA mais próxima.",
@@ -47,7 +48,8 @@
           "update_interval": "Distâncias que encurtam ainda serão atualizadas imediatamente, mas distâncias que aumentam serão limitadas por este intervalo para reduzir o crescimento da base de dados.",
           "smoothing_samples": "Quantas amostras usar para suavizar leituras de distância. Valores maiores tornam os aumentos de distância mais lentos. Reduções de distância não são afetadas.",
           "attenuation": "Após definir ref_power a 1 metro, ajuste a atenuação para que outras distâncias sejam lidas corretamente.",
-          "ref_power": "Coloque o beacon mais comum a 1 metro do scanner mais usado e ajuste ref_power até que o sensor de distância mostre 1 metro."
+          "ref_power": "Coloque o beacon mais comum a 1 metro do scanner mais usado e ajuste ref_power até que o sensor de distância mostre 1 metro.",
+          "recorder_friendly": "Quando ativado (padrão), os sensores de distância e RSSI não geram estatísticas de longo prazo e os atributos por scanner são excluídos da base de dados do recorder. Isto reduz drasticamente o tamanho da base de dados. Desative para gráficos de histórico completos e estatísticas de longo prazo (útil para calibração e depuração)."
         }
       },
       "selectdevices": {
