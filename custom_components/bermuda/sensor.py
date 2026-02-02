@@ -153,6 +153,19 @@ async def async_setup_entry(
 class BermudaSensor(BermudaEntity, SensorEntity):
     """bermuda Sensor class."""
 
+    # Exclude time-based metadata from HA recorder database.
+    # These 3 float attributes change every coordinator cycle (~1.05s),
+    # forcing a new DB row per cycle per entity (Area, Floor, Distance).
+    # They are pure real-time diagnostics with no historical value.
+    # Live state, UI, automations and templates are NOT affected.
+    _unrecorded_attributes = frozenset(
+        {
+            "last_good_area_age_s",
+            "last_good_distance_age_s",
+            "area_retention_seconds_remaining",
+        }
+    )
+
     @property
     def unique_id(self) -> str:
         """

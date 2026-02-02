@@ -1110,3 +1110,461 @@ class TestSensorIntegration:
         assert hasattr(sensor, "BermudaSensorRange")
         assert hasattr(sensor, "BermudaSensorScanner")
         assert hasattr(sensor, "BermudaSensorRssi")
+
+
+class TestRecorderBaseline:
+    """
+    Baseline tests for recorder database optimization (Stufe 0).
+
+    These tests capture the CURRENT behavior of sensor entities regarding:
+    - _unrecorded_attributes (which attributes are excluded from HA recorder)
+    - extra_state_attributes (which attributes are exposed)
+    - state_class (whether long-term statistics are generated)
+    - Rate-limiting behavior (which sensors use _cached_ratelimit)
+
+    These tests will be UPDATED in Stages 1-3 as optimizations are applied.
+    When a test changes, the old assertion documents what changed.
+    """
+
+    # --- Helpers ---
+
+    def _create_area_sensor(self, name_override: str = "Area") -> BermudaSensor:
+        """Create a BermudaSensor (or subclass) for baseline testing."""
+        mock_coordinator = MagicMock()
+        mock_coordinator.last_update_success = True
+
+        mock_device = MagicMock()
+        mock_device.name = "Test Device"
+        mock_device.unique_id = "test_unique_id"
+        mock_device.address = "aa:bb:cc:dd:ee:ff"
+        mock_device.area_name = "Living Room"
+        mock_device.area_id = "living_room"
+        mock_device.floor_id = "floor1"
+        mock_device.floor_name = "Ground Floor"
+        mock_device.floor_level = 0
+        mock_device.current_mac = "aa:bb:cc:dd:ee:ff"
+        mock_device.area_distance = 2.5
+        mock_device.area_state_metadata = MagicMock(
+            return_value={
+                "last_good_area_age_s": 1.5,
+                "last_good_distance_age_s": 0.8,
+                "area_retention_seconds_remaining": 898.2,
+                "area_is_stale": False,
+                "area_retained": False,
+                "area_source": "min_distance",
+            }
+        )
+        mock_coordinator.devices = {"aa:bb:cc:dd:ee:ff": mock_device}
+
+        mock_config_entry = MagicMock()
+        mock_config_entry.options = {}
+
+        # Select the appropriate sensor class
+        sensor_class: type
+        if name_override == "Floor":
+            sensor_class = BermudaSensorFloor
+        elif name_override == "Distance":
+            sensor_class = BermudaSensorRange
+        else:
+            sensor_class = BermudaSensor
+
+        with (
+            patch("custom_components.bermuda.entity.ar.async_get") as mock_ar,
+            patch("custom_components.bermuda.entity.dr.async_get") as mock_dr,
+        ):
+            mock_ar.return_value = MagicMock()
+            mock_dr.return_value = MagicMock()
+
+            sensor = object.__new__(sensor_class)
+            sensor.coordinator = mock_coordinator
+            sensor.config_entry = mock_config_entry
+            sensor.address = "aa:bb:cc:dd:ee:ff"
+            sensor._device = mock_device
+            sensor._lastname = mock_device.name
+            sensor.ar = mock_ar.return_value
+            sensor.dr = mock_dr.return_value
+            sensor.devreg_init_done = False
+            sensor.bermuda_last_state = None
+            sensor.bermuda_last_stamp = 0.0
+            sensor.bermuda_update_interval = 1.0
+
+        return sensor
+
+    def _create_scanner_range_sensor(
+        self,
+        rssi_distance: float = 5.123,
+    ) -> BermudaSensorScannerRange:
+        """Create a BermudaSensorScannerRange for baseline testing."""
+        mock_coordinator = MagicMock()
+        mock_coordinator.last_update_success = True
+
+        mock_device = MagicMock()
+        mock_device.name = "Test Device"
+        mock_device.unique_id = "test_unique_id"
+        mock_device.address = "aa:bb:cc:dd:ee:ff"
+        mock_device.ref_power_changed = 0  # Explicit: prevent MagicMock truthy bypass
+
+        mock_advert = MagicMock()
+        mock_advert.rssi_distance = rssi_distance
+        mock_advert.source = True  # hasattr check in extra_state_attributes
+        mock_device.get_scanner = MagicMock(return_value=mock_advert)
+
+        mock_scanner = MagicMock()
+        mock_scanner.name = "Test Scanner"
+        mock_scanner.address = "scanner:addr"
+        mock_scanner.address_wifi_mac = None
+        mock_scanner.area_id = "scanner_area"
+        mock_scanner.area_name = "Scanner Room"
+        mock_coordinator.devices = {
+            "aa:bb:cc:dd:ee:ff": mock_device,
+            "scanner:addr": mock_scanner,
+        }
+
+        mock_config_entry = MagicMock()
+        mock_config_entry.options = {}
+
+        with (
+            patch("custom_components.bermuda.entity.ar.async_get") as mock_ar,
+            patch("custom_components.bermuda.entity.dr.async_get") as mock_dr,
+        ):
+            mock_ar.return_value = MagicMock()
+            mock_dr.return_value = MagicMock()
+
+            sensor = object.__new__(BermudaSensorScannerRange)
+            sensor.coordinator = mock_coordinator
+            sensor.config_entry = mock_config_entry
+            sensor.address = "aa:bb:cc:dd:ee:ff"
+            sensor._device = mock_device
+            sensor._scanner = mock_scanner
+            sensor._lastname = mock_device.name
+            sensor.ar = mock_ar.return_value
+            sensor.dr = mock_dr.return_value
+            sensor.devreg_init_done = False
+            sensor.bermuda_last_state = None
+            sensor.bermuda_last_stamp = 0.0
+            sensor.bermuda_update_interval = 1.0
+
+        return sensor
+
+    def _create_scanner_range_raw_sensor(
+        self,
+        rssi_distance_raw: float = 5.123,
+    ) -> BermudaSensorScannerRangeRaw:
+        """Create a BermudaSensorScannerRangeRaw for baseline testing."""
+        mock_coordinator = MagicMock()
+        mock_coordinator.last_update_success = True
+
+        mock_device = MagicMock()
+        mock_device.name = "Test Device"
+        mock_device.unique_id = "test_unique_id"
+        mock_device.address = "aa:bb:cc:dd:ee:ff"
+        mock_device.ref_power_changed = 0
+
+        mock_advert = MagicMock()
+        mock_advert.rssi_distance_raw = rssi_distance_raw
+        mock_advert.source = True
+        mock_device.get_scanner = MagicMock(return_value=mock_advert)
+
+        mock_scanner = MagicMock()
+        mock_scanner.name = "Test Scanner"
+        mock_scanner.address = "scanner:addr"
+        mock_scanner.address_wifi_mac = None
+        mock_scanner.area_id = "scanner_area"
+        mock_scanner.area_name = "Scanner Room"
+        mock_coordinator.devices = {
+            "aa:bb:cc:dd:ee:ff": mock_device,
+            "scanner:addr": mock_scanner,
+        }
+
+        mock_config_entry = MagicMock()
+        mock_config_entry.options = {}
+
+        with (
+            patch("custom_components.bermuda.entity.ar.async_get") as mock_ar,
+            patch("custom_components.bermuda.entity.dr.async_get") as mock_dr,
+        ):
+            mock_ar.return_value = MagicMock()
+            mock_dr.return_value = MagicMock()
+
+            sensor = object.__new__(BermudaSensorScannerRangeRaw)
+            sensor.coordinator = mock_coordinator
+            sensor.config_entry = mock_config_entry
+            sensor.address = "aa:bb:cc:dd:ee:ff"
+            sensor._device = mock_device
+            sensor._scanner = mock_scanner
+            sensor._lastname = mock_device.name
+            sensor.ar = mock_ar.return_value
+            sensor.dr = mock_dr.return_value
+            sensor.devreg_init_done = False
+            sensor.bermuda_last_state = None
+            sensor.bermuda_last_stamp = 0.0
+            sensor.bermuda_update_interval = 1.0
+
+        return sensor
+
+    def _create_global_sensor(self, sensor_class: type) -> object:
+        """Create a global sensor for baseline testing."""
+        mock_coordinator = MagicMock()
+        mock_coordinator.last_update_success = True
+        mock_coordinator.scanner_list = ["scanner1", "scanner2"]
+        mock_coordinator.devices = {"dev1": MagicMock()}
+        mock_coordinator.count_active_scanners = MagicMock(return_value=2)
+        mock_coordinator.count_active_devices = MagicMock(return_value=5)
+
+        mock_entry = MagicMock()
+        mock_entry.entry_id = "test_entry_id"
+
+        sensor = object.__new__(sensor_class)
+        sensor.coordinator = mock_coordinator
+        sensor.config_entry = mock_entry
+        # Global sensors use _cache_ratelimit_* (from BermudaGlobalEntity)
+        sensor._cache_ratelimit_value = None
+        sensor._cache_ratelimit_stamp = 0
+        sensor._cache_ratelimit_interval = 60
+
+        return sensor
+
+    # --- Stage 1 Baselines: Time-based metadata currently recorded ---
+
+    def test_area_sensor_time_metadata_excluded_from_recorder(self) -> None:
+        """STAGE 1: Area sensor excludes time-based metadata from recorder.
+
+        These 3 attributes change every coordinator cycle (~1.05s) and have
+        no historical value. They are still available live in UI/automations.
+        """
+        sensor = self._create_area_sensor("Area")
+        unrecorded = getattr(sensor, "_unrecorded_attributes", frozenset())
+
+        # Stage 1: All 3 time-based attributes are excluded from recorder
+        assert "last_good_area_age_s" in unrecorded
+        assert "last_good_distance_age_s" in unrecorded
+        assert "area_retention_seconds_remaining" in unrecorded
+
+    def test_area_sensor_stable_attributes_not_excluded(self) -> None:
+        """STAGE 1: Stable attributes are NOT excluded from recorder.
+
+        area_is_stale, area_retained, area_source change rarely and are
+        valuable for history analysis.
+        """
+        sensor = self._create_area_sensor("Area")
+        unrecorded = getattr(sensor, "_unrecorded_attributes", frozenset())
+
+        assert "area_is_stale" not in unrecorded
+        assert "area_retained" not in unrecorded
+        assert "area_source" not in unrecorded
+
+    def test_area_sensor_includes_time_metadata_in_attributes(self) -> None:
+        """BASELINE: Area sensor includes time-based metadata in extra_state_attributes.
+
+        Verifies area_state_metadata() keys are present. After Stage 1, these
+        keys will STILL be in extra_state_attributes (live), but excluded
+        from the recorder via _unrecorded_attributes.
+        """
+        sensor = self._create_area_sensor("Area")
+        attrs = sensor.extra_state_attributes
+
+        # Time-based attributes (problematic for DB)
+        assert "last_good_area_age_s" in attrs
+        assert "last_good_distance_age_s" in attrs
+        assert "area_retention_seconds_remaining" in attrs
+        # Stable attributes (valuable for history)
+        assert "area_is_stale" in attrs
+        assert "area_retained" in attrs
+        assert "area_source" in attrs
+
+    def test_floor_sensor_time_metadata_excluded_from_recorder(self) -> None:
+        """STAGE 1: Floor sensor inherits _unrecorded_attributes from BermudaSensor."""
+        sensor = self._create_area_sensor("Floor")
+        unrecorded = getattr(sensor, "_unrecorded_attributes", frozenset())
+
+        assert "last_good_area_age_s" in unrecorded
+        assert "last_good_distance_age_s" in unrecorded
+        assert "area_retention_seconds_remaining" in unrecorded
+
+    def test_floor_sensor_still_exposes_time_metadata_live(self) -> None:
+        """STAGE 1: Floor sensor still has time metadata in extra_state_attributes (live).
+
+        _unrecorded_attributes only affects the recorder DB, not live state.
+        """
+        sensor = self._create_area_sensor("Floor")
+        attrs = sensor.extra_state_attributes
+
+        assert "last_good_area_age_s" in attrs
+        assert "last_good_distance_age_s" in attrs
+        assert "area_retention_seconds_remaining" in attrs
+
+    def test_distance_sensor_time_metadata_excluded_from_recorder(self) -> None:
+        """STAGE 1: Distance sensor inherits _unrecorded_attributes from BermudaSensor."""
+        sensor = self._create_area_sensor("Distance")
+        unrecorded = getattr(sensor, "_unrecorded_attributes", frozenset())
+
+        assert "last_good_area_age_s" in unrecorded
+        assert "last_good_distance_age_s" in unrecorded
+        assert "area_retention_seconds_remaining" in unrecorded
+
+    def test_distance_sensor_still_exposes_time_metadata_live(self) -> None:
+        """STAGE 1: Distance sensor still has time metadata in extra_state_attributes (live)."""
+        sensor = self._create_area_sensor("Distance")
+        attrs = sensor.extra_state_attributes
+
+        assert "last_good_area_age_s" in attrs
+        assert "last_good_distance_age_s" in attrs
+        assert "area_retention_seconds_remaining" in attrs
+
+    def test_area_sensor_stable_attributes_present(self) -> None:
+        """BASELINE: Stable attributes (area_id, floor_*) are in extra_state_attributes.
+
+        These should NEVER be excluded from the recorder.
+        """
+        sensor = self._create_area_sensor("Area")
+        attrs = sensor.extra_state_attributes
+
+        assert attrs["area_id"] == "living_room"
+        assert attrs["area_name"] == "Living Room"
+        assert attrs["floor_id"] == "floor1"
+        assert attrs["floor_name"] == "Ground Floor"
+        assert attrs["floor_level"] == 0
+        assert attrs["current_mac"] == "aa:bb:cc:dd:ee:ff"
+
+    # --- Stage 2 Baselines: Per-scanner attributes and rate-limiting ---
+
+    def test_scanner_range_inherits_unrecorded_attributes(self) -> None:
+        """STAGE 1: ScannerRange inherits time-based exclusions from BermudaSensor.
+
+        These attributes don't appear in ScannerRange's extra_state_attributes
+        (it has its own override), so this is a harmless no-op.
+        After Stage 2 (recorder_friendly=True): Will be overridden with MATCH_ALL.
+        """
+        sensor = self._create_scanner_range_sensor()
+        unrecorded = getattr(sensor, "_unrecorded_attributes", frozenset())
+        assert "last_good_area_age_s" in unrecorded
+        assert "last_good_distance_age_s" in unrecorded
+        assert "area_retention_seconds_remaining" in unrecorded
+
+    def test_scanner_range_raw_inherits_unrecorded_attributes(self) -> None:
+        """STAGE 1: ScannerRangeRaw inherits time-based exclusions from BermudaSensor.
+
+        Same as ScannerRange — harmless no-op since these attributes aren't
+        in ScannerRangeRaw's extra_state_attributes.
+        After Stage 2 (recorder_friendly=True): Will be overridden with MATCH_ALL.
+        """
+        sensor = self._create_scanner_range_raw_sensor()
+        unrecorded = getattr(sensor, "_unrecorded_attributes", frozenset())
+        assert "last_good_area_age_s" in unrecorded
+        assert "last_good_distance_age_s" in unrecorded
+        assert "area_retention_seconds_remaining" in unrecorded
+
+    def test_scanner_range_has_extra_state_attributes(self) -> None:
+        """BASELINE: ScannerRange exposes 4 scanner-specific attributes."""
+        sensor = self._create_scanner_range_sensor()
+        attrs = sensor.extra_state_attributes
+
+        assert attrs is not None
+        assert attrs["area_id"] == "scanner_area"
+        assert attrs["area_name"] == "Scanner Room"
+        assert attrs["area_scanner_mac"] == "scanner:addr"
+        assert attrs["area_scanner_name"] == "Test Scanner"
+
+    def test_scanner_range_uses_rate_limiting(self) -> None:
+        """BASELINE: ScannerRange uses _cached_ratelimit() for native_value.
+
+        Set up cache to return old value for a rising distance.
+        With fast_falling=True, fast_rising=False: a rising value (5.123 > 1.0)
+        does not trigger any bypass, so the cached value 1.0 is returned.
+        """
+        sensor = self._create_scanner_range_sensor(rssi_distance=5.123)
+        # Pre-set cache: value=1.0, timestamp far future (never stale)
+        sensor.bermuda_last_state = 1.0
+        sensor.bermuda_last_stamp = 1e18
+        sensor._device.ref_power_changed = 0
+
+        value = sensor.native_value
+        assert value == 1.0, "ScannerRange should return cached value when rate-limited"
+
+    def test_scanner_range_raw_does_not_use_rate_limiting(self) -> None:
+        """BASELINE: ScannerRangeRaw does NOT use _cached_ratelimit().
+
+        Even with a cached value set, Raw returns the actual raw distance.
+        """
+        sensor = self._create_scanner_range_raw_sensor(rssi_distance_raw=5.123)
+        # Same cache setup that would return 1.0 if rate-limited
+        sensor.bermuda_last_state = 1.0
+        sensor.bermuda_last_stamp = 1e18
+        sensor._device.ref_power_changed = 0
+
+        value = sensor.native_value
+        assert value == 5.123, "ScannerRangeRaw should return actual value, not cached"
+
+    # --- Stage 3 Baselines: state_class is currently MEASUREMENT ---
+
+    def test_scanner_range_state_class_is_measurement(self) -> None:
+        """BASELINE: ScannerRange inherits MEASUREMENT from BermudaSensorRange.
+
+        After Stage 3 (recorder_friendly=True): Will be None.
+        """
+        sensor = self._create_scanner_range_sensor()
+        assert sensor.state_class == SensorStateClass.MEASUREMENT
+
+    def test_scanner_range_raw_state_class_is_measurement(self) -> None:
+        """BASELINE: ScannerRangeRaw inherits MEASUREMENT.
+
+        After Stage 3 (recorder_friendly=True): Will be None.
+        """
+        sensor = self._create_scanner_range_raw_sensor()
+        assert sensor.state_class == SensorStateClass.MEASUREMENT
+
+    def test_rssi_sensor_state_class_is_measurement(self) -> None:
+        """BASELINE: RSSI sensor has MEASUREMENT state_class.
+
+        After Stage 3 (recorder_friendly=True): Will be None.
+        """
+        mock_coordinator = MagicMock()
+        mock_coordinator.last_update_success = True
+        mock_device = MagicMock()
+        mock_device.name = "Test"
+        mock_device.unique_id = "uid"
+        mock_device.address = "aa:bb:cc:dd:ee:ff"
+        mock_coordinator.devices = {"aa:bb:cc:dd:ee:ff": mock_device}
+        mock_config_entry = MagicMock()
+        mock_config_entry.options = {}
+
+        with (
+            patch("custom_components.bermuda.entity.ar.async_get") as mock_ar,
+            patch("custom_components.bermuda.entity.dr.async_get") as mock_dr,
+        ):
+            mock_ar.return_value = MagicMock()
+            mock_dr.return_value = MagicMock()
+            sensor = object.__new__(BermudaSensorRssi)
+            sensor.coordinator = mock_coordinator
+            sensor.config_entry = mock_config_entry
+            sensor._device = mock_device
+
+        assert sensor.state_class == SensorStateClass.MEASUREMENT
+
+    def test_range_sensor_state_class_is_measurement(self) -> None:
+        """BASELINE: Distance sensor has MEASUREMENT state_class.
+
+        After Stage 3 (recorder_friendly=True): Will be None.
+        """
+        sensor = self._create_area_sensor("Distance")
+        assert sensor.state_class == SensorStateClass.MEASUREMENT
+
+    def test_global_total_proxy_state_class_is_measurement(self) -> None:
+        """BASELINE: Total proxy count has MEASUREMENT state_class."""
+        sensor = self._create_global_sensor(BermudaTotalProxyCount)
+        assert sensor.state_class == SensorStateClass.MEASUREMENT
+
+    def test_global_active_proxy_state_class_is_measurement(self) -> None:
+        """BASELINE: Active proxy count has MEASUREMENT state_class."""
+        sensor = self._create_global_sensor(BermudaActiveProxyCount)
+        assert sensor.state_class == SensorStateClass.MEASUREMENT
+
+    def test_global_total_device_state_class_is_measurement(self) -> None:
+        """BASELINE: Total device count has MEASUREMENT state_class."""
+        sensor = self._create_global_sensor(BermudaTotalDeviceCount)
+        assert sensor.state_class == SensorStateClass.MEASUREMENT
+
+    def test_global_visible_device_state_class_is_measurement(self) -> None:
+        """BASELINE: Visible device count has MEASUREMENT state_class."""
+        sensor = self._create_global_sensor(BermudaVisibleDeviceCount)
+        assert sensor.state_class == SensorStateClass.MEASUREMENT
