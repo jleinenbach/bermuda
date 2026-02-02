@@ -21,7 +21,11 @@ from custom_components.bermuda.const import (
     AUTO_LEARNING_MAX_RSSI_VARIANCE,
     AUTO_LEARNING_MAX_VELOCITY,
     AUTO_LEARNING_MIN_CONFIDENCE,
-    AUTO_LEARNING_MIN_DWELL_TIME,
+    DWELL_TIME_MOVING_SECONDS,
+    DWELL_TIME_SETTLING_SECONDS,
+    MOVEMENT_STATE_MOVING,
+    MOVEMENT_STATE_SETTLING,
+    MOVEMENT_STATE_STATIONARY,
 )
 
 
@@ -50,6 +54,15 @@ class FakeDevice:
         if self.area_changed_at == 0.0:
             return stamp_now  # Assume device has been in area "forever"
         return stamp_now - self.area_changed_at
+
+    def get_movement_state(self, stamp_now: float) -> str:
+        """Return movement state based on dwell time."""
+        dwell_time = self.get_dwell_time(stamp_now)
+        if dwell_time < DWELL_TIME_MOVING_SECONDS:
+            return MOVEMENT_STATE_MOVING
+        if dwell_time < DWELL_TIME_SETTLING_SECONDS:
+            return MOVEMENT_STATE_SETTLING
+        return MOVEMENT_STATE_STATIONARY
 
 
 def make_coordinator_mock() -> MagicMock:
@@ -250,20 +263,21 @@ class TestRssiVarianceFilterIntegration:
 # =============================================================================
 
 
-class TestDwellTimeFilterIntegration:
+class TestMovementStateFilterIntegration:
     """
-    Feature 5: Dwell Time Filter at coordinator level.
+    Feature 5: Movement State Filter at coordinator level.
 
     Tests that _update_device_correlations skips learning when device
-    has just entered the room (dwell time < AUTO_LEARNING_MIN_DWELL_TIME).
+    is not STATIONARY (requires 10+ min in same room). This replaces
+    the previous 30s dwell time check.
     """
 
-    def test_short_dwell_time_skips_update(self) -> None:
-        """Updates should be skipped when device just entered room."""
+    def test_moving_state_skips_update(self) -> None:
+        """Updates should be skipped when device just entered room (MOVING)."""
         handler = make_handler_with_mock()
         device = FakeDevice()
         device.area_id = "area.living_room"
-        # Device just entered 10 seconds ago (below 30s threshold)
+        # Device just entered 10 seconds ago → MOVING state (< 120s)
         device.area_changed_at = 990.0  # nowstamp=1000, so dwell=10s
 
         device.adverts["scanner_a"] = FakeAdvert(
@@ -282,18 +296,47 @@ class TestDwellTimeFilterIntegration:
             nowstamp=1000.0,
         )
 
-        # Should NOT create profile (dwell time too short)
+        # Should NOT create profile (MOVING state, not STATIONARY)
         assert device.address not in handler.correlations or "area.living_room" not in handler.correlations.get(
             device.address, {}
         )
 
-    def test_long_dwell_time_allows_update(self) -> None:
-        """Updates should proceed when device has been in room long enough."""
+    def test_settling_state_skips_update(self) -> None:
+        """Updates should be skipped when device is SETTLING (2-10 min)."""
         handler = make_handler_with_mock()
         device = FakeDevice()
         device.area_id = "area.living_room"
-        # Device has been in room for 60 seconds (above 30s threshold)
-        device.area_changed_at = 940.0  # nowstamp=1000, so dwell=60s
+        # Device has been in room for 300 seconds → SETTLING state (120-600s)
+        device.area_changed_at = 700.0  # nowstamp=1000, so dwell=300s
+
+        device.adverts["scanner_a"] = FakeAdvert(
+            scanner_address="scanner_a",
+            rssi=-50.0,
+            stamp=1000.0,
+            hist_velocity=[0.1],
+        )
+
+        handler._update_device_correlations(
+            device=device,
+            area_id="area.living_room",
+            primary_rssi=-50.0,
+            primary_scanner_addr="scanner_a",
+            other_readings={"scanner_b": -60.0},
+            nowstamp=1000.0,
+        )
+
+        # Should NOT create profile (SETTLING state, not STATIONARY)
+        assert device.address not in handler.correlations or "area.living_room" not in handler.correlations.get(
+            device.address, {}
+        )
+
+    def test_stationary_state_allows_update(self) -> None:
+        """Updates should proceed when device is STATIONARY (10+ min)."""
+        handler = make_handler_with_mock()
+        device = FakeDevice()
+        device.area_id = "area.living_room"
+        # Device has been in room for 1000 seconds → STATIONARY state (>= 600s)
+        device.area_changed_at = 0.0  # nowstamp=1000, so dwell=1000s
 
         device.adverts["scanner_a"] = FakeAdvert(
             scanner_address="scanner_a",
@@ -319,7 +362,7 @@ class TestDwellTimeFilterIntegration:
                 nowstamp=1000.0,
             )
 
-        # Should create profile
+        # Should create profile (STATIONARY state)
         assert device.address in handler.correlations
         assert "area.living_room" in handler.correlations[device.address]
 
@@ -577,7 +620,7 @@ class TestCombinedQualityFiltersIntegration:
         handler = make_handler_with_mock()
         device = FakeDevice()
         device.area_id = "area.living_room"
-        device.area_changed_at = 940.0  # Good dwell time (60s)
+        device.area_changed_at = 0.0  # STATIONARY state (dwell=1000s)
 
         # Good velocity but high variance
         device.adverts["scanner_a"] = FakeAdvert(
@@ -613,7 +656,7 @@ class TestCombinedQualityFiltersIntegration:
         handler = make_handler_with_mock()
         device = FakeDevice()
         device.area_id = "area.living_room"
-        device.area_changed_at = 940.0  # Good dwell time (60s)
+        device.area_changed_at = 0.0  # STATIONARY state (dwell=1000s)
 
         device.adverts["scanner_a"] = FakeAdvert(
             scanner_address="scanner_a",

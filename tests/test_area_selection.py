@@ -112,6 +112,9 @@ def _make_advert(
             factor = (distance * math.log(10)) / (10.0 * 2.0)
             distance_variance = min((factor**2) * 4.0, 4.0)  # Cap at 4.0
 
+    # Mock rssi_kalman for _get_device_rssi_variance
+    rssi_kalman = SimpleNamespace(is_initialized=False, variance=4.0)
+
     advert = SimpleNamespace(
         name=name,
         area_id=area_id,
@@ -122,6 +125,8 @@ def _make_advert(
         stamp=stamp,
         scanner_device=scanner_device,
         hist_distance_by_interval=hist,
+        hist_velocity=[],  # For _get_device_max_velocity
+        rssi_kalman=rssi_kalman,  # For _get_device_rssi_variance
     )
     # Add median_rssi method for physical RSSI priority feature
     advert.median_rssi = lambda: rssi

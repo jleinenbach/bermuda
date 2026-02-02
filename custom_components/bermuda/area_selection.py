@@ -25,7 +25,6 @@ from .const import (
     AUTO_LEARNING_MAX_RSSI_VARIANCE,
     AUTO_LEARNING_MAX_VELOCITY,
     AUTO_LEARNING_MIN_CONFIDENCE,
-    AUTO_LEARNING_MIN_DWELL_TIME,
     CONF_MAX_RADIUS,
     CONF_USE_PHYSICAL_RSSI_PRIORITY,
     CONFIDENCE_WINNER_MARGIN,
@@ -737,6 +736,52 @@ class AreaSelectionHandler:
 
         return z_scores_to_confidence(z_scores)
 
+    def _is_signal_ambiguous(
+        self,
+        device: BermudaDevice,
+        area_id: str,
+        primary_rssi: float,
+        primary_scanner_addr: str | None,
+        other_readings: dict[str, float],
+    ) -> bool:
+        """
+        Check if the current RSSI pattern is ambiguous between rooms.
+
+        Returns True if another room's profile matches the current signal
+        equally well (all absolute z-scores < 2.0), meaning the assignment
+        is uncertain and we should not reinforce either profile.
+
+        This breaks the self-reinforcing feedback loop where a wrong room
+        learns the same signal as the correct room.
+        """
+        if device.address not in self.correlations:
+            return False
+
+        all_readings = dict(other_readings)
+        if primary_scanner_addr is not None:
+            all_readings[primary_scanner_addr] = primary_rssi
+
+        device_profiles = self.correlations[device.address]
+        for other_area_id, other_profile in device_profiles.items():
+            if other_area_id == area_id:
+                continue
+            abs_z_scores = other_profile.get_absolute_z_scores(all_readings)
+            if not abs_z_scores:
+                continue
+            # If ALL z-scores for another room are below 2.0, the signal
+            # is consistent with that room too → ambiguous assignment.
+            max_z = max(abs(z) for _, z in abs_z_scores)
+            if max_z < 2.0:
+                if _LOGGER.isEnabledFor(logging.DEBUG):
+                    _LOGGER.debug(
+                        "Auto-learning skip for %s: ambiguous signal (area %s also matches, max_z=%.1f)",
+                        device.name,
+                        other_area_id,
+                        max_z,
+                    )
+                return True
+        return False
+
     def _update_device_correlations(
         self,
         device: BermudaDevice,
@@ -754,11 +799,12 @@ class AreaSelectionHandler:
         Used by both UKF and min-distance selection paths to maintain
         consistent correlation data.
 
-        Quality Filters (Features 1, 3, 5):
+        Quality Filters (Features 1, 3, 5, 6):
         - Feature 3: Skip if confidence < AUTO_LEARNING_MIN_CONFIDENCE
+        - Feature 5: Skip if movement state is not STATIONARY (10+ min)
         - Feature 5: Skip if velocity > AUTO_LEARNING_MAX_VELOCITY
         - Feature 5: Skip if RSSI variance > AUTO_LEARNING_MAX_RSSI_VARIANCE
-        - Feature 5: Skip if dwell_time < AUTO_LEARNING_MIN_DWELL_TIME
+        - Feature 6: Skip if signal is ambiguous (matches another room)
 
         Args:
         ----
@@ -797,24 +843,28 @@ class AreaSelectionHandler:
             return
 
         # =====================================================================
-        # Quality Filter: Feature 5 - Dwell Time Filter
-        # Skip learning when device has just entered the room (still settling).
+        # Quality Filter: Feature 5 - Movement State Guard
+        # Only learn when the device is STATIONARY (10+ min in same room).
+        # This replaces the previous 30s dwell time check, which was too
+        # permissive and allowed the self-reinforcing misclassification loop:
+        # wrong room → auto-learn → stronger wrong profile → more wrong room.
+        # By requiring 10+ minutes of stable presence, transient misclassifications
+        # can no longer poison fingerprint profiles.
         # =====================================================================
         if nowstamp is not None:
-            dwell_time = device.get_dwell_time(stamp_now=nowstamp)
-            if dwell_time < AUTO_LEARNING_MIN_DWELL_TIME:
+            movement_state = device.get_movement_state(stamp_now=nowstamp)
+            if movement_state in (MOVEMENT_STATE_MOVING, MOVEMENT_STATE_SETTLING):
                 if _LOGGER.isEnabledFor(logging.DEBUG):
                     _LOGGER.debug(
-                        "Auto-learning skip for %s: dwell time %.1fs < %.1fs",
+                        "Auto-learning skip for %s: movement state %s (not stationary)",
                         device.name,
-                        dwell_time,
-                        AUTO_LEARNING_MIN_DWELL_TIME,
+                        movement_state,
                     )
                 self._auto_learning_stats.record_update(
                     performed=False,
                     stamp=nowstamp,
                     device_address=device.address,
-                    skip_reason="low_dwell_time",
+                    skip_reason="not_stationary",
                 )
                 return
 
@@ -859,6 +909,22 @@ class AreaSelectionHandler:
                     stamp=nowstamp,
                     device_address=device.address,
                     skip_reason="high_rssi_variance",
+                )
+            return
+
+        # =====================================================================
+        # Quality Filter: Feature 6 - Ambiguity Check
+        # Skip learning when the current RSSI pattern matches ANOTHER room's
+        # profile equally well. This breaks the self-reinforcing feedback loop
+        # where a wrong room learns the same signal as the correct room.
+        # =====================================================================
+        if self._is_signal_ambiguous(device, area_id, primary_rssi, primary_scanner_addr, other_readings):
+            if nowstamp is not None:
+                self._auto_learning_stats.record_update(
+                    performed=False,
+                    stamp=nowstamp,
+                    device_address=device.address,
+                    skip_reason="ambiguous_signal",
                 )
             return
 
@@ -2598,6 +2664,33 @@ class AreaSelectionHandler:
                         ):
                             other_readings[other_adv.scanner_address] = other_adv.rssi
 
+                    # FIX 1: Compute distance-margin confidence for min-distance
+                    # This prevents auto-learning from uncertain/close decisions.
+                    # Find the runner-up distance (best distance from a DIFFERENT area).
+                    winner_distance = analyzer.effective_distance(advert)
+                    runner_up_distance: float | None = None
+                    for other_adv in device.adverts.values():
+                        if (
+                            other_adv is not advert
+                            and analyzer.within_evidence(other_adv)
+                            and analyzer.has_area(other_adv)
+                            and other_adv.area_id != advert.area_id
+                        ):
+                            other_dist = analyzer.effective_distance(other_adv)
+                            if other_dist is not None and (
+                                runner_up_distance is None or other_dist < runner_up_distance
+                            ):
+                                runner_up_distance = other_dist
+
+                    mindist_confidence: float | None = None
+                    if winner_distance is not None and runner_up_distance is not None and runner_up_distance > 0:
+                        # Confidence = how much closer the winner is relative to runner-up.
+                        # 0.0 = equal distances, 1.0 = runner-up infinitely far.
+                        # E.g. 2m vs 5m → (5-2)/5 = 0.6 (confident)
+                        # E.g. 3.2m vs 3.5m → (3.5-3.2)/3.5 = 0.09 (uncertain)
+                        margin_ratio = (runner_up_distance - winner_distance) / runner_up_distance
+                        mindist_confidence = max(0.0, min(1.0, margin_ratio))
+
                     # Use shared method to update both device and room profiles
                     self._update_device_correlations(
                         device=device,
@@ -2606,6 +2699,7 @@ class AreaSelectionHandler:
                         primary_scanner_addr=advert.scanner_address,
                         other_readings=other_readings,
                         nowstamp=nowstamp,
+                        confidence=mindist_confidence,
                     )
 
         if winner is None:
