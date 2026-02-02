@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from homeassistant.components.sensor.const import SensorDeviceClass, SensorStateClass
 from homeassistant.const import (
+    MATCH_ALL,
     SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
     EntityCategory,
     UnitOfLength,
@@ -1911,3 +1912,226 @@ class TestSensorCoverageExtension:
         ]
         assert len(scanner_entities) == 0
         mock_coordinator.sensor_created.assert_called_once_with("aa:bb:cc:dd:ee:ff")
+
+
+class TestDynamicRecorderFriendlyToggle:
+    """Tests for runtime toggling of recorder-friendly option.
+
+    These tests cover the bugs fixed in this session:
+    1. Deprecated @property state_class → dynamic _attr_state_class
+    2. _unrecorded_attributes set once in __init__ → dynamic in _handle_coordinator_update
+    3. Fallback when recorder-friendly=OFF didn't preserve base-class exclusions
+    """
+
+    def _make_sensor(
+        self,
+        sensor_class: type,
+        recorder_friendly: bool = False,
+    ) -> tuple[object, MagicMock]:
+        """Create a sensor and return (sensor, mock_coordinator) for option toggling."""
+        mock_coordinator = MagicMock()
+        mock_coordinator.last_update_success = True
+        mock_coordinator.options = {CONF_RECORDER_FRIENDLY: recorder_friendly}
+
+        mock_device = MagicMock()
+        mock_device.name = "Test Device"
+        mock_device.unique_id = "test_uid"
+        mock_device.address = "aa:bb:cc:dd:ee:ff"
+        mock_device.ref_power_changed = 0
+
+        mock_scanner = MagicMock()
+        mock_scanner.name = "Test Scanner"
+        mock_scanner.address = "scanner:addr"
+        mock_scanner.address_wifi_mac = None
+        mock_scanner.area_id = "scanner_area"
+        mock_scanner.area_name = "Scanner Room"
+
+        mock_advert = MagicMock()
+        mock_advert.rssi_distance = 3.0
+        mock_advert.rssi_distance_raw = 3.0
+        mock_advert.source = True
+        mock_device.get_scanner = MagicMock(return_value=mock_advert)
+
+        mock_coordinator.devices = {
+            "aa:bb:cc:dd:ee:ff": mock_device,
+            "scanner:addr": mock_scanner,
+        }
+
+        mock_config_entry = MagicMock()
+        mock_config_entry.options = {}
+
+        with (
+            patch("custom_components.bermuda.entity.ar.async_get") as mock_ar,
+            patch("custom_components.bermuda.entity.dr.async_get") as mock_dr,
+        ):
+            mock_ar.return_value = MagicMock()
+            mock_dr.return_value = MagicMock()
+
+            sensor = object.__new__(sensor_class)
+            sensor.coordinator = mock_coordinator
+            sensor.config_entry = mock_config_entry
+            sensor.address = "aa:bb:cc:dd:ee:ff"
+            sensor._device = mock_device
+            sensor._scanner = mock_scanner
+            sensor._lastname = mock_device.name
+            sensor.ar = mock_ar.return_value
+            sensor.dr = mock_dr.return_value
+            sensor.devreg_init_done = False
+            sensor.device_entry = None
+            sensor.async_write_ha_state = MagicMock()
+            sensor.bermuda_last_state = None
+            sensor.bermuda_last_stamp = 0.0
+            sensor.bermuda_update_interval = 1.0
+            sensor._state_info = None
+
+        sensor._handle_coordinator_update()
+        return sensor, mock_coordinator
+
+    # --- Bug 1: _attr_state_class toggles at runtime ---
+
+    def test_rssi_state_class_toggles_on_to_off(self) -> None:
+        """state_class switches from None to MEASUREMENT when recorder-friendly is disabled."""
+        sensor, coord = self._make_sensor(BermudaSensorRssi, recorder_friendly=True)
+        assert sensor.state_class is None
+
+        coord.options[CONF_RECORDER_FRIENDLY] = False
+        sensor._handle_coordinator_update()
+        assert sensor.state_class == SensorStateClass.MEASUREMENT
+
+    def test_rssi_state_class_toggles_off_to_on(self) -> None:
+        """state_class switches from MEASUREMENT to None when recorder-friendly is enabled."""
+        sensor, coord = self._make_sensor(BermudaSensorRssi, recorder_friendly=False)
+        assert sensor.state_class == SensorStateClass.MEASUREMENT
+
+        coord.options[CONF_RECORDER_FRIENDLY] = True
+        sensor._handle_coordinator_update()
+        assert sensor.state_class is None
+
+    def test_range_state_class_toggles_on_to_off(self) -> None:
+        """Range sensor state_class switches from None to MEASUREMENT."""
+        sensor, coord = self._make_sensor(BermudaSensorRange, recorder_friendly=True)
+        assert sensor.state_class is None
+
+        coord.options[CONF_RECORDER_FRIENDLY] = False
+        sensor._handle_coordinator_update()
+        assert sensor.state_class == SensorStateClass.MEASUREMENT
+
+    def test_range_state_class_toggles_off_to_on(self) -> None:
+        """Range sensor state_class switches from MEASUREMENT to None."""
+        sensor, coord = self._make_sensor(BermudaSensorRange, recorder_friendly=False)
+        assert sensor.state_class == SensorStateClass.MEASUREMENT
+
+        coord.options[CONF_RECORDER_FRIENDLY] = True
+        sensor._handle_coordinator_update()
+        assert sensor.state_class is None
+
+    def test_scanner_range_state_class_toggles(self) -> None:
+        """ScannerRange inherits state_class toggle from parent chain."""
+        sensor, coord = self._make_sensor(BermudaSensorScannerRange, recorder_friendly=True)
+        assert sensor.state_class is None
+
+        coord.options[CONF_RECORDER_FRIENDLY] = False
+        sensor._handle_coordinator_update()
+        assert sensor.state_class == SensorStateClass.MEASUREMENT
+
+    def test_scanner_range_raw_state_class_toggles(self) -> None:
+        """ScannerRangeRaw inherits _handle_coordinator_update from ScannerRange."""
+        sensor, coord = self._make_sensor(BermudaSensorScannerRangeRaw, recorder_friendly=False)
+        assert sensor.state_class == SensorStateClass.MEASUREMENT
+
+        coord.options[CONF_RECORDER_FRIENDLY] = True
+        sensor._handle_coordinator_update()
+        assert sensor.state_class is None
+
+    # --- Bug 2: _unrecorded_attributes + _state_info dynamic sync ---
+
+    def test_scanner_range_unrecorded_match_all_when_recorder_friendly(self) -> None:
+        """recorder-friendly=True sets _unrecorded_attributes to frozenset({MATCH_ALL})."""
+        sensor, _coord = self._make_sensor(BermudaSensorScannerRange, recorder_friendly=True)
+        assert MATCH_ALL in sensor._unrecorded_attributes
+
+    def test_scanner_range_unrecorded_toggles_at_runtime(self) -> None:
+        """_unrecorded_attributes switches when option changes between cycles."""
+        sensor, coord = self._make_sensor(BermudaSensorScannerRange, recorder_friendly=True)
+        assert MATCH_ALL in sensor._unrecorded_attributes
+
+        coord.options[CONF_RECORDER_FRIENDLY] = False
+        sensor._handle_coordinator_update()
+        assert MATCH_ALL not in sensor._unrecorded_attributes
+
+        coord.options[CONF_RECORDER_FRIENDLY] = True
+        sensor._handle_coordinator_update()
+        assert MATCH_ALL in sensor._unrecorded_attributes
+
+    def test_scanner_range_raw_unrecorded_toggles_at_runtime(self) -> None:
+        """ScannerRangeRaw inherits _unrecorded_attributes toggle."""
+        sensor, coord = self._make_sensor(BermudaSensorScannerRangeRaw, recorder_friendly=True)
+        assert MATCH_ALL in sensor._unrecorded_attributes
+
+        coord.options[CONF_RECORDER_FRIENDLY] = False
+        sensor._handle_coordinator_update()
+        assert MATCH_ALL not in sensor._unrecorded_attributes
+
+    def test_state_info_mutated_when_present(self) -> None:
+        """_state_info dict is mutated in-place so recorder sees updated exclusions."""
+        sensor, coord = self._make_sensor(BermudaSensorScannerRange, recorder_friendly=False)
+
+        # Simulate async_internal_added_to_hass having set _state_info
+        sensor._state_info = {"unrecorded_attributes": frozenset()}
+
+        coord.options[CONF_RECORDER_FRIENDLY] = True
+        sensor._handle_coordinator_update()
+
+        assert MATCH_ALL in sensor._state_info["unrecorded_attributes"]
+
+    def test_state_info_mutated_back_on_disable(self) -> None:
+        """_state_info reflects class-level defaults when recorder-friendly is disabled."""
+        sensor, coord = self._make_sensor(BermudaSensorScannerRange, recorder_friendly=True)
+
+        sensor._state_info = {"unrecorded_attributes": frozenset({MATCH_ALL})}
+
+        coord.options[CONF_RECORDER_FRIENDLY] = False
+        sensor._handle_coordinator_update()
+
+        info_attrs = sensor._state_info["unrecorded_attributes"]
+        assert MATCH_ALL not in info_attrs
+        # Must still contain the 3 base-class time-based exclusions
+        assert "last_good_area_age_s" in info_attrs
+
+    def test_state_info_none_does_not_crash(self) -> None:
+        """_state_info=None (before async_internal_added_to_hass) is handled gracefully."""
+        sensor, coord = self._make_sensor(BermudaSensorScannerRange, recorder_friendly=False)
+        sensor._state_info = None
+
+        coord.options[CONF_RECORDER_FRIENDLY] = True
+        # Must not raise
+        sensor._handle_coordinator_update()
+        assert MATCH_ALL in sensor._unrecorded_attributes
+
+    # --- Bug 3: Fallback preserves base-class exclusions ---
+
+    def test_recorder_friendly_off_preserves_base_class_exclusions(self) -> None:
+        """When recorder-friendly=OFF, time-based attrs from BermudaSensor are still excluded."""
+        sensor, _coord = self._make_sensor(BermudaSensorScannerRange, recorder_friendly=False)
+
+        unrecorded = sensor._unrecorded_attributes
+        assert "last_good_area_age_s" in unrecorded
+        assert "last_good_distance_age_s" in unrecorded
+        assert "area_retention_seconds_remaining" in unrecorded
+
+    def test_recorder_friendly_off_preserves_entity_component_exclusions(self) -> None:
+        """When recorder-friendly=OFF, SensorEntity's 'options' exclusion is preserved."""
+        sensor, _coord = self._make_sensor(BermudaSensorScannerRange, recorder_friendly=False)
+
+        # SensorEntity._entity_component_unrecorded_attributes includes "options"
+        unrecorded = sensor._unrecorded_attributes
+        assert "options" in unrecorded
+
+    def test_recorder_friendly_on_overrides_all_exclusions(self) -> None:
+        """When recorder-friendly=ON, MATCH_ALL supersedes individual exclusions."""
+        sensor, _coord = self._make_sensor(BermudaSensorScannerRange, recorder_friendly=True)
+
+        unrecorded = sensor._unrecorded_attributes
+        assert MATCH_ALL in unrecorded
+        # Individual attrs are NOT listed separately (MATCH_ALL covers everything)
+        assert len(unrecorded) == 1
