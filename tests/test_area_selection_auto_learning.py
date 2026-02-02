@@ -822,3 +822,99 @@ class TestAutoLearningStats:
         assert "updates_performed" in diagnostics
         assert "updates_skipped" in diagnostics
         assert "skip_ratio" in diagnostics
+
+    def test_stats_skip_reason_not_stationary(self) -> None:
+        """Movement state skip should be tracked as not_stationary."""
+        handler = make_handler_with_mock()
+        device = FakeDevice()
+        device.area_id = "area.living_room"
+        device.area_changed_at = 999.0  # dwell=1s → MOVING
+
+        device.adverts["scanner_a"] = FakeAdvert(
+            scanner_address="scanner_a",
+            rssi=-50.0,
+            stamp=1000.0,
+            hist_velocity=[0.1],
+        )
+
+        handler._update_device_correlations(
+            device=device,
+            area_id="area.living_room",
+            primary_rssi=-50.0,
+            primary_scanner_addr="scanner_a",
+            other_readings={"scanner_b": -60.0},
+            nowstamp=1000.0,
+        )
+
+        assert handler._auto_learning_stats.updates_skipped_not_stationary >= 1
+        # Must NOT fall through to interval counter
+        assert handler._auto_learning_stats.updates_skipped_interval == 0
+
+    def test_stats_skip_reason_uninitialized_dwell(self) -> None:
+        """Uninitialized area_changed_at skip should be tracked correctly."""
+        handler = make_handler_with_mock()
+        device = FakeDevice()
+        device.area_id = "area.living_room"
+        device.area_changed_at = 0.0
+
+        device.adverts["scanner_a"] = FakeAdvert(
+            scanner_address="scanner_a",
+            rssi=-50.0,
+            stamp=1000.0,
+            hist_velocity=[0.1],
+        )
+
+        handler._update_device_correlations(
+            device=device,
+            area_id="area.living_room",
+            primary_rssi=-50.0,
+            primary_scanner_addr="scanner_a",
+            other_readings={"scanner_b": -60.0},
+            nowstamp=1000.0,
+        )
+
+        assert handler._auto_learning_stats.updates_skipped_uninitialized >= 1
+        assert handler._auto_learning_stats.updates_skipped_interval == 0
+
+    def test_stats_skip_reason_ambiguous_signal(self) -> None:
+        """Ambiguous signal skip should be tracked correctly."""
+        handler = make_handler_with_mock()
+        device = FakeDevice()
+        device.area_id = "area.living_room"
+        device.area_changed_at = 1.0  # dwell=999s → STATIONARY
+
+        device.adverts["scanner_a"] = FakeAdvert(
+            scanner_address="scanner_a",
+            rssi=-50.0,
+            stamp=1000.0,
+            hist_velocity=[0.1],
+        )
+
+        with (
+            patch.object(handler, "_get_device_rssi_variance", return_value=5.0),
+            patch.object(handler, "_is_signal_ambiguous", return_value=True),
+        ):
+            handler._update_device_correlations(
+                device=device,
+                area_id="area.living_room",
+                primary_rssi=-50.0,
+                primary_scanner_addr="scanner_a",
+                other_readings={"scanner_b": -60.0},
+                nowstamp=1000.0,
+            )
+
+        assert handler._auto_learning_stats.updates_skipped_ambiguous >= 1
+        assert handler._auto_learning_stats.updates_skipped_interval == 0
+
+    def test_diagnostics_output_includes_all_skip_reasons(self) -> None:
+        """Diagnostics output should include all skip reason counters."""
+        handler = make_handler_with_mock()
+        diagnostics = handler.get_auto_learning_diagnostics()
+        skipped = diagnostics["updates_skipped"]
+        assert "interval" in skipped
+        assert "low_confidence" in skipped
+        assert "uninitialized_dwell" in skipped
+        assert "not_stationary" in skipped
+        assert "high_velocity" in skipped
+        assert "high_rssi_variance" in skipped
+        assert "ambiguous_signal" in skipped
