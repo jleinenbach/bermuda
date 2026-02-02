@@ -21,7 +21,11 @@ from custom_components.bermuda.const import (
     AUTO_LEARNING_MAX_RSSI_VARIANCE,
     AUTO_LEARNING_MAX_VELOCITY,
     AUTO_LEARNING_MIN_CONFIDENCE,
-    AUTO_LEARNING_MIN_DWELL_TIME,
+    DWELL_TIME_MOVING_SECONDS,
+    DWELL_TIME_SETTLING_SECONDS,
+    MOVEMENT_STATE_MOVING,
+    MOVEMENT_STATE_SETTLING,
+    MOVEMENT_STATE_STATIONARY,
 )
 
 
@@ -50,6 +54,15 @@ class FakeDevice:
         if self.area_changed_at == 0.0:
             return stamp_now  # Assume device has been in area "forever"
         return stamp_now - self.area_changed_at
+
+    def get_movement_state(self, stamp_now: float) -> str:
+        """Return movement state based on dwell time."""
+        dwell_time = self.get_dwell_time(stamp_now)
+        if dwell_time < DWELL_TIME_MOVING_SECONDS:
+            return MOVEMENT_STATE_MOVING
+        if dwell_time < DWELL_TIME_SETTLING_SECONDS:
+            return MOVEMENT_STATE_SETTLING
+        return MOVEMENT_STATE_STATIONARY
 
 
 def make_coordinator_mock() -> MagicMock:
@@ -126,7 +139,7 @@ class TestVelocityFilterIntegration:
         handler = make_handler_with_mock()
         device = FakeDevice()
         device.area_id = "area.living_room"
-        device.area_changed_at = 0.0  # Long dwell time
+        device.area_changed_at = 1.0  # dwell=999s → STATIONARY
 
         # Create adverts with low velocity
         device.adverts["scanner_a"] = FakeAdvert(
@@ -175,7 +188,7 @@ class TestRssiVarianceFilterIntegration:
         """Updates should be skipped when RSSI is unstable."""
         handler = make_handler_with_mock()
         device = FakeDevice()
-        device.area_changed_at = 0.0  # Long dwell time
+        device.area_changed_at = 1.0  # dwell=999s → STATIONARY
 
         # Create adverts with low velocity but will mock high variance
         device.adverts["scanner_a"] = FakeAdvert(
@@ -210,7 +223,7 @@ class TestRssiVarianceFilterIntegration:
         handler = make_handler_with_mock()
         device = FakeDevice()
         device.area_id = "area.living_room"
-        device.area_changed_at = 0.0
+        device.area_changed_at = 1.0  # dwell=999s → STATIONARY
 
         device.adverts["scanner_a"] = FakeAdvert(
             scanner_address="scanner_a",
@@ -250,20 +263,21 @@ class TestRssiVarianceFilterIntegration:
 # =============================================================================
 
 
-class TestDwellTimeFilterIntegration:
+class TestMovementStateFilterIntegration:
     """
-    Feature 5: Dwell Time Filter at coordinator level.
+    Feature 5: Movement State Filter at coordinator level.
 
     Tests that _update_device_correlations skips learning when device
-    has just entered the room (dwell time < AUTO_LEARNING_MIN_DWELL_TIME).
+    is not STATIONARY (requires 10+ min in same room). This replaces
+    the previous 30s dwell time check.
     """
 
-    def test_short_dwell_time_skips_update(self) -> None:
-        """Updates should be skipped when device just entered room."""
+    def test_moving_state_skips_update(self) -> None:
+        """Updates should be skipped when device just entered room (MOVING)."""
         handler = make_handler_with_mock()
         device = FakeDevice()
         device.area_id = "area.living_room"
-        # Device just entered 10 seconds ago (below 30s threshold)
+        # Device just entered 10 seconds ago → MOVING state (< 120s)
         device.area_changed_at = 990.0  # nowstamp=1000, so dwell=10s
 
         device.adverts["scanner_a"] = FakeAdvert(
@@ -282,18 +296,47 @@ class TestDwellTimeFilterIntegration:
             nowstamp=1000.0,
         )
 
-        # Should NOT create profile (dwell time too short)
+        # Should NOT create profile (MOVING state, not STATIONARY)
         assert device.address not in handler.correlations or "area.living_room" not in handler.correlations.get(
             device.address, {}
         )
 
-    def test_long_dwell_time_allows_update(self) -> None:
-        """Updates should proceed when device has been in room long enough."""
+    def test_settling_state_skips_update(self) -> None:
+        """Updates should be skipped when device is SETTLING (2-10 min)."""
         handler = make_handler_with_mock()
         device = FakeDevice()
         device.area_id = "area.living_room"
-        # Device has been in room for 60 seconds (above 30s threshold)
-        device.area_changed_at = 940.0  # nowstamp=1000, so dwell=60s
+        # Device has been in room for 300 seconds → SETTLING state (120-600s)
+        device.area_changed_at = 700.0  # nowstamp=1000, so dwell=300s
+
+        device.adverts["scanner_a"] = FakeAdvert(
+            scanner_address="scanner_a",
+            rssi=-50.0,
+            stamp=1000.0,
+            hist_velocity=[0.1],
+        )
+
+        handler._update_device_correlations(
+            device=device,
+            area_id="area.living_room",
+            primary_rssi=-50.0,
+            primary_scanner_addr="scanner_a",
+            other_readings={"scanner_b": -60.0},
+            nowstamp=1000.0,
+        )
+
+        # Should NOT create profile (SETTLING state, not STATIONARY)
+        assert device.address not in handler.correlations or "area.living_room" not in handler.correlations.get(
+            device.address, {}
+        )
+
+    def test_stationary_state_allows_update(self) -> None:
+        """Updates should proceed when device is STATIONARY (10+ min)."""
+        handler = make_handler_with_mock()
+        device = FakeDevice()
+        device.area_id = "area.living_room"
+        # Device has been in room for 999 seconds → STATIONARY state (>= 600s)
+        device.area_changed_at = 1.0  # nowstamp=1000, so dwell=999s
 
         device.adverts["scanner_a"] = FakeAdvert(
             scanner_address="scanner_a",
@@ -319,9 +362,43 @@ class TestDwellTimeFilterIntegration:
                 nowstamp=1000.0,
             )
 
-        # Should create profile
+        # Should create profile (STATIONARY state)
         assert device.address in handler.correlations
         assert "area.living_room" in handler.correlations[device.address]
+
+    def test_uninitialized_area_changed_at_skips_update(self) -> None:
+        """Updates should be skipped when area_changed_at == 0.0 (startup/first discovery).
+
+        get_movement_state() returns STATIONARY for area_changed_at == 0.0
+        to prevent area-selection flapping. But for auto-learning, this is
+        dangerous: the initial assignment may be wrong and we have no evidence
+        of sustained presence. The guard must block explicitly.
+        """
+        handler = make_handler_with_mock()
+        device = FakeDevice()
+        device.area_id = "area.living_room"
+        device.area_changed_at = 0.0  # Uninitialized (startup/first discovery)
+
+        device.adverts["scanner_a"] = FakeAdvert(
+            scanner_address="scanner_a",
+            rssi=-50.0,
+            stamp=1000.0,
+            hist_velocity=[0.1],
+        )
+
+        handler._update_device_correlations(
+            device=device,
+            area_id="area.living_room",
+            primary_rssi=-50.0,
+            primary_scanner_addr="scanner_a",
+            other_readings={"scanner_b": -60.0},
+            nowstamp=1000.0,
+        )
+
+        # Should NOT create profile (uninitialized area_changed_at)
+        assert device.address not in handler.correlations or "area.living_room" not in handler.correlations.get(
+            device.address, {}
+        )
 
 
 # =============================================================================
@@ -372,7 +449,7 @@ class TestConfidenceFilterIntegration:
         handler = make_handler_with_mock()
         device = FakeDevice()
         device.area_id = "area.living_room"
-        device.area_changed_at = 0.0
+        device.area_changed_at = 1.0  # dwell=999s → STATIONARY
 
         device.adverts["scanner_a"] = FakeAdvert(
             scanner_address="scanner_a",
@@ -421,7 +498,7 @@ class TestNewDataCheckIntegration:
         handler = make_handler_with_mock()
         device = FakeDevice()
         device.area_id = "area.living_room"
-        device.area_changed_at = 0.0
+        device.area_changed_at = 1.0  # dwell=999s → STATIONARY
 
         device.adverts["scanner_a"] = FakeAdvert(
             scanner_address="scanner_a",
@@ -459,7 +536,7 @@ class TestNewDataCheckIntegration:
         handler = make_handler_with_mock()
         device = FakeDevice()
         device.area_id = "area.living_room"
-        device.area_changed_at = 0.0
+        device.area_changed_at = 1.0  # dwell=999s → STATIONARY
 
         device.adverts["scanner_a"] = FakeAdvert(
             scanner_address="scanner_a",
@@ -511,7 +588,7 @@ class TestNewDataCheckIntegration:
         handler = make_handler_with_mock()
         device = FakeDevice()
         device.area_id = "area.living_room"
-        device.area_changed_at = 0.0
+        device.area_changed_at = 1.0  # dwell=999s → STATIONARY
 
         device.adverts["scanner_a"] = FakeAdvert(
             scanner_address="scanner_a",
@@ -577,7 +654,7 @@ class TestCombinedQualityFiltersIntegration:
         handler = make_handler_with_mock()
         device = FakeDevice()
         device.area_id = "area.living_room"
-        device.area_changed_at = 940.0  # Good dwell time (60s)
+        device.area_changed_at = 1.0  # dwell=999s → STATIONARY
 
         # Good velocity but high variance
         device.adverts["scanner_a"] = FakeAdvert(
@@ -613,7 +690,7 @@ class TestCombinedQualityFiltersIntegration:
         handler = make_handler_with_mock()
         device = FakeDevice()
         device.area_id = "area.living_room"
-        device.area_changed_at = 940.0  # Good dwell time (60s)
+        device.area_changed_at = 1.0  # dwell=999s → STATIONARY
 
         device.adverts["scanner_a"] = FakeAdvert(
             scanner_address="scanner_a",
@@ -657,7 +734,7 @@ class TestAutoLearningStats:
         handler = make_handler_with_mock()
         device = FakeDevice()
         device.area_id = "area.living_room"
-        device.area_changed_at = 0.0
+        device.area_changed_at = 1.0  # dwell=999s → STATIONARY
 
         device.adverts["scanner_a"] = FakeAdvert(
             scanner_address="scanner_a",
@@ -716,7 +793,7 @@ class TestAutoLearningStats:
         handler = make_handler_with_mock()
         device = FakeDevice()
         device.area_id = "area.living_room"
-        device.area_changed_at = 0.0
+        device.area_changed_at = 1.0  # dwell=999s → STATIONARY
 
         device.adverts["scanner_a"] = FakeAdvert(
             scanner_address="scanner_a",
@@ -745,3 +822,99 @@ class TestAutoLearningStats:
         assert "updates_performed" in diagnostics
         assert "updates_skipped" in diagnostics
         assert "skip_ratio" in diagnostics
+
+    def test_stats_skip_reason_not_stationary(self) -> None:
+        """Movement state skip should be tracked as not_stationary."""
+        handler = make_handler_with_mock()
+        device = FakeDevice()
+        device.area_id = "area.living_room"
+        device.area_changed_at = 999.0  # dwell=1s → MOVING
+
+        device.adverts["scanner_a"] = FakeAdvert(
+            scanner_address="scanner_a",
+            rssi=-50.0,
+            stamp=1000.0,
+            hist_velocity=[0.1],
+        )
+
+        handler._update_device_correlations(
+            device=device,
+            area_id="area.living_room",
+            primary_rssi=-50.0,
+            primary_scanner_addr="scanner_a",
+            other_readings={"scanner_b": -60.0},
+            nowstamp=1000.0,
+        )
+
+        assert handler._auto_learning_stats.updates_skipped_not_stationary >= 1
+        # Must NOT fall through to interval counter
+        assert handler._auto_learning_stats.updates_skipped_interval == 0
+
+    def test_stats_skip_reason_uninitialized_dwell(self) -> None:
+        """Uninitialized area_changed_at skip should be tracked correctly."""
+        handler = make_handler_with_mock()
+        device = FakeDevice()
+        device.area_id = "area.living_room"
+        device.area_changed_at = 0.0
+
+        device.adverts["scanner_a"] = FakeAdvert(
+            scanner_address="scanner_a",
+            rssi=-50.0,
+            stamp=1000.0,
+            hist_velocity=[0.1],
+        )
+
+        handler._update_device_correlations(
+            device=device,
+            area_id="area.living_room",
+            primary_rssi=-50.0,
+            primary_scanner_addr="scanner_a",
+            other_readings={"scanner_b": -60.0},
+            nowstamp=1000.0,
+        )
+
+        assert handler._auto_learning_stats.updates_skipped_uninitialized >= 1
+        assert handler._auto_learning_stats.updates_skipped_interval == 0
+
+    def test_stats_skip_reason_ambiguous_signal(self) -> None:
+        """Ambiguous signal skip should be tracked correctly."""
+        handler = make_handler_with_mock()
+        device = FakeDevice()
+        device.area_id = "area.living_room"
+        device.area_changed_at = 1.0  # dwell=999s → STATIONARY
+
+        device.adverts["scanner_a"] = FakeAdvert(
+            scanner_address="scanner_a",
+            rssi=-50.0,
+            stamp=1000.0,
+            hist_velocity=[0.1],
+        )
+
+        with (
+            patch.object(handler, "_get_device_rssi_variance", return_value=5.0),
+            patch.object(handler, "_is_signal_ambiguous", return_value=True),
+        ):
+            handler._update_device_correlations(
+                device=device,
+                area_id="area.living_room",
+                primary_rssi=-50.0,
+                primary_scanner_addr="scanner_a",
+                other_readings={"scanner_b": -60.0},
+                nowstamp=1000.0,
+            )
+
+        assert handler._auto_learning_stats.updates_skipped_ambiguous >= 1
+        assert handler._auto_learning_stats.updates_skipped_interval == 0
+
+    def test_diagnostics_output_includes_all_skip_reasons(self) -> None:
+        """Diagnostics output should include all skip reason counters."""
+        handler = make_handler_with_mock()
+        diagnostics = handler.get_auto_learning_diagnostics()
+        skipped = diagnostics["updates_skipped"]
+        assert "interval" in skipped
+        assert "low_confidence" in skipped
+        assert "uninitialized_dwell" in skipped
+        assert "not_stationary" in skipped
+        assert "high_velocity" in skipped
+        assert "high_rssi_variance" in skipped
+        assert "ambiguous_signal" in skipped

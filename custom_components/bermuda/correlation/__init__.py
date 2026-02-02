@@ -73,9 +73,11 @@ class AutoLearningStats:
         updates_performed: Number of successful updates (new data accepted)
         updates_skipped_interval: Updates skipped due to minimum interval enforcement
         updates_skipped_confidence: Updates skipped due to low confidence (Feature 3)
-        updates_skipped_dwell_time: Updates skipped due to low dwell time (Feature 5)
+        updates_skipped_uninitialized: Updates skipped due to uninitialized area_changed_at
+        updates_skipped_not_stationary: Updates skipped due to MOVING/SETTLING state
         updates_skipped_velocity: Updates skipped due to high velocity (Feature 5)
         updates_skipped_rssi_variance: Updates skipped due to high RSSI variance (Feature 5)
+        updates_skipped_ambiguous: Updates skipped due to ambiguous signal (Feature 6)
         last_update_stamp: Timestamp of last successful update
 
     """
@@ -84,10 +86,13 @@ class AutoLearningStats:
     updates_skipped_interval: int = 0
     # Feature 3: Confidence filter stats
     updates_skipped_confidence: int = 0
-    # Feature 5: Quality filter stats
-    updates_skipped_dwell_time: int = 0
+    # Feature 5: Movement/quality filter stats
+    updates_skipped_uninitialized: int = 0
+    updates_skipped_not_stationary: int = 0
     updates_skipped_velocity: int = 0
     updates_skipped_rssi_variance: int = 0
+    # Feature 6: Ambiguity filter stats
+    updates_skipped_ambiguous: int = 0
     last_update_stamp: float = 0.0
     # Per-device stats tracking
     _device_stats: dict[str, dict[str, int]] = field(default_factory=dict, repr=False)
@@ -109,8 +114,10 @@ class AutoLearningStats:
             stamp: Current timestamp
             device_address: Optional device address for per-device tracking
             skip_reason: Why the update was skipped (for detailed statistics).
-                        Valid values: 'interval', 'low_confidence', 'low_dwell_time',
-                        'high_velocity', 'high_rssi_variance'
+                        Valid values: 'interval', 'low_confidence',
+                        'uninitialized_dwell', 'not_stationary',
+                        'high_velocity', 'high_rssi_variance',
+                        'ambiguous_signal'
 
         """
         if performed:
@@ -119,12 +126,16 @@ class AutoLearningStats:
         # Track skip reason for detailed diagnostics
         elif skip_reason == "low_confidence":
             self.updates_skipped_confidence += 1
-        elif skip_reason == "low_dwell_time":
-            self.updates_skipped_dwell_time += 1
+        elif skip_reason == "uninitialized_dwell":
+            self.updates_skipped_uninitialized += 1
+        elif skip_reason == "not_stationary":
+            self.updates_skipped_not_stationary += 1
         elif skip_reason == "high_velocity":
             self.updates_skipped_velocity += 1
         elif skip_reason == "high_rssi_variance":
             self.updates_skipped_rssi_variance += 1
+        elif skip_reason == "ambiguous_signal":
+            self.updates_skipped_ambiguous += 1
         else:
             # Default: interval or unspecified
             self.updates_skipped_interval += 1
@@ -144,9 +155,11 @@ class AutoLearningStats:
         return (
             self.updates_skipped_interval
             + self.updates_skipped_confidence
-            + self.updates_skipped_dwell_time
+            + self.updates_skipped_uninitialized
+            + self.updates_skipped_not_stationary
             + self.updates_skipped_velocity
             + self.updates_skipped_rssi_variance
+            + self.updates_skipped_ambiguous
         )
 
     @property
@@ -189,9 +202,11 @@ class AutoLearningStats:
         self.updates_performed = 0
         self.updates_skipped_interval = 0
         self.updates_skipped_confidence = 0
-        self.updates_skipped_dwell_time = 0
+        self.updates_skipped_uninitialized = 0
+        self.updates_skipped_not_stationary = 0
         self.updates_skipped_velocity = 0
         self.updates_skipped_rssi_variance = 0
+        self.updates_skipped_ambiguous = 0
         self.last_update_stamp = 0.0
         self._device_stats.clear()
 
@@ -210,9 +225,11 @@ class AutoLearningStats:
                 "total": self.total_skipped,
                 "interval": self.updates_skipped_interval,
                 "low_confidence": self.updates_skipped_confidence,
-                "low_dwell_time": self.updates_skipped_dwell_time,
+                "uninitialized_dwell": self.updates_skipped_uninitialized,
+                "not_stationary": self.updates_skipped_not_stationary,
                 "high_velocity": self.updates_skipped_velocity,
                 "high_rssi_variance": self.updates_skipped_rssi_variance,
+                "ambiguous_signal": self.updates_skipped_ambiguous,
             },
             "total_attempts": self.total_attempts,
             "skip_ratio": f"{self.skip_ratio:.1%}",

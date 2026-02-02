@@ -148,6 +148,9 @@ def _make_advert(
     # Capture in closure for the lambda
     _distance_variance = distance_variance
 
+    # Mock rssi_kalman for _get_device_rssi_variance
+    rssi_kalman = SimpleNamespace(is_initialized=False, variance=4.0)
+
     advert = SimpleNamespace(
         name=name,
         area_id=area_id,
@@ -159,6 +162,8 @@ def _make_advert(
         scanner_device=scanner_device,
         hist_distance_by_interval=hist_dist,
         hist_rssi_by_interval=hist_rssi,
+        hist_velocity=[],  # For _get_device_max_velocity
+        rssi_kalman=rssi_kalman,  # For _get_device_rssi_variance
         conf_rssi_offset=0,
     )
     advert.median_rssi = median_rssi_func
