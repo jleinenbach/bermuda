@@ -381,6 +381,11 @@ class TestBermudaSensorRssi:
             sensor.bermuda_last_stamp = 0.0
             sensor.bermuda_update_interval = 1.0
 
+        # Trigger dynamic _attr_state_class sync (set via _handle_coordinator_update)
+        sensor.device_entry = None
+        sensor.async_write_ha_state = MagicMock()
+        sensor._handle_coordinator_update()
+
         return sensor
 
     def test_unique_id(self) -> None:
@@ -404,7 +409,7 @@ class TestBermudaSensorRssi:
         assert sensor.native_unit_of_measurement == SIGNAL_STRENGTH_DECIBELS_MILLIWATT
 
     def test_state_class(self) -> None:
-        """Test that state_class is MEASUREMENT."""
+        """Test that state_class is MEASUREMENT when recorder_friendly=False."""
         sensor = self._create_sensor()
         assert sensor.state_class == SensorStateClass.MEASUREMENT
 
@@ -448,6 +453,11 @@ class TestBermudaSensorRange:
             sensor.bermuda_last_stamp = 0.0
             sensor.bermuda_update_interval = 1.0
 
+        # Trigger dynamic _attr_state_class sync (set via _handle_coordinator_update)
+        sensor.device_entry = None
+        sensor.async_write_ha_state = MagicMock()
+        sensor._handle_coordinator_update()
+
         return sensor
 
     def test_unique_id(self) -> None:
@@ -471,7 +481,7 @@ class TestBermudaSensorRange:
         assert sensor.native_unit_of_measurement == UnitOfLength.METERS
 
     def test_state_class(self) -> None:
-        """Test that state_class is MEASUREMENT."""
+        """Test that state_class is MEASUREMENT when recorder_friendly=False."""
         sensor = self._create_sensor()
         assert sensor.state_class == SensorStateClass.MEASUREMENT
 
@@ -1197,6 +1207,12 @@ class TestRecorderBaseline:
             sensor.bermuda_last_stamp = 0.0
             sensor.bermuda_update_interval = 1.0
 
+        # Trigger dynamic _attr_state_class sync (set via _handle_coordinator_update)
+        sensor.device_entry = None
+        sensor.async_write_ha_state = MagicMock()
+        sensor._state_info = None
+        sensor._handle_coordinator_update()
+
         return sensor
 
     def _create_scanner_range_sensor(
@@ -1255,6 +1271,12 @@ class TestRecorderBaseline:
             sensor.bermuda_last_stamp = 0.0
             sensor.bermuda_update_interval = 1.0
 
+        # Trigger dynamic _attr_state_class + _unrecorded_attributes sync
+        sensor.device_entry = None
+        sensor.async_write_ha_state = MagicMock()
+        sensor._state_info = None
+        sensor._handle_coordinator_update()
+
         return sensor
 
     def _create_scanner_range_raw_sensor(
@@ -1312,6 +1334,12 @@ class TestRecorderBaseline:
             sensor.bermuda_last_state = None
             sensor.bermuda_last_stamp = 0.0
             sensor.bermuda_update_interval = 1.0
+
+        # Trigger dynamic _attr_state_class + _unrecorded_attributes sync
+        sensor.device_entry = None
+        sensor.async_write_ha_state = MagicMock()
+        sensor._state_info = None
+        sensor._handle_coordinator_update()
 
         return sensor
 
@@ -1568,6 +1596,11 @@ class TestRecorderBaseline:
             sensor.coordinator = mock_coordinator
             sensor.config_entry = mock_config_entry
             sensor._device = mock_device
+            sensor._lastname = mock_device.name
+            sensor.devreg_init_done = False
+            sensor.device_entry = None
+            sensor.async_write_ha_state = MagicMock()
+            sensor._handle_coordinator_update()
 
         assert sensor.state_class == SensorStateClass.MEASUREMENT
 
@@ -1594,6 +1627,11 @@ class TestRecorderBaseline:
             sensor.coordinator = mock_coordinator
             sensor.config_entry = mock_config_entry
             sensor._device = mock_device
+            sensor._lastname = mock_device.name
+            sensor.devreg_init_done = False
+            sensor.device_entry = None
+            sensor.async_write_ha_state = MagicMock()
+            sensor._handle_coordinator_update()
 
         assert sensor.state_class is None
 

@@ -331,12 +331,14 @@ class BermudaSensorRssi(BermudaSensor):
     def native_unit_of_measurement(self) -> str:
         return SIGNAL_STRENGTH_DECIBELS_MILLIWATT
 
-    @property
-    def state_class(self) -> SensorStateClass | None:
-        """Return MEASUREMENT unless recorder-friendly mode suppresses statistics."""
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Sync _attr_state_class with recorder-friendly option on every cycle."""
         if self.coordinator.options.get(CONF_RECORDER_FRIENDLY, DEFAULT_RECORDER_FRIENDLY):
-            return None
-        return SensorStateClass.MEASUREMENT
+            self._attr_state_class = None
+        else:
+            self._attr_state_class = SensorStateClass.MEASUREMENT
+        super()._handle_coordinator_update()
 
 
 class BermudaSensorRange(BermudaSensor):
@@ -371,12 +373,14 @@ class BermudaSensorRange(BermudaSensor):
         """Results are in metres."""
         return UnitOfLength.METERS
 
-    @property
-    def state_class(self) -> SensorStateClass | None:
-        """Return MEASUREMENT unless recorder-friendly mode suppresses statistics."""
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Sync _attr_state_class with recorder-friendly option on every cycle."""
         if self.coordinator.options.get(CONF_RECORDER_FRIENDLY, DEFAULT_RECORDER_FRIENDLY):
-            return None
-        return SensorStateClass.MEASUREMENT
+            self._attr_state_class = None
+        else:
+            self._attr_state_class = SensorStateClass.MEASUREMENT
+        super()._handle_coordinator_update()
 
 
 class BermudaSensorScannerRange(BermudaSensorRange):
@@ -394,14 +398,38 @@ class BermudaSensorScannerRange(BermudaSensorRange):
         self.config_entry = config_entry
         self._device = coordinator.devices[address]
         self._scanner = coordinator.devices[scanner_address]
-        # Exclude ALL extra_state_attributes from recorder when recorder-friendly.
-        # Per-scanner attributes (area_id, area_name, area_scanner_mac, area_scanner_name)
-        # are static metadata that changes rarely but gets written with every state update.
-        # With O(N*M) scanner entities, this causes significant database bloat.
-        # NOTE: Must be set as instance attribute (not property) because HA's
-        # Entity.__init_subclass__ unions _unrecorded_attributes at class definition time.
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """
+        Sync _unrecorded_attributes with recorder-friendly option on every cycle.
+
+        Extends parent's state_class sync with per-scanner attribute exclusion.
+        MATCH_ALL excludes ALL extra_state_attributes from the recorder DB.
+
+        The recorder reads unrecorded_attributes from _state_info (a mutable dict
+        set once in async_internal_added_to_hass). We mutate it here so the
+        recorder sees the updated value on the next state write.
+
+        When recorder-friendly is OFF, we restore the class-level defaults
+        computed by Entity.__init_subclass__ (entity component exclusions like
+        "options" from SensorEntity + base class exclusions like the 3 time-based
+        attrs from BermudaSensor). Using type(self) accesses the CLASS-level
+        attributes, bypassing any instance-level overrides.
+        """
         if self.coordinator.options.get(CONF_RECORDER_FRIENDLY, DEFAULT_RECORDER_FRIENDLY):
-            self._unrecorded_attributes = MATCH_ALL
+            new_unrecorded: frozenset[str] = frozenset({MATCH_ALL})
+        else:
+            # Restore class-level defaults (entity component + base class exclusions).
+            # type(self).attr accesses the CLASS attribute via MRO, not the
+            # instance attribute we may have set on a previous cycle.
+            new_unrecorded = type(self)._entity_component_unrecorded_attributes | type(self)._unrecorded_attributes
+        self._unrecorded_attributes = new_unrecorded
+        # Propagate to _state_info so the recorder sees the change immediately.
+        # _state_info is None before async_internal_added_to_hass runs.
+        if self._state_info is not None:
+            self._state_info["unrecorded_attributes"] = new_unrecorded
+        super()._handle_coordinator_update()
 
     @property
     def unique_id(self) -> str:
