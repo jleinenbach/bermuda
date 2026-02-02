@@ -2542,6 +2542,35 @@ info = manager.get_scanner_pair_info(nowstamp=current_time)
   ```
 - **Files**: `coordinator.py`
 
+### Recorder Database Optimization (3-Stage Fix)
+- **Problem**: ~1 GB/day database growth on RPi4 with SD card. Bermuda sensors are top contributors.
+  - 3 float attributes (`last_good_area_age_s`, `last_good_distance_age_s`, `area_retention_seconds_remaining`) change every coordinator cycle (~1.05s), forcing a new DB entry per cycle per entity
+  - `SensorStateClass.MEASUREMENT` on Distance/RSSI sensors generates unnecessary 5-min short-term and hourly long-term statistics
+  - Per-scanner entities write all attributes to DB without filtering
+- **Root Cause**: Fork-specific `area_state_metadata()` returns monotonically changing float values. Combined with missing `_unrecorded_attributes` and `MEASUREMENT` state class on volatile BLE sensors.
+- **Solution (3 Stages)**:
+  1. **Stage 1**: `_unrecorded_attributes` frozenset excludes 3 time-based attributes from recorder (always active, no config needed)
+  2. **Stage 2**: `CONF_RECORDER_FRIENDLY` config toggle (default: `True`) in globalopts step. When enabled: `_unrecorded_attributes = MATCH_ALL` for per-scanner entities, rate-limiting for `ScannerRangeRaw`
+  3. **Stage 3**: Conditional `state_class` — returns `None` when recorder-friendly (no long-term statistics), `MEASUREMENT` when disabled (debug mode)
+- **Key Design Decisions**:
+  - `_unrecorded_attributes` CANNOT be a `@property` — HA's `__init_subclass__` metaclass requires frozenset at class level or instance attribute in `__init__`
+  - `MATCH_ALL` sentinel (`"*"`) excludes ALL attributes from recorder. HA checks via identity comparison `is MATCH_ALL`
+  - One-way data flow confirmed: no internal Bermuda logic reads from HA DB, so excluding attributes from recorder has zero functional impact
+  - Default `True` (recorder-friendly) because most users don't need BLE statistics and SD card longevity is critical
+- **DB Impact** (10 devices, 5 scanners):
+
+  | Source | Before (Writes/Day) | After (Writes/Day) | Reduction |
+  |--------|---------------------|---------------------|-----------|
+  | `area_state_metadata()` time-based | ~2,469,000 | 0 | **100%** |
+  | Distance/RSSI Long-Term-Stats | ~288,000 | 0 | **100%** |
+  | Per-Scanner Attributes | ~864,000 | 0 | **100%** |
+  | Per-Scanner Raw (no rate-limit) | ~823,000 | ~82,300 | **90%** |
+  | **Total** | **~4,458,000** | **~96,700** | **~97.8%** |
+
+- **Files**: `sensor.py`, `const.py`, `config_flow.py`, `translations/*.json`
+- **Tests**: 10 new sensor.py tests (95%→97%), 17 new config_flow.py tests (55%→99%)
+- **Commits**: `0b6b9a5` (Stage 1), `9cf2c27` (Stages 2-3)
+
 ## Manual Fingerprint Training System
 
 ### Problem Statement
@@ -7229,3 +7258,69 @@ if distance_improvement >= significance_threshold:
 | `VARIANCE_FLOOR_COLD_START` | 9.0 | σ=3m before Kalman converges |
 
 **Rule of Thumb**: When converting between measurement domains (RSSI → distance), propagate uncertainty using the derivative. Fixed thresholds ignore measurement quality.
+
+### 65. `_unrecorded_attributes` Cannot Be a Property in HA Entities
+
+Home Assistant's `Entity.__init_subclass__` metaclass processes `_unrecorded_attributes` at class definition time. Using `@property` causes HA to see a property descriptor instead of a frozenset, silently breaking the recorder exclusion.
+
+**Bug Pattern:**
+```python
+# BAD - HA metaclass sees property descriptor, not frozenset
+class MyEntity(SensorEntity):
+    @property
+    def _unrecorded_attributes(self) -> frozenset[str]:
+        if self.recorder_friendly:
+            return frozenset({MATCH_ALL})
+        return frozenset()
+```
+
+**Fix Pattern:**
+```python
+# GOOD - Class-level frozenset for always-excluded attributes
+class MyEntity(SensorEntity):
+    _unrecorded_attributes = frozenset({
+        "volatile_attr_1",
+        "volatile_attr_2",
+    })
+
+# GOOD - Instance attribute in __init__ for conditional exclusion
+class MyConditionalEntity(SensorEntity):
+    def __init__(self, ...):
+        super().__init__(...)
+        if recorder_friendly:
+            self._unrecorded_attributes = frozenset({MATCH_ALL})
+```
+
+**Rule of Thumb**: HA entity class attributes processed by metaclass (`_unrecorded_attributes`, `_attr_*`) must be frozensets or plain values, never properties. Use `__init__` for conditional assignment.
+
+### 66. MATCH_ALL Uses Identity Comparison, Not Equality
+
+HA checks `_unrecorded_attributes` via `is MATCH_ALL`, not `== MATCH_ALL` or `in`. This means you must use the exact sentinel object from `homeassistant.const`, not a string `"*"`.
+
+**Bug Pattern:**
+```python
+# BAD - String literal, not the sentinel
+self._unrecorded_attributes = frozenset({"*"})  # HA won't recognize this!
+```
+
+**Fix Pattern:**
+```python
+# GOOD - Import and use the actual sentinel
+from homeassistant.const import MATCH_ALL
+self._unrecorded_attributes = frozenset({MATCH_ALL})  # HA checks `is MATCH_ALL`
+```
+
+**Rule of Thumb**: When HA documentation says "use MATCH_ALL", always import the constant. Never use string literals as substitutes for sentinel objects.
+
+### 67. One-Way Data Flow Enables Safe Recorder Exclusion
+
+Before excluding attributes from the recorder, verify that no internal logic reads those attributes back from the HA database. In Bermuda, the data flow is strictly one-way: Coordinator → Entities → HA State Machine. No internal component reads from the recorder DB.
+
+**Verification Method:**
+```bash
+# Grep for any reads from HA state/history in integration code
+grep -r "states.get\|get_state\|history\.\|recorder\." custom_components/bermuda/
+# Result: No hits → safe to exclude from recorder
+```
+
+**Rule of Thumb**: Before using `_unrecorded_attributes` or removing `state_class`, trace the data flow to confirm no internal logic depends on recorder-stored data. Document the verification result.

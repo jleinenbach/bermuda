@@ -20,6 +20,7 @@ from custom_components.bermuda.const import (
 )
 from custom_components.bermuda.sensor import (
     BermudaActiveProxyCount,
+    BermudaGlobalSensor,
     BermudaSensor,
     BermudaSensorAreaLastSeen,
     BermudaSensorAreaSwitchReason,
@@ -1135,9 +1136,7 @@ class TestRecorderBaseline:
 
     # --- Helpers ---
 
-    def _create_area_sensor(
-        self, name_override: str = "Area", recorder_friendly: bool = False
-    ) -> BermudaSensor:
+    def _create_area_sensor(self, name_override: str = "Area", recorder_friendly: bool = False) -> BermudaSensor:
         """Create a BermudaSensor (or subclass) for baseline testing."""
         mock_coordinator = MagicMock()
         mock_coordinator.last_update_success = True
@@ -1316,9 +1315,7 @@ class TestRecorderBaseline:
 
         return sensor
 
-    def _create_global_sensor(
-        self, sensor_class: type, recorder_friendly: bool = False
-    ) -> object:
+    def _create_global_sensor(self, sensor_class: type, recorder_friendly: bool = False) -> object:
         """Create a global sensor for baseline testing."""
         mock_coordinator = MagicMock()
         mock_coordinator.last_update_success = True
@@ -1503,9 +1500,7 @@ class TestRecorderBaseline:
 
         In debug mode (recorder_friendly=False), raw values pass through unfiltered.
         """
-        sensor = self._create_scanner_range_raw_sensor(
-            rssi_distance_raw=5.123, recorder_friendly=False
-        )
+        sensor = self._create_scanner_range_raw_sensor(rssi_distance_raw=5.123, recorder_friendly=False)
         # Same cache setup that would return 1.0 if rate-limited
         sensor.bermuda_last_state = 1.0
         sensor.bermuda_last_stamp = 1e18
@@ -1519,9 +1514,7 @@ class TestRecorderBaseline:
 
         With recorder_friendly enabled, rate-limiting reduces DB writes for raw sensors.
         """
-        sensor = self._create_scanner_range_raw_sensor(
-            rssi_distance_raw=5.123, recorder_friendly=True
-        )
+        sensor = self._create_scanner_range_raw_sensor(rssi_distance_raw=5.123, recorder_friendly=True)
         # Pre-set cache: value=1.0, timestamp far future (never stale)
         sensor.bermuda_last_state = 1.0
         sensor.bermuda_last_stamp = 1e18
@@ -1633,3 +1626,250 @@ class TestRecorderBaseline:
         """S3c: Visible device count has no state_class (unconditional, no long-term statistics)."""
         sensor = self._create_global_sensor(BermudaVisibleDeviceCount)
         assert sensor.state_class is None
+
+
+class TestSensorCoverageExtension:
+    """Tests targeting uncovered lines in sensor.py to increase coverage.
+
+    Covers: icon property branches (lines 208-212), native_value paths
+    (lines 324, 362), ScannerRange extra_state_attributes None (line 441),
+    BermudaGlobalSensor.name (line 540), async_added_to_hass restore (lines 526-529),
+    create_scanner_entities early return (line 115).
+    """
+
+    def _create_bermuda_sensor(
+        self,
+        sensor_class: type,
+        **device_attrs: object,
+    ) -> object:
+        """Create a BermudaSensor subclass instance for testing."""
+        mock_coordinator = MagicMock()
+        mock_coordinator.last_update_success = True
+        mock_coordinator.options = {CONF_RECORDER_FRIENDLY: False}
+
+        mock_device = MagicMock()
+        mock_device.name = "Test Device"
+        mock_device.unique_id = "test_uid"
+        mock_device.address = "aa:bb:cc:dd:ee:ff"
+        for key, val in device_attrs.items():
+            setattr(mock_device, key, val)
+        mock_coordinator.devices = {"aa:bb:cc:dd:ee:ff": mock_device}
+
+        mock_config_entry = MagicMock()
+        mock_config_entry.options = {}
+
+        with (
+            patch("custom_components.bermuda.entity.ar.async_get") as mock_ar,
+            patch("custom_components.bermuda.entity.dr.async_get") as mock_dr,
+        ):
+            mock_ar.return_value = MagicMock()
+            mock_dr.return_value = MagicMock()
+
+            sensor = object.__new__(sensor_class)
+            sensor.coordinator = mock_coordinator
+            sensor.config_entry = mock_config_entry
+            sensor.address = "aa:bb:cc:dd:ee:ff"
+            sensor._device = mock_device
+            sensor._lastname = mock_device.name
+            sensor.ar = mock_ar.return_value
+            sensor.dr = mock_dr.return_value
+            sensor.devreg_init_done = False
+            sensor.bermuda_last_state = None
+            sensor.bermuda_last_stamp = 0.0
+            sensor.bermuda_update_interval = 1.0
+
+        return sensor
+
+    # --- Icon property tests (lines 208-212) ---
+
+    def test_icon_area_last_seen(self) -> None:
+        """Cover line 209: icon returns area_last_seen_icon for 'Area Last Seen'."""
+        sensor = self._create_bermuda_sensor(
+            BermudaSensorAreaLastSeen,
+            area_last_seen_icon="mdi:clock-outline",
+        )
+        assert sensor.icon == "mdi:clock-outline"
+
+    def test_icon_floor(self) -> None:
+        """Cover line 211: icon returns floor_icon for 'Floor' sensor."""
+        sensor = self._create_bermuda_sensor(
+            BermudaSensorFloor,
+            floor_icon="mdi:home-floor-1",
+        )
+        assert sensor.icon == "mdi:home-floor-1"
+
+    def test_icon_fallback_super(self) -> None:
+        """Cover line 212: icon falls through to super().icon for other names."""
+        sensor = self._create_bermuda_sensor(BermudaSensorRssi)
+        # "Nearest RSSI" doesn't match any branch, falls through to super().icon
+        # SensorEntity returns None by default when _attr_icon is not set
+        assert sensor.icon is None
+
+    # --- BermudaSensorRssi.native_value (line 324) ---
+
+    def test_rssi_native_value_with_data(self) -> None:
+        """Cover line 324: RSSI native_value returns rate-limited value."""
+        sensor = self._create_bermuda_sensor(
+            BermudaSensorRssi,
+            area_rssi=-65.0,
+            ref_power_changed=0.0,
+        )
+        # bermuda_last_stamp=0.0 means cache is stale → returns new value
+        assert sensor.native_value == -65.0
+
+    # --- BermudaSensorRange.native_value (line 362) ---
+
+    def test_range_native_value_with_distance(self) -> None:
+        """Cover line 362: Range native_value returns rounded distance."""
+        sensor = self._create_bermuda_sensor(
+            BermudaSensorRange,
+            area_distance=2.567,
+            ref_power_changed=0.0,
+        )
+        assert sensor.native_value == round(2.567, 1)
+
+    # --- ScannerRange extra_state_attributes None (line 441) ---
+
+    def test_scanner_range_extra_attrs_none_when_no_source(self) -> None:
+        """Cover line 441: extra_state_attributes returns None when no source."""
+        sensor = self._create_bermuda_sensor(BermudaSensorScannerRange)
+        mock_scanner = MagicMock()
+        mock_scanner.address = "scanner:addr"
+        sensor._scanner = mock_scanner
+
+        # MagicMock always has any attribute → use plain class without 'source'
+        class BareDevScanner:
+            pass
+
+        sensor._device.get_scanner = MagicMock(return_value=BareDevScanner())
+        assert sensor.extra_state_attributes is None
+
+    # --- BermudaGlobalSensor.name (line 540) ---
+
+    def test_global_sensor_base_name(self) -> None:
+        """Cover line 540: BermudaGlobalSensor.name returns 'Area'."""
+        mock_coordinator = MagicMock()
+        mock_coordinator.last_update_success = True
+
+        mock_entry = MagicMock()
+        mock_entry.entry_id = "test_entry"
+
+        sensor = object.__new__(BermudaGlobalSensor)
+        sensor.coordinator = mock_coordinator
+        sensor.config_entry = mock_entry
+
+        assert sensor.name == "Area"
+
+    # --- async_added_to_hass restore (lines 524-529) ---
+
+    @pytest.mark.asyncio
+    async def test_area_last_seen_restores_state(self) -> None:
+        """Cover lines 526-529: async_added_to_hass restores last saved value."""
+        sensor = self._create_bermuda_sensor(
+            BermudaSensorAreaLastSeen,
+            area_last_seen="Kitchen",
+        )
+
+        mock_sensor_data = MagicMock()
+        mock_sensor_data.native_value = "Living Room"
+
+        with patch(
+            "homeassistant.helpers.update_coordinator.CoordinatorEntity.async_added_to_hass",
+            new_callable=AsyncMock,
+        ):
+            sensor.async_get_last_sensor_data = AsyncMock(return_value=mock_sensor_data)
+            await sensor.async_added_to_hass()
+
+        assert sensor._attr_native_value == "Living Room"
+        assert sensor._device.area_last_seen == "Living Room"
+
+    @pytest.mark.asyncio
+    async def test_area_last_seen_no_restore_data(self) -> None:
+        """Cover line 527 False branch: async_added_to_hass with no saved data."""
+        sensor = self._create_bermuda_sensor(
+            BermudaSensorAreaLastSeen,
+            area_last_seen="Kitchen",
+        )
+
+        # Record the initial value of _attr_native_value (from SensorEntity base)
+        initial_native_value = getattr(sensor, "_attr_native_value", None)
+
+        with patch(
+            "homeassistant.helpers.update_coordinator.CoordinatorEntity.async_added_to_hass",
+            new_callable=AsyncMock,
+        ):
+            sensor.async_get_last_sensor_data = AsyncMock(return_value=None)
+            await sensor.async_added_to_hass()
+
+        # _attr_native_value should not have been changed by restore
+        assert sensor._attr_native_value == initial_native_value
+        assert sensor._device.area_last_seen == "Kitchen"
+
+    # --- create_scanner_entities early return (line 115) ---
+
+    @pytest.mark.asyncio
+    async def test_create_scanner_entities_early_return(self, hass: HomeAssistant) -> None:
+        """Cover line 115: create_scanner_entities returns early when scanner not ready."""
+        mock_device = MagicMock()
+        mock_device.name = "Test Device"
+        mock_device.unique_id = "test_uid"
+        mock_device.address = "aa:bb:cc:dd:ee:ff"
+        mock_device.area_name = "Room"
+        mock_device.area_id = "room"
+        mock_device.floor_id = "floor1"
+        mock_device.floor_name = "Floor 1"
+        mock_device.floor_level = 0
+        mock_device.area_icon = "mdi:sofa"
+        mock_device.area_last_seen_icon = "mdi:clock"
+        mock_device.floor_icon = "mdi:home-floor-0"
+        mock_device.address_type = "public"
+        mock_device.adverts = {}
+        mock_device.area_state_metadata = MagicMock(return_value={})
+
+        # Scanner that is NOT ready (remote scanner without wifi mac)
+        mock_scanner = MagicMock()
+        mock_scanner.is_remote_scanner = True
+        mock_scanner.address_wifi_mac = None
+        mock_scanner.address = "11:22:33:44:55:66"
+        mock_scanner.name = "Test Scanner"
+
+        mock_coordinator = MagicMock()
+        mock_coordinator.hass = hass
+        mock_coordinator.last_update_success = True
+        mock_coordinator.devices = {"aa:bb:cc:dd:ee:ff": mock_device}
+        mock_coordinator.have_floors = True
+        mock_coordinator.scanner_list = ["11:22:33:44:55:66"]
+        mock_coordinator.get_scanners = [mock_scanner]
+        mock_coordinator.check_for_duplicate_entities = MagicMock(return_value=None)
+        mock_coordinator.sensor_created = MagicMock()
+
+        mock_entry = MagicMock()
+        mock_entry.runtime_data = MagicMock()
+        mock_entry.runtime_data.coordinator = mock_coordinator
+        mock_entry.async_on_unload = MagicMock()
+        mock_entry.options = {}
+
+        added_entities: list = []
+        mock_add_devices = MagicMock(side_effect=lambda entities, update=False: added_entities.extend(entities))
+
+        with (
+            patch("custom_components.bermuda.sensor.async_dispatcher_connect") as mock_dispatcher,
+            patch("custom_components.bermuda.entity.ar.async_get") as mock_ar,
+            patch("custom_components.bermuda.entity.dr.async_get") as mock_dr,
+        ):
+            mock_ar.return_value = MagicMock()
+            mock_dr.return_value = MagicMock()
+
+            await async_setup_entry(hass, mock_entry, mock_add_devices)
+
+            callback_func = mock_dispatcher.call_args_list[0][0][2]
+            callback_func("aa:bb:cc:dd:ee:ff")
+
+        # Main device entities were created (7 with floors) + 4 global sensors
+        assert len(added_entities) >= 7
+        # But NO scanner-specific entities (early return at line 115)
+        scanner_entities = [
+            e for e in added_entities if isinstance(e, (BermudaSensorScannerRange, BermudaSensorScannerRangeRaw))
+        ]
+        assert len(scanner_entities) == 0
+        mock_coordinator.sensor_created.assert_called_once_with("aa:bb:cc:dd:ee:ff")
