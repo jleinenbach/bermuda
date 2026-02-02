@@ -2554,7 +2554,7 @@ info = manager.get_scanner_pair_info(nowstamp=current_time)
   3. **Stage 3**: Conditional `state_class` — returns `None` when recorder-friendly (no long-term statistics), `MEASUREMENT` when disabled (debug mode)
 - **Key Design Decisions**:
   - `_unrecorded_attributes` CANNOT be a `@property` — HA's `__init_subclass__` metaclass requires frozenset at class level or instance attribute in `__init__`
-  - `MATCH_ALL` sentinel (`"*"`) excludes ALL attributes from recorder. HA checks via identity comparison `is MATCH_ALL`
+  - `MATCH_ALL` sentinel (`"*"`) excludes ALL attributes from recorder. HA checks via containment `MATCH_ALL in unrecorded_attributes` (see `db_schema.py:570`)
   - One-way data flow confirmed: no internal Bermuda logic reads from HA DB, so excluding attributes from recorder has zero functional impact
   - Default `True` (recorder-friendly) because most users don't need BLE statistics and SD card longevity is critical
 - **DB Impact** (10 devices, 5 scanners):
@@ -7293,24 +7293,24 @@ class MyConditionalEntity(SensorEntity):
 
 **Rule of Thumb**: HA entity class attributes processed by metaclass (`_unrecorded_attributes`, `_attr_*`) must be frozensets or plain values, never properties. Use `__init__` for conditional assignment.
 
-### 66. MATCH_ALL Uses Identity Comparison, Not Equality
+### 66. MATCH_ALL Uses Containment Check, Not Identity
 
-HA checks `_unrecorded_attributes` via `is MATCH_ALL`, not `== MATCH_ALL` or `in`. This means you must use the exact sentinel object from `homeassistant.const`, not a string `"*"`.
+HA checks `_unrecorded_attributes` via `MATCH_ALL in unrecorded_attributes` (containment check at `db_schema.py:570`), not `is MATCH_ALL`. The `StateInfo` TypedDict declares `unrecorded_attributes: frozenset[str]`, so the correct type is a frozenset containing the MATCH_ALL constant.
 
 **Bug Pattern:**
 ```python
-# BAD - String literal, not the sentinel
-self._unrecorded_attributes = frozenset({"*"})  # HA won't recognize this!
+# BAD - String literal, not the imported constant
+self._unrecorded_attributes = frozenset({"*"})  # Works but fragile if sentinel changes
 ```
 
 **Fix Pattern:**
 ```python
-# GOOD - Import and use the actual sentinel
+# GOOD - Import and use the actual constant
 from homeassistant.const import MATCH_ALL
-self._unrecorded_attributes = frozenset({MATCH_ALL})  # HA checks `is MATCH_ALL`
+self._unrecorded_attributes = frozenset({MATCH_ALL})  # HA checks `MATCH_ALL in ...`
 ```
 
-**Rule of Thumb**: When HA documentation says "use MATCH_ALL", always import the constant. Never use string literals as substitutes for sentinel objects.
+**Rule of Thumb**: Always import `MATCH_ALL` from `homeassistant.const` rather than using string literals. The HA recorder uses `MATCH_ALL in unrecorded_attributes` (containment), so `frozenset({MATCH_ALL})` is the correct pattern. The expected type is `frozenset[str]` per `StateInfo` TypedDict.
 
 ### 67. One-Way Data Flow Enables Safe Recorder Exclusion
 
