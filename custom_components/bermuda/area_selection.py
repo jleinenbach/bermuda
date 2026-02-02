@@ -782,6 +782,41 @@ class AreaSelectionHandler:
                 return True
         return False
 
+    def _check_movement_state_for_learning(
+        self,
+        device: BermudaDevice,
+        nowstamp: float | None,
+    ) -> str | None:
+        """
+        Check if device movement state allows auto-learning.
+
+        Returns None if learning is allowed, or a skip_reason string if not.
+        Checks both area_changed_at == 0.0 (startup/first discovery)
+        and movement state (MOVING/SETTLING).
+        """
+        if nowstamp is None:
+            return None
+
+        if device.area_changed_at == 0.0:
+            if _LOGGER.isEnabledFor(logging.DEBUG):
+                _LOGGER.debug(
+                    "Auto-learning skip for %s: area_changed_at uninitialized (startup/first discovery)",
+                    device.name,
+                )
+            return "uninitialized_dwell"
+
+        movement_state = device.get_movement_state(stamp_now=nowstamp)
+        if movement_state in (MOVEMENT_STATE_MOVING, MOVEMENT_STATE_SETTLING):
+            if _LOGGER.isEnabledFor(logging.DEBUG):
+                _LOGGER.debug(
+                    "Auto-learning skip for %s: movement state %s (not stationary)",
+                    device.name,
+                    movement_state,
+                )
+            return "not_stationary"
+
+        return None
+
     def _update_device_correlations(
         self,
         device: BermudaDevice,
@@ -850,23 +885,22 @@ class AreaSelectionHandler:
         # wrong room → auto-learn → stronger wrong profile → more wrong room.
         # By requiring 10+ minutes of stable presence, transient misclassifications
         # can no longer poison fingerprint profiles.
+        #
+        # NOTE: get_movement_state() returns STATIONARY when area_changed_at == 0.0
+        # (startup/first discovery) to prevent area-selection flapping. But for
+        # auto-learning this is dangerous: the initial assignment may be wrong,
+        # and we have no evidence of sustained presence. Block explicitly.
         # =====================================================================
-        if nowstamp is not None:
-            movement_state = device.get_movement_state(stamp_now=nowstamp)
-            if movement_state in (MOVEMENT_STATE_MOVING, MOVEMENT_STATE_SETTLING):
-                if _LOGGER.isEnabledFor(logging.DEBUG):
-                    _LOGGER.debug(
-                        "Auto-learning skip for %s: movement state %s (not stationary)",
-                        device.name,
-                        movement_state,
-                    )
+        skip_reason = self._check_movement_state_for_learning(device, nowstamp)
+        if skip_reason is not None:
+            if nowstamp is not None:
                 self._auto_learning_stats.record_update(
                     performed=False,
                     stamp=nowstamp,
                     device_address=device.address,
-                    skip_reason="not_stationary",
+                    skip_reason=skip_reason,
                 )
-                return
+            return
 
         # =====================================================================
         # Quality Filter: Feature 5 - Velocity Filter

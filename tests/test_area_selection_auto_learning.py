@@ -139,7 +139,7 @@ class TestVelocityFilterIntegration:
         handler = make_handler_with_mock()
         device = FakeDevice()
         device.area_id = "area.living_room"
-        device.area_changed_at = 0.0  # Long dwell time
+        device.area_changed_at = 1.0  # dwell=999s → STATIONARY
 
         # Create adverts with low velocity
         device.adverts["scanner_a"] = FakeAdvert(
@@ -188,7 +188,7 @@ class TestRssiVarianceFilterIntegration:
         """Updates should be skipped when RSSI is unstable."""
         handler = make_handler_with_mock()
         device = FakeDevice()
-        device.area_changed_at = 0.0  # Long dwell time
+        device.area_changed_at = 1.0  # dwell=999s → STATIONARY
 
         # Create adverts with low velocity but will mock high variance
         device.adverts["scanner_a"] = FakeAdvert(
@@ -223,7 +223,7 @@ class TestRssiVarianceFilterIntegration:
         handler = make_handler_with_mock()
         device = FakeDevice()
         device.area_id = "area.living_room"
-        device.area_changed_at = 0.0
+        device.area_changed_at = 1.0  # dwell=999s → STATIONARY
 
         device.adverts["scanner_a"] = FakeAdvert(
             scanner_address="scanner_a",
@@ -335,8 +335,8 @@ class TestMovementStateFilterIntegration:
         handler = make_handler_with_mock()
         device = FakeDevice()
         device.area_id = "area.living_room"
-        # Device has been in room for 1000 seconds → STATIONARY state (>= 600s)
-        device.area_changed_at = 0.0  # nowstamp=1000, so dwell=1000s
+        # Device has been in room for 999 seconds → STATIONARY state (>= 600s)
+        device.area_changed_at = 1.0  # nowstamp=1000, so dwell=999s
 
         device.adverts["scanner_a"] = FakeAdvert(
             scanner_address="scanner_a",
@@ -365,6 +365,40 @@ class TestMovementStateFilterIntegration:
         # Should create profile (STATIONARY state)
         assert device.address in handler.correlations
         assert "area.living_room" in handler.correlations[device.address]
+
+    def test_uninitialized_area_changed_at_skips_update(self) -> None:
+        """Updates should be skipped when area_changed_at == 0.0 (startup/first discovery).
+
+        get_movement_state() returns STATIONARY for area_changed_at == 0.0
+        to prevent area-selection flapping. But for auto-learning, this is
+        dangerous: the initial assignment may be wrong and we have no evidence
+        of sustained presence. The guard must block explicitly.
+        """
+        handler = make_handler_with_mock()
+        device = FakeDevice()
+        device.area_id = "area.living_room"
+        device.area_changed_at = 0.0  # Uninitialized (startup/first discovery)
+
+        device.adverts["scanner_a"] = FakeAdvert(
+            scanner_address="scanner_a",
+            rssi=-50.0,
+            stamp=1000.0,
+            hist_velocity=[0.1],
+        )
+
+        handler._update_device_correlations(
+            device=device,
+            area_id="area.living_room",
+            primary_rssi=-50.0,
+            primary_scanner_addr="scanner_a",
+            other_readings={"scanner_b": -60.0},
+            nowstamp=1000.0,
+        )
+
+        # Should NOT create profile (uninitialized area_changed_at)
+        assert device.address not in handler.correlations or "area.living_room" not in handler.correlations.get(
+            device.address, {}
+        )
 
 
 # =============================================================================
@@ -415,7 +449,7 @@ class TestConfidenceFilterIntegration:
         handler = make_handler_with_mock()
         device = FakeDevice()
         device.area_id = "area.living_room"
-        device.area_changed_at = 0.0
+        device.area_changed_at = 1.0  # dwell=999s → STATIONARY
 
         device.adverts["scanner_a"] = FakeAdvert(
             scanner_address="scanner_a",
@@ -464,7 +498,7 @@ class TestNewDataCheckIntegration:
         handler = make_handler_with_mock()
         device = FakeDevice()
         device.area_id = "area.living_room"
-        device.area_changed_at = 0.0
+        device.area_changed_at = 1.0  # dwell=999s → STATIONARY
 
         device.adverts["scanner_a"] = FakeAdvert(
             scanner_address="scanner_a",
@@ -502,7 +536,7 @@ class TestNewDataCheckIntegration:
         handler = make_handler_with_mock()
         device = FakeDevice()
         device.area_id = "area.living_room"
-        device.area_changed_at = 0.0
+        device.area_changed_at = 1.0  # dwell=999s → STATIONARY
 
         device.adverts["scanner_a"] = FakeAdvert(
             scanner_address="scanner_a",
@@ -554,7 +588,7 @@ class TestNewDataCheckIntegration:
         handler = make_handler_with_mock()
         device = FakeDevice()
         device.area_id = "area.living_room"
-        device.area_changed_at = 0.0
+        device.area_changed_at = 1.0  # dwell=999s → STATIONARY
 
         device.adverts["scanner_a"] = FakeAdvert(
             scanner_address="scanner_a",
@@ -620,7 +654,7 @@ class TestCombinedQualityFiltersIntegration:
         handler = make_handler_with_mock()
         device = FakeDevice()
         device.area_id = "area.living_room"
-        device.area_changed_at = 0.0  # STATIONARY state (dwell=1000s)
+        device.area_changed_at = 1.0  # dwell=999s → STATIONARY
 
         # Good velocity but high variance
         device.adverts["scanner_a"] = FakeAdvert(
@@ -656,7 +690,7 @@ class TestCombinedQualityFiltersIntegration:
         handler = make_handler_with_mock()
         device = FakeDevice()
         device.area_id = "area.living_room"
-        device.area_changed_at = 0.0  # STATIONARY state (dwell=1000s)
+        device.area_changed_at = 1.0  # dwell=999s → STATIONARY
 
         device.adverts["scanner_a"] = FakeAdvert(
             scanner_address="scanner_a",
@@ -700,7 +734,7 @@ class TestAutoLearningStats:
         handler = make_handler_with_mock()
         device = FakeDevice()
         device.area_id = "area.living_room"
-        device.area_changed_at = 0.0
+        device.area_changed_at = 1.0  # dwell=999s → STATIONARY
 
         device.adverts["scanner_a"] = FakeAdvert(
             scanner_address="scanner_a",
@@ -759,7 +793,7 @@ class TestAutoLearningStats:
         handler = make_handler_with_mock()
         device = FakeDevice()
         device.area_id = "area.living_room"
-        device.area_changed_at = 0.0
+        device.area_changed_at = 1.0  # dwell=999s → STATIONARY
 
         device.adverts["scanner_a"] = FakeAdvert(
             scanner_address="scanner_a",
