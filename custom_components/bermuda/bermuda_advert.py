@@ -479,20 +479,32 @@ class BermudaAdvert(dict[str, Any]):
 
     def _clear_stale_history(self) -> None:
         """
-        Clear distance and RSSI history when advert is stale.
+        Clear history and distance state when advert is stale.
 
-        Also clears hist_distance to maintain synchronization between the two
-        distance history lists. Previously only hist_distance_by_interval was
-        cleared, which could cause desynchronization.
+        When an advert is stale (no recent data from scanner), we must clear
+        rssi_distance to prevent stale incumbents from blocking fresh challengers.
+
+        Why we MUST clear rssi_distance:
+        In _refresh_area_by_min_distance, distance comparison happens BEFORE
+        variance-based checks. If a stale incumbent has rssi_distance=0.5m from
+        15 minutes ago, it will beat a fresh challenger at 1.0m in the distance
+        comparison, and the variance check is never reached. By clearing
+        rssi_distance to None, stale adverts won't participate in distance
+        ordering, allowing fresh challengers to win.
+
+        We still clear velocity-related history to prevent stale velocity
+        calculations from causing issues with teleport detection.
         """
+        # IMPORTANT: Clear rssi_distance so stale adverts don't block fresh challengers
+        # in distance comparisons (see docstring for rationale)
         self.rssi_distance = None
-        self.rssi_filtered = None
-        self.rssi_kalman.reset()  # Reset Kalman filter state for fresh start
+
+        # Clear velocity-related arrays
         if len(self.hist_distance_by_interval) > 0:
             self.hist_distance_by_interval.clear()
         if len(self.hist_rssi_by_interval) > 0:
             self.hist_rssi_by_interval.clear()
-        # Bug Fix: Also clear hist_distance to maintain sync with hist_distance_by_interval
+        # Clear hist_distance to maintain sync with hist_distance_by_interval
         # This prevents velocity calculations from using stale data when area selection
         # uses fresh (empty) hist_distance_by_interval data.
         if len(self.hist_distance) > 0:
@@ -873,10 +885,12 @@ class BermudaAdvert(dict[str, Any]):
             # Near-field: use scientifically-derived exponent (matches rssi_to_metres)
             path_loss_exponent = PATH_LOSS_EXPONENT_NEAR
         else:
-            # Far-field: use user-configured attenuation
-            path_loss_exponent = self.conf_attenuation
-            if path_loss_exponent is None or path_loss_exponent <= 0:
+            # Far-field: use user-configured attenuation (or default if not set/invalid)
+            conf_atten = self.conf_attenuation
+            if conf_atten is None or conf_atten <= 0:
                 path_loss_exponent = DEFAULT_ATTENUATION
+            else:
+                path_loss_exponent = conf_atten
 
         # 5. Calculate variance using correct error propagation
         # CORRECTED FORMULA (peer review): ln(10) is in the NUMERATOR

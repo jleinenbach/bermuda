@@ -148,8 +148,9 @@ def _make_advert(
     # Capture in closure for the lambda
     _distance_variance = distance_variance
 
-    # Mock rssi_kalman for _get_device_rssi_variance
-    rssi_kalman = SimpleNamespace(is_initialized=False, variance=4.0)
+    # Mock rssi_kalman for _get_device_rssi_variance and staleness check
+    # last_update_time = stamp means the measurement is fresh (not stale)
+    rssi_kalman = SimpleNamespace(is_initialized=False, variance=4.0, last_update_time=stamp)
 
     advert = SimpleNamespace(
         name=name,

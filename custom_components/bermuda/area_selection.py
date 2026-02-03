@@ -2053,7 +2053,19 @@ class AreaSelectionHandler:
         _protect_scannerless_area = device.ukf_scannerless_area
         _scannerless_min_dist_override = UKF_WEAK_SCANNER_MIN_DISTANCE
 
-        if not analyzer.is_distance_contender(incumbent):
+        # FIX: Use has_valid_distance() instead of is_distance_contender() for incumbent.
+        # The incumbent should only become "soft" if it has NO distance data (scanner truly
+        # not providing data), NOT just because distance > max_radius. RSSI fluctuations
+        # can temporarily cause distance to exceed max_radius, which was causing second-by-
+        # second flickering when both scanners were actively sending data.
+        #
+        # The max_radius check is still applied to challengers via is_distance_contender().
+        #
+        # We also track whether the incumbent has valid distance for the RSSI fallback gate.
+        # If incumbent has valid distance (even > max_radius), RSSI fallback should NOT
+        # override it - the scanner is actively providing data.
+        incumbent_has_valid_distance = analyzer.has_valid_distance(incumbent)
+        if not incumbent_has_valid_distance:
             if analyzer.area_candidate(incumbent) and analyzer.within_evidence(incumbent):
                 soft_incumbent = incumbent
             incumbent = None
@@ -2142,7 +2154,10 @@ class AreaSelectionHandler:
                 continue
 
             # Handle soft_incumbent case
-            if current_incumbent is soft_incumbent and not analyzer.is_distance_contender(soft_incumbent):
+            # FIX: Use has_valid_distance() for consistency with the incumbent check above.
+            # A soft_incumbent should trigger the special protections if it has NO valid
+            # distance data, not just because distance > max_radius.
+            if current_incumbent is soft_incumbent and not analyzer.has_valid_distance(soft_incumbent):
                 # ABSOLUTE PROFILE RESCUE
                 if current_incumbent.area_id is not None:
                     current_area_id = current_incumbent.area_id
@@ -2301,8 +2316,27 @@ class AreaSelectionHandler:
                     incumbent_variance = current_incumbent.get_distance_variance(nowstamp)
                     challenger_variance = challenger.get_distance_variance(nowstamp)
 
-                    # Combined standard deviation (Gaussian addition of variances)
-                    combined_std = math.sqrt(incumbent_variance + challenger_variance)
+                    # Combined standard deviation for stability check
+                    # KEY FIX: When incumbent is STALE (no recent data), it should be
+                    # EASIER to beat, not harder. A stale incumbent means we're uncertain
+                    # where it is, so we shouldn't inflate the threshold with its variance.
+                    #
+                    # We use time-based staleness based on the advert's adaptive_timeout,
+                    # which is calculated from observed advertisement intervals (60-360s).
+                    # This respects the device's actual behavior rather than using an
+                    # arbitrary fixed threshold.
+                    incumbent_last_update = current_incumbent.rssi_kalman.last_update_time
+                    incumbent_adaptive_timeout = getattr(current_incumbent, "adaptive_timeout", AREA_MAX_AD_AGE_DEFAULT)
+                    incumbent_is_stale = (
+                        incumbent_last_update is None or (nowstamp - incumbent_last_update) > incumbent_adaptive_timeout
+                    )
+
+                    if incumbent_is_stale:
+                        # Stale incumbent: exclude its variance - high uncertainty = less protection
+                        combined_std = math.sqrt(challenger_variance)
+                    else:
+                        # Fresh incumbent: use both variances as originally designed
+                        combined_std = math.sqrt(incumbent_variance + challenger_variance)
 
                     # Movement-aware sigma factor
                     movement_state = device.get_movement_state(stamp_now=nowstamp)
@@ -2619,7 +2653,22 @@ class AreaSelectionHandler:
                 )
             return
 
-        if not has_distance_contender:
+        # FIX: RSSI fallback should only run when we have NO distance information at all.
+        # If the incumbent has valid distance (even > max_radius), don't use RSSI fallback
+        # UNLESS the incumbent itself is > max_radius and no distance contender exists.
+        # This prevents flickering when a scanner is actively providing data, while still
+        # allowing selection to clear when nothing is in range.
+        #
+        # The key insight: we want to prevent RSSI fallback from picking a DIFFERENT area
+        # when the incumbent has valid distance data, but we still want to clear the
+        # selection when nothing is within max_radius.
+        incumbent_outside_radius = (
+            incumbent is not None
+            and analyzer.effective_distance(incumbent) is not None
+            and (analyzer.effective_distance(incumbent) or 0) > _max_radius
+        )
+        skip_rssi_fallback = incumbent_has_valid_distance and not incumbent_outside_radius
+        if not has_distance_contender and not skip_rssi_fallback:
             fallback_candidates: list[BermudaAdvert] = []
             for adv in device.adverts.values():
                 if not analyzer.area_candidate(adv) or not analyzer.within_evidence(adv):

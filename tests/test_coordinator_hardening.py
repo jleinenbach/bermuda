@@ -120,6 +120,8 @@ def test_refresh_area_by_min_distance_handles_empty_incumbent_history(
         scanner_device=SimpleNamespace(last_seen=995.0, name="scanner-inc", address="00:00:00:00:00:01", floor_id=None),
         scanner_address="00:00:00:00:00:01",
         hist_distance_by_interval=[],
+        # rssi_kalman for staleness check - last_update_time = stamp means fresh
+        rssi_kalman=SimpleNamespace(is_initialized=False, variance=4.0, last_update_time=995.0),
     )
     incumbent.median_rssi = lambda: -60.0
     # Add get_distance_variance method for variance-based stability check
@@ -135,6 +137,8 @@ def test_refresh_area_by_min_distance_handles_empty_incumbent_history(
         scanner_device=SimpleNamespace(last_seen=999.0, name="scanner-new", address="00:00:00:00:00:02", floor_id=None),
         scanner_address="00:00:00:00:00:02",
         hist_distance_by_interval=[2.1, 2.0, 1.9, 1.8],
+        # rssi_kalman for staleness check - last_update_time = stamp means fresh
+        rssi_kalman=SimpleNamespace(is_initialized=False, variance=4.0, last_update_time=999.0),
     )
     challenger.median_rssi = lambda: -55.0
     # Add get_distance_variance method for variance-based stability check
