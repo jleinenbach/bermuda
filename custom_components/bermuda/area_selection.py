@@ -2219,6 +2219,20 @@ class AreaSelectionHandler:
                                 )
                             continue
 
+                # FIX: Challenger must have a valid area_id to replace soft incumbent.
+                # Without this check, a scanner without room assignment can "win"
+                # and the device switches to UNKNOWN state.
+                challenger_area_id = getattr(challenger, "area_id", None)
+                if challenger_area_id is None:
+                    tests.reason = "LOSS - challenger has no area_id (would cause UNKNOWN state)"
+                    if _superchatty:
+                        _LOGGER.debug(
+                            "%s: Soft incumbent protection - %s rejected (no area_id)",
+                            device.name,
+                            challenger.name,
+                        )
+                    continue
+
                 tests.reason = "WIN - soft incumbent failed distance contention"
                 incumbent = challenger
                 soft_incumbent = None
