@@ -96,6 +96,7 @@ from .const import (
     UKF_STICKINESS_BONUS,
     UKF_WEAK_SCANNER_MIN_DISTANCE,
     UPDATE_INTERVAL,
+    VARIANCE_STALENESS_THRESHOLD,
     VIRTUAL_DISTANCE_MIN_SCORE,
     VIRTUAL_DISTANCE_SCALE,
 )
@@ -2311,8 +2312,17 @@ class AreaSelectionHandler:
                     incumbent_variance = current_incumbent.get_distance_variance(nowstamp)
                     challenger_variance = challenger.get_distance_variance(nowstamp)
 
-                    # Combined standard deviation (Gaussian addition of variances)
-                    combined_std = math.sqrt(incumbent_variance + challenger_variance)
+                    # Combined standard deviation for stability check
+                    # KEY FIX: When incumbent variance is HIGH (stale/uncertain), it should
+                    # be EASIER to beat, not harder. High variance in incumbent means we're
+                    # uncertain where it is, so we shouldn't inflate the threshold.
+                    # Only include incumbent variance if it's reasonably fresh (low variance).
+                    if incumbent_variance > VARIANCE_STALENESS_THRESHOLD:
+                        # Stale incumbent: exclude its variance - high uncertainty = less protection
+                        combined_std = math.sqrt(challenger_variance)
+                    else:
+                        # Fresh incumbent: use both variances as originally designed
+                        combined_std = math.sqrt(incumbent_variance + challenger_variance)
 
                     # Movement-aware sigma factor
                     movement_state = device.get_movement_state(stamp_now=nowstamp)

@@ -153,6 +153,32 @@ MIN_DISTANCE_FOR_VARIANCE: Final = 0.5  # Below this: use fixed variance
 NEAR_FIELD_DISTANCE_VARIANCE: Final = 0.1  # m^2, fixed variance for near-field
 MAX_DISTANCE_VARIANCE: Final = 4.0  # m^2, cap for far-field (std=2m max)
 
+# Staleness detection threshold for distance variance (m^2).
+#
+# Distance variance is derived from RSSI variance via Gaussian Error Propagation:
+#   factor = (distance * ln(10)) / (10 * path_loss_exponent)
+#   distance_variance = factor^2 * rssi_variance
+#
+# Typical values for FRESH measurements (RSSI variance ~ 4 dB^2):
+#   - 1m distance: ~0.2 m^2 (std ~ +/-0.45m)
+#   - 3m distance: ~1.0 m^2 (std ~ +/-1.0m)
+#   - 5m distance: ~1.5 m^2 (std ~ +/-1.2m)
+#   - 8m+ distance: 4.0 m^2 (capped by MAX_DISTANCE_VARIANCE, std = +/-2.0m)
+#
+# When no new RSSI samples arrive, the Kalman filter's predict step increases
+# variance over time (P = P + Q*dt). After ~30-60s without updates, variance
+# can grow to 6-9 m^2, indicating the measurement is stale.
+#
+# This threshold detects stale incumbents: if variance > 6.0 m^2, the incumbent
+# is considered uncertain and should be EASIER to beat (its high variance is
+# excluded from the stability margin calculation).
+#
+# Context in the variance hierarchy:
+#   MAX_DISTANCE_VARIANCE (4.0 m^2)     - cap for fresh measurements
+#   VARIANCE_STALENESS_THRESHOLD (6.0)  - "this measurement is stale"
+#   VARIANCE_FLOOR_COLD_START (9.0)     - uninitialized Kalman filter
+VARIANCE_STALENESS_THRESHOLD: Final = 6.0
+
 # Physical RSSI Priority - prevents offset-boosted signals from winning over physically closer sensors
 MIN_DISTANCE: Final = 0.1  # Minimum distance in metres (prevents multiple sensors at "0m")
 CONF_USE_PHYSICAL_RSSI_PRIORITY = "use_physical_rssi_priority"
