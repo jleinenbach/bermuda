@@ -886,10 +886,12 @@ class BermudaAdvert(dict[str, Any]):
             # Near-field: use scientifically-derived exponent (matches rssi_to_metres)
             path_loss_exponent = PATH_LOSS_EXPONENT_NEAR
         else:
-            # Far-field: use user-configured attenuation
-            path_loss_exponent = self.conf_attenuation
-            if path_loss_exponent is None or path_loss_exponent <= 0:
+            # Far-field: use user-configured attenuation (or default if not set/invalid)
+            conf_atten = self.conf_attenuation
+            if conf_atten is None or conf_atten <= 0:
                 path_loss_exponent = DEFAULT_ATTENUATION
+            else:
+                path_loss_exponent = conf_atten
 
         # 5. Calculate variance using correct error propagation
         # CORRECTED FORMULA (peer review): ln(10) is in the NUMERATOR

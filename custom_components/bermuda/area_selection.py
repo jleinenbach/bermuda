@@ -2053,7 +2053,14 @@ class AreaSelectionHandler:
         _protect_scannerless_area = device.ukf_scannerless_area
         _scannerless_min_dist_override = UKF_WEAK_SCANNER_MIN_DISTANCE
 
-        if not analyzer.is_distance_contender(incumbent):
+        # FIX: Use has_valid_distance() instead of is_distance_contender() for incumbent.
+        # The incumbent should only become "soft" if it has NO distance data (scanner truly
+        # not providing data), NOT just because distance > max_radius. RSSI fluctuations
+        # can temporarily cause distance to exceed max_radius, which was causing second-by-
+        # second flickering when both scanners were actively sending data.
+        #
+        # The max_radius check is still applied to challengers via is_distance_contender().
+        if not analyzer.has_valid_distance(incumbent):
             if analyzer.area_candidate(incumbent) and analyzer.within_evidence(incumbent):
                 soft_incumbent = incumbent
             incumbent = None
@@ -2142,7 +2149,10 @@ class AreaSelectionHandler:
                 continue
 
             # Handle soft_incumbent case
-            if current_incumbent is soft_incumbent and not analyzer.is_distance_contender(soft_incumbent):
+            # FIX: Use has_valid_distance() for consistency with the incumbent check above.
+            # A soft_incumbent should trigger the special protections if it has NO valid
+            # distance data, not just because distance > max_radius.
+            if current_incumbent is soft_incumbent and not analyzer.has_valid_distance(soft_incumbent):
                 # ABSOLUTE PROFILE RESCUE
                 if current_incumbent.area_id is not None:
                     current_area_id = current_incumbent.area_id

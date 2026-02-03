@@ -259,6 +259,33 @@ class AdvertAnalyzer:
         """
         return self.belongs(advert) and self.has_area(advert)
 
+    def has_valid_distance(self, advert: BermudaAdvert | None) -> bool:
+        """
+        Check if advert has a valid distance calculation (ignoring max_radius).
+
+        This is used for incumbent stability: an incumbent should only become
+        "soft" if it has NO distance data, not just because distance > max_radius.
+        Temporary RSSI fluctuations can cause distance to exceed max_radius, but
+        the scanner is still actively providing data.
+
+        Args:
+        ----
+            advert: The advertisement to check
+
+        Returns:
+        -------
+            True if advert has a valid effective distance (regardless of max_radius)
+
+        """
+        if not self.area_candidate(advert):
+            return False
+        if advert is None:  # Type narrowing
+            return False
+        if not self.within_evidence(advert):
+            return False
+        eff_dist = self.effective_distance(advert)
+        return eff_dist is not None
+
     def is_distance_contender(self, advert: BermudaAdvert | None) -> bool:
         """
         Check if advert qualifies as a distance contender.
