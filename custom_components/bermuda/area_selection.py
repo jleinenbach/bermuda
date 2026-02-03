@@ -2060,7 +2060,12 @@ class AreaSelectionHandler:
         # second flickering when both scanners were actively sending data.
         #
         # The max_radius check is still applied to challengers via is_distance_contender().
-        if not analyzer.has_valid_distance(incumbent):
+        #
+        # We also track whether the incumbent has valid distance for the RSSI fallback gate.
+        # If incumbent has valid distance (even > max_radius), RSSI fallback should NOT
+        # override it - the scanner is actively providing data.
+        incumbent_has_valid_distance = analyzer.has_valid_distance(incumbent)
+        if not incumbent_has_valid_distance:
             if analyzer.area_candidate(incumbent) and analyzer.within_evidence(incumbent):
                 soft_incumbent = incumbent
             incumbent = None
@@ -2648,7 +2653,22 @@ class AreaSelectionHandler:
                 )
             return
 
-        if not has_distance_contender:
+        # FIX: RSSI fallback should only run when we have NO distance information at all.
+        # If the incumbent has valid distance (even > max_radius), don't use RSSI fallback
+        # UNLESS the incumbent itself is > max_radius and no distance contender exists.
+        # This prevents flickering when a scanner is actively providing data, while still
+        # allowing selection to clear when nothing is in range.
+        #
+        # The key insight: we want to prevent RSSI fallback from picking a DIFFERENT area
+        # when the incumbent has valid distance data, but we still want to clear the
+        # selection when nothing is within max_radius.
+        incumbent_outside_radius = (
+            incumbent is not None
+            and analyzer.effective_distance(incumbent) is not None
+            and (analyzer.effective_distance(incumbent) or 0) > _max_radius
+        )
+        skip_rssi_fallback = incumbent_has_valid_distance and not incumbent_outside_radius
+        if not has_distance_contender and not skip_rssi_fallback:
             fallback_candidates: list[BermudaAdvert] = []
             for adv in device.adverts.values():
                 if not analyzer.area_candidate(adv) or not analyzer.within_evidence(adv):
