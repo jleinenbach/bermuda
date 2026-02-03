@@ -233,9 +233,9 @@ def test_adaptive_stale_timeout_with_frequent_updates(bermuda_advert: BermudaAdv
     # At time base_time + 61, device should be considered stale
     with patch("custom_components.bermuda.bermuda_advert.monotonic_time_coarse", return_value=base_time + 61):
         bermuda_advert.calculate_data()
-        # rssi_distance is now PRESERVED for gradual variance decay (not cleared to None)
-        # Only velocity-related history is cleared
-        assert bermuda_advert.rssi_distance == 5.0  # Preserved!
+        # rssi_distance is CLEARED so stale incumbents don't block fresh challengers
+        # in distance comparisons. Velocity-related history is also cleared.
+        assert bermuda_advert.rssi_distance is None  # Cleared!
         assert len(bermuda_advert.hist_velocity) == 0  # Cleared
 
 
@@ -268,9 +268,9 @@ def test_adaptive_stale_timeout_with_slow_updates(bermuda_advert: BermudaAdvert)
     # At time base_time + 91, device should be considered stale
     with patch("custom_components.bermuda.bermuda_advert.monotonic_time_coarse", return_value=base_time + 91):
         bermuda_advert.calculate_data()
-        # rssi_distance is now PRESERVED for gradual variance decay (not cleared to None)
-        # Only velocity-related history is cleared
-        assert bermuda_advert.rssi_distance == 5.0  # Preserved!
+        # rssi_distance is CLEARED so stale incumbents don't block fresh challengers
+        # in distance comparisons. Velocity-related history is also cleared.
+        assert bermuda_advert.rssi_distance is None  # Cleared!
         assert len(bermuda_advert.hist_velocity) == 0  # Cleared
 
 
@@ -300,12 +300,11 @@ def test_adaptive_stale_timeout_capped_at_180s(bermuda_advert: BermudaAdvert) ->
     bermuda_advert.rssi_distance = 5.0
 
     # At time base_time + 181, device should be considered stale (capped at 180s)
-    # However, rssi_distance is now preserved for gradual variance decay
     with patch("custom_components.bermuda.bermuda_advert.monotonic_time_coarse", return_value=base_time + 181):
         bermuda_advert.calculate_data()
-        # rssi_distance preserved for gradual variance decay (not binary cutoff)
-        # Only velocity-related history is cleared
-        assert bermuda_advert.rssi_distance == 5.0
+        # rssi_distance is CLEARED so stale incumbents don't block fresh challengers
+        # in distance comparisons. Velocity-related history is also cleared.
+        assert bermuda_advert.rssi_distance is None  # Cleared!
         assert len(bermuda_advert.hist_velocity) == 0  # Velocity history cleared
 
 
@@ -326,12 +325,11 @@ def test_adaptive_stale_timeout_with_insufficient_history(bermuda_advert: Bermud
     bermuda_advert.rssi_distance = 5.0
 
     # At time base_time + 61, device is stale with default 60s timeout
-    # However, rssi_distance is now preserved for gradual variance decay
     with patch("custom_components.bermuda.bermuda_advert.monotonic_time_coarse", return_value=base_time + 61):
         bermuda_advert.calculate_data()
-        # rssi_distance preserved for gradual variance decay (not binary cutoff)
-        # Only velocity-related history is cleared
-        assert bermuda_advert.rssi_distance == 5.0
+        # rssi_distance is CLEARED so stale incumbents don't block fresh challengers
+        # in distance comparisons. Velocity-related history is also cleared.
+        assert bermuda_advert.rssi_distance is None  # Cleared!
         assert len(bermuda_advert.hist_velocity) == 0  # Velocity history cleared
 
 
@@ -772,11 +770,12 @@ class TestBermudaAdvertEdgeCases:
         assert bermuda_advert.velocity_blocked_count == 0
 
     def test_clear_stale_history(self, bermuda_advert: BermudaAdvert) -> None:
-        """Test _clear_stale_history clears velocity-related history but preserves distance state.
+        """Test _clear_stale_history clears rssi_distance and velocity-related history.
 
-        The method now intentionally preserves rssi_distance and rssi_filtered (and Kalman state)
-        to allow gradual confidence decay via increasing variance over time, instead of a
-        binary cutoff that immediately makes the scanner a non-contender.
+        rssi_distance is cleared so that stale adverts don't block fresh challengers
+        in distance comparisons. In _refresh_area_by_min_distance, distance comparison
+        happens BEFORE variance-based checks, so a stale incumbent with a small old
+        distance could otherwise beat fresh challengers indefinitely.
         """
         bermuda_advert.rssi_distance = 5.0
         bermuda_advert.rssi_filtered = -70.0
@@ -788,8 +787,9 @@ class TestBermudaAdvertEdgeCases:
 
         bermuda_advert._clear_stale_history()
 
-        # rssi_distance and rssi_filtered are PRESERVED for gradual variance decay
-        assert bermuda_advert.rssi_distance == 5.0
+        # rssi_distance is CLEARED so stale adverts don't block fresh challengers
+        assert bermuda_advert.rssi_distance is None
+        # rssi_filtered is preserved (Kalman state, used for variance calculation)
         assert bermuda_advert.rssi_filtered == -70.0
         # Velocity-related history is cleared
         assert len(bermuda_advert.hist_distance_by_interval) == 0

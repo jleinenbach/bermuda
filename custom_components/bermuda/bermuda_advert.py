@@ -479,28 +479,27 @@ class BermudaAdvert(dict[str, Any]):
 
     def _clear_stale_history(self) -> None:
         """
-        Clear velocity-related history when advert is stale, but preserve distance state.
+        Clear history and distance state when advert is stale.
 
-        IMPORTANT: We intentionally DO NOT clear rssi_distance or reset rssi_kalman!
+        When an advert is stale (no recent data from scanner), we must clear
+        rssi_distance to prevent stale incumbents from blocking fresh challengers.
 
-        Why: The Kalman filter's variance naturally increases over time due to
-        process_noise * staleness (see _get_effective_rssi_variance). By preserving
-        the last known distance and Kalman state:
-        1. The scanner remains a valid "distance contender" (is_distance_contender)
-        2. But its variance increases, making it easier to beat via variance-based checks
-        3. This provides GRADUAL confidence decay instead of a binary cut-off
+        Why we MUST clear rssi_distance:
+        In _refresh_area_by_min_distance, distance comparison happens BEFORE
+        variance-based checks. If a stale incumbent has rssi_distance=0.5m from
+        15 minutes ago, it will beat a fresh challenger at 1.0m in the distance
+        comparison, and the variance check is never reached. By clearing
+        rssi_distance to None, stale adverts won't participate in distance
+        ordering, allowing fresh challengers to win.
 
-        The old approach was: stamp > 60s → rssi_distance = None → not a contender
-        The new approach is: stamp > 60s → rssi_distance preserved → variance increases
-
-        We still clear velocity-related history to prevent stale velocity calculations
-        from causing issues with teleport detection and movement tracking.
+        We still clear velocity-related history to prevent stale velocity
+        calculations from causing issues with teleport detection.
         """
-        # NOTE: rssi_distance is intentionally preserved for gradual variance decay
-        # NOTE: rssi_filtered is intentionally preserved for consistency
-        # NOTE: rssi_kalman is NOT reset - variance accumulates over time
+        # IMPORTANT: Clear rssi_distance so stale adverts don't block fresh challengers
+        # in distance comparisons (see docstring for rationale)
+        self.rssi_distance = None
 
-        # Clear velocity-related arrays only
+        # Clear velocity-related arrays
         if len(self.hist_distance_by_interval) > 0:
             self.hist_distance_by_interval.clear()
         if len(self.hist_rssi_by_interval) > 0:
