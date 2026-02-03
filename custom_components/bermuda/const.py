@@ -153,25 +153,6 @@ MIN_DISTANCE_FOR_VARIANCE: Final = 0.5  # Below this: use fixed variance
 NEAR_FIELD_DISTANCE_VARIANCE: Final = 0.1  # m^2, fixed variance for near-field
 MAX_DISTANCE_VARIANCE: Final = 4.0  # m^2, cap for far-field (std=2m max)
 
-# Staleness detection threshold for stability margin calculation (seconds).
-#
-# When the incumbent scanner hasn't provided new RSSI data for this long,
-# it's considered "stale" and should be EASIER to beat. A stale incumbent's
-# variance is excluded from the combined_std calculation, lowering the
-# threshold that challengers must exceed.
-#
-# Why time-based instead of variance-based:
-#   - get_distance_variance() caps at MAX_DISTANCE_VARIANCE (4.0 m^2)
-#   - Staleness-inflated variance can exceed this cap, but the cap hides it
-#   - Direct time check is unambiguous: "no data for 30s = stale"
-#
-# Value rationale:
-#   - BLE advertisements typically arrive every 1-10 seconds
-#   - 30 seconds without data = 3-30 missed advertisements = clearly stale
-#   - Shorter values (10s) might trigger during normal gaps
-#   - Longer values (60s) delay necessary room switches too much
-STALENESS_SECONDS_THRESHOLD: Final = 30.0
-
 # Physical RSSI Priority - prevents offset-boosted signals from winning over physically closer sensors
 MIN_DISTANCE: Final = 0.1  # Minimum distance in metres (prevents multiple sensors at "0m")
 CONF_USE_PHYSICAL_RSSI_PRIORITY = "use_physical_rssi_priority"

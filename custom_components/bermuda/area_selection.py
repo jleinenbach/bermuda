@@ -83,7 +83,6 @@ from .const import (
     STABILITY_SIGMA_MOVING,
     STABILITY_SIGMA_SETTLING,
     STABILITY_SIGMA_STATIONARY,
-    STALENESS_SECONDS_THRESHOLD,
     STREAK_LOW_CONFIDENCE_THRESHOLD,
     UKF_HIGH_CONFIDENCE_OVERRIDE,
     UKF_LOW_CONFIDENCE_THRESHOLD,
@@ -2317,12 +2316,14 @@ class AreaSelectionHandler:
                     # EASIER to beat, not harder. A stale incumbent means we're uncertain
                     # where it is, so we shouldn't inflate the threshold with its variance.
                     #
-                    # We use time-based staleness (not variance) because get_distance_variance()
-                    # caps at MAX_DISTANCE_VARIANCE, hiding the staleness-inflated values.
+                    # We use time-based staleness based on the advert's adaptive_timeout,
+                    # which is calculated from observed advertisement intervals (60-360s).
+                    # This respects the device's actual behavior rather than using an
+                    # arbitrary fixed threshold.
                     incumbent_last_update = current_incumbent.rssi_kalman.last_update_time
+                    incumbent_adaptive_timeout = getattr(current_incumbent, "adaptive_timeout", AREA_MAX_AD_AGE_DEFAULT)
                     incumbent_is_stale = (
-                        incumbent_last_update is None
-                        or (nowstamp - incumbent_last_update) > STALENESS_SECONDS_THRESHOLD
+                        incumbent_last_update is None or (nowstamp - incumbent_last_update) > incumbent_adaptive_timeout
                     )
 
                     if incumbent_is_stale:
