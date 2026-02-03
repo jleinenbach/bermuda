@@ -479,20 +479,33 @@ class BermudaAdvert(dict[str, Any]):
 
     def _clear_stale_history(self) -> None:
         """
-        Clear distance and RSSI history when advert is stale.
+        Clear velocity-related history when advert is stale, but preserve distance state.
 
-        Also clears hist_distance to maintain synchronization between the two
-        distance history lists. Previously only hist_distance_by_interval was
-        cleared, which could cause desynchronization.
+        IMPORTANT: We intentionally DO NOT clear rssi_distance or reset rssi_kalman!
+
+        Why: The Kalman filter's variance naturally increases over time due to
+        process_noise * staleness (see _get_effective_rssi_variance). By preserving
+        the last known distance and Kalman state:
+        1. The scanner remains a valid "distance contender" (is_distance_contender)
+        2. But its variance increases, making it easier to beat via variance-based checks
+        3. This provides GRADUAL confidence decay instead of a binary cut-off
+
+        The old approach was: stamp > 60s → rssi_distance = None → not a contender
+        The new approach is: stamp > 60s → rssi_distance preserved → variance increases
+
+        We still clear velocity-related history to prevent stale velocity calculations
+        from causing issues with teleport detection and movement tracking.
         """
-        self.rssi_distance = None
-        self.rssi_filtered = None
-        self.rssi_kalman.reset()  # Reset Kalman filter state for fresh start
+        # NOTE: rssi_distance is intentionally preserved for gradual variance decay
+        # NOTE: rssi_filtered is intentionally preserved for consistency
+        # NOTE: rssi_kalman is NOT reset - variance accumulates over time
+
+        # Clear velocity-related arrays only
         if len(self.hist_distance_by_interval) > 0:
             self.hist_distance_by_interval.clear()
         if len(self.hist_rssi_by_interval) > 0:
             self.hist_rssi_by_interval.clear()
-        # Bug Fix: Also clear hist_distance to maintain sync with hist_distance_by_interval
+        # Clear hist_distance to maintain sync with hist_distance_by_interval
         # This prevents velocity calculations from using stale data when area selection
         # uses fresh (empty) hist_distance_by_interval data.
         if len(self.hist_distance) > 0:
