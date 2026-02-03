@@ -83,6 +83,7 @@ from .const import (
     STABILITY_SIGMA_MOVING,
     STABILITY_SIGMA_SETTLING,
     STABILITY_SIGMA_STATIONARY,
+    STALENESS_SECONDS_THRESHOLD,
     STREAK_LOW_CONFIDENCE_THRESHOLD,
     UKF_HIGH_CONFIDENCE_OVERRIDE,
     UKF_LOW_CONFIDENCE_THRESHOLD,
@@ -96,7 +97,6 @@ from .const import (
     UKF_STICKINESS_BONUS,
     UKF_WEAK_SCANNER_MIN_DISTANCE,
     UPDATE_INTERVAL,
-    VARIANCE_STALENESS_THRESHOLD,
     VIRTUAL_DISTANCE_MIN_SCORE,
     VIRTUAL_DISTANCE_SCALE,
 )
@@ -2313,11 +2313,19 @@ class AreaSelectionHandler:
                     challenger_variance = challenger.get_distance_variance(nowstamp)
 
                     # Combined standard deviation for stability check
-                    # KEY FIX: When incumbent variance is HIGH (stale/uncertain), it should
-                    # be EASIER to beat, not harder. High variance in incumbent means we're
-                    # uncertain where it is, so we shouldn't inflate the threshold.
-                    # Only include incumbent variance if it's reasonably fresh (low variance).
-                    if incumbent_variance > VARIANCE_STALENESS_THRESHOLD:
+                    # KEY FIX: When incumbent is STALE (no recent data), it should be
+                    # EASIER to beat, not harder. A stale incumbent means we're uncertain
+                    # where it is, so we shouldn't inflate the threshold with its variance.
+                    #
+                    # We use time-based staleness (not variance) because get_distance_variance()
+                    # caps at MAX_DISTANCE_VARIANCE, hiding the staleness-inflated values.
+                    incumbent_last_update = current_incumbent.rssi_kalman.last_update_time
+                    incumbent_is_stale = (
+                        incumbent_last_update is None
+                        or (nowstamp - incumbent_last_update) > STALENESS_SECONDS_THRESHOLD
+                    )
+
+                    if incumbent_is_stale:
                         # Stale incumbent: exclude its variance - high uncertainty = less protection
                         combined_std = math.sqrt(challenger_variance)
                     else:

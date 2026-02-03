@@ -13,6 +13,7 @@ from custom_components.bermuda.const import (
     MOVEMENT_STATE_STATIONARY,
 )
 from custom_components.bermuda.area_selection import AreaSelectionHandler
+from bluetooth_data_tools import monotonic_time_coarse
 from custom_components.bermuda.coordinator import BermudaDataUpdateCoordinator
 
 if TYPE_CHECKING:
@@ -66,9 +67,16 @@ class FakeScanner:
 class FakeKalman:
     """Minimal Kalman filter stub for quality filter tests."""
 
-    def __init__(self, variance: float = 5.0, is_initialized: bool = True) -> None:
+    def __init__(
+        self,
+        variance: float = 5.0,
+        is_initialized: bool = True,
+        last_update_time: float | None = None,
+    ) -> None:
         self.variance = variance
         self._is_initialized = is_initialized
+        # Default to current time if not specified (fresh measurement)
+        self.last_update_time = last_update_time if last_update_time is not None else monotonic_time_coarse()
 
     @property
     def is_initialized(self) -> bool:
