@@ -2034,6 +2034,7 @@ class AreaSelectionHandler:
 
         tests = AreaTests()
         tests.device = device.name
+        tests.decision_path = "MIN_DISTANCE"
 
         _superchatty = False  # Set to true for very verbose logging about area wins
 
@@ -2106,24 +2107,28 @@ class AreaSelectionHandler:
             cross_floor = inc_floor_id is not None and chal_floor_id is not None and inc_floor_id != chal_floor_id
 
             # FIX: Weak Scanner Override Protection for Scannerless Rooms
+            # Protect scannerless area from being overridden by distant challengers.
+            # This protection applies to BOTH cross-floor AND same-floor challengers,
+            # since scannerless rooms have no "home" scanner to defend them.
             if _protect_scannerless_area and current_incumbent is not None:
                 challenger_dist = analyzer.effective_distance(challenger)
                 if challenger_dist is not None and challenger_dist >= _scannerless_min_dist_override:
-                    if cross_floor:
-                        tests.reason = (
-                            f"LOSS - scannerless area protection (challenger at {challenger_dist:.1f}m "
-                            f">= {_scannerless_min_dist_override:.1f}m, cross-floor)"
+                    floor_type = "cross-floor" if cross_floor else "same-floor"
+                    tests.reason = (
+                        f"LOSS - scannerless area protection (challenger at {challenger_dist:.1f}m "
+                        f">= {_scannerless_min_dist_override:.1f}m, {floor_type})"
+                    )
+                    if _LOGGER.isEnabledFor(logging.DEBUG):
+                        _LOGGER.debug(
+                            "Weak scanner override blocked for %s: scannerless area protected, "
+                            "challenger %s at %.1fm (min=%.1fm), %s",
+                            device.name,
+                            challenger.name,
+                            challenger_dist,
+                            _scannerless_min_dist_override,
+                            floor_type,
                         )
-                        if _LOGGER.isEnabledFor(logging.DEBUG):
-                            _LOGGER.debug(
-                                "Weak scanner override blocked for %s: scannerless area protected, "
-                                "challenger %s at %.1fm (min=%.1fm), cross-floor",
-                                device.name,
-                                challenger.name,
-                                challenger_dist,
-                                _scannerless_min_dist_override,
-                            )
-                        continue
+                    continue
 
             if current_incumbent is None:
                 incumbent = challenger
