@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from homeassistant.components import bluetooth
 from homeassistant.components.sensor import RestoreSensor, SensorEntity
 from homeassistant.components.sensor.const import SensorDeviceClass, SensorStateClass
 from homeassistant.const import (
@@ -521,9 +520,10 @@ class BermudaSensorEstimatedBroadcastInterval(BermudaSensor):
     Estimated broadcast interval sensor for FMDN devices.
 
     This sensor shows the learned advertising interval for FMDN devices
-    (Google Find My), similar to the Private BLE Device integration.
-    Since GoogleFindMy-HA doesn't receive Bluetooth itself (Bermuda handles that),
-    this provides the broadcast interval diagnostics for FMDN devices.
+    (Google Find My), calculated from Bermuda's own observation data.
+    Since FMDN devices rotate their MAC addresses, HA's Bluetooth learned
+    intervals don't work - we calculate from the actual observed intervals
+    between advertisements.
     """
 
     _attr_translation_key = "estimated_broadcast_interval"
@@ -542,24 +542,29 @@ class BermudaSensorEstimatedBroadcastInterval(BermudaSensor):
         """
         Return the estimated broadcast interval in seconds.
 
-        Uses HA Bluetooth's learned advertising interval, with fallbacks
-        to availability interval and finally the maximum stale advertisement time.
+        Calculates the median interval from Bermuda's observed advertisement
+        intervals across all scanners. Uses median to be robust against
+        occasional missed packets or outliers.
         """
-        # Get the current MAC address (for metadevices this is the active rotating MAC)
-        address = self._device.current_mac or self._device.address
+        # Collect all valid intervals from all adverts (scanner observations)
+        all_intervals: list[float] = []
+        for advert in self._device.adverts.values():
+            # hist_interval contains time deltas between consecutive advertisements
+            if hasattr(advert, "hist_interval") and advert.hist_interval:
+                # Only include valid positive intervals (filter out None and negatives)
+                all_intervals.extend(
+                    interval for interval in advert.hist_interval if interval is not None and interval > 0
+                )
 
-        # Try learned advertising interval first (most accurate)
-        interval = bluetooth.async_get_learned_advertising_interval(self.coordinator.hass, address)
-        if interval is not None:
-            return interval
+        if not all_intervals:
+            return None
 
-        # Fallback to availability interval
-        interval = bluetooth.async_get_fallback_availability_interval(self.coordinator.hass, address)
-        if interval is not None:
-            return interval
-
-        # Final fallback to maximum stale advertisement time
-        return bluetooth.FALLBACK_MAXIMUM_STALE_ADVERTISEMENT_SECONDS
+        # Return median interval (robust against outliers from missed packets)
+        all_intervals.sort()
+        mid = len(all_intervals) // 2
+        if len(all_intervals) % 2 == 0:
+            return (all_intervals[mid - 1] + all_intervals[mid]) / 2
+        return all_intervals[mid]
 
 
 class BermudaSensorAreaLastSeen(BermudaSensor, RestoreSensor):
