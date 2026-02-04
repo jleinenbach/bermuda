@@ -781,8 +781,7 @@ class AreaSelectionHandler:
                 if max_z < 2.0:
                     if _LOGGER.isEnabledFor(logging.DEBUG):
                         _LOGGER.debug(
-                            "Auto-learning skip for %s: ambiguous signal "
-                            "(AreaProfile for %s also matches, max_z=%.1f)",
+                            "Auto-learning skip for %s: ambiguous signal (AreaProfile for %s also matches, max_z=%.1f)",
                             device.name,
                             other_area_id,
                             max_z,
@@ -813,10 +812,7 @@ class AreaSelectionHandler:
             other_score = room_profile.get_match_score(all_readings)
 
             # Ambiguous if: other room has good score AND is close to target
-            if (
-                other_score >= ROOM_AMBIGUITY_MIN_SCORE
-                and target_score - other_score < ROOM_AMBIGUITY_MAX_DIFF
-            ):
+            if other_score >= ROOM_AMBIGUITY_MIN_SCORE and target_score - other_score < ROOM_AMBIGUITY_MAX_DIFF:
                 if _LOGGER.isEnabledFor(logging.DEBUG):
                     _LOGGER.debug(
                         "Auto-learning skip for %s: ambiguous RoomProfile signal "
