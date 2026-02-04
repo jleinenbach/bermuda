@@ -126,6 +126,9 @@
             },
             "visible_device_count": {
                 "name": "보이는 장치 수"
+            },
+            "estimated_broadcast_interval": {
+                "name": "예상 브로드캐스트 간격"
             }
         },
         "device_tracker": {

@@ -126,6 +126,9 @@
       },
       "visible_device_count": {
         "name": "Ορατές Συσκευές"
+      },
+      "estimated_broadcast_interval": {
+        "name": "Εκτιμώμενο Διάστημα Μετάδοσης"
       }
     },
     "device_tracker": {

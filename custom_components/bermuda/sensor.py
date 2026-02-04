@@ -6,17 +6,20 @@ from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.sensor import RestoreSensor, SensorEntity
 from homeassistant.components.sensor.const import SensorDeviceClass, SensorStateClass
+from homeassistant.components import bluetooth
 from homeassistant.const import (
     MATCH_ALL,
     SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
     EntityCategory,
     UnitOfLength,
+    UnitOfTime,
 )
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
 from .const import (
     _LOGGER,
+    ADDR_TYPE_FMDN_DEVICE,
     CONF_RECORDER_FRIENDLY,
     DEFAULT_RECORDER_FRIENDLY,
     SIGNAL_DEVICE_NEW,
@@ -85,6 +88,12 @@ async def async_setup_entry(
             entities.append(BermudaSensorRssi(coordinator, entry, address))
             entities.append(BermudaSensorAreaLastSeen(coordinator, entry, address))
             entities.append(BermudaSensorAreaSwitchReason(coordinator, entry, address))
+
+            # Add FMDN-specific sensor (Estimated Broadcast Interval)
+            # Since GoogleFindMy-HA doesn't receive Bluetooth itself (Bermuda handles that),
+            # we provide the broadcast interval diagnostics for FMDN devices.
+            if coordinator.devices[address].address_type == ADDR_TYPE_FMDN_DEVICE:
+                entities.append(BermudaSensorEstimatedBroadcastInterval(coordinator, entry, address))
 
             # _LOGGER.debug("Sensor received new_device signal for %s", address)
             # We set update before add to False because we are being
@@ -505,6 +514,54 @@ class BermudaSensorAreaSwitchReason(BermudaSensor):
         if self._device.area_tests is None:
             return None
         return self._device.area_tests.to_dict()
+
+
+class BermudaSensorEstimatedBroadcastInterval(BermudaSensor):
+    """Estimated broadcast interval sensor for FMDN devices.
+
+    This sensor shows the learned advertising interval for FMDN devices
+    (Google Find My), similar to the Private BLE Device integration.
+    Since GoogleFindMy-HA doesn't receive Bluetooth itself (Bermuda handles that),
+    this provides the broadcast interval diagnostics for FMDN devices.
+    """
+
+    _attr_translation_key = "estimated_broadcast_interval"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_entity_registry_enabled_default = False
+    _attr_native_unit_of_measurement = UnitOfTime.SECONDS
+    _attr_suggested_display_precision = 1
+
+    @property
+    def unique_id(self) -> str:
+        """Return unique id for the entity."""
+        return f"{self._device.unique_id}_estimated_broadcast_interval"
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the estimated broadcast interval in seconds.
+
+        Uses HA Bluetooth's learned advertising interval, with fallbacks
+        to availability interval and finally the maximum stale advertisement time.
+        """
+        # Get the current MAC address (for metadevices this is the active rotating MAC)
+        address = self._device.current_mac or self._device.address
+
+        # Try learned advertising interval first (most accurate)
+        interval = bluetooth.async_get_learned_advertising_interval(
+            self.coordinator.hass, address
+        )
+        if interval is not None:
+            return interval
+
+        # Fallback to availability interval
+        interval = bluetooth.async_get_fallback_availability_interval(
+            self.coordinator.hass, address
+        )
+        if interval is not None:
+            return interval
+
+        # Final fallback to maximum stale advertisement time
+        return bluetooth.FALLBACK_MAXIMUM_STALE_ADVERTISEMENT_SECONDS
 
 
 class BermudaSensorAreaLastSeen(BermudaSensor, RestoreSensor):

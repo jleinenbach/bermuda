@@ -128,6 +128,9 @@
       },
       "visible_device_count": {
         "name": "Sichtbare Geräte"
+      },
+      "estimated_broadcast_interval": {
+        "name": "Geschätztes Sendeintervall"
       }
     },
     "device_tracker": {

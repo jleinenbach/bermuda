@@ -131,6 +131,9 @@
       },
       "visible_device_count": {
         "name": "Zichtbare Apparaten"
+      },
+      "estimated_broadcast_interval": {
+        "name": "Geschat Zendinterval"
       }
     },
     "device_tracker": {
