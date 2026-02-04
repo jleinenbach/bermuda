@@ -71,6 +71,8 @@ from .const import (
     NEAR_FIELD_THRESHOLD,
     PDIFF_HISTORICAL,
     PDIFF_OUTRIGHT,
+    ROOM_AMBIGUITY_MAX_DIFF,
+    ROOM_AMBIGUITY_MIN_SCORE,
     RSSI_CONSISTENCY_MARGIN_DB,
     RSSI_FALLBACK_CROSS_FLOOR_MARGIN,
     RSSI_FALLBACK_MARGIN,
@@ -748,38 +750,83 @@ class AreaSelectionHandler:
         Check if the current RSSI pattern is ambiguous between rooms.
 
         Returns True if another room's profile matches the current signal
-        equally well (all absolute z-scores < 2.0), meaning the assignment
-        is uncertain and we should not reinforce either profile.
+        equally well, meaning the assignment is uncertain and we should
+        not reinforce either profile.
 
-        This breaks the self-reinforcing feedback loop where a wrong room
-        learns the same signal as the correct room.
+        This implements Feature 6 (Ambiguity Check) and prevents the
+        self-reinforcing feedback loop where a wrong room learns the
+        same signal as the correct room.
+
+        Two-layer check:
+        1. AreaProfiles (device-specific): Uses z-score matching
+        2. RoomProfiles (device-independent): Used as fallback when no
+           AreaProfiles exist - compares match scores
         """
-        if device.address not in self.correlations:
-            return False
-
         all_readings = dict(other_readings)
         if primary_scanner_addr is not None:
             all_readings[primary_scanner_addr] = primary_rssi
 
-        device_profiles = self.correlations[device.address]
-        for other_area_id, other_profile in device_profiles.items():
+        # Layer 1: Check device-specific AreaProfiles (existing behavior)
+        if device.address in self.correlations:
+            device_profiles = self.correlations[device.address]
+            for other_area_id, other_profile in device_profiles.items():
+                if other_area_id == area_id:
+                    continue
+                abs_z_scores = other_profile.get_absolute_z_scores(all_readings)
+                if not abs_z_scores:
+                    continue
+                # If ALL z-scores for another room are below 2.0, the signal
+                # is consistent with that room too → ambiguous assignment.
+                max_z = max(abs(z) for _, z in abs_z_scores)
+                if max_z < 2.0:
+                    if _LOGGER.isEnabledFor(logging.DEBUG):
+                        _LOGGER.debug(
+                            "Auto-learning skip for %s: ambiguous signal (AreaProfile for %s also matches, max_z=%.1f)",
+                            device.name,
+                            other_area_id,
+                            max_z,
+                        )
+                    return True
+            # AreaProfiles checked, not ambiguous
+            return False
+
+        # Layer 2: Check device-independent RoomProfiles (for new devices)
+        # This is critical to prevent the self-reinforcing feedback loop
+        # where wrong assignments corrupt RoomProfiles for ALL devices.
+        target_profile = self.room_profiles.get(area_id) if self.room_profiles else None
+        if target_profile is None:
+            return False
+
+        target_score = target_profile.get_match_score(all_readings)
+
+        # Only check for ambiguity if target room has a decent match
+        # and there are other RoomProfiles to compare against
+        if target_score < ROOM_AMBIGUITY_MIN_SCORE or len(self.room_profiles) < 2:
+            return False
+
+        # Check if any other RoomProfile matches almost as well
+        for other_area_id, room_profile in self.room_profiles.items():
             if other_area_id == area_id:
                 continue
-            abs_z_scores = other_profile.get_absolute_z_scores(all_readings)
-            if not abs_z_scores:
-                continue
-            # If ALL z-scores for another room are below 2.0, the signal
-            # is consistent with that room too → ambiguous assignment.
-            max_z = max(abs(z) for _, z in abs_z_scores)
-            if max_z < 2.0:
+
+            other_score = room_profile.get_match_score(all_readings)
+
+            # Ambiguous if: other room has good score AND is close to target
+            if other_score >= ROOM_AMBIGUITY_MIN_SCORE and target_score - other_score < ROOM_AMBIGUITY_MAX_DIFF:
                 if _LOGGER.isEnabledFor(logging.DEBUG):
                     _LOGGER.debug(
-                        "Auto-learning skip for %s: ambiguous signal (area %s also matches, max_z=%.1f)",
+                        "Auto-learning skip for %s: ambiguous RoomProfile signal "
+                        "(target %s score=%.2f, competitor %s score=%.2f, diff=%.2f < %.2f)",
                         device.name,
+                        area_id,
+                        target_score,
                         other_area_id,
-                        max_z,
+                        other_score,
+                        target_score - other_score,
+                        ROOM_AMBIGUITY_MAX_DIFF,
                     )
                 return True
+
         return False
 
     def _check_movement_state_for_learning(
