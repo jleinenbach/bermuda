@@ -44,6 +44,47 @@
       },
       "area": {
         "name": "Område"
+      },
+      "floor": {
+        "name": "Etasje"
+      },
+      "nearest_scanner": {
+        "name": "Nærmeste Skanner"
+      },
+      "nearest_rssi": {
+        "name": "Nærmeste RSSI"
+      },
+      "scanner_distance": {
+        "name": "Avstand {scanner_name}"
+      },
+      "scanner_distance_raw": {
+        "name": "Avstand {scanner_name} Rå"
+      },
+      "area_switch_diagnostic": {
+        "name": "Områdebytte Diagnostikk"
+      },
+      "area_last_seen": {
+        "name": "Sist Sett Område"
+      },
+      "total_proxy_count": {
+        "name": "Totalt Antall Proxyer"
+      },
+      "active_proxy_count": {
+        "name": "Aktive Proxyer"
+      },
+      "total_device_count": {
+        "name": "Totalt Antall Enheter"
+      },
+      "visible_device_count": {
+        "name": "Synlige Enheter"
+      },
+      "estimated_broadcast_interval": {
+        "name": "Estimert Kringkastingsintervall"
+      }
+    },
+    "device_tracker": {
+      "tracker": {
+        "name": "Bermuda Tracker"
       }
     },
     "select": {

@@ -44,6 +44,47 @@
       },
       "area": {
         "name": "Zone"
+      },
+      "floor": {
+        "name": "Étage"
+      },
+      "nearest_scanner": {
+        "name": "Scanner le plus proche"
+      },
+      "nearest_rssi": {
+        "name": "RSSI le plus proche"
+      },
+      "scanner_distance": {
+        "name": "Distance {scanner_name}"
+      },
+      "scanner_distance_raw": {
+        "name": "Distance {scanner_name} brute"
+      },
+      "area_switch_diagnostic": {
+        "name": "Diagnostic de changement de zone"
+      },
+      "area_last_seen": {
+        "name": "Dernière zone vue"
+      },
+      "total_proxy_count": {
+        "name": "Nombre total de proxys"
+      },
+      "active_proxy_count": {
+        "name": "Proxys actifs"
+      },
+      "total_device_count": {
+        "name": "Nombre total d'appareils"
+      },
+      "visible_device_count": {
+        "name": "Appareils visibles"
+      },
+      "estimated_broadcast_interval": {
+        "name": "Intervalle de diffusion estimé"
+      }
+    },
+    "device_tracker": {
+      "tracker": {
+        "name": "Bermuda Tracker"
       }
     },
     "select": {
