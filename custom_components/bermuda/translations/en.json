@@ -95,6 +95,39 @@
       },
       "area": {
         "name": "Area"
+      },
+      "floor": {
+        "name": "Floor"
+      },
+      "nearest_scanner": {
+        "name": "Nearest Scanner"
+      },
+      "nearest_rssi": {
+        "name": "Nearest RSSI"
+      },
+      "scanner_distance": {
+        "name": "Distance {scanner_name}"
+      },
+      "scanner_distance_raw": {
+        "name": "Distance {scanner_name} Raw"
+      },
+      "area_switch_diagnostic": {
+        "name": "Area Switch Diagnostic"
+      },
+      "area_last_seen": {
+        "name": "Area Last Seen"
+      },
+      "total_proxy_count": {
+        "name": "Total Proxy Count"
+      },
+      "active_proxy_count": {
+        "name": "Active Proxy Count"
+      },
+      "total_device_count": {
+        "name": "Total Device Count"
+      },
+      "visible_device_count": {
+        "name": "Visible Device Count"
       }
     },
     "select": {

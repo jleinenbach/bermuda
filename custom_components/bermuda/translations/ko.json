@@ -93,6 +93,39 @@
             },
             "area": {
                 "name": "구역"
+            },
+            "floor": {
+                "name": "층"
+            },
+            "nearest_scanner": {
+                "name": "가장 가까운 스캐너"
+            },
+            "nearest_rssi": {
+                "name": "가장 가까운 RSSI"
+            },
+            "scanner_distance": {
+                "name": "{scanner_name} 거리"
+            },
+            "scanner_distance_raw": {
+                "name": "{scanner_name} 거리 (원시)"
+            },
+            "area_switch_diagnostic": {
+                "name": "구역 전환 진단"
+            },
+            "area_last_seen": {
+                "name": "마지막 구역"
+            },
+            "total_proxy_count": {
+                "name": "총 프록시 수"
+            },
+            "active_proxy_count": {
+                "name": "활성 프록시 수"
+            },
+            "total_device_count": {
+                "name": "총 장치 수"
+            },
+            "visible_device_count": {
+                "name": "보이는 장치 수"
             }
         },
         "select": {

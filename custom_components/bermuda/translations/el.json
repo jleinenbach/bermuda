@@ -93,6 +93,39 @@
       },
       "area": {
         "name": "Περιοχή"
+      },
+      "floor": {
+        "name": "Όροφος"
+      },
+      "nearest_scanner": {
+        "name": "Κοντινότερος Ανιχνευτής"
+      },
+      "nearest_rssi": {
+        "name": "Κοντινότερο RSSI"
+      },
+      "scanner_distance": {
+        "name": "Απόσταση {scanner_name}"
+      },
+      "scanner_distance_raw": {
+        "name": "Απόσταση {scanner_name} Ακατέργαστη"
+      },
+      "area_switch_diagnostic": {
+        "name": "Διάγνωση Αλλαγής Περιοχής"
+      },
+      "area_last_seen": {
+        "name": "Τελευταία Περιοχή"
+      },
+      "total_proxy_count": {
+        "name": "Σύνολο Proxy"
+      },
+      "active_proxy_count": {
+        "name": "Ενεργά Proxy"
+      },
+      "total_device_count": {
+        "name": "Σύνολο Συσκευών"
+      },
+      "visible_device_count": {
+        "name": "Ορατές Συσκευές"
       }
     },
     "select": {

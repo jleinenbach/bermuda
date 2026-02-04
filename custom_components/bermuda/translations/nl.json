@@ -98,6 +98,39 @@
       },
       "area": {
         "name": "Ruimte"
+      },
+      "floor": {
+        "name": "Verdieping"
+      },
+      "nearest_scanner": {
+        "name": "Dichtstbijzijnde Scanner"
+      },
+      "nearest_rssi": {
+        "name": "Dichtstbijzijnde RSSI"
+      },
+      "scanner_distance": {
+        "name": "Afstand {scanner_name}"
+      },
+      "scanner_distance_raw": {
+        "name": "Afstand {scanner_name} Ruw"
+      },
+      "area_switch_diagnostic": {
+        "name": "Ruimtewisseling Diagnose"
+      },
+      "area_last_seen": {
+        "name": "Laatst Geziene Ruimte"
+      },
+      "total_proxy_count": {
+        "name": "Totaal Aantal Proxy's"
+      },
+      "active_proxy_count": {
+        "name": "Actieve Proxy's"
+      },
+      "total_device_count": {
+        "name": "Totaal Aantal Apparaten"
+      },
+      "visible_device_count": {
+        "name": "Zichtbare Apparaten"
       }
     },
     "select": {

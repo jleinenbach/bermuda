@@ -156,6 +156,9 @@ async def async_setup_entry(
 class BermudaSensor(BermudaEntity, SensorEntity):
     """bermuda Sensor class."""
 
+    _attr_has_entity_name = True
+    _attr_translation_key = "area"
+
     # Exclude time-based metadata from HA recorder database.
     # These 3 float attributes change every coordinator cycle (~1.05s),
     # forcing a new DB row per cycle per entity (Area, Floor, Distance).
@@ -178,19 +181,6 @@ class BermudaSensor(BermudaEntity, SensorEntity):
         return self._device.unique_id  # type: ignore[return-value]
 
     @property
-    def has_entity_name(self) -> bool:
-        """
-        Indicate that our name() method only returns the entity's name,
-        so that HA should prepend the device name for the user.
-        """
-        return True
-
-    @property
-    def name(self) -> str:
-        """Return the name of the sensor."""
-        return "Area"
-
-    @property
     def native_value(self) -> str | None:
         """Return the state of the sensor."""
         # return self.coordinator.data.get("body")
@@ -199,23 +189,20 @@ class BermudaSensor(BermudaEntity, SensorEntity):
     @property
     def icon(self) -> str | None:
         """Provide a custom icon for particular entities."""
-        # TODO: This is ugly doing a check on name, and is a kludge
-        # because I originally was a bit reckless with the multiple
-        # inheritance here. So all the sensors should be restructured
-        # a bit to clean up this and other properties.
-        if self.name == "Area":
+        # Use translation_key to check entity type instead of name
+        # (name would return translated string which varies by locale)
+        if self._attr_translation_key == "area":
             return self._device.area_icon
-        if self.name == "Area Last Seen":
+        if self._attr_translation_key == "area_last_seen":
             return self._device.area_last_seen_icon
-        if self.name == "Floor":
+        if self._attr_translation_key == "floor":
             return self._device.floor_icon
         return super().icon
-        # return "mdi:floor-plan" or "mdi:map-marker-distance" or "mdi:signal-distance-variant"
 
     @property
     def entity_registry_enabled_default(self) -> bool:
         """Declare if entity should be automatically enabled on adding."""
-        return self.name in ["Area", "Distance", "Floor"]
+        return self._attr_translation_key in ["area", "distance", "floor"]
 
     @property
     def device_class(self) -> str:  # type: ignore[override]
@@ -234,13 +221,14 @@ class BermudaSensor(BermudaEntity, SensorEntity):
         # since oft-changing attribs cause more db writes than sensors
         # "last_seen": self.coordinator.dt_mono_to_datetime(self._device.last_seen),
         attribs: dict[str, Any] = {}
-        if self.name in ["Area", "Floor"]:
+        # Use translation_key to check entity type instead of name
+        if self._attr_translation_key in ["area", "floor"]:
             attribs["area_id"] = self._device.area_id
             attribs["area_name"] = self._device.area_name
             attribs["floor_id"] = self._device.floor_id
             attribs["floor_name"] = self._device.floor_name
             attribs["floor_level"] = self._device.floor_level
-        if self.name in ["Area", "Floor", "Distance"]:
+        if self._attr_translation_key in ["area", "floor", "distance"]:
             attribs.update(self._device.area_state_metadata())
         attribs["current_mac"] = self._device.current_mac
 
@@ -250,13 +238,11 @@ class BermudaSensor(BermudaEntity, SensorEntity):
 class BermudaSensorFloor(BermudaSensor):
     """Sensor for the Floor of the current Area."""
 
+    _attr_translation_key = "floor"
+
     @property
     def unique_id(self) -> str:
         return f"{self._device.unique_id}_floor"
-
-    @property
-    def name(self) -> str:
-        return "Floor"
 
     @property
     def native_value(self) -> str | None:
@@ -281,13 +267,11 @@ class BermudaSensorScanner(BermudaSensor):
     but the device entry no longer exists. Returning None is safe here.
     """
 
+    _attr_translation_key = "nearest_scanner"
+
     @property
     def unique_id(self) -> str:
         return f"{self._device.unique_id}_scanner"
-
-    @property
-    def name(self) -> str:
-        return "Nearest Scanner"
 
     @property
     def native_value(self) -> str | None:
@@ -310,14 +294,12 @@ class BermudaSensorScanner(BermudaSensor):
 class BermudaSensorRssi(BermudaSensor):
     """Sensor for RSSI of closest scanner."""
 
+    _attr_translation_key = "nearest_rssi"
+
     @property
     def unique_id(self) -> str:
         """Return unique id for the entity."""
         return f"{self._device.unique_id}_rssi"
-
-    @property
-    def name(self) -> str:
-        return "Nearest RSSI"
 
     @property
     def native_value(self) -> str | None:
@@ -344,6 +326,8 @@ class BermudaSensorRssi(BermudaSensor):
 class BermudaSensorRange(BermudaSensor):
     """Extra sensor for range-to-closest-area."""
 
+    _attr_translation_key = "distance"
+
     @property
     def unique_id(self) -> str:
         """
@@ -351,10 +335,6 @@ class BermudaSensorRange(BermudaSensor):
         and can be maintained / renamed etc by the user.
         """
         return f"{self._device.unique_id}_range"
-
-    @property
-    def name(self) -> str:
-        return "Distance"
 
     @property
     def native_value(self) -> str | None:
@@ -385,6 +365,8 @@ class BermudaSensorRange(BermudaSensor):
 
 class BermudaSensorScannerRange(BermudaSensorRange):
     """Create sensors for range to each scanner. Extends closest-range class."""
+
+    _attr_translation_key = "scanner_distance"
 
     def __init__(
         self,
@@ -437,8 +419,9 @@ class BermudaSensorScannerRange(BermudaSensorRange):
         return f"{self._device.unique_id}_{self._scanner.address_wifi_mac or self._scanner.address}_range"
 
     @property
-    def name(self) -> str:
-        return f"Distance to {self._scanner.name}"
+    def translation_placeholders(self) -> dict[str, str]:
+        """Return placeholders for translation."""
+        return {"scanner_name": self._scanner.name or ""}
 
     @property
     def native_value(self) -> str | None:
@@ -472,16 +455,14 @@ class BermudaSensorScannerRange(BermudaSensorRange):
 class BermudaSensorScannerRangeRaw(BermudaSensorScannerRange):
     """Provides un-filtered latest distances per-scanner."""
 
+    _attr_translation_key = "scanner_distance_raw"
+
     @property
     def unique_id(self) -> str:
         # Using address_wifi_mac as a legacy action, because esphome changed from
         # sending WIFI MAC to BLE MAC as its source address, in ESPHome 2025.3.0
         #
         return f"{self._device.unique_id}_{self._scanner.address_wifi_mac or self._scanner.address}_range_raw"
-
-    @property
-    def name(self) -> str:
-        return f"Unfiltered Distance to {self._scanner.name}"
 
     @property
     def native_value(self) -> str | None:
@@ -504,17 +485,9 @@ class BermudaSensorScannerRangeRaw(BermudaSensorScannerRange):
 class BermudaSensorAreaSwitchReason(BermudaSensor):
     """Sensor for area switch reason."""
 
-    # _attr_entity_registry_enabled_default = False
+    _attr_translation_key = "area_switch_diagnostic"
     _attr_entity_category = EntityCategory.DIAGNOSTIC
-
-    @property
-    def entity_registry_enabled_default(self) -> bool:
-        """Declare if entity should be automatically enabled on adding."""
-        return False
-
-    @property
-    def name(self) -> str:
-        return "Area Switch Diagnostic"
+    _attr_entity_registry_enabled_default = False
 
     @property
     def unique_id(self) -> str:
@@ -537,13 +510,11 @@ class BermudaSensorAreaSwitchReason(BermudaSensor):
 class BermudaSensorAreaLastSeen(BermudaSensor, RestoreSensor):
     """Sensor for name of last seen area."""
 
+    _attr_translation_key = "area_last_seen"
+
     @property
     def unique_id(self) -> str:
         return f"{self._device.unique_id}_area_last_seen"
-
-    @property
-    def name(self) -> str:
-        return "Area Last Seen"
 
     @property
     def native_value(self) -> str | None:
@@ -561,11 +532,7 @@ class BermudaGlobalSensor(BermudaGlobalEntity, SensorEntity):
     """bermuda Global Sensor class."""
 
     _attr_has_entity_name = True
-
-    @property
-    def name(self) -> str:
-        """Return the name of the sensor."""
-        return "Area"
+    _attr_translation_key = "area"
 
     @property
     def device_class(self) -> str:  # type: ignore[override]
@@ -576,6 +543,7 @@ class BermudaGlobalSensor(BermudaGlobalEntity, SensorEntity):
 class BermudaTotalProxyCount(BermudaGlobalSensor):
     """Counts the total number of proxies we have access to."""
 
+    _attr_translation_key = "total_proxy_count"
     _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     @property
@@ -591,15 +559,11 @@ class BermudaTotalProxyCount(BermudaGlobalSensor):
         """Gets the number of proxies we have access to."""
         return self._cached_ratelimit(len(self.coordinator.scanner_list)) or 0  # type: ignore[attr-defined]
 
-    @property
-    def name(self) -> str:
-        """Gets the name of the sensor."""
-        return "Total proxy count"
-
 
 class BermudaActiveProxyCount(BermudaGlobalSensor):
     """Counts the number of proxies that are active."""
 
+    _attr_translation_key = "active_proxy_count"
     _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     @property
@@ -615,15 +579,11 @@ class BermudaActiveProxyCount(BermudaGlobalSensor):
         """Gets the number of proxies we have access to."""
         return self._cached_ratelimit(self.coordinator.count_active_scanners()) or 0  # type: ignore[attr-defined]
 
-    @property
-    def name(self) -> str:
-        """Gets the name of the sensor."""
-        return "Active proxy count"
-
 
 class BermudaTotalDeviceCount(BermudaGlobalSensor):
     """Counts the total number of devices we can see."""
 
+    _attr_translation_key = "total_device_count"
     _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     @property
@@ -639,15 +599,11 @@ class BermudaTotalDeviceCount(BermudaGlobalSensor):
         """Gets the amount of devices we have seen."""
         return self._cached_ratelimit(len(self.coordinator.devices)) or 0  # type: ignore[attr-defined]
 
-    @property
-    def name(self) -> str:
-        """Gets the name of the sensor."""
-        return "Total device count"
-
 
 class BermudaVisibleDeviceCount(BermudaGlobalSensor):
     """Counts the number of devices that are active."""
 
+    _attr_translation_key = "visible_device_count"
     _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     @property
@@ -662,8 +618,3 @@ class BermudaVisibleDeviceCount(BermudaGlobalSensor):
     def native_value(self) -> int:
         """Gets the amount of devices that are active."""
         return self._cached_ratelimit(self.coordinator.count_active_devices()) or 0  # type: ignore[attr-defined]
-
-    @property
-    def name(self) -> str:
-        """Gets the name of the sensor."""
-        return "Visible device count"

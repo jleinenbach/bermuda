@@ -95,6 +95,39 @@
       },
       "area": {
         "name": "Bereich"
+      },
+      "floor": {
+        "name": "Etage"
+      },
+      "nearest_scanner": {
+        "name": "Nächster Scanner"
+      },
+      "nearest_rssi": {
+        "name": "Nächster RSSI"
+      },
+      "scanner_distance": {
+        "name": "Entfernung {scanner_name}"
+      },
+      "scanner_distance_raw": {
+        "name": "Entfernung {scanner_name} Roh"
+      },
+      "area_switch_diagnostic": {
+        "name": "Bereichswechsel-Diagnose"
+      },
+      "area_last_seen": {
+        "name": "Zuletzt gesehener Bereich"
+      },
+      "total_proxy_count": {
+        "name": "Gesamtzahl Proxys"
+      },
+      "active_proxy_count": {
+        "name": "Aktive Proxys"
+      },
+      "total_device_count": {
+        "name": "Gesamtzahl Geräte"
+      },
+      "visible_device_count": {
+        "name": "Sichtbare Geräte"
       }
     },
     "select": {
