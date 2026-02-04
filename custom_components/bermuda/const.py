@@ -276,6 +276,13 @@ AUTO_LEARNING_MAX_RSSI_VARIANCE: Final = 16.0  # dB^2 (std_dev = 4 dB)
 # Minimum time in room before learning (device must be settled)
 AUTO_LEARNING_MIN_DWELL_TIME: Final = 30.0  # seconds
 
+# Feature 6: RoomProfile Ambiguity Check thresholds
+# Implemented in: AreaSelectionHandler._is_signal_ambiguous()
+# Skip learning when another RoomProfile matches the signal almost as well.
+# This prevents the self-reinforcing feedback loop for new devices without AreaProfiles.
+ROOM_AMBIGUITY_MIN_SCORE: Final = 0.4  # Minimum score for a room to be considered a competitor
+ROOM_AMBIGUITY_MAX_DIFF: Final = 0.15  # Max score difference to consider ambiguous
+
 # Sentinel values for distance/RSSI
 DISTANCE_INFINITE_SENTINEL: Final = 999.0  # Sentinel value for unknown/infinite distance
 RSSI_INVALID_SENTINEL: Final = -999.0  # Sentinel value for invalid/missing RSSI

@@ -918,3 +918,223 @@ class TestAutoLearningStats:
         assert "high_velocity" in skipped
         assert "high_rssi_variance" in skipped
         assert "ambiguous_signal" in skipped
+
+
+# =============================================================================
+# Feature 6: RoomProfile Ambiguity Check Tests
+# =============================================================================
+
+
+class TestRoomProfileAmbiguityCheck:
+    """
+    Feature 6: RoomProfile-based ambiguity check for new devices.
+
+    Tests that _is_signal_ambiguous correctly uses RoomProfiles as fallback
+    when no AreaProfiles exist for a device. This prevents the self-reinforcing
+    feedback loop where wrong assignments corrupt RoomProfiles for ALL devices.
+    """
+
+    def test_no_room_profiles_returns_false(self) -> None:
+        """When no RoomProfiles exist, should return False (allow learning)."""
+        handler = make_handler_with_mock()
+        device = FakeDevice()
+        # Ensure no correlations and no room_profiles
+        handler.coordinator.correlations = {}
+        handler.coordinator.room_profiles = {}
+
+        result = handler._is_signal_ambiguous(
+            device=device,
+            area_id="area.living_room",
+            primary_rssi=-50.0,
+            primary_scanner_addr="scanner_a",
+            other_readings={"scanner_b": -60.0},
+        )
+        assert result is False
+
+    def test_no_target_room_profile_returns_false(self) -> None:
+        """When target area has no RoomProfile, should return False."""
+        handler = make_handler_with_mock()
+        device = FakeDevice()
+        handler.coordinator.correlations = {}
+
+        # Only another room has a profile, not the target
+        mock_other_profile = MagicMock()
+        mock_other_profile.get_match_score.return_value = 0.8
+        handler.coordinator.room_profiles = {"area.kitchen": mock_other_profile}
+
+        result = handler._is_signal_ambiguous(
+            device=device,
+            area_id="area.living_room",  # Target area has no profile
+            primary_rssi=-50.0,
+            primary_scanner_addr="scanner_a",
+            other_readings={"scanner_b": -60.0},
+        )
+        assert result is False
+
+    def test_low_target_score_returns_false(self) -> None:
+        """When target RoomProfile has poor match, should return False."""
+        handler = make_handler_with_mock()
+        device = FakeDevice()
+        handler.coordinator.correlations = {}
+
+        # Target has low score (below ROOM_AMBIGUITY_MIN_SCORE = 0.4)
+        mock_target = MagicMock()
+        mock_target.get_match_score.return_value = 0.3
+
+        mock_other = MagicMock()
+        mock_other.get_match_score.return_value = 0.8
+
+        handler.coordinator.room_profiles = {
+            "area.living_room": mock_target,
+            "area.kitchen": mock_other,
+        }
+
+        result = handler._is_signal_ambiguous(
+            device=device,
+            area_id="area.living_room",
+            primary_rssi=-50.0,
+            primary_scanner_addr="scanner_a",
+            other_readings={"scanner_b": -60.0},
+        )
+        assert result is False
+
+    def test_ambiguous_scores_returns_true(self) -> None:
+        """When another RoomProfile scores close to target, should return True."""
+        handler = make_handler_with_mock()
+        device = FakeDevice()
+        handler.coordinator.correlations = {}
+
+        # Target: 0.6, Competitor: 0.55 → diff = 0.05 < ROOM_AMBIGUITY_MAX_DIFF (0.15)
+        mock_target = MagicMock()
+        mock_target.get_match_score.return_value = 0.6
+
+        mock_competitor = MagicMock()
+        mock_competitor.get_match_score.return_value = 0.55
+
+        handler.coordinator.room_profiles = {
+            "area.living_room": mock_target,
+            "area.kitchen": mock_competitor,
+        }
+
+        result = handler._is_signal_ambiguous(
+            device=device,
+            area_id="area.living_room",
+            primary_rssi=-50.0,
+            primary_scanner_addr="scanner_a",
+            other_readings={"scanner_b": -60.0},
+        )
+        assert result is True
+
+    def test_clear_winner_returns_false(self) -> None:
+        """When target significantly outscores others, should return False."""
+        handler = make_handler_with_mock()
+        device = FakeDevice()
+        handler.coordinator.correlations = {}
+
+        # Target: 0.8, Competitor: 0.5 → diff = 0.3 > ROOM_AMBIGUITY_MAX_DIFF (0.15)
+        mock_target = MagicMock()
+        mock_target.get_match_score.return_value = 0.8
+
+        mock_competitor = MagicMock()
+        mock_competitor.get_match_score.return_value = 0.5
+
+        handler.coordinator.room_profiles = {
+            "area.living_room": mock_target,
+            "area.kitchen": mock_competitor,
+        }
+
+        result = handler._is_signal_ambiguous(
+            device=device,
+            area_id="area.living_room",
+            primary_rssi=-50.0,
+            primary_scanner_addr="scanner_a",
+            other_readings={"scanner_b": -60.0},
+        )
+        assert result is False
+
+    def test_competitor_below_min_score_returns_false(self) -> None:
+        """When competitor score is below minimum, it's not considered."""
+        handler = make_handler_with_mock()
+        device = FakeDevice()
+        handler.coordinator.correlations = {}
+
+        # Target: 0.5, Competitor: 0.35 (below ROOM_AMBIGUITY_MIN_SCORE)
+        # Even though diff = 0.15 = ROOM_AMBIGUITY_MAX_DIFF, competitor is ignored
+        mock_target = MagicMock()
+        mock_target.get_match_score.return_value = 0.5
+
+        mock_competitor = MagicMock()
+        mock_competitor.get_match_score.return_value = 0.35  # Below 0.4
+
+        handler.coordinator.room_profiles = {
+            "area.living_room": mock_target,
+            "area.kitchen": mock_competitor,
+        }
+
+        result = handler._is_signal_ambiguous(
+            device=device,
+            area_id="area.living_room",
+            primary_rssi=-50.0,
+            primary_scanner_addr="scanner_a",
+            other_readings={"scanner_b": -60.0},
+        )
+        assert result is False
+
+    def test_area_profiles_checked_first(self) -> None:
+        """When AreaProfiles exist, they should be checked (not RoomProfiles)."""
+        handler = make_handler_with_mock()
+        device = FakeDevice()
+
+        # Create AreaProfile correlations for the device
+        mock_area_profile = MagicMock()
+        mock_area_profile.get_absolute_z_scores.return_value = [
+            ("scanner_a", 1.5),  # z < 2.0 → ambiguous in AreaProfile check
+        ]
+
+        handler.coordinator.correlations = {
+            device.address: {
+                "area.kitchen": mock_area_profile,  # Another area matches too well
+            }
+        }
+
+        # RoomProfiles also exist but shouldn't be used
+        mock_room_profile = MagicMock()
+        mock_room_profile.get_match_score.return_value = 0.9
+        handler.coordinator.room_profiles = {
+            "area.living_room": mock_room_profile,
+            "area.kitchen": mock_room_profile,
+        }
+
+        result = handler._is_signal_ambiguous(
+            device=device,
+            area_id="area.living_room",
+            primary_rssi=-50.0,
+            primary_scanner_addr="scanner_a",
+            other_readings={"scanner_b": -60.0},
+        )
+
+        # Should return True because AreaProfile check found ambiguity
+        assert result is True
+        # RoomProfile.get_match_score should NOT have been called
+        mock_room_profile.get_match_score.assert_not_called()
+
+    def test_single_room_profile_returns_false(self) -> None:
+        """When only one RoomProfile exists, no ambiguity possible."""
+        handler = make_handler_with_mock()
+        device = FakeDevice()
+        handler.coordinator.correlations = {}
+
+        mock_target = MagicMock()
+        mock_target.get_match_score.return_value = 0.8
+
+        # Only one room profile exists
+        handler.coordinator.room_profiles = {"area.living_room": mock_target}
+
+        result = handler._is_signal_ambiguous(
+            device=device,
+            area_id="area.living_room",
+            primary_rssi=-50.0,
+            primary_scanner_addr="scanner_a",
+            other_readings={"scanner_b": -60.0},
+        )
+        assert result is False

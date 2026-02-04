@@ -7324,3 +7324,71 @@ grep -r "states.get\|get_state\|history\.\|recorder\." custom_components/bermuda
 ```
 
 **Rule of Thumb**: Before using `_unrecorded_attributes` or removing `state_class`, trace the data flow to confirm no internal logic depends on recorder-stored data. Document the verification result.
+
+### 68. Ambiguity Checks Must Cover All Fingerprint Layers
+
+When using dual-layer fingerprinting (device-specific AreaProfiles + device-independent RoomProfiles), ambiguity checks that only examine one layer create a self-reinforcing feedback loop for the other layer.
+
+**Bug Pattern:**
+```python
+# BAD - Only checks device-specific AreaProfiles
+def _is_signal_ambiguous(self, device, area_id, readings):
+    if device.address not in self.correlations:
+        return False  # ← New devices skip ALL checks!
+
+    # Check device-specific AreaProfiles...
+    for other_area_id, profile in self.correlations[device.address].items():
+        if profile.matches_too_well(readings):
+            return True
+    return False
+```
+
+**The Self-Reinforcing Feedback Loop:**
+```
+1. New device arrives (no AreaProfiles yet)
+2. Min-distance assigns to "Kitchen" (actually in "Office")
+3. _is_signal_ambiguous returns False (no AreaProfiles to check)
+4. Auto-learning updates RoomProfile for "Kitchen"
+5. Next device arrives → RoomProfile for "Kitchen" is now stronger
+6. Repeat → "Kitchen" RoomProfile learns "Office" signal pattern
+7. Eventually: ALL new devices get assigned to "Kitchen" when in "Office"!
+```
+
+**Fix Pattern:**
+```python
+# GOOD - Two-layer ambiguity check
+def _is_signal_ambiguous(self, device, area_id, readings):
+    # Layer 1: Check device-specific AreaProfiles (if they exist)
+    if device.address in self.correlations:
+        for other_area_id, profile in self.correlations[device.address].items():
+            if profile.matches_too_well(readings):
+                return True
+        return False  # AreaProfiles exist and are unambiguous
+
+    # Layer 2: Check device-independent RoomProfiles (for NEW devices)
+    target_profile = self.room_profiles.get(area_id)
+    if target_profile is None or len(self.room_profiles) < 2:
+        return False
+
+    target_score = target_profile.get_match_score(readings)
+    if target_score < ROOM_AMBIGUITY_MIN_SCORE:
+        return False
+
+    for other_area_id, room_profile in self.room_profiles.items():
+        if other_area_id == area_id:
+            continue
+        other_score = room_profile.get_match_score(readings)
+        if (other_score >= ROOM_AMBIGUITY_MIN_SCORE
+            and target_score - other_score < ROOM_AMBIGUITY_MAX_DIFF):
+            return True  # Ambiguous!
+
+    return False
+```
+
+**Key Constants:**
+| Constant | Value | Purpose |
+|----------|-------|---------|
+| `ROOM_AMBIGUITY_MIN_SCORE` | 0.4 | Minimum score to consider a room as competitor |
+| `ROOM_AMBIGUITY_MAX_DIFF` | 0.15 | Maximum score difference to consider ambiguous |
+
+**Rule of Thumb**: When auto-learning affects shared state (like RoomProfiles), always check for ambiguity against that shared state, not just device-specific state. New devices without device-specific data are especially vulnerable to self-reinforcing errors.
