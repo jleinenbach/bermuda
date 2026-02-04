@@ -79,6 +79,11 @@
         "name": "Appareils visibles"
       }
     },
+    "device_tracker": {
+      "tracker": {
+        "name": "Bermuda Tracker"
+      }
+    },
     "select": {
       "training_room": {
         "name": "Salle d'entraînement",

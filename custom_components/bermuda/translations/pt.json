@@ -128,6 +128,11 @@
         "name": "Dispositivos Visíveis"
       }
     },
+    "device_tracker": {
+      "tracker": {
+        "name": "Bermuda Tracker"
+      }
+    },
     "select": {
       "training_room": {
         "name": "Sala de Treinamento",

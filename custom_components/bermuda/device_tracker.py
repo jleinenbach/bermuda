@@ -74,7 +74,7 @@ class BermudaDeviceTracker(BermudaEntity, BaseTrackerEntity):
 
     _attr_should_poll = False
     _attr_has_entity_name = True
-    _attr_name = None
+    _attr_translation_key = "tracker"
 
     @property
     def unique_id(self) -> str:

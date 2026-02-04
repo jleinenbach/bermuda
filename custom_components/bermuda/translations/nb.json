@@ -79,6 +79,11 @@
         "name": "Synlige Enheter"
       }
     },
+    "device_tracker": {
+      "tracker": {
+        "name": "Bermuda Tracker"
+      }
+    },
     "select": {
       "training_room": {
         "name": "Treningsrom",
