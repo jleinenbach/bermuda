@@ -148,10 +148,10 @@ class TestBermudaSensor:
         sensor = self._create_sensor()
         assert sensor.has_entity_name is True
 
-    def test_name(self) -> None:
-        """Test that name is Area."""
+    def test_translation_key(self) -> None:
+        """Test that translation_key is area."""
         sensor = self._create_sensor()
-        assert sensor.name == "Area"
+        assert sensor._attr_translation_key == "area"
 
     def test_native_value(self) -> None:
         """Test that native_value returns area_name."""
@@ -250,10 +250,10 @@ class TestBermudaSensorFloor:
         sensor = self._create_sensor()
         assert sensor.unique_id == "test_unique_id_floor"
 
-    def test_name(self) -> None:
-        """Test that name is Floor."""
+    def test_translation_key(self) -> None:
+        """Test that translation_key is floor."""
         sensor = self._create_sensor()
-        assert sensor.name == "Floor"
+        assert sensor._attr_translation_key == "floor"
 
     def test_native_value(self) -> None:
         """Test that native_value returns floor_name."""
@@ -303,10 +303,10 @@ class TestBermudaSensorScanner:
         sensor = self._create_sensor()
         assert sensor.unique_id == "test_unique_id_scanner"
 
-    def test_name(self) -> None:
-        """Test that name is Nearest Scanner."""
+    def test_translation_key(self) -> None:
+        """Test that translation_key is nearest_scanner."""
         sensor = self._create_sensor()
-        assert sensor.name == "Nearest Scanner"
+        assert sensor._attr_translation_key == "nearest_scanner"
 
     def test_native_value_returns_none_when_no_advert(self) -> None:
         """Test that native_value returns None when no advert."""
@@ -394,10 +394,10 @@ class TestBermudaSensorRssi:
         sensor = self._create_sensor()
         assert sensor.unique_id == "test_unique_id_rssi"
 
-    def test_name(self) -> None:
-        """Test that name is Nearest RSSI."""
+    def test_translation_key(self) -> None:
+        """Test that translation_key is nearest_rssi."""
         sensor = self._create_sensor()
-        assert sensor.name == "Nearest RSSI"
+        assert sensor._attr_translation_key == "nearest_rssi"
 
     def test_device_class(self) -> None:
         """Test that device_class is SIGNAL_STRENGTH."""
@@ -466,10 +466,10 @@ class TestBermudaSensorRange:
         sensor = self._create_sensor()
         assert sensor.unique_id == "test_unique_id_range"
 
-    def test_name(self) -> None:
-        """Test that name is Distance."""
+    def test_translation_key(self) -> None:
+        """Test that translation_key is distance."""
         sensor = self._create_sensor()
-        assert sensor.name == "Distance"
+        assert sensor._attr_translation_key == "distance"
 
     def test_device_class(self) -> None:
         """Test that device_class is DISTANCE."""
@@ -540,10 +540,10 @@ class TestBermudaSensorAreaSwitchReason:
         sensor = self._create_sensor()
         assert sensor.unique_id == "test_unique_id_area_switch_reason"
 
-    def test_name(self) -> None:
-        """Test that name is Area Switch Diagnostic."""
+    def test_translation_key(self) -> None:
+        """Test that translation_key is area_switch_diagnostic."""
         sensor = self._create_sensor()
-        assert sensor.name == "Area Switch Diagnostic"
+        assert sensor._attr_translation_key == "area_switch_diagnostic"
 
     def test_entity_registry_enabled_default(self) -> None:
         """Test that entity is disabled by default."""
@@ -604,10 +604,10 @@ class TestBermudaSensorAreaLastSeen:
         sensor = self._create_sensor()
         assert sensor.unique_id == "test_unique_id_area_last_seen"
 
-    def test_name(self) -> None:
-        """Test that name is Area Last Seen."""
+    def test_translation_key(self) -> None:
+        """Test that translation_key is area_last_seen."""
         sensor = self._create_sensor()
-        assert sensor.name == "Area Last Seen"
+        assert sensor._attr_translation_key == "area_last_seen"
 
     def test_native_value(self) -> None:
         """Test that native_value returns area_last_seen."""
@@ -644,40 +644,40 @@ class TestGlobalSensors:
         sensor = self._create_global_sensor(BermudaTotalProxyCount)
         assert sensor.unique_id == "BERMUDA_GLOBAL_PROXY_COUNT"
 
-    def test_total_proxy_count_name(self) -> None:
-        """Test BermudaTotalProxyCount name."""
+    def test_total_proxy_count_translation_key(self) -> None:
+        """Test BermudaTotalProxyCount translation_key."""
         sensor = self._create_global_sensor(BermudaTotalProxyCount)
-        assert sensor.name == "Total proxy count"
+        assert sensor._attr_translation_key == "total_proxy_count"
 
     def test_active_proxy_count_unique_id(self) -> None:
         """Test BermudaActiveProxyCount unique_id."""
         sensor = self._create_global_sensor(BermudaActiveProxyCount)
         assert sensor.unique_id == "BERMUDA_GLOBAL_ACTIVE_PROXY_COUNT"
 
-    def test_active_proxy_count_name(self) -> None:
-        """Test BermudaActiveProxyCount name."""
+    def test_active_proxy_count_translation_key(self) -> None:
+        """Test BermudaActiveProxyCount translation_key."""
         sensor = self._create_global_sensor(BermudaActiveProxyCount)
-        assert sensor.name == "Active proxy count"
+        assert sensor._attr_translation_key == "active_proxy_count"
 
     def test_total_device_count_unique_id(self) -> None:
         """Test BermudaTotalDeviceCount unique_id."""
         sensor = self._create_global_sensor(BermudaTotalDeviceCount)
         assert sensor.unique_id == "BERMUDA_GLOBAL_DEVICE_COUNT"
 
-    def test_total_device_count_name(self) -> None:
-        """Test BermudaTotalDeviceCount name."""
+    def test_total_device_count_translation_key(self) -> None:
+        """Test BermudaTotalDeviceCount translation_key."""
         sensor = self._create_global_sensor(BermudaTotalDeviceCount)
-        assert sensor.name == "Total device count"
+        assert sensor._attr_translation_key == "total_device_count"
 
     def test_visible_device_count_unique_id(self) -> None:
         """Test BermudaVisibleDeviceCount unique_id."""
         sensor = self._create_global_sensor(BermudaVisibleDeviceCount)
         assert sensor.unique_id == "BERMUDA_GLOBAL_VISIBLE_DEVICE_COUNT"
 
-    def test_visible_device_count_name(self) -> None:
-        """Test BermudaVisibleDeviceCount name."""
+    def test_visible_device_count_translation_key(self) -> None:
+        """Test BermudaVisibleDeviceCount translation_key."""
         sensor = self._create_global_sensor(BermudaVisibleDeviceCount)
-        assert sensor.name == "Visible device count"
+        assert sensor._attr_translation_key == "visible_device_count"
 
     def test_global_sensors_have_diagnostic_category(self) -> None:
         """Test that global sensors have diagnostic category."""
@@ -771,10 +771,10 @@ class TestBermudaSensorScannerRange:
         sensor = self._create_sensor()
         assert sensor.unique_id == "test_unique_id_scanner:addr_range"
 
-    def test_name(self) -> None:
-        """Test that name includes scanner name."""
+    def test_translation_key(self) -> None:
+        """Test that translation_key is scanner_distance."""
         sensor = self._create_sensor()
-        assert sensor.name == "Distance to Test Scanner"
+        assert sensor._attr_translation_key == "scanner_distance"
 
     def test_device_class(self) -> None:
         """Test that device_class is DISTANCE."""
@@ -854,10 +854,10 @@ class TestBermudaSensorScannerRangeRaw:
         sensor = self._create_sensor()
         assert sensor.unique_id == "test_unique_id_scanner:addr_range_raw"
 
-    def test_name(self) -> None:
-        """Test that name includes scanner name."""
+    def test_translation_key(self) -> None:
+        """Test that translation_key is scanner_distance_raw."""
         sensor = self._create_sensor()
-        assert sensor.name == "Unfiltered Distance to Test Scanner"
+        assert sensor._attr_translation_key == "scanner_distance_raw"
 
     def test_native_value_returns_raw_distance(self) -> None:
         """Test that native_value returns rssi_distance_raw."""
@@ -1783,10 +1783,10 @@ class TestSensorCoverageExtension:
         sensor._device.get_scanner = MagicMock(return_value=BareDevScanner())
         assert sensor.extra_state_attributes is None
 
-    # --- BermudaGlobalSensor.name (line 540) ---
+    # --- BermudaGlobalSensor translation_key (line 540) ---
 
-    def test_global_sensor_base_name(self) -> None:
-        """Cover line 540: BermudaGlobalSensor.name returns 'Area'."""
+    def test_global_sensor_base_translation_key(self) -> None:
+        """Cover BermudaGlobalSensor._attr_translation_key is 'area'."""
         mock_coordinator = MagicMock()
         mock_coordinator.last_update_success = True
 
@@ -1797,7 +1797,7 @@ class TestSensorCoverageExtension:
         sensor.coordinator = mock_coordinator
         sensor.config_entry = mock_entry
 
-        assert sensor.name == "Area"
+        assert sensor._attr_translation_key == "area"
 
     # --- async_added_to_hass restore (lines 524-529) ---
 

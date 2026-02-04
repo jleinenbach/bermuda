@@ -88,7 +88,7 @@ class TestBermudaDeviceTracker:
         tracker = self._create_tracker()
         assert tracker.should_poll is False
         assert tracker.has_entity_name is True
-        assert tracker.name == "Bermuda Tracker"
+        assert tracker._attr_translation_key == "tracker"
 
     def test_unique_id(self) -> None:
         """Test that unique_id is correct."""

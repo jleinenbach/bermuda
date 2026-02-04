@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from homeassistant.components import bluetooth
 from homeassistant.components.sensor import RestoreSensor, SensorEntity
 from homeassistant.components.sensor.const import SensorDeviceClass, SensorStateClass
-from homeassistant.components import bluetooth
 from homeassistant.const import (
     MATCH_ALL,
     SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
@@ -517,7 +517,8 @@ class BermudaSensorAreaSwitchReason(BermudaSensor):
 
 
 class BermudaSensorEstimatedBroadcastInterval(BermudaSensor):
-    """Estimated broadcast interval sensor for FMDN devices.
+    """
+    Estimated broadcast interval sensor for FMDN devices.
 
     This sensor shows the learned advertising interval for FMDN devices
     (Google Find My), similar to the Private BLE Device integration.
@@ -538,7 +539,8 @@ class BermudaSensorEstimatedBroadcastInterval(BermudaSensor):
 
     @property
     def native_value(self) -> float | None:
-        """Return the estimated broadcast interval in seconds.
+        """
+        Return the estimated broadcast interval in seconds.
 
         Uses HA Bluetooth's learned advertising interval, with fallbacks
         to availability interval and finally the maximum stale advertisement time.
@@ -547,16 +549,12 @@ class BermudaSensorEstimatedBroadcastInterval(BermudaSensor):
         address = self._device.current_mac or self._device.address
 
         # Try learned advertising interval first (most accurate)
-        interval = bluetooth.async_get_learned_advertising_interval(
-            self.coordinator.hass, address
-        )
+        interval = bluetooth.async_get_learned_advertising_interval(self.coordinator.hass, address)
         if interval is not None:
             return interval
 
         # Fallback to availability interval
-        interval = bluetooth.async_get_fallback_availability_interval(
-            self.coordinator.hass, address
-        )
+        interval = bluetooth.async_get_fallback_availability_interval(self.coordinator.hass, address)
         if interval is not None:
             return interval
 
