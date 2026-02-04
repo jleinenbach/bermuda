@@ -159,7 +159,7 @@ class BermudaAdvert(dict[str, Any]):
         self.rssi: float | None = None
         self.tx_power: float | None = None
         self.rssi_distance: float | None = None
-        self.rssi_distance_raw: float
+        self.rssi_distance_raw: float | None = None  # Must have default, not just annotation
         self.stale_update_count = 0  # How many times we did an update but no new stamps were found.
         self.adaptive_timeout: float = AREA_MAX_AD_AGE_DEFAULT  # Calculated based on device's ad pattern
         self.hist_stamp: list[float] = []
