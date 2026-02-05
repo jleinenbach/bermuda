@@ -179,7 +179,7 @@ def create_filter(
     factories: dict[str, Callable[[], SignalFilter]] = {
         "kalman": lambda: KalmanFilter.from_config(config),
         "adaptive": lambda: AdaptiveRobustFilter.from_config(config),
-        "ukf": lambda: UnscentedKalmanFilter(),
+        "ukf": UnscentedKalmanFilter,
     }
 
     if filter_type not in factories:

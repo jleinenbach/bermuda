@@ -78,7 +78,9 @@ class BermudaDeviceTracker(BermudaEntity, BaseTrackerEntity):
     # Override BaseTrackerEntity's default DIAGNOSTIC category.
     # Bermuda's device_tracker is the PRIMARY function (location tracking for Person entities),
     # not diagnostic information about a device.
-    _attr_entity_category = None
+    # BaseTrackerEntity narrows Entity's EntityCategory | None to EntityCategory,
+    # but we intentionally want None here (no category = primary entity).
+    _attr_entity_category = None  # type: ignore[assignment]
 
     @property
     def unique_id(self) -> str:

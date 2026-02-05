@@ -2,46 +2,108 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from homeassistant.components.binary_sensor import BinarySensorEntity
+from bluetooth_data_tools import monotonic_time_coarse
+from homeassistant.components.binary_sensor import (
+    BinarySensorDeviceClass,
+    BinarySensorEntity,
+)
+from homeassistant.const import EntityCategory
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
-from .const import BINARY_SENSOR_DEVICE_CLASS, DEFAULT_NAME
+from .const import (
+    _LOGGER,
+    SCANNER_ACTIVITY_TIMEOUT,
+    SIGNAL_SCANNERS_CHANGED,
+)
 from .entity import BermudaEntity
 
 if TYPE_CHECKING:
-    from homeassistant.config_entries import ConfigEntry
-    from homeassistant.core import HomeAssistant
+    from collections.abc import Mapping
+
     from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-# from .const import DOMAIN
+    from . import BermudaConfigEntry
+    from .coordinator import BermudaDataUpdateCoordinator
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
-    async_add_devices: AddEntitiesCallback,
+    entry: BermudaConfigEntry,
+    async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Setup binary_sensor platform."""
-    # coordinator = hass.data[DOMAIN][entry.entry_id]
-    # AJG async_add_devices([BermudaBinarySensor(coordinator, entry)])
+    """Set up binary_sensor platform."""
+    coordinator: BermudaDataUpdateCoordinator = entry.runtime_data.coordinator
+
+    created_scanner_sensors: set[str] = set()
+
+    def _create_scanner_online_sensors() -> None:
+        """Create online/offline binary sensors for each scanner."""
+        entities: list[BermudaScannerOnlineSensor] = []
+        for scanner in coordinator.get_scanners:
+            if scanner.address not in created_scanner_sensors:
+                _LOGGER.debug(
+                    "Creating scanner online binary sensor for %s",
+                    scanner.address,
+                )
+                entities.append(BermudaScannerOnlineSensor(coordinator, entry, scanner.address))
+                created_scanner_sensors.add(scanner.address)
+        if entities:
+            async_add_entities(entities, False)
+
+    @callback
+    def scanners_changed() -> None:
+        """Handle scanner roster changes."""
+        _create_scanner_online_sensors()
+
+    # Create sensors for scanners that already exist
+    _create_scanner_online_sensors()
+
+    # Listen for new scanners being added
+    entry.async_on_unload(async_dispatcher_connect(hass, SIGNAL_SCANNERS_CHANGED, scanners_changed))
 
 
-class BermudaBinarySensor(BermudaEntity, BinarySensorEntity):
-    """bermuda binary_sensor class."""
+class BermudaScannerOnlineSensor(BermudaEntity, BinarySensorEntity):
+    """
+    Binary sensor that tracks whether a BLE scanner/proxy is online.
+
+    Reports ON when the scanner has sent BLE data within the activity
+    timeout window (default 30 seconds), OFF otherwise.
+    """
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "scanner_online"
+    _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     @property
-    def name(self) -> str:
-        """Return the name of the binary_sensor."""
-        return f"{DEFAULT_NAME}_binary_sensor"
+    def unique_id(self) -> str:
+        """Return a unique ID for this entity."""
+        return f"{self._device.unique_id}_scanner_online"
 
     @property
-    def device_class(self) -> str:  # type: ignore[override]
-        """Return the class of this binary_sensor."""
-        return BINARY_SENSOR_DEVICE_CLASS
+    def is_on(self) -> bool | None:
+        """Return true if the scanner is actively sending BLE data."""
+        last_seen = self._device.last_seen
+        if last_seen == 0:
+            # Scanner has never sent data
+            return None
+        age = monotonic_time_coarse() - last_seen
+        return age < SCANNER_ACTIVITY_TIMEOUT
 
     @property
-    def is_on(self) -> bool:
-        """Return true if the binary_sensor is on."""
-        # return self.coordinator.data.get("title", "") == "foo"
-        return True
+    def extra_state_attributes(self) -> Mapping[str, Any] | None:
+        """Return additional state attributes."""
+        last_seen = self._device.last_seen
+        if last_seen == 0:
+            return {
+                "last_seen_age_seconds": None,
+                "timeout_seconds": SCANNER_ACTIVITY_TIMEOUT,
+            }
+        age = round(monotonic_time_coarse() - last_seen, 1)
+        return {
+            "last_seen_age_seconds": age,
+            "timeout_seconds": SCANNER_ACTIVITY_TIMEOUT,
+        }

@@ -467,6 +467,17 @@ class AreaProfile:
         return any(corr.has_button_training for corr in self._correlations.values())
 
     @property
+    def trained_scanner_addresses(self) -> frozenset[str]:
+        """
+        Return set of scanner addresses that have mature absolute profiles.
+
+        This is used by the offline-aware rescue logic to determine which
+        scanners are "expected" for this area. When a scanner in this set
+        goes offline, the rescue logic can account for the missing data.
+        """
+        return frozenset(addr for addr, prof in self._absolute_profiles.items() if prof.is_mature)
+
+    @property
     def first_sample_stamp(self) -> float | None:
         """
         Return earliest timestamp from all child profiles.

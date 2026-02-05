@@ -7392,3 +7392,534 @@ def _is_signal_ambiguous(self, device, area_id, readings):
 | `ROOM_AMBIGUITY_MAX_DIFF` | 0.15 | Maximum score difference to consider ambiguous |
 
 **Rule of Thumb**: When auto-learning affects shared state (like RoomProfiles), always check for ambiguity against that shared state, not just device-specific state. New devices without device-specific data are especially vulnerable to self-reinforcing errors.
+
+## Scanner Offline Detection System
+
+### Overview
+
+The scanner offline detection system extends Bermuda's area selection algorithms with awareness
+of scanner online/offline state. It addresses the problem that when a BLE scanner goes offline
+(proxy reboot, network loss, power failure), the system could make incorrect room assignments
+and corrupt fingerprint data by learning patterns that reflect incomplete scanner coverage.
+
+### Problem Statement
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                    Scanner Offline Impact (Before Fix)                           │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  Normal State (all scanners online):                                             │
+│  ┌────────────────────────────────────────────────────────────────────────────┐ │
+│  │ Scanner A (Kitchen): -55dBm ──┐                                            │ │
+│  │ Scanner B (Office):  -72dBm ──┼── UKF → Kitchen (correct, score 0.85)      │ │
+│  │ Scanner C (Bedroom): -80dBm ──┘                                            │ │
+│  └────────────────────────────────────────────────────────────────────────────┘ │
+│                                                                                  │
+│  Scanner A goes offline:                                                         │
+│  ┌────────────────────────────────────────────────────────────────────────────┐ │
+│  │ Scanner A (Kitchen): ❌ OFFLINE                                             │ │
+│  │ Scanner B (Office):  -72dBm ──┐                                            │ │
+│  │ Scanner C (Bedroom): -80dBm ──┼── UKF → Office (WRONG! score 0.78)         │ │
+│  │                                │                                            │ │
+│  │ Problems:                      │                                            │ │
+│  │ 1. Kitchen fingerprint missing strongest scanner → low match score          │ │
+│  │ 2. Office fingerprint now "closest match" by default                       │ │
+│  │ 3. Auto-learning updates Kitchen profile WITHOUT Scanner A data            │ │
+│  │ 4. When Scanner A returns, Kitchen profile is corrupted                    │ │
+│  └────────────────────────────────────────────────────────────────────────────┘ │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Architecture: 6-Phase Defense-in-Depth
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                    Scanner Offline Detection Architecture                        │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  Phase 0: INFRASTRUCTURE — ScannerOnlineStatus Registry                         │
+│  ┌────────────────────────────────────────────────────────────────────────────┐ │
+│  │ Runs ONCE per coordinator cycle (before all device processing)             │ │
+│  │                                                                             │ │
+│  │ For each scanner: Check max(advert.stamp across ALL devices)               │ │
+│  │   → Online: last_seen < 120s (SCANNER_ALGO_TIMEOUT)                        │ │
+│  │   → Offline: last_seen >= 120s                                              │ │
+│  │   → Tracks state transitions (went_offline_at, came_online_at)             │ │
+│  │                                                                             │ │
+│  │ Output: _scanner_status dict, _get_offline_scanner_addrs() frozenset       │ │
+│  └────────────────────────────────────────────────────────────────────────────┘ │
+│                                │                                                 │
+│                                ▼                                                 │
+│  Phase 1: UKF COVERAGE PENALTY — Penalize incomplete fingerprints               │
+│  ┌────────────────────────────────────────────────────────────────────────────┐ │
+│  │ In match_fingerprints(): After Mahalanobis distance calculation            │ │
+│  │                                                                             │ │
+│  │ For each area:                                                              │ │
+│  │   weight_online = Σ max(0, 100 + RSSI) for online trained scanners         │ │
+│  │   weight_offline = Σ max(0, 100 + RSSI) for offline trained scanners       │ │
+│  │   coverage_ratio = weight_offline / weight_total                            │ │
+│  │   penalty = coverage_ratio²                     (quadratic)                 │ │
+│  │   adjusted_score = device_score × (1 - penalty)                             │ │
+│  │                                                                             │ │
+│  │ Effect: Areas that lost their strongest scanner → drastically penalized     │ │
+│  └────────────────────────────────────────────────────────────────────────────┘ │
+│                                │                                                 │
+│                                ▼                                                 │
+│  Phase 2: OFFLINE-AWARE RESCUE — Protect incumbent during outages               │
+│  ┌────────────────────────────────────────────────────────────────────────────┐ │
+│  │ In Absolute Profile Rescue (soft incumbent protection):                    │ │
+│  │                                                                             │ │
+│  │ Normal: avg_z < ABSOLUTE_Z_SCORE_MAX (2.0) → rescue succeeds              │ │
+│  │ Offline: avg_z < ABSOLUTE_Z_SCORE_MAX × leniency → rescue easier          │ │
+│  │                                                                             │ │
+│  │ Leniency = 1.0 + 0.5 × count(offline trained scanners), capped at 2.0     │ │
+│  │                                                                             │ │
+│  │ Effect: When primary scanner is offline, secondary scanners can            │ │
+│  │         still "rescue" the incumbent area with relaxed threshold           │ │
+│  └────────────────────────────────────────────────────────────────────────────┘ │
+│                                │                                                 │
+│                                ▼                                                 │
+│  Phase 3: AUTO-LEARNING GUARD — Prevent fingerprint corruption                  │
+│  ┌────────────────────────────────────────────────────────────────────────────┐ │
+│  │ In _update_device_correlations() (Quality Filter Feature 7):               │ │
+│  │                                                                             │ │
+│  │ Before updating AreaProfile for the current area:                          │ │
+│  │   trained_addrs = profile.trained_scanner_addresses                        │ │
+│  │   offline_addrs = _get_offline_scanner_addrs()                             │ │
+│  │   if trained_addrs & offline_addrs:                                         │ │
+│  │       SKIP auto-learning (return early)                                    │ │
+│  │                                                                             │ │
+│  │ Effect: Fingerprints are NEVER updated with incomplete scanner data        │ │
+│  │         Prevents the slow corruption that occurs over hours/days           │ │
+│  └────────────────────────────────────────────────────────────────────────────┘ │
+│                                │                                                 │
+│                                ▼                                                 │
+│  Phase 4: RECOVERY DAMPENING — Exclude unstable returning scanners              │
+│  ┌────────────────────────────────────────────────────────────────────────────┐ │
+│  │ In _refresh_area_by_ukf() RSSI collection loop:                            │ │
+│  │                                                                             │ │
+│  │ For each advert:                                                            │ │
+│  │   if _is_scanner_recovering(scanner_addr, nowstamp):                       │ │
+│  │       SKIP this scanner's RSSI for UKF matching                            │ │
+│  │       (scanner came online < 60s ago, Kalman filter is cold)               │ │
+│  │                                                                             │ │
+│  │ NOT applied to min-distance path (has its own streak protection)           │ │
+│  │                                                                             │ │
+│  │ Effect: Prevents room flicker when scanner reboots and sends               │ │
+│  │         burst of initial (unreliable) advertisements                       │ │
+│  └────────────────────────────────────────────────────────────────────────────┘ │
+│                                │                                                 │
+│                                ▼                                                 │
+│  Phase 5: DIAGNOSTICS — Observability via AreaTests                             │
+│  ┌────────────────────────────────────────────────────────────────────────────┐ │
+│  │ Fields added to AreaTests dataclass:                                        │ │
+│  │   offline_scanners_count: int         — Number of offline scanners         │ │
+│  │   offline_scanner_addrs: str          — Comma-separated addresses          │ │
+│  │   coverage_penalty_applied: float     — Penalty factor (0.0-1.0)          │ │
+│  │   auto_learning_blocked_offline: bool — Was learning skipped?              │ │
+│  │                                                                             │ │
+│  │ Available in: sensortext(), to_dict(), diagnostics dump                    │ │
+│  └────────────────────────────────────────────────────────────────────────────┘ │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Key Design Decision: Dual Timeout Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                    Dual Timeout Architecture                                     │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  SCANNER_ACTIVITY_TIMEOUT = 30s (UI Binary Sensor)                              │
+│  ┌────────────────────────────────────────────────────────────────────────────┐ │
+│  │ Purpose: Quick visual feedback to user                                     │ │
+│  │ Used by: binary_sensor.py (BermudaScannerOnlineSensor)                     │ │
+│  │ Why 30s: Users expect fast reaction in the UI. A scanner that hasn't      │ │
+│  │          sent data for 30s is likely experiencing issues.                  │ │
+│  │ Source: scanner.last_seen (per-scanner timestamp)                          │ │
+│  └────────────────────────────────────────────────────────────────────────────┘ │
+│                                                                                  │
+│  SCANNER_ALGO_TIMEOUT = 120s (Algorithm Decisions)                              │
+│  ┌────────────────────────────────────────────────────────────────────────────┐ │
+│  │ Purpose: Reliable offline detection for algorithmic decisions              │ │
+│  │ Used by: area_selection.py (ScannerOnlineStatus)                          │ │
+│  │ Why 120s: Algorithms tolerate brief gaps. A 60s network hiccup shouldn't  │ │
+│  │          trigger coverage penalties that cause room switches.             │ │
+│  │ Source: max(advert.stamp) across ALL devices (avoids BUG 22 resurgence)  │ │
+│  └────────────────────────────────────────────────────────────────────────────┘ │
+│                                                                                  │
+│  Why different data sources?                                                     │
+│  ┌────────────────────────────────────────────────────────────────────────────┐ │
+│  │ BUG 22: In quiet rooms with little BLE traffic, scanner.last_seen         │ │
+│  │ doesn't update even though the scanner is ONLINE. The scanner only        │ │
+│  │ updates last_seen when it receives an advertisement.                      │ │
+│  │                                                                             │ │
+│  │ Solution: For algo decisions, use max(advert.stamp across ALL devices)    │ │
+│  │ — if ANY tracked device is seen by this scanner, it's online.             │ │
+│  │                                                                             │ │
+│  │ The UI binary sensor uses scanner.last_seen because it's per-scanner      │ │
+│  │ and doesn't need the cross-device aggregation.                            │ │
+│  └────────────────────────────────────────────────────────────────────────────┘ │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### RSSI-Weighted Coverage Penalty
+
+The coverage penalty uses signal strength to weight the importance of each offline scanner:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                    RSSI-Weighted Coverage Penalty                                │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  Weight formula: max(0.0, 100.0 + RSSI)                                         │
+│                                                                                  │
+│  | RSSI (dBm) | Weight | Interpretation              |                         │
+│  |------------|--------|----------------------------- |                         │
+│  | -40        | 60     | Very close scanner (high)    |                         │
+│  | -55        | 45     | Nearby scanner (medium-high) |                         │
+│  | -70        | 30     | Moderate distance            |                         │
+│  | -85        | 15     | Far scanner (low)            |                         │
+│  | -95        |  5     | Very far / marginal          |                         │
+│  | -100       |  0     | At noise floor (zero)        |                         │
+│                                                                                  │
+│  Penalty formula: penalty = coverage_ratio²                                      │
+│                                                                                  │
+│  | Offline% (weighted) | Coverage Ratio | Penalty | Score Multiplier |          │
+│  |---------------------|----------------|---------|------------------|          │
+│  | 0%                  | 0.00           | 0.00    | 1.00 (no effect) |          │
+│  | 25%                 | 0.25           | 0.06    | 0.94             |          │
+│  | 50%                 | 0.50           | 0.25    | 0.75             |          │
+│  | 75%                 | 0.75           | 0.56    | 0.44             |          │
+│  | 100%                | 1.00           | 1.00    | 0.00 (zeroed)    |          │
+│                                                                                  │
+│  Why RSSI-weighted (not scanner-count)?                                          │
+│  - Losing a scanner at -50dBm (primary, nearby) is catastrophic                │
+│  - Losing a scanner at -90dBm (peripheral, far) is minor                       │
+│  - Count-based penalty would treat both equally                                 │
+│                                                                                  │
+│  Why quadratic (not linear)?                                                     │
+│  - Gentle for small gaps: 25% offline → only 6% penalty                        │
+│  - Harsh for large gaps: 75% offline → 56% penalty                             │
+│  - Prevents over-penalization for minor scanner dropout                         │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Files and Methods
+
+| File | Method/Class | Phase | Purpose |
+|------|--------------|-------|---------|
+| `area_selection.py` | `ScannerOnlineStatus` | 0 | Dataclass tracking per-scanner state |
+| `area_selection.py` | `_update_scanner_online_status()` | 0 | Updates all scanner status from adverts |
+| `area_selection.py` | `_get_offline_scanner_addrs()` | 0 | Returns frozenset of offline scanner addresses |
+| `area_selection.py` | `_is_scanner_recovering()` | 4 | Checks if scanner is in grace period |
+| `area_selection.py` | `get_scanner_online_diagnostics()` | 5 | Returns diagnostic dict for UI/debugging |
+| `filters/ukf.py` | `match_fingerprints()` | 1 | Coverage penalty in UKF score calculation |
+| `correlation/area_profile.py` | `trained_scanner_addresses` | 2,3 | Property: frozenset of mature scanner addrs |
+| `area_selection.py` | `_update_device_correlations()` | 3 | Quality filter: skip learning on offline |
+| `area_selection.py` | `_refresh_area_by_ukf()` | 4 | Recovery dampening in RSSI collection |
+| `area_selection.py` | `AreaTests` dataclass | 5 | Diagnostic fields for offline tracking |
+| `const.py` | `SCANNER_ALGO_TIMEOUT` | 0 | 120s algorithm timeout |
+| `const.py` | `SCANNER_RECOVERY_GRACE_SECONDS` | 4 | 60s recovery grace period |
+
+### Constants
+
+| Constant | Value | File | Purpose |
+|----------|-------|------|---------|
+| `SCANNER_ACTIVITY_TIMEOUT` | 30.0s | `const.py` | UI binary sensor timeout |
+| `SCANNER_ALGO_TIMEOUT` | 120.0s | `const.py` | Algorithm offline detection |
+| `SCANNER_RECOVERY_GRACE_SECONDS` | 60.0s | `const.py` | Grace period after scanner recovery |
+| `ABSOLUTE_Z_SCORE_MAX` | 2.0 | `const.py` | Base z-score threshold for rescue |
+
+### Peer Review: Critical Findings
+
+#### Finding 1: Redundant `_get_offline_scanner_addrs()` Calls (Performance, Severity: Low)
+
+**Problem**: `_get_offline_scanner_addrs()` is called up to 4 times per device per cycle:
+1. Line 1162: Auto-learning guard (Phase 3)
+2. Line 1359: Virtual distance calculation (Phase 1)
+3. Line 1744: UKF fingerprint matching (Phase 1)
+4. Line 2461: Absolute Profile Rescue (Phase 2)
+
+Each call creates a new `frozenset` by iterating all scanner statuses. With 10 scanners and
+50 devices, this is 2000 iterations per cycle.
+
+**Impact**: Minor — frozenset creation over ~10 items is O(n) with small n. Not a bottleneck
+compared to UKF matrix operations. But violates the principle of "compute once, use everywhere."
+
+**Recommendation**: Compute once in `refresh_areas_by_min_distance()` after
+`_update_scanner_online_status()` and pass as parameter, or cache as instance variable
+that's refreshed once per cycle.
+
+```python
+# Better: Compute once per cycle
+def refresh_areas_by_min_distance(self) -> None:
+    nowstamp = monotonic_time_coarse()
+    self._update_scanner_online_status(nowstamp)
+    self._offline_addrs_cache = self._get_offline_scanner_addrs()  # Once
+```
+
+#### Finding 2: `hasattr()` Guard Pattern in UKF (Code Smell, Severity: Low)
+
+**Problem**: `ukf.py` uses `hasattr(profile, "_absolute_profiles")` and
+`hasattr(abs_profile, "is_mature")` defensively. This suggests the type annotations
+don't fully describe the runtime contract.
+
+```python
+# Lines 776, 780, 831, 837 in ukf.py
+if hasattr(profile, "_absolute_profiles"):
+    ...
+    if hasattr(abs_profile, "is_mature") and abs_profile.is_mature:
+```
+
+**Impact**: The `hasattr` checks are defense-in-depth since `AreaProfile` always has
+`_absolute_profiles` and `ScannerAbsoluteRssi` always has `is_mature`. But they mask
+type checker visibility — mypy can't verify correct attribute access through `hasattr`.
+
+**Recommendation**: These checks existed before Phase 1 (pre-existing pattern in UKF).
+Not a regression. Accept as-is for backward compatibility, but consider removing in a
+future cleanup when the type contract is fully trusted.
+
+#### Finding 3: Coverage Penalty Diagnostic Duplication (DRY Violation, Severity: Low)
+
+**Problem**: The coverage penalty RSSI weight calculation is duplicated:
+1. In `ukf.py:826-856` (actual penalty application)
+2. In `area_selection.py:1764-1778` (diagnostic calculation)
+
+Both compute the same weights using `max(0.0, 100.0 + rssi_val)` formula.
+
+**Impact**: If the formula changes in one place, it must also change in the other.
+Currently small code, but maintenance burden grows.
+
+**Recommendation**: Have `match_fingerprints()` return the penalty value alongside
+the score (e.g., in a richer result type), or extract the weight calculation to a
+shared helper function.
+
+#### Finding 4: Leniency Formula Assumes Small Scanner Counts (Correctness, Severity: Low)
+
+**Problem**: The Phase 2 z-score leniency is `1.0 + 0.5 × count(offline_trained)`,
+capped at 2.0. With 1 offline scanner, threshold becomes 3.0 (vs base 2.0). With 2+
+offline scanners, it caps at 4.0.
+
+**Concern**: With 3+ trained scanners going offline simultaneously, the cap at 2.0
+means the rescue threshold maxes out at 4.0 regardless. This is probably correct
+(beyond 2x leniency, rescue becomes unreliable), but the linear scaling with scanner
+count assumes few scanners per area (typical: 1-3).
+
+**Impact**: Works well for typical installations. Edge case for large installations
+with many scanners per area, but the 2.0 cap prevents runaway leniency.
+
+**Recommendation**: Accept as-is. The cap is the right safety measure.
+
+#### Finding 5: Recovery Dampening Only on UKF Path (Design Decision, Severity: Info)
+
+**Problem**: Phase 4 excludes recovering scanners from UKF matching but NOT from
+min-distance. This is documented as intentional (min-distance has streak protection),
+but creates an asymmetry.
+
+**Concern**: If UKF falls back to min-distance during the grace period AND the
+recovering scanner reports volatile RSSI, min-distance could react before streak
+protection kicks in.
+
+**Impact**: Low — streak protection requires 4-6 consecutive wins, which naturally
+filters initial noise. The asymmetry is acceptable.
+
+**Recommendation**: Accept as-is. Document the rationale (already done in comments).
+
+#### Finding 6: No Persistent State for Scanner Status (Design, Severity: Info)
+
+**Problem**: `ScannerOnlineStatus` is purely in-memory. After HA restart, all scanners
+start as "online" until the first `_update_scanner_online_status()` cycle.
+
+**Impact**: After restart, there's a brief window (~120s) where the system doesn't know
+about offline scanners. During this window:
+- Coverage penalties won't apply (scanners appear online)
+- Auto-learning guard won't block (no offline scanners detected)
+- Recovery dampening won't trigger (no transition history)
+
+**Recommendation**: Accept as-is. This is consistent with the calibration system's design
+decision (no persistence to avoid stale data). The 120s convergence window is acceptable.
+
+### Peer Review: Positive Aspects
+
+1. **BUG 22 Prevention**: Using `max(advert.stamp across ALL devices)` instead of
+   `scanner.last_seen` prevents the quiet-room false-offline problem. Well-designed.
+
+2. **Defense-in-Depth**: 6 phases create layered protection. If any single phase fails,
+   the others still provide partial protection. This is excellent engineering.
+
+3. **Dual Timeout**: Separating UI timeout (30s) from algorithm timeout (120s) is
+   a clean architectural decision. UI needs fast feedback; algorithms need stability.
+
+4. **RSSI-Weighted Penalty**: Much better than count-based. Losing the primary scanner
+   (strong signal) correctly penalizes more than losing a marginal scanner.
+
+5. **Quadratic Penalty**: Gentle for small gaps, harsh for large ones. Prevents
+   over-reaction to minor, brief scanner dropouts.
+
+6. **Phase 5 Diagnostics**: All phases have observability via `AreaTests`. This makes
+   debugging production issues much easier.
+
+7. **Recovery Dampening**: Addressing the scanner-comes-back-online edge case shows
+   thorough thinking about the full lifecycle.
+
+### Lesson Learned
+
+### 69. Offline-Aware Algorithms Need Defense-in-Depth
+
+When a data source (scanner) goes offline, a single fix point is insufficient. The impact
+cascades through multiple algorithm stages: matching (wrong room), learning (corrupted
+fingerprints), and stabilization (lost incumbent protection). Each stage needs its own
+offline-aware guard.
+
+**Bug Pattern:**
+```python
+# BAD - Single fix point: only penalize UKF matching
+if scanner_offline:
+    penalize_ukf_score()
+# But auto-learning still corrupts profiles!
+# And incumbent rescue still fails!
+```
+
+**Fix Pattern:**
+```python
+# GOOD - Defense-in-depth: guard at every stage
+# Stage 1: Penalize matching (coverage penalty)
+score *= (1 - coverage_ratio²)
+
+# Stage 2: Protect incumbent (relaxed rescue threshold)
+if offline_trained:
+    rescue_threshold *= leniency
+
+# Stage 3: Prevent corruption (block auto-learning)
+if trained_scanners & offline_scanners:
+    return  # Skip learning entirely
+
+# Stage 4: Dampen recovery (grace period)
+if scanner_recovering:
+    exclude_from_matching()
+```
+
+**Rule of Thumb**: When a subsystem has multiple stages (detect → decide → learn → stabilize),
+an offline/failure event needs a guard at EACH stage, not just the first one. A single fix
+leaves downstream stages vulnerable.
+
+### 70. Dual Timeouts Separate UI Concerns from Algorithm Concerns
+
+UI components and algorithmic decisions have fundamentally different requirements for "how
+stale is too stale." Using a single timeout creates a conflict: too short causes algorithm
+flickering, too long makes the UI unresponsive.
+
+**Bug Pattern:**
+```python
+# BAD - Single timeout for both UI and algorithm
+TIMEOUT = 30  # Good for UI, too short for algorithms
+TIMEOUT = 120  # Good for algorithms, too slow for UI
+```
+
+**Fix Pattern:**
+```python
+# GOOD - Separate timeouts for different concerns
+SCANNER_ACTIVITY_TIMEOUT = 30.0   # UI binary sensor: fast feedback
+SCANNER_ALGO_TIMEOUT = 120.0      # Algorithm decisions: stability
+```
+
+**Rule of Thumb**: When the same "freshness" concept is used by both UI (needs speed) and
+algorithms (needs stability), define separate timeout constants. Document why they differ.
+
+### 71. Scanner Freshness Must Aggregate Across All Devices
+
+A scanner's "online" status cannot be determined from a single device's perspective. In quiet
+rooms, a scanner may not see any particular device for minutes — but it's still online if it
+sees OTHER devices.
+
+**Bug Pattern:**
+```python
+# BAD - Per-scanner timestamp (BUG 22 resurgence)
+def is_online(scanner):
+    return scanner.last_seen > nowstamp - TIMEOUT
+# In quiet rooms: scanner IS online but last_seen is stale → appears offline!
+```
+
+**Fix Pattern:**
+```python
+# GOOD - Aggregate across all tracked devices
+scanner_latest: dict[str, float] = {}
+for device in all_devices.values():
+    for advert in device.adverts.values():
+        if advert.scanner_address is not None:
+            scanner_latest[addr] = max(scanner_latest.get(addr, 0.0), advert.stamp)
+
+is_online = scanner_latest[addr] > nowstamp - TIMEOUT
+# Scanner is online if ANY tracked device was seen by it recently
+```
+
+**Rule of Thumb**: When determining if a data source is "alive," aggregate evidence from ALL
+consumers of that source, not just one. A single quiet consumer doesn't imply the source is
+down.
+
+### 72. Coverage Penalties Should Be RSSI-Weighted, Not Count-Weighted
+
+When penalizing a fingerprint match for missing scanners, weighting by scanner count treats
+all scanners equally. But losing the primary scanner (strong signal, close proximity) is
+far more damaging than losing a peripheral scanner (weak signal, far away).
+
+**Bug Pattern:**
+```python
+# BAD - Count-based: losing 1 of 3 scanners = 33% penalty regardless
+offline_ratio = offline_count / total_count
+penalty = offline_ratio ** 2  # 0.33² = 0.11 — same for primary or peripheral
+```
+
+**Fix Pattern:**
+```python
+# GOOD - RSSI-weighted: losing primary scanner = higher penalty
+for scanner, profile in area_profiles.items():
+    weight = max(0.0, 100.0 + profile.expected_rssi)
+    total_weight += weight
+    if scanner in offline_scanners:
+        offline_weight += weight
+
+coverage_ratio = offline_weight / total_weight
+# Primary scanner (-50dBm, weight=50) offline → ratio ≈ 0.63
+# Peripheral scanner (-90dBm, weight=10) offline → ratio ≈ 0.13
+```
+
+**Rule of Thumb**: When penalizing for missing data, weight the penalty by the importance
+of the missing data. For RSSI-based systems, signal strength is a natural importance proxy.
+
+### 73. Recovery Dampening Prevents Cold-Start Oscillation
+
+When a scanner comes back online after an outage, its initial readings are unreliable (cold
+Kalman filter, bursty advertisements). Without dampening, the UKF immediately incorporates
+this noisy data, potentially causing room switches that reverse when the data stabilizes.
+
+**Bug Pattern:**
+```python
+# BAD - Immediate inclusion of recovering scanner
+if scanner_online:
+    rssi_readings[scanner] = advert.rssi  # Noisy initial data!
+# UKF matches against cold Kalman state → false room switch
+# 60s later: Kalman stabilizes → switch back → flicker!
+```
+
+**Fix Pattern:**
+```python
+# GOOD - Grace period for recovering scanners
+RECOVERY_GRACE_SECONDS = 60.0
+
+if is_recovering(scanner, nowstamp):
+    continue  # Skip for UKF matching (cold Kalman data)
+
+# Min-distance path: OK to include — has streak protection
+rssi_readings[scanner] = advert.rssi
+```
+
+**Rule of Thumb**: After a data source recovers from an outage, exclude its data from
+sensitive algorithms for a grace period. Less sensitive algorithms (with their own
+dampening, like streak requirements) can include it immediately.

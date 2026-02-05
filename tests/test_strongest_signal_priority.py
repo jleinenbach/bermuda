@@ -302,14 +302,14 @@ class TestStrongestSignalPriority:
 
         # Log the matches for debugging
         _LOGGER.info("UKF Matches for device in scannerless Lagerraum:")
-        for area_id, d_squared, score in matches:
+        for area_id, d_squared, score, _ in matches:
             profile = profiles[area_id]
             _LOGGER.info(
                 f"  {area_id}: d²={d_squared:.2f}, score={score:.4f}, has_button_training={profile.has_button_training}"
             )
 
         # Get best match
-        best_area_id, _d_squared, best_score = matches[0]
+        best_area_id, _d_squared, best_score, _ = matches[0]
 
         # The strongest signal is from Technikraum scanner (-60dB)
         # This indicates the device is in the basement
@@ -346,7 +346,7 @@ class TestStrongestSignalPriority:
         matches = ukf.match_fingerprints(profiles, None)
 
         # Get scores for each area
-        scores = {area_id: score for area_id, _d2, score in matches}
+        scores = {area_id: score for area_id, _d2, score, _ in matches}
 
         _LOGGER.info(f"Test strongest_signal_scanner_indicates_floor - Scores: {scores}")
 
@@ -396,7 +396,7 @@ class TestStrongestSignalPriority:
         matches = ukf.match_fingerprints(profiles, None)
 
         _LOGGER.info("Test distant_room_should_not_win - Matches:")
-        for area_id, d2, score in matches:
+        for area_id, d2, score, _ in matches:
             profile = profiles[area_id]
             # Get expected RSSI for each scanner from profile
             abs_profiles = profile._absolute_profiles  # noqa: SLF001
@@ -581,14 +581,14 @@ class TestProblematicScenarios:
 
         _LOGGER.info("Test similar_fingerprints_different_floors:")
         _LOGGER.info(f"  Current: Technikraum=-60dB (STRONGEST), Schlafzimmer=-80dB")
-        for area_id, d2, score in matches:
+        for area_id, d2, score, _ in matches:
             profile = profiles[area_id]
             abs_profiles = profile._absolute_profiles  # noqa: SLF001
             expected = {addr[-8:]: round(p.expected_rssi, 1) for addr, p in abs_profiles.items()}
             _LOGGER.info(f"  {area_id}: score={score:.4f}, expected={expected}")
 
         best_area_id = matches[0][0] if matches else None
-        scores = {area_id: score for area_id, d2, score in matches}
+        scores = {area_id: score for area_id, d2, score, _ in matches}
 
         # CRITICAL: If Schlafzimmer wins, this is a BUG
         # The strongest signal (-60dB) is from Technikraum scanner (basement)
@@ -636,7 +636,7 @@ class TestProblematicScenarios:
 
         matches = ukf.match_fingerprints(profiles, None)
 
-        scores = {area_id: score for area_id, d2, score in matches}
+        scores = {area_id: score for area_id, d2, score, _ in matches}
 
         _LOGGER.info("Test strongest_signal_should_break_tie:")
         _LOGGER.info(f"  Lagerraum score: {scores.get(AREA_LAGERRAUM, 0):.4f}")
@@ -683,7 +683,7 @@ class TestProblematicScenarios:
         ukf.update_multi(current_readings)
 
         matches = ukf.match_fingerprints(profiles, None)
-        scores = {area_id: score for area_id, d2, score in matches}
+        scores = {area_id: score for area_id, d2, score, _ in matches}
 
         _LOGGER.info("Test cross_floor_penalty_needed:")
         _LOGGER.info(f"  Current: Technikraum=-50dB (VERY STRONG), Schlafzimmer=-90dB (VERY WEAK)")
@@ -764,7 +764,7 @@ class TestCombinedScenario:
             _LOGGER.info(f"  {area_id}: {expected}")
         _LOGGER.info("")
         _LOGGER.info("Match results:")
-        for area_id, d2, score in matches:
+        for area_id, d2, score, _ in matches:
             _LOGGER.info(f"  {area_id}: score={score:.4f}, d²={d2:.2f}")
         _LOGGER.info("")
 

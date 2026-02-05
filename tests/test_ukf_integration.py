@@ -189,6 +189,8 @@ def create_coordinator_mock() -> BermudaDataUpdateCoordinator:
     coordinator.AreaTests = BermudaDataUpdateCoordinator.AreaTests
     # FIX: Add mock area registry for floor resolution in _refresh_area_by_ukf
     coordinator.ar = MockAreaRegistry()  # type: ignore[assignment]
+    # FIX: Add scanner set for _update_scanner_online_status
+    coordinator._scanners = set()  # type: ignore[attr-defined]
     # FIX: Add area_selection handler for delegated area selection logic
     coordinator.area_selection = AreaSelectionHandler(coordinator)
     return coordinator

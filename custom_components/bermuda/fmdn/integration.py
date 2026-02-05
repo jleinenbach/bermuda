@@ -443,8 +443,8 @@ class FmdnIntegration:
         Uses a lock to prevent race conditions when multiple advertisements
         are processed concurrently, and a cache for O(1) metadevice lookup.
         """
-        fmdn_device_id: str | None = match.device_id if match.device_id else None
-        canonical_id: str | None = match.canonical_id if match.canonical_id else None
+        fmdn_device_id: str | None = match.device_id or None
+        canonical_id: str | None = match.canonical_id or None
 
         # Use lock to prevent race conditions during metadevice creation
         with self._registration_lock:
@@ -561,7 +561,7 @@ class FmdnIntegration:
                     eid_bytes,
                     device.address,
                     match.device_id,
-                    match.canonical_id if match.canonical_id else None,
+                    match.canonical_id or None,
                     time_offset=match.time_offset,
                     is_reversed=match.is_reversed,
                 )
@@ -620,7 +620,7 @@ class FmdnIntegration:
             # This matches what GoogleFindMy-HA's EID resolver does:
             # clean_canonical_id = identity.canonical_id.split(":")[-1]
             if ":" in id_value:
-                return id_value.split(":")[-1]
+                return id_value.rsplit(":", maxsplit=1)[-1]
             # Already UUID-only format
             return id_value
         return None

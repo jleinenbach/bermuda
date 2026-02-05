@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from homeassistant.helpers.entity_platform import AddEntitiesCallback
+    from homeassistant.helpers.typing import StateType
 
     from . import BermudaConfigEntry
     from .coordinator import BermudaDataUpdateCoordinator
@@ -189,7 +190,7 @@ class BermudaSensor(BermudaEntity, SensorEntity):
         return self._device.unique_id  # type: ignore[return-value]
 
     @property
-    def native_value(self) -> str | None:
+    def native_value(self) -> StateType:
         """Return the state of the sensor."""
         # return self.coordinator.data.get("body")
         return self._device.area_name
@@ -388,6 +389,7 @@ class BermudaSensorScannerRange(BermudaSensorRange):
         self.config_entry = config_entry
         self._device = coordinator.devices[address]
         self._scanner = coordinator.devices[scanner_address]
+        self._attr_translation_placeholders = {"scanner_name": self._scanner.name or ""}
 
     @callback
     def _handle_coordinator_update(self) -> None:
@@ -425,11 +427,6 @@ class BermudaSensorScannerRange(BermudaSensorRange):
     def unique_id(self) -> str:
         # Retaining legacy wifi mac for unique_id
         return f"{self._device.unique_id}_{self._scanner.address_wifi_mac or self._scanner.address}_range"
-
-    @property
-    def translation_placeholders(self) -> dict[str, str]:
-        """Return placeholders for translation."""
-        return {"scanner_name": self._scanner.name or ""}
 
     @property
     def native_value(self) -> str | None:

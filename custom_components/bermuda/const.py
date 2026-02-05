@@ -44,8 +44,8 @@ PLATFORMS = [
     Platform.NUMBER,
     Platform.SELECT,
     Platform.BUTTON,
+    Platform.BINARY_SENSOR,
     # Platform.SWITCH,
-    # Platform.BINARY_SENSOR
 ]
 
 # Should probably retreive this from the component, but it's in "DOMAIN" *shrug*
@@ -114,6 +114,19 @@ AREA_LOCK_TIMEOUT_SECONDS: Final = 60  # 60 seconds without signal from locked s
 # 30 seconds is long enough to bridge brief network hiccups but short enough to react
 # quickly to actual scanner outages.
 SCANNER_ACTIVITY_TIMEOUT: Final = 30.0  # seconds
+
+# Scanner algorithm timeout - used by area selection algorithms to determine if a scanner
+# is offline for algorithmic decisions (auto-learning guard, coverage penalty, rescue logic).
+# Longer than SCANNER_ACTIVITY_TIMEOUT because algorithms tolerate brief gaps better, while
+# the UI binary sensor should react quickly. 120s bridges longer network hiccups and slow
+# advertisement intervals without prematurely degrading fingerprint quality.
+SCANNER_ALGO_TIMEOUT: Final = 120.0  # seconds
+
+# Scanner recovery grace period - after a scanner comes back online, its RSSI data may be
+# unreliable (cold Kalman filter, noisy initial readings). During this grace period, the
+# scanner's data is excluded from UKF fingerprint matching to prevent false room switches.
+# Min-distance heuristic still uses the data (has its own streak protection).
+SCANNER_RECOVERY_GRACE_SECONDS: Final = 60.0  # seconds
 
 # After SETTLING: stationary, higher threshold
 
