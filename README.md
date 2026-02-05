@@ -100,6 +100,17 @@ Automatic RSSI offset calibration using mutual cross-visibility between scanners
 - Multi-factor confidence scoring (sample count, pair count, consistency) -- only shows suggestions above 70% confidence.
 - Not persisted across restarts; recalibrates automatically after each reboot.
 
+### Scanner Offline Detection
+
+Per-scanner binary sensors that report whether each BLE proxy is online, enabling automations to detect and react to scanner outages (e.g., automatically rebooting an unresponsive ESP32 node).
+
+- Each scanner gets a `binary_sensor.<name>_scanner_online` entity with device class `connectivity`.
+- Reports ON when the scanner has sent BLE data within the last 30 seconds, OFF otherwise.
+- Exposes `last_seen_age_seconds` and `timeout_seconds` as state attributes for use in automations and templates.
+- Internally, the area selection algorithms use a separate 120-second timeout to avoid reacting to brief network hiccups. This **6-phase defense-in-depth** system also penalizes UKF fingerprint scores for areas whose scanner is offline, protects incumbent room assignments during outages, blocks auto-learning when scanner data is incomplete, and dampens room-switching noise when a scanner recovers.
+
+This directly addresses [agittins#422](https://github.com/agittins/bermuda/issues/422).
+
 ### Recorder Database Optimization
 
 Reduces Home Assistant database writes by approximately 98%, which is critical for SD card longevity on Raspberry Pi installations.
