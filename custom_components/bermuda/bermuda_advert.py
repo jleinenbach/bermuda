@@ -661,7 +661,7 @@ class BermudaAdvert(dict[str, Any]):
                 if len(self.hist_distance_by_interval) > 0:
                     self.hist_distance_by_interval.insert(0, self.hist_distance_by_interval[0])
                 else:
-                    self.hist_distance_by_interval.insert(0, self.rssi_distance_raw)
+                    self.hist_distance_by_interval.insert(0, self.rssi_distance_raw or DISTANCE_INFINITE)
                 # Don't modify velocity_blocked_count - noise should not trigger recovery
 
             elif abs_velocity > max_velocity:
@@ -682,10 +682,10 @@ class BermudaAdvert(dict[str, Any]):
                     )
                     # Accept the new measurement
                     self.hist_distance_by_interval.clear()
-                    self.hist_distance_by_interval.insert(0, self.rssi_distance_raw)
+                    self.hist_distance_by_interval.insert(0, self.rssi_distance_raw or DISTANCE_INFINITE)
                     # Clear the position history so the new position becomes baseline
                     self.hist_distance.clear()
-                    self.hist_distance.insert(0, self.rssi_distance_raw)
+                    self.hist_distance.insert(0, self.rssi_distance_raw or DISTANCE_INFINITE)
                     self.hist_stamp.clear()
                     self.hist_stamp.insert(0, self.stamp)
                     self.hist_velocity.clear()
@@ -704,10 +704,10 @@ class BermudaAdvert(dict[str, Any]):
                     if len(self.hist_distance_by_interval) > 0:
                         self.hist_distance_by_interval.insert(0, self.hist_distance_by_interval[0])
                     else:
-                        self.hist_distance_by_interval.insert(0, self.rssi_distance_raw)
+                        self.hist_distance_by_interval.insert(0, self.rssi_distance_raw or DISTANCE_INFINITE)
             else:
                 # Velocity is acceptable - accept the measurement and reset counter
-                self.hist_distance_by_interval.insert(0, self.rssi_distance_raw)
+                self.hist_distance_by_interval.insert(0, self.rssi_distance_raw or DISTANCE_INFINITE)
                 # FIX: Teleport Recovery - Reset counter when velocity is normal
                 self.velocity_blocked_count = 0
 
