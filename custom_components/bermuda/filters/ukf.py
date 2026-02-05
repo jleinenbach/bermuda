@@ -724,7 +724,7 @@ class UnscentedKalmanFilter(SignalFilter):
         area_profiles: dict[str, AreaProfile],
         room_profiles: dict[str, RoomProfile] | None = None,
         offline_scanner_addrs: frozenset[str] | None = None,
-    ) -> list[tuple[str, float, float]]:
+    ) -> list[tuple[str, float, float, float]]:
         """
         Compare current UKF state to learned fingerprints.
 
@@ -744,10 +744,11 @@ class UnscentedKalmanFilter(SignalFilter):
 
         Returns:
         -------
-            List of (area_id, mahalanobis_distance, match_score) sorted by score.
+            List of (area_id, d_squared, match_score, coverage_penalty) sorted by score.
+            coverage_penalty is 0.0 when no penalty was applied.
 
         """
-        results: list[tuple[str, float, float]] = []
+        results: list[tuple[str, float, float, float]] = []
 
         # Get all area_ids from both profile types
         all_area_ids = set(area_profiles.keys())
@@ -764,6 +765,7 @@ class UnscentedKalmanFilter(SignalFilter):
             device_score: float | None = None
             device_samples = 0
             room_score: float | None = None
+            coverage_penalty: float = 0.0
 
             # Device-specific matching (Mahalanobis distance)
             if area_id in area_profiles:
@@ -772,16 +774,15 @@ class UnscentedKalmanFilter(SignalFilter):
                 fp_var: list[float] = []
                 state_indices: list[int] = []
 
+                abs_profiles = profile._absolute_profiles
                 for i, addr in enumerate(self.scanner_addresses):
-                    if hasattr(profile, "_absolute_profiles"):
-                        abs_profiles = profile._absolute_profiles
-                        if addr in abs_profiles:
-                            abs_profile = abs_profiles[addr]
-                            if hasattr(abs_profile, "is_mature") and abs_profile.is_mature:
-                                fp_mean.append(abs_profile.expected_rssi)
-                                fp_var.append(abs_profile.variance)
-                                state_indices.append(i)
-                                device_samples += abs_profile.sample_count
+                    if addr in abs_profiles:
+                        abs_profile = abs_profiles[addr]
+                        if abs_profile.is_mature:
+                            fp_mean.append(abs_profile.expected_rssi)
+                            fp_var.append(abs_profile.variance)
+                            state_indices.append(i)
+                            device_samples += abs_profile.sample_count
 
                 if len(state_indices) >= 2:
                     x_sub = [self._x[i] for i in state_indices]
@@ -828,42 +829,42 @@ class UnscentedKalmanFilter(SignalFilter):
             # more than losing a weak (distant) scanner.
             if device_score is not None and offline_scanner_addrs and area_id in area_profiles:
                 penalty_profile = area_profiles[area_id]
-                if hasattr(penalty_profile, "_absolute_profiles"):
-                    penalty_abs = penalty_profile._absolute_profiles
-                    # Collect RSSI weights for all trained scanners in this area
-                    total_weight = 0.0
-                    offline_weight = 0.0
-                    for s_addr, s_prof in penalty_abs.items():
-                        if not (hasattr(s_prof, "is_mature") and s_prof.is_mature):
-                            continue
-                        # RSSI weight: stronger signal = higher weight
-                        # Convert RSSI to linear power scale (always positive)
-                        rssi_val = s_prof.expected_rssi
-                        # Use 10^(RSSI/10) but normalise so -40dBm ≈ 1.0, -90dBm ≈ 0.00001
-                        # Simpler: use (100 + RSSI) as weight (0 at -100dBm, 60 at -40dBm)
-                        weight = max(0.0, 100.0 + rssi_val)
-                        total_weight += weight
-                        if s_addr in offline_scanner_addrs:
-                            offline_weight += weight
+                penalty_abs = penalty_profile._absolute_profiles
+                # Collect RSSI weights for all trained scanners in this area
+                total_weight = 0.0
+                offline_weight = 0.0
+                for s_addr, s_prof in penalty_abs.items():
+                    if not s_prof.is_mature:
+                        continue
+                    # RSSI weight: stronger signal = higher weight
+                    # Convert RSSI to linear power scale (always positive)
+                    rssi_val = s_prof.expected_rssi
+                    # Use 10^(RSSI/10) but normalise so -40dBm ≈ 1.0, -90dBm ≈ 0.00001
+                    # Simpler: use (100 + RSSI) as weight (0 at -100dBm, 60 at -40dBm)
+                    weight = max(0.0, 100.0 + rssi_val)
+                    total_weight += weight
+                    if s_addr in offline_scanner_addrs:
+                        offline_weight += weight
 
-                    if total_weight > 0.0 and offline_weight > 0.0:
-                        # coverage_ratio: 0.0 = all scanners online, 1.0 = all offline
-                        coverage_ratio = offline_weight / total_weight
-                        # Quadratic penalty: gentle for small gaps, harsh for large
-                        # At 50% offline weight → penalty = 0.25 → score * 0.75
-                        # At 100% offline weight → penalty = 1.0 → score * 0.0
-                        penalty = coverage_ratio * coverage_ratio
-                        device_score = device_score * (1.0 - penalty)
-                        _LOGGER.debug(
-                            "UKF coverage penalty area=%s: offline_weight=%.1f/%.1f "
-                            "ratio=%.2f penalty=%.2f adjusted_score=%.4f",
-                            area_id,
-                            offline_weight,
-                            total_weight,
-                            coverage_ratio,
-                            penalty,
-                            device_score,
-                        )
+                if total_weight > 0.0 and offline_weight > 0.0:
+                    # coverage_ratio: 0.0 = all scanners online, 1.0 = all offline
+                    coverage_ratio = offline_weight / total_weight
+                    # Quadratic penalty: gentle for small gaps, harsh for large
+                    # At 50% offline weight → penalty = 0.25 → score * 0.75
+                    # At 100% offline weight → penalty = 1.0 → score * 0.0
+                    penalty = coverage_ratio * coverage_ratio
+                    coverage_penalty = penalty
+                    device_score = device_score * (1.0 - penalty)
+                    _LOGGER.debug(
+                        "UKF coverage penalty area=%s: offline_weight=%.1f/%.1f "
+                        "ratio=%.2f penalty=%.2f adjusted_score=%.4f",
+                        area_id,
+                        offline_weight,
+                        total_weight,
+                        coverage_ratio,
+                        penalty,
+                        device_score,
+                    )
 
             # Room-level matching (delta patterns)
             if room_profiles and area_id in room_profiles and len(current_readings) >= 2:
@@ -889,7 +890,7 @@ class UnscentedKalmanFilter(SignalFilter):
             else:
                 continue  # No data for this area
 
-            results.append((area_id, d_squared, combined_score))
+            results.append((area_id, d_squared, combined_score, coverage_penalty))
 
         return sorted(results, key=lambda x: -x[2])
 

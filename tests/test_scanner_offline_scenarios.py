@@ -105,7 +105,7 @@ class TestScenario1FingerprintDegradation:
         ukf = _train_ukf(all_scanners, current_readings)
 
         results = ukf.match_fingerprints({AREA_OFFICE: office_profile, AREA_KITCHEN: kitchen_profile})
-        scores = {area_id: score for area_id, _, score in results}
+        scores = {area_id: score for area_id, _, score, _ in results}
 
         # Office should clearly win with all scanners
         assert scores[AREA_OFFICE] > scores[AREA_KITCHEN], (
@@ -138,7 +138,7 @@ class TestScenario1FingerprintDegradation:
         ukf = _train_ukf(all_scanners, readings_without_b, n_updates=10)
 
         results = ukf.match_fingerprints({AREA_OFFICE: office_profile, AREA_KITCHEN: kitchen_profile})
-        scores = {area_id: score for area_id, _, score in results}
+        scores = {area_id: score for area_id, _, score, _ in results}
 
         # Both scores should be lower due to reduced dimensions
         # The discrimination (score difference) should be smaller

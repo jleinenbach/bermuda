@@ -280,7 +280,7 @@ class TestUKFFingerprintMatching:
 
         # Should match well since measurements match learned profile
         assert len(results) >= 1
-        area_id, d_squared, match_score = results[0]
+        area_id, d_squared, match_score, _ = results[0]
         assert area_id == "area_kitchen"
         assert match_score > 0.5  # Good match
 
@@ -314,7 +314,7 @@ class TestUKFFingerprintMatching:
 
         # Kitchen should be best match
         assert len(results) == 2
-        best_area, _, best_score = results[0]
+        best_area, _, best_score, _ = results[0]
         assert best_area == "area_kitchen"
 
         # Kitchen score should be much higher than bedroom
@@ -405,7 +405,7 @@ class TestVarianceFloorFix:
 
         # With variance floor, 3dB deviation should still produce good score
         assert len(results) >= 1
-        _, d_squared, score = results[0]
+        _, d_squared, score, _ = results[0]
 
         # Key assertion: Score should be > 0.7 despite 3dB deviation
         # Without fix, this would be around 0.37 or lower
@@ -437,7 +437,7 @@ class TestVarianceFloorFix:
         results = ukf.match_fingerprints({"area_wrong": wrong_profile})
 
         assert len(results) >= 1
-        _, _, score = results[0]
+        _, _, score, _ = results[0]
 
         # Large deviation should still produce low score
         assert score < 0.3, f"Score {score:.4f} too high for 15dB deviation"
@@ -465,7 +465,7 @@ class TestVarianceFloorFix:
 
         results = ukf.match_fingerprints({"area_test": profile})
         assert len(results) >= 1
-        _, _, actual_score = results[0]
+        _, _, actual_score, _ = results[0]
 
         # Calculate theoretical score WITHOUT floor
         # Assuming converged variance ≈ 2-4, combined ≈ 4-8

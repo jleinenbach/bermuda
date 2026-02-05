@@ -447,6 +447,8 @@ class AreaSelectionHandler:
         # Tracks per-scanner online status using SCANNER_ALGO_TIMEOUT (120s).
         # Uses advert timestamps from ALL devices to avoid BUG 22 (quiet room false-offline).
         self._scanner_status: dict[str, ScannerOnlineStatus] = {}
+        # Per-cycle cache of offline scanner addresses (computed once, used 4x per device)
+        self._cycle_offline_addrs: frozenset[str] = frozenset()
 
     # =========================================================================
     # Property accessors for coordinator state
@@ -1159,7 +1161,7 @@ class AreaSelectionHandler:
         # that are biased toward the "without scanner X" pattern, corrupting
         # the profile. When the scanner comes back, the profile won't match.
         # =====================================================================
-        offline_addrs_learn = self._get_offline_scanner_addrs()
+        offline_addrs_learn = self._cycle_offline_addrs
         if offline_addrs_learn:
             # Check if any trained scanner for this area is offline
             if device.address in self.correlations and area_id in self.correlations[device.address]:
@@ -1356,7 +1358,7 @@ class AreaSelectionHandler:
         ukf.update_multi(rssi_readings)
 
         # Get all matches from UKF (with coverage penalty for offline scanners)
-        offline_addrs = self._get_offline_scanner_addrs()
+        offline_addrs = self._cycle_offline_addrs
         matches = ukf.match_fingerprints(device_profiles, self.room_profiles, offline_addrs)
 
         # DEBUG logging
@@ -1388,7 +1390,7 @@ class AreaSelectionHandler:
                     ", ".join(abs_details) if abs_details else "none",
                 )
 
-        for area_id, _d_squared, score in matches:
+        for area_id, _d_squared, score, _cov_penalty in matches:
             # Only consider button-trained profiles (explicit user intent)
             area_profile = device_profiles.get(area_id)
             if area_profile is None or not area_profile.has_button_training:
@@ -1440,6 +1442,10 @@ class AreaSelectionHandler:
         # This must run ONCE per cycle, before any device iteration, so all devices
         # see a consistent scanner status snapshot.
         self._update_scanner_online_status(nowstamp)
+
+        # Cache offline scanner addresses once per cycle to avoid redundant
+        # frozenset creation (was called 4x per device before).
+        self._cycle_offline_addrs = self._get_offline_scanner_addrs()
 
         # Check if we have mature room profiles (scanner-pairs with sufficient samples)
         has_mature_profiles = any(
@@ -1741,7 +1747,7 @@ class AreaSelectionHandler:
 
         # Match against both device-specific and room-level fingerprints
         # Pass offline scanner addresses so match_fingerprints() can apply coverage penalty
-        offline_addrs = self._get_offline_scanner_addrs()
+        offline_addrs = self._cycle_offline_addrs
         matches = ukf.match_fingerprints(device_profiles, self.room_profiles, offline_addrs)
 
         # Populate offline diagnostics into AreaTests
@@ -1753,29 +1759,17 @@ class AreaSelectionHandler:
             tests.reason = "SKIP - no fingerprint matches"
             return False
 
-        # Get best match
-        best_area_id, _d_squared, match_score = matches[0]
+        # Get best match (includes coverage_penalty computed by match_fingerprints)
+        best_area_id, _d_squared, match_score, best_coverage_penalty = matches[0]
 
         # Populate top candidates for diagnostics
         tests.top_candidates = [
-            {"area": area_id, "score": round(score, 3), "type": "UKF"} for area_id, _, score in matches[:5]
+            {"area": area_id, "score": round(score, 3), "type": "UKF"} for area_id, _, score, _ in matches[:5]
         ]
 
-        # Calculate coverage penalty diagnostics for the best area
-        if offline_addrs and best_area_id in device_profiles:
-            _penalty_profile = device_profiles[best_area_id]
-            if hasattr(_penalty_profile, "_absolute_profiles"):
-                _total_w = 0.0
-                _offline_w = 0.0
-                for s_addr, s_prof in _penalty_profile._absolute_profiles.items():
-                    if hasattr(s_prof, "is_mature") and s_prof.is_mature:
-                        w = max(0.0, 100.0 + s_prof.expected_rssi)
-                        _total_w += w
-                        if s_addr in offline_addrs:
-                            _offline_w += w
-                if _total_w > 0.0 and _offline_w > 0.0:
-                    cov_ratio = _offline_w / _total_w
-                    tests.coverage_penalty_applied = cov_ratio * cov_ratio
+        # Coverage penalty diagnostic — read directly from match_fingerprints result
+        if best_coverage_penalty > 0.0:
+            tests.coverage_penalty_applied = best_coverage_penalty
 
         # Phase 3 diagnostic: Will auto-learning be blocked for the winning area?
         if offline_addrs and best_area_id in device_profiles:
@@ -1799,7 +1793,7 @@ class AreaSelectionHandler:
         current_area_match_score: float | None = None
 
         if current_area_id is not None:
-            for area_id, _d_sq, score in matches:
+            for area_id, _d_sq, score, _cp in matches:
                 if area_id == current_area_id:
                     current_area_match_score = score
                     break
@@ -2458,16 +2452,16 @@ class AreaSelectionHandler:
                                 # incumbent has no distance data BECAUSE of the outage,
                                 # not because the device left. Relax the z-score threshold
                                 # to make rescue more effective during scanner outages.
-                                offline_addrs_rescue = self._get_offline_scanner_addrs()
+                                offline_addrs_rescue = self._cycle_offline_addrs
                                 trained_scanners = profile.trained_scanner_addresses
                                 offline_trained = trained_scanners & offline_addrs_rescue
                                 rescue_z_threshold = ABSOLUTE_Z_SCORE_MAX
                                 offline_context = ""
                                 if offline_trained:
-                                    # Relax threshold: 50% more lenient per offline scanner
-                                    # (capped at 2x the base threshold)
-                                    leniency = 1.0 + 0.5 * len(offline_trained)
-                                    leniency = min(leniency, 2.0)
+                                    # Relax threshold proportional to fraction of trained
+                                    # scanners that are offline (1.0 = no leniency, 2.0 = max)
+                                    offline_fraction = len(offline_trained) / len(trained_scanners)
+                                    leniency = 1.0 + offline_fraction
                                     rescue_z_threshold = ABSOLUTE_Z_SCORE_MAX * leniency
                                     offline_context = (
                                         f", offline_scanners={len(offline_trained)}, threshold={rescue_z_threshold:.1f}"

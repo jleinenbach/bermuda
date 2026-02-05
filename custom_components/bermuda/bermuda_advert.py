@@ -747,10 +747,10 @@ class BermudaAdvert(dict[str, Any]):
         # linting and typing can catch errors.
         out = {}
         for var, val in vars(self).items():
-            if val in [self.options]:
+            if val is self.options:
                 # skip certain vars that we don't want in the dump output.
                 continue
-            if val in [self.options, self._device, self.scanner_device]:
+            if val in (self._device, self.scanner_device):
                 # objects we might want to represent but not fully iterate etc.
                 out[var] = val.__repr__()
                 continue
