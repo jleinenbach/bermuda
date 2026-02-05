@@ -723,6 +723,7 @@ class UnscentedKalmanFilter(SignalFilter):
         self,
         area_profiles: dict[str, AreaProfile],
         room_profiles: dict[str, RoomProfile] | None = None,
+        offline_scanner_addrs: frozenset[str] | None = None,
     ) -> list[tuple[str, float, float]]:
         """
         Compare current UKF state to learned fingerprints.
@@ -730,10 +731,16 @@ class UnscentedKalmanFilter(SignalFilter):
         Uses both device-specific (AreaProfile) and device-independent (RoomProfile)
         fingerprints for matching. Combines scores using weighted fusion.
 
+        When offline_scanner_addrs is provided, applies a per-area coverage penalty
+        for areas whose trained profiles include scanners that are currently offline.
+        The penalty is RSSI-weighted: losing a strong scanner (close proximity) penalizes
+        more than losing a weak scanner (distant/marginal).
+
         Args:
         ----
             area_profiles: Dict of area_id -> AreaProfile with device-specific fingerprints
             room_profiles: Optional dict of area_id -> RoomProfile (device-independent)
+            offline_scanner_addrs: Set of scanner addresses currently offline (algo timeout)
 
         Returns:
         -------
@@ -815,6 +822,48 @@ class UnscentedKalmanFilter(SignalFilter):
                         )
                     except (ValueError, ZeroDivisionError):
                         pass
+
+            # Coverage penalty: penalize areas whose trained scanners are offline.
+            # The penalty is RSSI-weighted: losing a strong (nearby) scanner penalizes
+            # more than losing a weak (distant) scanner.
+            if device_score is not None and offline_scanner_addrs and area_id in area_profiles:
+                penalty_profile = area_profiles[area_id]
+                if hasattr(penalty_profile, "_absolute_profiles"):
+                    penalty_abs = penalty_profile._absolute_profiles
+                    # Collect RSSI weights for all trained scanners in this area
+                    total_weight = 0.0
+                    offline_weight = 0.0
+                    for s_addr, s_prof in penalty_abs.items():
+                        if not (hasattr(s_prof, "is_mature") and s_prof.is_mature):
+                            continue
+                        # RSSI weight: stronger signal = higher weight
+                        # Convert RSSI to linear power scale (always positive)
+                        rssi_val = s_prof.expected_rssi
+                        # Use 10^(RSSI/10) but normalise so -40dBm ≈ 1.0, -90dBm ≈ 0.00001
+                        # Simpler: use (100 + RSSI) as weight (0 at -100dBm, 60 at -40dBm)
+                        weight = max(0.0, 100.0 + rssi_val)
+                        total_weight += weight
+                        if s_addr in offline_scanner_addrs:
+                            offline_weight += weight
+
+                    if total_weight > 0.0 and offline_weight > 0.0:
+                        # coverage_ratio: 0.0 = all scanners online, 1.0 = all offline
+                        coverage_ratio = offline_weight / total_weight
+                        # Quadratic penalty: gentle for small gaps, harsh for large
+                        # At 50% offline weight → penalty = 0.25 → score * 0.75
+                        # At 100% offline weight → penalty = 1.0 → score * 0.0
+                        penalty = coverage_ratio * coverage_ratio
+                        device_score = device_score * (1.0 - penalty)
+                        _LOGGER.debug(
+                            "UKF coverage penalty area=%s: offline_weight=%.1f/%.1f "
+                            "ratio=%.2f penalty=%.2f adjusted_score=%.4f",
+                            area_id,
+                            offline_weight,
+                            total_weight,
+                            coverage_ratio,
+                            penalty,
+                            device_score,
+                        )
 
             # Room-level matching (delta patterns)
             if room_profiles and area_id in room_profiles and len(current_readings) >= 2:

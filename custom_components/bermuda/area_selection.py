@@ -80,6 +80,8 @@ from .const import (
     SAME_FLOOR_MIN_HISTORY,
     SAME_FLOOR_STREAK,
     SCANNER_ACTIVITY_TIMEOUT,
+    SCANNER_ALGO_TIMEOUT,
+    SCANNER_RECOVERY_GRACE_SECONDS,
     SOFT_INC_MIN_DISTANCE_ADVANTAGE,
     SOFT_INC_MIN_HISTORY_DIVISOR,
     STABILITY_SIGMA_MOVING,
@@ -112,6 +114,28 @@ if TYPE_CHECKING:
     from .coordinator import BermudaDataUpdateCoordinator
 
 _LOGGER = logging.getLogger(__name__)
+
+
+@dataclass(slots=True)
+class ScannerOnlineStatus:
+    """
+    Online/offline state of a scanner for algorithm decisions.
+
+    This is separate from the binary_sensor UI timeout (30s). The algorithm
+    timeout (120s) is more lenient because algorithmic decisions tolerate brief
+    gaps better, while the UI should react quickly to outages.
+
+    Uses last_seen_by_any_device (max advert stamp across ALL devices) to avoid
+    BUG 22 resurgence: in quiet rooms without BLE traffic, scanner.last_seen
+    doesn't update even though the scanner is online and functional.
+    """
+
+    address: str
+    area_id: str | None = None
+    last_seen_by_any_device: float = 0.0
+    is_online: bool = True
+    went_offline_at: float | None = None
+    came_online_at: float | None = None
 
 
 @dataclass
@@ -182,6 +206,12 @@ class AreaTests:
     # List of top candidates for debugging: [{"area": str, "score": float, "type": str}, ...]
     top_candidates: list[dict[str, Any]] = field(default_factory=list)
 
+    # === SCANNER OFFLINE STATUS (Phase 5) ===
+    offline_scanners_count: int = 0  # Number of scanners currently offline
+    offline_scanner_addrs: str = ""  # Comma-separated offline scanner addresses
+    coverage_penalty_applied: float = 0.0  # UKF coverage penalty (0.0-1.0, 0=no penalty)
+    auto_learning_blocked_offline: bool = False  # True if auto-learning was skipped due to offline
+
     # === RESULT ===
     reason: str | None = None  # Human-readable reason/result string
 
@@ -233,7 +263,13 @@ class AreaTests:
             count = self.profile_sample_count or 0
             parts.append(f"Prof:{src}({count})")
 
-        # 6. Sanity check failures (only show if failed)
+        # 6. Offline scanner info (only show if relevant)
+        if self.offline_scanners_count > 0:
+            parts.append(f"Offline:{self.offline_scanners_count}")
+            if self.coverage_penalty_applied > 0:
+                parts.append(f"CovPen:{self.coverage_penalty_applied:.0%}")
+
+        # 7. Sanity check failures (only show if failed)
         failures = []
         if self.passed_proximity_check is False:
             failures.append("PROX")
@@ -319,6 +355,15 @@ class AreaTests:
                 for c in self.top_candidates[:5]
             ]
 
+        # Scanner offline status
+        if self.offline_scanners_count > 0:
+            attrs["offline_scanners_count"] = self.offline_scanners_count
+            attrs["offline_scanner_addrs"] = self.offline_scanner_addrs
+            if self.coverage_penalty_applied > 0:
+                attrs["coverage_penalty"] = round(self.coverage_penalty_applied, 3)
+            if self.auto_learning_blocked_offline:
+                attrs["auto_learning_blocked_offline"] = True
+
         # Floor info
         if self.floors[0] or self.floors[1]:
             attrs["from_floor"] = self.floors[0]
@@ -398,6 +443,10 @@ class AreaSelectionHandler:
         # Feature 1: Per-device storage for last advertisement timestamps
         # Used to detect genuinely new data vs re-reading cached RSSI values
         self._device_last_stamps: dict[str, dict[str, float]] = {}
+        # Scanner online/offline status registry (Phase 0)
+        # Tracks per-scanner online status using SCANNER_ALGO_TIMEOUT (120s).
+        # Uses advert timestamps from ALL devices to avoid BUG 22 (quiet room false-offline).
+        self._scanner_status: dict[str, ScannerOnlineStatus] = {}
 
     # =========================================================================
     # Property accessors for coordinator state
@@ -485,6 +534,100 @@ class AreaSelectionHandler:
     def reset_auto_learning_stats(self) -> None:
         """Reset auto-learning statistics to zero."""
         self._auto_learning_stats.reset()
+
+    # =========================================================================
+    # Scanner online/offline status (Phase 0)
+    # =========================================================================
+
+    def _update_scanner_online_status(self, nowstamp: float) -> None:
+        """
+        Update scanner online/offline status from all device adverts.
+
+        Uses the maximum advert stamp across ALL devices per scanner to determine
+        if the scanner is online. This avoids BUG 22 resurgence: in quiet rooms
+        without BLE traffic, scanner.last_seen doesn't update even though the
+        scanner is online and functional. By checking adverts from ALL tracked
+        devices, a scanner is considered online as long as it sees ANY device.
+
+        Uses SCANNER_ALGO_TIMEOUT (120s), not SCANNER_ACTIVITY_TIMEOUT (30s).
+        """
+        # Collect latest advert timestamp per scanner across ALL devices
+        scanner_latest: dict[str, float] = {}
+        for device in self.devices.values():
+            for advert in device.adverts.values():
+                if advert.scanner_address is not None and advert.stamp is not None:
+                    prev = scanner_latest.get(advert.scanner_address, 0.0)
+                    if advert.stamp > prev:
+                        scanner_latest[advert.scanner_address] = advert.stamp
+
+        # Update status for each registered scanner
+        for scanner in self._scanners:
+            addr = scanner.address
+            status = self._scanner_status.get(addr)
+            if status is None:
+                status = ScannerOnlineStatus(
+                    address=addr,
+                    area_id=getattr(scanner, "area_id", None),
+                )
+                self._scanner_status[addr] = status
+
+            status.area_id = getattr(scanner, "area_id", None)
+            latest = scanner_latest.get(addr, 0.0)
+            status.last_seen_by_any_device = max(status.last_seen_by_any_device, latest)
+
+            was_online = status.is_online
+            status.is_online = (
+                status.last_seen_by_any_device > 0
+                and (nowstamp - status.last_seen_by_any_device) < SCANNER_ALGO_TIMEOUT
+            )
+
+            # Track state transitions for recovery dampening (Phase 4)
+            if was_online and not status.is_online:
+                status.went_offline_at = nowstamp
+                status.came_online_at = None
+            elif not was_online and status.is_online:
+                status.came_online_at = nowstamp
+
+    def _get_offline_scanner_addrs(self) -> frozenset[str]:
+        """Return addresses of scanners currently considered offline (algo timeout)."""
+        return frozenset(addr for addr, status in self._scanner_status.items() if not status.is_online)
+
+    def _is_scanner_recovering(self, scanner_addr: str, nowstamp: float) -> bool:
+        """
+        Check if a scanner recently came back online (within grace period).
+
+        During recovery, the scanner's Kalman filter is cold and RSSI data may be
+        unreliable. Used by Phase 4 to exclude recovering scanners from UKF matching.
+        """
+        status = self._scanner_status.get(scanner_addr)
+        if status is None or status.came_online_at is None:
+            return False
+        return (nowstamp - status.came_online_at) < SCANNER_RECOVERY_GRACE_SECONDS
+
+    def get_scanner_online_diagnostics(self) -> dict[str, Any]:
+        """Return scanner online/offline status for diagnostics."""
+        result: dict[str, Any] = {}
+        for addr, status in self._scanner_status.items():
+            result[addr] = {
+                "is_online": status.is_online,
+                "area_id": status.area_id,
+                "last_seen_age_s": (
+                    round(monotonic_time_coarse() - status.last_seen_by_any_device, 1)
+                    if status.last_seen_by_any_device > 0
+                    else None
+                ),
+                "went_offline_at_age_s": (
+                    round(monotonic_time_coarse() - status.went_offline_at, 1)
+                    if status.went_offline_at is not None
+                    else None
+                ),
+                "came_online_at_age_s": (
+                    round(monotonic_time_coarse() - status.came_online_at, 1)
+                    if status.came_online_at is not None
+                    else None
+                ),
+            }
+        return result
 
     # =========================================================================
     # Pure helper functions (no coordinator state access)
@@ -864,7 +1007,7 @@ class AreaSelectionHandler:
 
         return None
 
-    def _update_device_correlations(
+    def _update_device_correlations(  # noqa: C901, PLR0911
         self,
         device: BermudaDevice,
         area_id: str,
@@ -1008,6 +1151,38 @@ class AreaSelectionHandler:
                     skip_reason="ambiguous_signal",
                 )
             return
+
+        # =====================================================================
+        # Quality Filter: Feature 7 - Scanner Completeness Guard
+        # Skip learning when important scanners for the CURRENT area are offline.
+        # Learning with incomplete scanner coverage would create fingerprints
+        # that are biased toward the "without scanner X" pattern, corrupting
+        # the profile. When the scanner comes back, the profile won't match.
+        # =====================================================================
+        offline_addrs_learn = self._get_offline_scanner_addrs()
+        if offline_addrs_learn:
+            # Check if any trained scanner for this area is offline
+            if device.address in self.correlations and area_id in self.correlations[device.address]:
+                area_prof = self.correlations[device.address][area_id]
+                trained_addrs = area_prof.trained_scanner_addresses
+                offline_trained_learn = trained_addrs & offline_addrs_learn
+                if offline_trained_learn:
+                    if _LOGGER.isEnabledFor(logging.DEBUG):
+                        _LOGGER.debug(
+                            "Auto-learning skip for %s: %d trained scanner(s) offline for area %s: %s",
+                            device.name,
+                            len(offline_trained_learn),
+                            area_id,
+                            list(offline_trained_learn),
+                        )
+                    if nowstamp is not None:
+                        self._auto_learning_stats.record_update(
+                            performed=False,
+                            stamp=nowstamp,
+                            device_address=device.address,
+                            skip_reason="scanner_offline",
+                        )
+                    return
 
         # =====================================================================
         # All quality filters passed - proceed with learning
@@ -1180,18 +1355,21 @@ class AreaSelectionHandler:
         ukf.predict(dt=UPDATE_INTERVAL)
         ukf.update_multi(rssi_readings)
 
-        # Get all matches from UKF
-        matches = ukf.match_fingerprints(device_profiles, self.room_profiles)
+        # Get all matches from UKF (with coverage penalty for offline scanners)
+        offline_addrs = self._get_offline_scanner_addrs()
+        matches = ukf.match_fingerprints(device_profiles, self.room_profiles, offline_addrs)
 
         # DEBUG logging
         if _LOGGER.isEnabledFor(logging.DEBUG):
             _LOGGER.debug(
-                "Virtual distance check for %s: %d device_profiles, %d matches, rssi_readings=%s, ukf_scanners=%s",
+                "Virtual distance check for %s: %d device_profiles, %d matches, "
+                "rssi_readings=%s, ukf_scanners=%s, offline=%s",
                 device.name,
                 len(device_profiles),
                 len(matches),
                 list(rssi_readings.keys()),
                 ukf.scanner_addresses,
+                list(offline_addrs) if offline_addrs else "none",
             )
             for area_id, profile in device_profiles.items():
                 has_btn = profile.has_button_training
@@ -1256,6 +1434,13 @@ class AreaSelectionHandler:
 
     def refresh_areas_by_min_distance(self) -> None:
         """Set area for ALL devices based on UKF+RoomProfile or min-distance fallback."""
+        nowstamp = monotonic_time_coarse()
+
+        # Phase 0: Update scanner online/offline status before processing devices.
+        # This must run ONCE per cycle, before any device iteration, so all devices
+        # see a consistent scanner status snapshot.
+        self._update_scanner_online_status(nowstamp)
+
         # Check if we have mature room profiles (scanner-pairs with sufficient samples)
         has_mature_profiles = any(
             profile.mature_pair_count >= MATURE_PROFILE_MIN_PAIRS for profile in self.room_profiles.values()
@@ -1426,6 +1611,7 @@ class AreaSelectionHandler:
 
         # Collect RSSI readings from all visible scanners
         rssi_readings: dict[str, float] = {}
+        recovering_scanners: list[str] = []
         for advert in device.adverts.values():
             if (
                 advert.rssi is not None
@@ -1433,6 +1619,20 @@ class AreaSelectionHandler:
                 and advert.stamp is not None
                 and nowstamp - advert.stamp < EVIDENCE_WINDOW_SECONDS
             ):
+                # Phase 4: Recovery dampening — exclude scanners in grace period
+                # When a scanner just came back online, its first readings may be
+                # unreliable (stale Kalman state, bursty advertisements).
+                # Exclude from UKF matching during the grace period to prevent
+                # immediate room-switching based on unreliable data.
+                if self._is_scanner_recovering(advert.scanner_address, nowstamp):
+                    recovering_scanners.append(advert.scanner_address)
+                    if _LOGGER.isEnabledFor(logging.DEBUG):
+                        _LOGGER.debug(
+                            "UKF recovery dampening: excluding scanner %s for %s (in grace period)",
+                            advert.scanner_address,
+                            device.name,
+                        )
+                    continue
                 rssi_readings[advert.scanner_address] = advert.rssi
 
         # Need minimum scanners for UKF to be useful
@@ -1540,7 +1740,14 @@ class AreaSelectionHandler:
             return False
 
         # Match against both device-specific and room-level fingerprints
-        matches = ukf.match_fingerprints(device_profiles, self.room_profiles)
+        # Pass offline scanner addresses so match_fingerprints() can apply coverage penalty
+        offline_addrs = self._get_offline_scanner_addrs()
+        matches = ukf.match_fingerprints(device_profiles, self.room_profiles, offline_addrs)
+
+        # Populate offline diagnostics into AreaTests
+        if offline_addrs:
+            tests.offline_scanners_count = len(offline_addrs)
+            tests.offline_scanner_addrs = ",".join(sorted(offline_addrs))
 
         if not matches:
             tests.reason = "SKIP - no fingerprint matches"
@@ -1553,6 +1760,28 @@ class AreaSelectionHandler:
         tests.top_candidates = [
             {"area": area_id, "score": round(score, 3), "type": "UKF"} for area_id, _, score in matches[:5]
         ]
+
+        # Calculate coverage penalty diagnostics for the best area
+        if offline_addrs and best_area_id in device_profiles:
+            _penalty_profile = device_profiles[best_area_id]
+            if hasattr(_penalty_profile, "_absolute_profiles"):
+                _total_w = 0.0
+                _offline_w = 0.0
+                for s_addr, s_prof in _penalty_profile._absolute_profiles.items():
+                    if hasattr(s_prof, "is_mature") and s_prof.is_mature:
+                        w = max(0.0, 100.0 + s_prof.expected_rssi)
+                        _total_w += w
+                        if s_addr in offline_addrs:
+                            _offline_w += w
+                if _total_w > 0.0 and _offline_w > 0.0:
+                    cov_ratio = _offline_w / _total_w
+                    tests.coverage_penalty_applied = cov_ratio * cov_ratio
+
+        # Phase 3 diagnostic: Will auto-learning be blocked for the winning area?
+        if offline_addrs and best_area_id in device_profiles:
+            _trained_addrs = device_profiles[best_area_id].trained_scanner_addresses
+            if _trained_addrs & offline_addrs:
+                tests.auto_learning_blocked_offline = True
 
         # FIX: Sticky Virtual Rooms - Apply stickiness bonus for current area
         # When the device is already in an area (especially a scannerless one),
@@ -2205,7 +2434,7 @@ class AreaSelectionHandler:
             # A soft_incumbent should trigger the special protections if it has NO valid
             # distance data, not just because distance > max_radius.
             if current_incumbent is soft_incumbent and not analyzer.has_valid_distance(soft_incumbent):
-                # ABSOLUTE PROFILE RESCUE
+                # ABSOLUTE PROFILE RESCUE (with offline-awareness)
                 if current_incumbent.area_id is not None:
                     current_area_id = current_incumbent.area_id
                     if device.address in self.correlations and current_area_id in self.correlations[device.address]:
@@ -2223,18 +2452,44 @@ class AreaSelectionHandler:
                             z_scores = profile.get_absolute_z_scores(all_readings)
                             if len(z_scores) >= MATURE_ABSOLUTE_MIN_COUNT:
                                 avg_z = sum(z for _, z in z_scores) / len(z_scores)
-                                if avg_z < ABSOLUTE_Z_SCORE_MAX:
+
+                                # Phase 2: Offline-aware z-score threshold
+                                # When the area's primary scanner is offline, the soft
+                                # incumbent has no distance data BECAUSE of the outage,
+                                # not because the device left. Relax the z-score threshold
+                                # to make rescue more effective during scanner outages.
+                                offline_addrs_rescue = self._get_offline_scanner_addrs()
+                                trained_scanners = profile.trained_scanner_addresses
+                                offline_trained = trained_scanners & offline_addrs_rescue
+                                rescue_z_threshold = ABSOLUTE_Z_SCORE_MAX
+                                offline_context = ""
+                                if offline_trained:
+                                    # Relax threshold: 50% more lenient per offline scanner
+                                    # (capped at 2x the base threshold)
+                                    leniency = 1.0 + 0.5 * len(offline_trained)
+                                    leniency = min(leniency, 2.0)
+                                    rescue_z_threshold = ABSOLUTE_Z_SCORE_MAX * leniency
+                                    offline_context = (
+                                        f", offline_scanners={len(offline_trained)}, threshold={rescue_z_threshold:.1f}"
+                                    )
+
+                                if avg_z < rescue_z_threshold:
                                     tests.reason = (
-                                        f"LOSS - absolute profile match (z={avg_z:.2f}) protects current area"
+                                        f"LOSS - absolute profile match "
+                                        f"(z={avg_z:.2f}{offline_context}) "
+                                        f"protects current area"
                                     )
                                     if _superchatty:
                                         _LOGGER.debug(
                                             "%s: Absolute profile rescue - secondary readings match "
-                                            "%s profile (avg_z=%.2f, scanners=%d)",
+                                            "%s profile (avg_z=%.2f, scanners=%d, "
+                                            "offline=%d, threshold=%.1f)",
                                             device.name,
                                             current_area_id,
                                             avg_z,
                                             len(z_scores),
+                                            len(offline_trained),
+                                            rescue_z_threshold,
                                         )
                                     continue
                 if cross_floor:
@@ -2696,7 +2951,7 @@ class AreaSelectionHandler:
                     "Applied virtual distance winner for %s: area=%s distance=%.2fm",
                     device.name,
                     virtual_winner_area_id,
-                    virtual_winner_distance if virtual_winner_distance else 0,
+                    virtual_winner_distance or 0,
                 )
             return
 
