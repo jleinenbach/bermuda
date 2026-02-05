@@ -345,7 +345,22 @@ class BermudaAdvert(dict[str, Any]):
             return self.ref_power, "device-calibrated"
         beacon_power: float | None = getattr(self._device, "beacon_power", None)
         if beacon_power is not None:
-            return beacon_power, "iBeacon beacon_power"
+            if beacon_power > 0:
+                # Positive values indicate the tracker is sending TX power
+                # (transmit strength, e.g. +1 dBm) instead of calibrated
+                # RSSI at 1m (always negative, e.g. -55 dBm).  Skip this
+                # value and fall through to the global default.
+                _LOGGER_SPAM_LESS.warning(
+                    f"invalid_beacon_power_{self._device.address}",
+                    "Device %s has beacon_power %.1f dBm which is positive. "
+                    "iBeacon beacon_power should be calibrated RSSI at 1m "
+                    "(always negative). The tracker likely sends TX power "
+                    "instead. Falling back to global ref_power default",
+                    self._device.name or self._device.address,
+                    beacon_power,
+                )
+            else:
+                return beacon_power, "iBeacon beacon_power"
         ref_power = self.conf_ref_power
         if ref_power is None:
             ref_power = DEFAULT_REF_POWER
@@ -384,16 +399,21 @@ class BermudaAdvert(dict[str, Any]):
         # BUG FIX: Pass timestamp for time-aware process noise scaling.
         # Without this, stale scanners don't have increased uncertainty,
         # causing distant (stale) scanners to incorrectly "win" over close (fresh) ones.
-        # Log invalid ref_power with device context for debugging
+        # Safety net: clamp positive ref_power (should never happen after
+        # _get_effective_ref_power filtering, but guards against misconfigured
+        # device-specific ref_power).
         if ref_power > 0:
-            _LOGGER.warning(
+            _LOGGER_SPAM_LESS.warning(
+                f"invalid_ref_power_{self._device.address}",
                 "Device %s has invalid ref_power %.1f dBm (from %s). "
-                "This is likely TX power being used as RSSI-at-1m. "
-                "Check beacon_power field or device configuration.",
+                "ref_power should be negative (calibrated RSSI at 1m). "
+                "Falling back to default %.0f dBm",
                 self._device.name or self._device.address,
                 ref_power,
                 ref_power_source,
+                DEFAULT_REF_POWER,
             )
+            ref_power = DEFAULT_REF_POWER
         if reading_is_new:
             self.rssi_filtered = self.rssi_kalman.update_adaptive(adjusted_rssi, ref_power, timestamp=timestamp)
         elif self.rssi_kalman.is_initialized:
