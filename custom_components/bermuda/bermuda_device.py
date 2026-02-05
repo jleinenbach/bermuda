@@ -418,12 +418,15 @@ class BermudaDevice:
                 maclist.add(altmac_norm)
 
         # Requires 2025.3
-        devreg_devices = self._coordinator.dr.devices.get_entries(None, connections=connlist)
-        devreg_count = 0  # can't len() an iterable.
+        # Note: get_entries() is a generator that yields the same DeviceEntry
+        # once for EACH matching connection. Since connlist contains many variants
+        # (offsets x formats x cases), we must deduplicate by device entry ID.
+        devreg_seen_ids: set[str] = set()
         devreg_stringlist = ""  # for debug logging
-        for devreg_device in devreg_devices:
-            devreg_count += 1
-            # _LOGGER.debug("DevregScanner: %s", devreg_device)
+        for devreg_device in self._coordinator.dr.devices.get_entries(None, connections=connlist):
+            if devreg_device.id in devreg_seen_ids:
+                continue
+            devreg_seen_ids.add(devreg_device.id)
             devreg_stringlist += f"** {devreg_device.name_by_user or devreg_device.name}\n"
             for conn in devreg_device.connections:
                 if conn[0] == "bluetooth":
@@ -435,6 +438,7 @@ class BermudaDevice:
                     scanner_devreg_mac = devreg_device
                     scanner_devreg_mac_address = conn[1]
 
+        devreg_count = len(devreg_seen_ids)
         if devreg_count not in (1, 2, 3):
             # We expect just the bt, or bt and another like esphome/shelly, or
             # two bt's and shelly/esphome, the second bt being the alternate
