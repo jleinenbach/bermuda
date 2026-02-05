@@ -44,8 +44,8 @@ PLATFORMS = [
     Platform.NUMBER,
     Platform.SELECT,
     Platform.BUTTON,
+    Platform.BINARY_SENSOR,
     # Platform.SWITCH,
-    # Platform.BINARY_SENSOR
 ]
 
 # Should probably retreive this from the component, but it's in "DOMAIN" *shrug*

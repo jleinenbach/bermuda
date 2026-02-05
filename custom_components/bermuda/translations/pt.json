@@ -153,6 +153,11 @@
       "reset_training": {
         "name": "Redefinir Treinamento"
       }
+    },
+    "binary_sensor": {
+      "scanner_online": {
+        "name": "Scanner online"
+      }
     }
   },
   "services": {

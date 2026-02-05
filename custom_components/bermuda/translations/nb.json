@@ -104,6 +104,11 @@
       "reset_training": {
         "name": "Tilbakestill trening"
       }
+    },
+    "binary_sensor": {
+      "scanner_online": {
+        "name": "Skanner tilkoblet"
+      }
     }
   }
 }

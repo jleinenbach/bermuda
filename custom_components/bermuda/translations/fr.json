@@ -104,6 +104,11 @@
       "reset_training": {
         "name": "Réinitialiser l'entraînement"
       }
+    },
+    "binary_sensor": {
+      "scanner_online": {
+        "name": "Scanner en ligne"
+      }
     }
   }
 }

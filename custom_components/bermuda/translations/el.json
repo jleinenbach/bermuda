@@ -153,6 +153,11 @@
       "reset_training": {
         "name": "Επαναφορά Εκπαίδευσης"
       }
+    },
+    "binary_sensor": {
+      "scanner_online": {
+        "name": "Σαρωτής σε σύνδεση"
+      }
     }
   },
   "services": {

@@ -153,6 +153,11 @@
             "reset_training": {
                 "name": "훈련 초기화"
             }
+        },
+        "binary_sensor": {
+            "scanner_online": {
+                "name": "스캐너 온라인"
+            }
         }
     },
     "services": {
