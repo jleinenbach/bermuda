@@ -462,7 +462,7 @@ class BermudaDevice:
                     # ESPHome, Shelly
                     if scanner_devreg_mac is None or _is_better_entry(devreg_device, scanner_devreg_mac):
                         scanner_devreg_mac = devreg_device
-                        scanner_devreg_mac_address = conn[1]
+                        scanner_devreg_mac_address = conn[1].lower()
 
         devreg_count = len(devreg_seen_ids)
         if devreg_count not in (1, 2, 3):
