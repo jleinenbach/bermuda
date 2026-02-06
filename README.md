@@ -56,49 +56,53 @@ Track devices on the Google Find My Device Network -- Android phones, Pixel Buds
 - **Device congealment**: Bermuda sensors automatically appear inside the same Home Assistant device card as the GoogleFindMy-HA entities, giving you a single unified view per tracker.
 - Supports shared trackers across multiple Google accounts -- each account gets its own independent Bermuda entities without collisions.
 
-### Fingerprint-Based Room Detection (UKF)
+### Fingerprint-Based Room Detection
 
-An optional Unscented Kalman Filter (UKF) mode that fuses RSSI data from multiple scanners and matches the result against learned room fingerprints using Mahalanobis distance.
+An optional advanced detection mode that combines signal data from multiple scanners and matches the result against learned room fingerprints to determine which room a device is in.
 
 - Opt-in via the `Use UKF area selection` toggle in Global Options.
-- Falls back to the standard min-distance algorithm when UKF confidence is low (below the switching threshold of 0.3).
-- Enables detection of **scannerless rooms** -- rooms that have no BLE scanner of their own (see below).
+- Falls back to the standard distance-based algorithm when fingerprint confidence is low.
+- Enables detection of **scannerless rooms** -- rooms that have no Bluetooth scanner of their own (see below).
 
 ### Manual Fingerprint Training
 
 Per-device UI to teach the system what a room "looks like" from the perspective of all visible scanners.
 
 - **Floor** and **Room** dropdown selectors per device.
-- **Learn** button starts a training session: collects 60 unique RSSI samples over up to 5 minutes with a minimum 5-second interval between samples to ensure statistical independence.
-- Uses a **dual-filter architecture**: a button-trained anchor filter and a continuous auto-learning filter, combined via Clamped Bayesian Fusion. The user's training always retains at least 70% authority; auto-learning can refine but never overpower it.
+- **Learn** button starts a training session: collects 60 unique signal samples over up to 5 minutes with a minimum 5-second interval between samples to ensure data quality.
+- Your manual training always takes priority (at least 70% influence). The system can refine the fingerprint slightly over time to adapt to environmental changes, but it can never overpower what you trained.
 - **Reset Training** button to clear all user training for a device and fall back to auto-learned data.
 - **Multi-position training**: training the same room again from a different position averages both positions into the fingerprint rather than overwriting it.
 
+**[Read the full Fingerprint Training Guide](docs/fingerprint-training.md)** for step-by-step instructions, when to reset training data, and scannerless room setup.
+
 ### Scannerless Room Detection
 
-Rooms without their own BLE scanner (basements, storage rooms, hallways) can be detected through fingerprint matching after manual training.
+Rooms without their own Bluetooth scanner (basements, storage rooms, hallways) can be detected through fingerprint matching after manual training.
 
-- A trained scannerless room receives a **virtual distance** derived from the UKF fingerprint match score, allowing it to compete against physical scanner distances in the min-distance algorithm.
-- Topological sanity checks prevent a scannerless room from winning if no scanner on its floor sees the device at all.
+- After training, the scannerless room receives a calculated distance based on how well the current signal pattern matches the trained fingerprint, allowing it to compete against rooms with physical scanners.
+- Safety checks prevent a scannerless room from being selected if no scanner on its floor sees the device at all.
 - Requires explicit user training -- auto-learning alone cannot create scannerless room profiles.
 
 ### Enhanced Area Stability
 
-Multiple layers of protection against room flickering caused by BLE signal noise:
+Multiple layers of protection against room flickering caused by Bluetooth signal noise:
 
-- **Variance-based stability margins**: uses Gaussian Error Propagation to convert Kalman filter RSSI variance into distance variance. A challenger must improve by a statistically significant amount (2-3 sigma depending on movement state) to trigger a room switch.
-- **Movement state awareness**: devices transition through MOVING (0-2 min), SETTLING (2-10 min), and STATIONARY (10+ min) states. Stationary devices require stronger evidence (3 sigma / 99.7% confidence) to switch rooms.
+- **Noise-aware stability margins**: the system accounts for measurement uncertainty when deciding whether to switch rooms. A challenger room must be closer by a statistically significant amount -- not just a little closer due to random signal fluctuation.
+- **Movement state awareness**: devices transition through MOVING (0-2 min), SETTLING (2-10 min), and STATIONARY (10+ min) states. Stationary devices require stronger evidence to switch rooms, reducing false room changes.
 - **Cross-floor streak protection**: switching floors requires 6 consecutive wins (vs 4 for same-floor switches) and additional history checks.
-- **Soft incumbent protection**: when a scanner temporarily stops sending data, challengers still need sustained evidence before replacing the incumbent area.
+- **Soft incumbent protection**: when a scanner temporarily stops sending data, challengers still need sustained evidence before replacing the current room.
 
 ### Scanner Auto-Calibration
 
-Automatic RSSI offset calibration using mutual cross-visibility between scanners (scanners that can see each other's iBeacon advertisements).
+Automatic offset calibration using mutual visibility between scanners (scanners that can see each other's Bluetooth signals).
 
-- Calculates suggested per-scanner RSSI offsets to normalize hardware differences.
-- Compensates for different TX power levels across scanner hardware.
-- Multi-factor confidence scoring (sample count, pair count, consistency) -- only shows suggestions above 70% confidence.
-- Not persisted across restarts; recalibrates automatically after each reboot.
+- Calculates suggested per-scanner offsets to normalize hardware differences between ESP32 boards and Shelly devices.
+- Compensates for different transmit power levels across scanner hardware.
+- Multi-factor confidence scoring -- only shows suggestions above 70% confidence.
+- Not persisted across restarts; recalibrates automatically after each reboot (typically converges within 2-4 hours).
+
+**[Read the full Scanner Calibration Guide](docs/scanner-calibration.md)** for step-by-step instructions, including how to use the auto-calibration suggestions.
 
 ### Recorder Database Optimization
 
@@ -125,6 +129,14 @@ Reduces Home Assistant database writes by approximately 98%, which is critical f
   [![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=jleinenbach&repository=bermuda&category=Integration)
 
 ## Documentation and help
+
+### Guides
+
+- **[Fingerprint Training Guide](docs/fingerprint-training.md)** -- How to teach Bermuda what your rooms look like. Covers regular rooms, scannerless rooms, multi-position training, and when to reset training data.
+- **[Scanner Calibration Guide](docs/scanner-calibration.md)** -- How to calibrate distance accuracy. Covers the global distance model, per-scanner RSSI offsets, and the automatic calibration suggestions.
+- **[Troubleshooting](docs/troubleshooting.md)** -- Common issues with scanners, distances, room detection, and metadevices.
+
+### Community
 
 [The Wiki](https://github.com/jleinenbach/bermuda/wiki/) is the primary and official source of information for setting up Bermuda.
 
