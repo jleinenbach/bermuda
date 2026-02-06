@@ -80,6 +80,27 @@ if TYPE_CHECKING:
     from .coordinator import BermudaDataUpdateCoordinator
 
 
+def _is_better_entry(candidate: dr.DeviceEntry, current: dr.DeviceEntry) -> bool:
+    """
+    Return True if candidate has richer metadata than current.
+
+    When multiple DeviceEntries match the same scanner (e.g., ESPHome's "mac"
+    entry, HA Bluetooth's auto-created entry, and a second BT entry with BLE MAC),
+    we prefer entries that have area_id and/or name_by_user set, since those
+    carry the user's room/floor/name configuration. HA's Bluetooth integration
+    auto-creates entries with MAC-as-name and no area assignment, which should
+    not overwrite a user-configured ESPHome or Shelly entry.
+    """
+    # If candidate has area_id and current doesn't, prefer candidate.
+    if candidate.area_id is not None and current.area_id is None:
+        return True
+    # If candidate lacks area_id but current has it, keep current.
+    if candidate.area_id is None and current.area_id is not None:
+        return False
+    # Both have area_id or both lack it — check name_by_user as tiebreaker.
+    return candidate.name_by_user is not None and current.name_by_user is None
+
+
 class BermudaDevice:
     """
     This class is to represent a single bluetooth "device" tracked by Bermuda.
@@ -431,12 +452,17 @@ class BermudaDevice:
             for conn in devreg_device.connections:
                 if conn[0] == "bluetooth":
                     # Bluetooth component's device!
-                    scanner_devreg_bt = devreg_device
-                    scanner_devreg_bt_address = conn[1].lower()
+                    # Prefer entries with area_id or name_by_user (richer metadata)
+                    # over entries without, since HA's Bluetooth integration auto-creates
+                    # entries with MAC-as-name and no area assignment.
+                    if scanner_devreg_bt is None or _is_better_entry(devreg_device, scanner_devreg_bt):
+                        scanner_devreg_bt = devreg_device
+                        scanner_devreg_bt_address = conn[1].lower()
                 if conn[0] == "mac":
                     # ESPHome, Shelly
-                    scanner_devreg_mac = devreg_device
-                    scanner_devreg_mac_address = conn[1]
+                    if scanner_devreg_mac is None or _is_better_entry(devreg_device, scanner_devreg_mac):
+                        scanner_devreg_mac = devreg_device
+                        scanner_devreg_mac_address = conn[1]
 
         devreg_count = len(devreg_seen_ids)
         if devreg_count not in (1, 2, 3):
