@@ -149,6 +149,7 @@ class TestBermudaEntityDeviceInfo:
         unique_id: str = "test_unique_id",
         fmdn_device_id: str | None = None,
         fmdn_canonical_id: str | None = None,
+        entry_id: str | None = None,
     ) -> BermudaEntity:
         """Create a BermudaEntity instance for testing."""
         mock_device = MagicMock()
@@ -161,6 +162,7 @@ class TestBermudaEntityDeviceInfo:
         mock_device.address_ble_mac = None
         mock_device.fmdn_device_id = fmdn_device_id
         mock_device.fmdn_canonical_id = fmdn_canonical_id
+        mock_device.entry_id = entry_id
 
         mock_dr = MagicMock()
         mock_dr.async_get.return_value = None
@@ -241,17 +243,139 @@ class TestBermudaEntityDeviceInfo:
         assert (DOMAIN_GOOGLEFINDMY, "canonical_id") in device_info["identifiers"]
 
     def test_device_info_for_scanner(self) -> None:
-        """Test device_info for scanner device."""
+        """Test device_info for scanner device without entry_id falls back to connections."""
         entity = self._create_entity(
             address="aa:bb:cc:dd:ee:ff",
             is_scanner=True,
+            entry_id=None,
         )
 
         device_info = entity.device_info
 
         assert device_info is not None
-        # Scanner should have bluetooth connection
+        # Scanner without entry_id should fall back to bluetooth connections
         assert len(device_info["connections"]) > 0
+
+    def test_device_info_for_scanner_with_congealment(self) -> None:
+        """Test device_info for scanner device congeals with native integration device.
+
+        When a scanner has an entry_id (from ESPHome/Shelly/Bluetooth), the
+        device_info should return the native integration's identifiers so that
+        Bermuda entities appear in the same HA device.
+        """
+        entity = self._create_entity(
+            address="48:27:e2:e3:f2:da",
+            is_scanner=True,
+            entry_id="scanner_device_registry_id",
+        )
+
+        # Mock the ESPHome/Shelly device registry entry
+        mock_scanner_entry = MagicMock()
+        mock_scanner_entry.identifiers = {("esphome", "atoms3-bt-5")}
+        entity.dr.async_get.return_value = mock_scanner_entry
+
+        device_info = entity.device_info
+
+        assert device_info is not None
+        # Should use the native integration's identifiers for congealment
+        assert ("esphome", "atoms3-bt-5") in device_info["identifiers"]
+        assert device_info["name"] == "Test Device"
+        # Should NOT have bermuda domain identifier (congealment replaces it)
+        assert (DOMAIN, "test_unique_id") not in device_info.get("identifiers", set())
+
+    def test_device_info_for_scanner_congealment_calls_dr_async_get(self) -> None:
+        """Test that scanner congealment looks up the entry_id in device registry."""
+        entity = self._create_entity(
+            address="48:27:e2:e3:f2:da",
+            is_scanner=True,
+            entry_id="my_scanner_entry_id",
+        )
+
+        mock_entry = MagicMock()
+        mock_entry.identifiers = {("esphome", "my_device")}
+        entity.dr.async_get.return_value = mock_entry
+
+        entity.device_info
+
+        entity.dr.async_get.assert_called_with("my_scanner_entry_id")
+
+    def test_device_info_for_scanner_congealment_fallback_no_entry(self) -> None:
+        """Test scanner congealment falls back to connections when entry not found."""
+        entity = self._create_entity(
+            address="aa:bb:cc:dd:ee:ff",
+            is_scanner=True,
+            entry_id="nonexistent_entry_id",
+        )
+
+        # async_get returns None (entry not found)
+        entity.dr.async_get.return_value = None
+
+        device_info = entity.device_info
+
+        assert device_info is not None
+        # Should fall back to connections-based approach
+        assert len(device_info["connections"]) > 0
+        assert (DOMAIN, "test_unique_id") in device_info["identifiers"]
+
+    def test_device_info_for_scanner_congealment_fallback_no_identifiers(self) -> None:
+        """Test scanner congealment falls back when entry has no identifiers."""
+        entity = self._create_entity(
+            address="aa:bb:cc:dd:ee:ff",
+            is_scanner=True,
+            entry_id="entry_with_no_identifiers",
+        )
+
+        mock_entry = MagicMock()
+        mock_entry.identifiers = set()  # Empty identifiers
+        entity.dr.async_get.return_value = mock_entry
+
+        device_info = entity.device_info
+
+        assert device_info is not None
+        # Should fall back to connections-based approach
+        assert len(device_info["connections"]) > 0
+        assert (DOMAIN, "test_unique_id") in device_info["identifiers"]
+
+    def test_device_info_for_scanner_congealment_preserves_name(self) -> None:
+        """Test scanner congealment preserves the Bermuda device name."""
+        entity = self._create_entity(
+            address="48:27:e2:e3:f2:da",
+            is_scanner=True,
+            entry_id="scanner_entry_id",
+        )
+        entity._device.name = "BT Scanner 5 Wohnzimmer"
+
+        mock_entry = MagicMock()
+        mock_entry.identifiers = {("esphome", "atoms3-bt-5")}
+        entity.dr.async_get.return_value = mock_entry
+
+        device_info = entity.device_info
+
+        assert device_info is not None
+        assert device_info["name"] == "BT Scanner 5 Wohnzimmer"
+
+    def test_device_info_scanner_congealment_with_multiple_identifiers(self) -> None:
+        """Test scanner congealment works with multiple native identifiers."""
+        entity = self._create_entity(
+            address="48:27:e2:e3:f2:da",
+            is_scanner=True,
+            entry_id="scanner_entry_id",
+        )
+
+        # Some integrations register multiple identifiers
+        mock_entry = MagicMock()
+        mock_entry.identifiers = {
+            ("esphome", "atoms3-bt-5"),
+            ("bluetooth", "48:27:E2:E3:F2:DA"),
+        }
+        entity.dr.async_get.return_value = mock_entry
+
+        device_info = entity.device_info
+
+        assert device_info is not None
+        # All native identifiers should be passed through
+        assert ("esphome", "atoms3-bt-5") in device_info["identifiers"]
+        assert ("bluetooth", "48:27:E2:E3:F2:DA") in device_info["identifiers"]
 
 
 class TestBermudaEntityDeviceStateAttributes:
