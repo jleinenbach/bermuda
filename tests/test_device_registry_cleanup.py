@@ -70,3 +70,60 @@ async def test_cleanup_ignores_non_bermuda_devices(
     refreshed = registry.async_get(original.id)
     assert refreshed is not None
     assert refreshed.connections == original_connections
+
+
+async def test_cleanup_handles_connection_collision_gracefully(
+    coordinator: BermudaDataUpdateCoordinator, mock_bermuda_entry: MockConfigEntry
+) -> None:
+    """Regression: DeviceConnectionCollisionError must not crash startup.
+
+    When normalizing 'mac' -> CONNECTION_NETWORK_MAC creates a collision with
+    another device that already owns the same canonical connection, the cleanup
+    must skip the colliding device and continue processing the remaining ones.
+    """
+    registry = coordinator.dr
+
+    # Device A (non-Bermuda) already owns the canonical MAC connection.
+    registry.async_get_or_create(
+        config_entry_id=mock_bermuda_entry.entry_id,
+        identifiers={("esphome", "scanner-wifi")},
+        connections={
+            (dr.CONNECTION_NETWORK_MAC, "aa:bb:cc:dd:ee:ff"),
+        },
+    )
+
+    # Device B (Bermuda) has the same MAC under the legacy 'mac' type.
+    # Normalization will try 'mac' -> CONNECTION_NETWORK_MAC which collides
+    # with Device A.
+    colliding_device = registry.async_get_or_create(
+        config_entry_id=mock_bermuda_entry.entry_id,
+        identifiers={(DOMAIN, "colliding-device")},
+        connections={
+            ("mac", "AA:BB:CC:DD:EE:FF"),
+        },
+    )
+    colliding_original = set(colliding_device.connections)
+
+    # Device C (Bermuda) should still be normalized despite B's collision.
+    other_device = registry.async_get_or_create(
+        config_entry_id=mock_bermuda_entry.entry_id,
+        identifiers={(DOMAIN, "other-device")},
+        connections={
+            ("mac", "11:22:33:44:55:66"),
+        },
+    )
+
+    # Must NOT raise DeviceConnectionCollisionError.
+    await coordinator.async_cleanup_device_registry_connections()
+
+    # Colliding device: update was skipped, connections unchanged.
+    refreshed_colliding = registry.async_get(colliding_device.id)
+    assert refreshed_colliding is not None
+    assert refreshed_colliding.connections == colliding_original
+
+    # Other device: successfully normalized.
+    refreshed_other = registry.async_get(other_device.id)
+    assert refreshed_other is not None
+    assert refreshed_other.connections == {
+        (dr.CONNECTION_NETWORK_MAC, normalize_mac("11:22:33:44:55:66")),
+    }

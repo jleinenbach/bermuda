@@ -44,6 +44,7 @@ from homeassistant.helpers import (
 )
 from homeassistant.helpers.device_registry import (
     EVENT_DEVICE_REGISTRY_UPDATED,
+    DeviceConnectionCollisionError,
     EventDeviceRegistryUpdatedData,
 )
 from homeassistant.helpers.dispatcher import async_dispatcher_send
@@ -596,7 +597,19 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             if normalized_connections != original_connections:
                 # new_connections replaces the existing set (it is not merged), so legacy/duplicated
                 # tuples are dropped when we write the canonicalized set back.
-                registry.async_update_device(device.id, new_connections=normalized_connections)
+                try:
+                    registry.async_update_device(device.id, new_connections=normalized_connections)
+                except DeviceConnectionCollisionError:
+                    # A connection (e.g. bluetooth MAC) may already belong to another device
+                    # (e.g. the HA Bluetooth auto-created device or a congealed ESPHome device).
+                    # This is expected for scanner devices and is harmless — skip the update.
+                    _LOGGER.debug(
+                        "Skipping connection normalization for %s (%s): "
+                        "connection already registered with another device",
+                        device.name,
+                        device.id,
+                    )
+                    continue
                 updated += 1
 
         if updated:
