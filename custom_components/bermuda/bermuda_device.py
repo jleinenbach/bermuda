@@ -369,10 +369,13 @@ class BermudaDevice:
             self._is_remote_scanner = True
         else:
             self._is_remote_scanner = False
-        self._coordinator.scanner_list_add(self)
-
-        # Find the relevant device entries in HA for this scanner and apply the names, addresses etc
+        # Resolve device entries FIRST (sets address_wifi_mac, address_ble_mac etc.)
+        # This MUST happen before scanner_list_add() because that dispatches
+        # SIGNAL_SCANNERS_CHANGED which triggers entity creation. Entity device_info
+        # needs address_wifi_mac to be set for proper device congealment.
         self.async_as_scanner_resolve_device_entries()
+
+        self._coordinator.scanner_list_add(self)
 
         # Call the per-update processor as well, but only
         # if this is our first ha_scanner.
