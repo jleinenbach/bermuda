@@ -132,6 +132,18 @@ class BermudaEntity(CoordinatorEntity):
         model = None
 
         if self._device.is_scanner:
+            # Scanner device congealment: use the scanner's native integration
+            # device entry identifiers so Bermuda entities appear in the same
+            # HA device as ESPHome/Shelly/Bluetooth entities.
+            # This follows the same pattern as FMDN device congealment.
+            if self._device.entry_id:
+                scanner_device_entry = self.dr.async_get(self._device.entry_id)
+                if scanner_device_entry and scanner_device_entry.identifiers:
+                    return DeviceInfo(
+                        identifiers=scanner_device_entry.identifiers,
+                        name=self._device.name,
+                    )
+            # Fallback: use connections for congealment if entry_id lookup fails.
             # ESPHome proxies prior to 2025.3 report their WIFI MAC for any address,
             # except for received iBeacons.
             connections = set()
