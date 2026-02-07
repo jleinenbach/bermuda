@@ -452,20 +452,50 @@ class BermudaDevice:
                 continue
             devreg_seen_ids.add(devreg_device.id)
             devreg_stringlist += f"** {devreg_device.name_by_user or devreg_device.name}\n"
+            # Two-pass classification: first determine what connection types
+            # this device has, then classify accordingly. A device with BOTH
+            # "bluetooth" and "mac" connections is a BT device with a polluted
+            # "mac" entry (from old Bermuda code) — classify as BT only.
+            has_bt_conn = False
+            bt_addr: str | None = None
+            mac_addr: str | None = None
             for conn in devreg_device.connections:
                 if conn[0] == "bluetooth":
-                    # Bluetooth component's device!
-                    # Prefer entries with area_id or name_by_user (richer metadata)
-                    # over entries without, since HA's Bluetooth integration auto-creates
-                    # entries with MAC-as-name and no area assignment.
-                    if scanner_devreg_bt is None or _is_better_entry(devreg_device, scanner_devreg_bt):
-                        scanner_devreg_bt = devreg_device
-                        scanner_devreg_bt_address = conn[1].lower()
-                if conn[0] == "mac":
-                    # ESPHome, Shelly
-                    if scanner_devreg_mac is None or _is_better_entry(devreg_device, scanner_devreg_mac):
-                        scanner_devreg_mac = devreg_device
-                        scanner_devreg_mac_address = conn[1].lower()
+                    has_bt_conn = True
+                    bt_addr = conn[1].lower()
+                elif conn[0] == "mac":
+                    mac_addr = conn[1].lower()
+
+            if has_bt_conn and bt_addr is not None:
+                # Bluetooth component's device!
+                # Prefer entries with area_id or name_by_user (richer metadata)
+                # over entries without, since HA's Bluetooth integration auto-creates
+                # entries with MAC-as-name and no area assignment.
+                if scanner_devreg_bt is None or _is_better_entry(devreg_device, scanner_devreg_bt):
+                    scanner_devreg_bt = devreg_device
+                    scanner_devreg_bt_address = bt_addr
+            elif mac_addr is not None:
+                # ESPHome, Shelly — only if device does NOT have "bluetooth"
+                # connection. Devices with both are BT devices with polluted
+                # "mac" entries and must not be classified as ESPHome/Shelly.
+                if scanner_devreg_mac is None or _is_better_entry(devreg_device, scanner_devreg_mac):
+                    scanner_devreg_mac = devreg_device
+                    scanner_devreg_mac_address = mac_addr
+
+        # Clean up polluted "mac" connections from BT devices.
+        # Old Bermuda code incorrectly added CONNECTION_NETWORK_MAC with the
+        # BLE MAC address to BT devices via async_get_or_create(). HA merged
+        # this into the BT device, creating a stale "mac" connection that
+        # causes misclassification. Remove it so future lookups are correct.
+        if scanner_devreg_bt is not None:
+            clean_conns = frozenset(c for c in scanner_devreg_bt.connections if c[0] != "mac")
+            if clean_conns != scanner_devreg_bt.connections:
+                _LOGGER.info(
+                    "Cleaning polluted 'mac' connection from BT device %s (%s)",
+                    scanner_devreg_bt.name,
+                    scanner_devreg_bt.id,
+                )
+                self._coordinator.dr.async_update_device(scanner_devreg_bt.id, new_connections=clean_conns)
 
         devreg_count = len(devreg_seen_ids)
         if devreg_count not in (1, 2, 3):
