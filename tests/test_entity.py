@@ -439,6 +439,193 @@ class TestBermudaEntityDeviceInfo:
         for conn_type, mac in connections:
             assert mac == "48:27:e2:e3:f2:da"  # Normalized lowercase
 
+    def test_device_info_scanner_priority3_mac_offset_finds_esphome(self) -> None:
+        """Test Priority 3: MAC-offset search finds ESPHome device when P1 and P2 fail.
+
+        When address_wifi_mac is None and entry_id lookup fails, the code
+        searches MAC offsets (-3 to +2) from the BLE address to find an
+        ESPHome/Shelly device registered with CONNECTION_NETWORK_MAC.
+        """
+        # BLE address: offset -2 from WiFi MAC (typical ESP32)
+        entity = self._create_entity(
+            address="48:27:e2:e3:f2:d8",
+            is_scanner=True,
+            entry_id=None,
+            address_wifi_mac=None,  # WiFi MAC not resolved
+            address_ble_mac="48:27:e2:e3:f2:d8",
+        )
+
+        # ESPHome device registered with WiFi MAC (offset -2 from BLE)
+        mock_esphome_entry = MagicMock()
+        mock_esphome_entry.identifiers = {("esphome", "atoms3-bt-5")}
+
+        def mock_get_device(connections=None, identifiers=None):
+            if connections:
+                for conn_type, mac in connections:
+                    # WiFi MAC = BLE MAC - 2 = 48:27:e2:e3:f2:d6
+                    if conn_type == "mac" and mac == "48:27:e2:e3:f2:d6":
+                        return mock_esphome_entry
+            return None
+
+        entity.dr.async_get_device.side_effect = mock_get_device
+
+        device_info = entity.device_info
+
+        assert device_info is not None
+        assert ("esphome", "atoms3-bt-5") in device_info["identifiers"]
+        assert device_info["name"] == "Test Device"
+
+    def test_device_info_scanner_priority3_uses_address_ble_mac(self) -> None:
+        """Test Priority 3: uses address_ble_mac when available for offset search."""
+        entity = self._create_entity(
+            address="some:other:addr:00:00:01",
+            is_scanner=True,
+            entry_id=None,
+            address_wifi_mac=None,
+            address_ble_mac="48:27:e2:e3:f2:d8",  # BLE MAC set separately
+        )
+
+        mock_esphome_entry = MagicMock()
+        mock_esphome_entry.identifiers = {("esphome", "my-scanner")}
+
+        def mock_get_device(connections=None, identifiers=None):
+            if connections:
+                for conn_type, mac in connections:
+                    # WiFi MAC = BLE MAC - 2
+                    if conn_type == "mac" and mac == "48:27:e2:e3:f2:d6":
+                        return mock_esphome_entry
+            return None
+
+        entity.dr.async_get_device.side_effect = mock_get_device
+
+        device_info = entity.device_info
+
+        assert device_info is not None
+        assert ("esphome", "my-scanner") in device_info["identifiers"]
+
+    def test_device_info_scanner_priority3_skips_no_identifiers(self) -> None:
+        """Test Priority 3: skips candidates without identifiers and keeps searching."""
+        entity = self._create_entity(
+            address="48:27:e2:e3:f2:d8",
+            is_scanner=True,
+            entry_id=None,
+            address_wifi_mac=None,
+            address_ble_mac="48:27:e2:e3:f2:d8",
+        )
+
+        # First candidate has no identifiers, second one does
+        mock_empty = MagicMock()
+        mock_empty.identifiers = set()
+        mock_good = MagicMock()
+        mock_good.identifiers = {("esphome", "found-it")}
+
+        call_count = 0
+
+        def mock_get_device(connections=None, identifiers=None):
+            nonlocal call_count
+            if connections:
+                for conn_type, mac in connections:
+                    if conn_type == "mac":
+                        call_count += 1
+                        # First match: empty identifiers (offset -3)
+                        if mac == "48:27:e2:e3:f2:d5":
+                            return mock_empty
+                        # Second match: good identifiers (offset -2)
+                        if mac == "48:27:e2:e3:f2:d6":
+                            return mock_good
+            return None
+
+        entity.dr.async_get_device.side_effect = mock_get_device
+
+        device_info = entity.device_info
+
+        assert device_info is not None
+        assert ("esphome", "found-it") in device_info["identifiers"]
+
+    def test_device_info_scanner_priority3_after_entry_id_no_identifiers(self) -> None:
+        """Test Priority 3: runs after entry_id lookup returns device without identifiers."""
+        entity = self._create_entity(
+            address="48:27:e2:e3:f2:d8",
+            is_scanner=True,
+            entry_id="bt_entry_id",
+            address_wifi_mac=None,
+            address_ble_mac="48:27:e2:e3:f2:d8",
+        )
+
+        # entry_id returns a device but with empty identifiers
+        mock_bt_entry = MagicMock()
+        mock_bt_entry.identifiers = set()
+        entity.dr.async_get.return_value = mock_bt_entry
+
+        # Priority 3 finds ESPHome device
+        mock_esphome_entry = MagicMock()
+        mock_esphome_entry.identifiers = {("esphome", "my-esp")}
+
+        def mock_get_device(connections=None, identifiers=None):
+            if connections:
+                for conn_type, mac in connections:
+                    if conn_type == "mac" and mac == "48:27:e2:e3:f2:d6":
+                        return mock_esphome_entry
+            return None
+
+        entity.dr.async_get_device.side_effect = mock_get_device
+
+        device_info = entity.device_info
+
+        assert device_info is not None
+        assert ("esphome", "my-esp") in device_info["identifiers"]
+
+    def test_device_info_scanner_fallback_no_wifi_mac_no_network_mac_connection(self) -> None:
+        """Test fallback: when WiFi MAC is None, CONNECTION_NETWORK_MAC is NOT added.
+
+        Previously the fallback used the BLE MAC for CONNECTION_NETWORK_MAC which
+        is incorrect (BLE MAC != WiFi MAC) and would create a separate device.
+        """
+        entity = self._create_entity(
+            address="aa:bb:cc:dd:ee:ff",
+            is_scanner=True,
+            entry_id=None,
+            address_wifi_mac=None,
+        )
+
+        # All lookups fail
+        entity.dr.async_get_device.return_value = None
+        entity.dr.async_get.return_value = None
+
+        device_info = entity.device_info
+
+        assert device_info is not None
+        # Check that CONNECTION_NETWORK_MAC is NOT in connections
+        for conn_type, _mac in device_info["connections"]:
+            assert conn_type != "mac", "CONNECTION_NETWORK_MAC should not be set when WiFi MAC is unknown"
+        # CONNECTION_BLUETOOTH should still be present
+        bluetooth_conns = [(ct, m) for ct, m in device_info["connections"] if ct == "bluetooth"]
+        assert len(bluetooth_conns) == 1
+
+    def test_device_info_scanner_fallback_with_wifi_mac_has_both_connections(self) -> None:
+        """Test fallback: when WiFi MAC is known, both connection types are added."""
+        entity = self._create_entity(
+            address="48:27:e2:e3:f2:d8",
+            is_scanner=True,
+            entry_id=None,
+            address_wifi_mac="48:27:e2:e3:f2:da",
+        )
+
+        # WiFi MAC lookup fails (device not in registry yet)
+        entity.dr.async_get_device.return_value = None
+        entity.dr.async_get.return_value = None
+
+        device_info = entity.device_info
+
+        assert device_info is not None
+        conn_types = {ct for ct, _m in device_info["connections"]}
+        assert "mac" in conn_types, "CONNECTION_NETWORK_MAC should be set when WiFi MAC is known"
+        assert "bluetooth" in conn_types, "CONNECTION_BLUETOOTH should be present"
+        # Verify the MAC values
+        conn_dict = {ct: m for ct, m in device_info["connections"]}
+        assert conn_dict["mac"] == "48:27:e2:e3:f2:da"
+        assert conn_dict["bluetooth"] == "48:27:e2:e3:f2:d8"
+
 
 class TestBermudaEntityDeviceStateAttributes:
     """Tests for BermudaEntity device_state_attributes property."""

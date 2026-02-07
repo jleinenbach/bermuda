@@ -22,7 +22,7 @@ from .const import (
     DOMAIN_GOOGLEFINDMY,
     DOMAIN_PRIVATE_BLE_DEVICE,
 )
-from .util import is_mac_address, normalize_mac
+from .util import is_mac_address, mac_math_offset, normalize_mac
 
 if TYPE_CHECKING:
     from . import BermudaConfigEntry
@@ -154,18 +154,38 @@ class BermudaEntity(CoordinatorEntity):
             if congealment_device is None and self._device.entry_id:
                 congealment_device = self.dr.async_get(self._device.entry_id)
 
+            # Priority 3: Direct MAC-offset search for ESPHome/Shelly device.
+            # Handles cases where scanner resolution failed (ESPHome not yet
+            # loaded, non-standard MAC offset, etc.). Searches device registry
+            # for any device with CONNECTION_NETWORK_MAC matching a MAC offset
+            # (-3 to +2) from the scanner's BLE address.
+            if congealment_device is None or not congealment_device.identifiers:
+                base_addr = self._device.address_ble_mac or self._device.address
+                for offset in range(-3, 3):
+                    alt_mac = mac_math_offset(base_addr, offset)
+                    if alt_mac is None:
+                        continue
+                    try:
+                        alt_mac_norm = normalize_mac(alt_mac)
+                    except ValueError:
+                        continue
+                    candidate = self.dr.async_get_device(connections={(dr.CONNECTION_NETWORK_MAC, alt_mac_norm)})
+                    if candidate is not None and candidate.identifiers:
+                        congealment_device = candidate
+                        break
+
             if congealment_device is not None and congealment_device.identifiers:
                 return DeviceInfo(
                     identifiers=congealment_device.identifiers,
                     name=self._device.name,
                 )
             # Fallback: use connections for congealment if all lookups fail.
-            # ESPHome proxies prior to 2025.3 report their WIFI MAC for any address,
-            # except for received iBeacons.
+            # Only add CONNECTION_NETWORK_MAC if we actually know the WiFi MAC.
+            # Using the BLE MAC as CONNECTION_NETWORK_MAC is incorrect and
+            # would create a separate device instead of congealing.
             connections = set()
-            wifi_address = self._device.address_wifi_mac or self._device.address
-            if wifi_address and is_mac_address(wifi_address):
-                connections.add((dr.CONNECTION_NETWORK_MAC, normalize_mac(wifi_address)))
+            if self._device.address_wifi_mac and is_mac_address(self._device.address_wifi_mac):
+                connections.add((dr.CONNECTION_NETWORK_MAC, normalize_mac(self._device.address_wifi_mac)))
             ble_address = self._device.address_ble_mac or self._device.address
             if ble_address and is_mac_address(ble_address):
                 connections.add((dr.CONNECTION_BLUETOOTH, normalize_mac(ble_address)))
