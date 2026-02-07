@@ -184,23 +184,8 @@ class BermudaEntity(CoordinatorEntity):
                 congealment_device = self.dr.async_get(self._device.entry_id)
 
             if congealment_device is not None and congealment_device.identifiers:
-                merged_identifiers = set(congealment_device.identifiers)
-                merged_connections: set[tuple[str, str]] = set()
-
-                # If entry_id points to a DIFFERENT device (typically the HA
-                # Bluetooth proxy device), include its identifiers and
-                # connections to trigger HA device merging. This eliminates
-                # the separate "Verbundene Geräte" (Connected Devices) entry
-                # by folding the BT proxy device into the ESPHome device.
-                if self._device.entry_id:
-                    secondary = self.dr.async_get(self._device.entry_id)
-                    if secondary is not None and secondary.id != congealment_device.id:
-                        merged_identifiers.update(secondary.identifiers)
-                        merged_connections.update(secondary.connections)
-
                 return DeviceInfo(
-                    identifiers=merged_identifiers,
-                    connections=merged_connections,
+                    identifiers=congealment_device.identifiers,
                     name=self._device.name,
                 )
             # Fallback: use connections for congealment if all lookups fail.

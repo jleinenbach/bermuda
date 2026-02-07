@@ -267,9 +267,6 @@ class TestBermudaEntityDeviceInfo:
         to MAC offset (Priority 2) or entry_id (Priority 3). This ensures
         congealment targets the ESPHome device (with firmware info, manufacturer
         etc.) rather than the HA Bluetooth auto-created device.
-
-        When entry_id points to a DIFFERENT device (the BT proxy), that device's
-        identifiers and connections are merged to trigger HA device merging.
         """
         entity = self._create_entity(
             address="48:27:e2:e3:f2:d8",
@@ -280,30 +277,16 @@ class TestBermudaEntityDeviceInfo:
 
         # WiFi MAC lookup returns the ESPHome device (no bluetooth connection)
         mock_esphome_entry = MagicMock()
-        mock_esphome_entry.id = "esphome_device_id"
         mock_esphome_entry.identifiers = {("esphome", "atoms3-bt-5")}
         mock_esphome_entry.connections = frozenset({("mac", "48:27:e2:e3:f2:da")})
         entity.dr.async_get_device.return_value = mock_esphome_entry
-
-        # entry_id lookup returns the BT device (different from ESPHome)
-        mock_bt_entry = MagicMock()
-        mock_bt_entry.id = "bt_device_id"
-        mock_bt_entry.identifiers = {("bluetooth", "48:27:E2:E3:F2:D8")}
-        mock_bt_entry.connections = frozenset({("bluetooth", "48:27:e2:e3:f2:d8")})
-        entity.dr.async_get.return_value = mock_bt_entry
 
         device_info = entity.device_info
 
         assert device_info is not None
         # Should use ESPHome identifiers (from WiFi MAC lookup)
         assert ("esphome", "atoms3-bt-5") in device_info["identifiers"]
-        # BT device identifiers should also be merged (triggers HA device merging)
-        assert ("bluetooth", "48:27:E2:E3:F2:D8") in device_info["identifiers"]
-        # BT device connections should be merged
-        assert ("bluetooth", "48:27:e2:e3:f2:d8") in device_info["connections"]
         assert device_info["name"] == "Test Device"
-        # entry_id lookup IS called to merge BT proxy device
-        entity.dr.async_get.assert_called_with("bt_device_registry_id")
 
     def test_device_info_for_scanner_fallback_to_entry_id(self) -> None:
         """Test scanner congealment falls back to entry_id when no WiFi MAC and no MAC offset match."""
@@ -567,10 +550,7 @@ class TestBermudaEntityDeviceInfo:
         assert ("esphome", "found-it") in device_info["identifiers"]
 
     def test_device_info_scanner_priority2_finds_before_entry_id(self) -> None:
-        """Test Priority 2 (MAC offset) finds ESPHome before Priority 3 (entry_id).
-
-        P2 finds ESPHome, but entry_id lookup IS called to merge the BT proxy device.
-        """
+        """Test Priority 2 (MAC offset) finds ESPHome before Priority 3 (entry_id)."""
         entity = self._create_entity(
             address="48:27:e2:e3:f2:d8",
             is_scanner=True,
@@ -579,16 +559,8 @@ class TestBermudaEntityDeviceInfo:
             address_ble_mac="48:27:e2:e3:f2:d8",
         )
 
-        # entry_id returns BT device (different from ESPHome → will be merged)
-        mock_bt_entry = MagicMock()
-        mock_bt_entry.id = "bt_device_id"
-        mock_bt_entry.identifiers = {("bluetooth", "48:27:e2:e3:f2:d8")}
-        mock_bt_entry.connections = frozenset({("bluetooth", "48:27:e2:e3:f2:d8")})
-        entity.dr.async_get.return_value = mock_bt_entry
-
         # Priority 2 finds ESPHome device via MAC offset
         mock_esphome_entry = MagicMock()
-        mock_esphome_entry.id = "esphome_device_id"
         mock_esphome_entry.identifiers = {("esphome", "my-esp")}
         mock_esphome_entry.connections = frozenset({("mac", "48:27:e2:e3:f2:d6")})
 
@@ -606,12 +578,6 @@ class TestBermudaEntityDeviceInfo:
         assert device_info is not None
         # Should use ESPHome (from MAC offset) as primary
         assert ("esphome", "my-esp") in device_info["identifiers"]
-        # BT proxy device identifiers merged for HA device merging
-        assert ("bluetooth", "48:27:e2:e3:f2:d8") in device_info["identifiers"]
-        # BT proxy device connections merged
-        assert ("bluetooth", "48:27:e2:e3:f2:d8") in device_info["connections"]
-        # entry_id IS called to look up BT proxy for merging
-        entity.dr.async_get.assert_called_with("bt_entry_id")
 
     def test_device_info_scanner_fallback_no_wifi_mac_no_network_mac_connection(self) -> None:
         """Test fallback: when WiFi MAC is None, CONNECTION_NETWORK_MAC is NOT added.
@@ -663,106 +629,6 @@ class TestBermudaEntityDeviceInfo:
         conn_dict = {ct: m for ct, m in device_info["connections"]}
         assert conn_dict["mac"] == "48:27:e2:e3:f2:da"
         assert conn_dict["bluetooth"] == "48:27:e2:e3:f2:d8"
-
-    def test_device_info_scanner_merges_bt_proxy_into_esphome(self) -> None:
-        """Test that BT proxy device is merged into ESPHome device.
-
-        When congealment finds the ESPHome device (via WiFi MAC) and
-        entry_id points to a DIFFERENT device (the HA Bluetooth proxy),
-        both identifiers and connections should be included in DeviceInfo
-        to trigger HA's built-in device merging. This eliminates the
-        separate 'Verbundene Geräte' (Connected Devices) entry.
-        """
-        entity = self._create_entity(
-            address="48:27:e2:e3:f2:d8",
-            is_scanner=True,
-            entry_id="bt_proxy_device_id",
-            address_wifi_mac="48:27:e2:e3:f2:da",
-        )
-
-        # P1: WiFi MAC lookup returns the ESPHome device
-        mock_esphome = MagicMock()
-        mock_esphome.id = "esphome_device_id"
-        mock_esphome.identifiers = {("esphome", "atoms3-bt-5")}
-        mock_esphome.connections = frozenset({("mac", "48:27:e2:e3:f2:da")})
-        entity.dr.async_get_device.return_value = mock_esphome
-
-        # entry_id lookup returns the BT proxy device (different device)
-        mock_bt_proxy = MagicMock()
-        mock_bt_proxy.id = "bt_proxy_device_id"
-        mock_bt_proxy.identifiers = {("bluetooth", "48:27:E2:E3:F2:D8")}
-        mock_bt_proxy.connections = frozenset(
-            {
-                ("bluetooth", "48:27:e2:e3:f2:d8"),
-                ("mac", "48:27:e2:e3:f2:d8"),
-            }
-        )
-        entity.dr.async_get.return_value = mock_bt_proxy
-
-        device_info = entity.device_info
-
-        assert device_info is not None
-        # ESPHome identifiers (primary)
-        assert ("esphome", "atoms3-bt-5") in device_info["identifiers"]
-        # BT proxy identifiers (merged for device merging)
-        assert ("bluetooth", "48:27:E2:E3:F2:D8") in device_info["identifiers"]
-        # BT proxy connections (merged)
-        assert ("bluetooth", "48:27:e2:e3:f2:d8") in device_info["connections"]
-        assert ("mac", "48:27:e2:e3:f2:d8") in device_info["connections"]
-
-    def test_device_info_scanner_no_merge_when_same_device(self) -> None:
-        """Test no merge when entry_id points to the same congealment device.
-
-        When the congealment device (found via WiFi MAC or entry_id) IS the
-        same device as the entry_id device, no merging should happen (no
-        extra connections added).
-        """
-        entity = self._create_entity(
-            address="48:27:e2:e3:f2:d8",
-            is_scanner=True,
-            entry_id="same_device_id",
-            address_wifi_mac=None,
-        )
-
-        # P1/P2 fail, P3 finds device via entry_id
-        entity.dr.async_get_device.return_value = None
-
-        mock_device = MagicMock()
-        mock_device.id = "same_device_id"
-        mock_device.identifiers = {("esphome", "my-device")}
-        mock_device.connections = frozenset({("mac", "48:27:e2:e3:f2:da")})
-        entity.dr.async_get.return_value = mock_device
-
-        device_info = entity.device_info
-
-        assert device_info is not None
-        assert ("esphome", "my-device") in device_info["identifiers"]
-        # No extra connections should be merged (same device)
-        assert len(device_info["connections"]) == 0
-
-    def test_device_info_scanner_no_merge_when_no_entry_id(self) -> None:
-        """Test no merge attempt when entry_id is not set."""
-        entity = self._create_entity(
-            address="48:27:e2:e3:f2:d8",
-            is_scanner=True,
-            entry_id=None,
-            address_wifi_mac="48:27:e2:e3:f2:da",
-        )
-
-        # P1: WiFi MAC lookup returns the ESPHome device
-        mock_esphome = MagicMock()
-        mock_esphome.id = "esphome_device_id"
-        mock_esphome.identifiers = {("esphome", "atoms3-bt-5")}
-        mock_esphome.connections = frozenset({("mac", "48:27:e2:e3:f2:da")})
-        entity.dr.async_get_device.return_value = mock_esphome
-
-        device_info = entity.device_info
-
-        assert device_info is not None
-        assert ("esphome", "atoms3-bt-5") in device_info["identifiers"]
-        # No merge should happen - no entry_id set
-        assert len(device_info["connections"]) == 0
-        entity.dr.async_get.assert_not_called()
 
 
 class TestScannerPollutionFix:
@@ -887,7 +753,6 @@ class TestScannerPollutionFix:
         1. address_wifi_mac is BLE MAC (wrong, from polluted classification)
         2. P1 finds polluted BT device → SKIPPED (has 'bluetooth' connection)
         3. P2 MAC offset finds real ESPHome at offset -2 → USED
-        4. entry_id BT device merged into ESPHome device
         """
         entity = self._create_entity(
             address="48:27:e2:e3:f2:d8",
@@ -908,7 +773,6 @@ class TestScannerPollutionFix:
 
         # Real ESPHome device (WiFi MAC = BLE - 2)
         mock_esphome = MagicMock()
-        mock_esphome.id = "esphome_device_id"
         mock_esphome.identifiers = {("esphome", "my-scanner")}
         mock_esphome.connections = frozenset({("mac", "48:27:e2:e3:f2:d6")})
 
@@ -924,22 +788,11 @@ class TestScannerPollutionFix:
 
         entity.dr.async_get_device.side_effect = mock_get_device
 
-        # entry_id returns BT device (will be merged into ESPHome)
-        mock_bt_entry = MagicMock()
-        mock_bt_entry.id = "bt_device_id"
-        mock_bt_entry.identifiers = {("bluetooth", "48:27:e2:e3:f2:d8")}
-        mock_bt_entry.connections = frozenset({("bluetooth", "48:27:e2:e3:f2:d8")})
-        entity.dr.async_get.return_value = mock_bt_entry
-
         device_info = entity.device_info
 
         assert device_info is not None
         # Should congeal with ESPHome as primary
         assert ("esphome", "my-scanner") in device_info["identifiers"]
-        # BT proxy device merged for HA device merging
-        assert ("bluetooth", "48:27:e2:e3:f2:d8") in device_info["identifiers"]
-        # entry_id IS called to merge BT proxy
-        entity.dr.async_get.assert_called_with("bt_entry_id")
 
     def test_p3_entry_id_used_when_no_esphome_found(self) -> None:
         """Priority 3: entry_id used as last resort when no ESPHome/Shelly found.
