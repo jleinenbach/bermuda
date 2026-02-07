@@ -264,9 +264,9 @@ class TestBermudaEntityDeviceInfo:
 
         When a scanner has address_wifi_mac, it should look up the ESPHome/Shelly
         device via CONNECTION_NETWORK_MAC first (Priority 1), before falling back
-        to entry_id (Priority 2). This ensures congealment targets the ESPHome
-        device (with firmware info, manufacturer etc.) rather than the HA
-        Bluetooth auto-created device.
+        to MAC offset (Priority 2) or entry_id (Priority 3). This ensures
+        congealment targets the ESPHome device (with firmware info, manufacturer
+        etc.) rather than the HA Bluetooth auto-created device.
         """
         entity = self._create_entity(
             address="48:27:e2:e3:f2:d8",
@@ -275,14 +275,16 @@ class TestBermudaEntityDeviceInfo:
             address_wifi_mac="48:27:e2:e3:f2:da",
         )
 
-        # WiFi MAC lookup returns the ESPHome device
+        # WiFi MAC lookup returns the ESPHome device (no bluetooth connection)
         mock_esphome_entry = MagicMock()
         mock_esphome_entry.identifiers = {("esphome", "atoms3-bt-5")}
+        mock_esphome_entry.connections = frozenset({("mac", "48:27:e2:e3:f2:da")})
         entity.dr.async_get_device.return_value = mock_esphome_entry
 
         # entry_id lookup would return the BT device (should NOT be used)
         mock_bt_entry = MagicMock()
         mock_bt_entry.identifiers = {("bluetooth", "48:27:E2:E3:F2:D8")}
+        mock_bt_entry.connections = frozenset({("bluetooth", "48:27:e2:e3:f2:d8")})
         entity.dr.async_get.return_value = mock_bt_entry
 
         device_info = entity.device_info
@@ -295,7 +297,7 @@ class TestBermudaEntityDeviceInfo:
         entity.dr.async_get.assert_not_called()
 
     def test_device_info_for_scanner_fallback_to_entry_id(self) -> None:
-        """Test scanner congealment falls back to entry_id when no WiFi MAC."""
+        """Test scanner congealment falls back to entry_id when no WiFi MAC and no MAC offset match."""
         entity = self._create_entity(
             address="48:27:e2:e3:f2:da",
             is_scanner=True,
@@ -303,8 +305,13 @@ class TestBermudaEntityDeviceInfo:
             address_wifi_mac=None,
         )
 
+        # MAC offset search returns None (no device found)
+        entity.dr.async_get_device.return_value = None
+
+        # entry_id lookup returns ESPHome device
         mock_entry = MagicMock()
         mock_entry.identifiers = {("esphome", "atoms3-bt-5")}
+        mock_entry.connections = frozenset({("mac", "48:27:e2:e3:f2:da")})
         entity.dr.async_get.return_value = mock_entry
 
         device_info = entity.device_info
@@ -314,7 +321,7 @@ class TestBermudaEntityDeviceInfo:
         entity.dr.async_get.assert_called_with("scanner_device_registry_id")
 
     def test_device_info_for_scanner_fallback_wifi_mac_not_found(self) -> None:
-        """Test scanner congealment falls back to entry_id when WiFi MAC lookup fails."""
+        """Test scanner congealment falls back to entry_id when WiFi MAC and MAC offset fail."""
         entity = self._create_entity(
             address="48:27:e2:e3:f2:d8",
             is_scanner=True,
@@ -322,12 +329,13 @@ class TestBermudaEntityDeviceInfo:
             address_wifi_mac="48:27:e2:e3:f2:da",
         )
 
-        # WiFi MAC lookup returns None (device not found)
+        # WiFi MAC lookup AND MAC offset search both return None
         entity.dr.async_get_device.return_value = None
 
-        # Fall back to entry_id
+        # Fall back to entry_id (Priority 3)
         mock_bt_entry = MagicMock()
         mock_bt_entry.identifiers = {("bluetooth", "48:27:E2:E3:F2:D8")}
+        mock_bt_entry.connections = frozenset({("bluetooth", "48:27:e2:e3:f2:d8")})
         entity.dr.async_get.return_value = mock_bt_entry
 
         device_info = entity.device_info
@@ -388,6 +396,7 @@ class TestBermudaEntityDeviceInfo:
 
         mock_entry = MagicMock()
         mock_entry.identifiers = {("esphome", "atoms3-bt-5")}
+        mock_entry.connections = frozenset({("mac", "48:27:e2:e3:f2:da")})
         entity.dr.async_get_device.return_value = mock_entry
 
         device_info = entity.device_info
@@ -409,6 +418,7 @@ class TestBermudaEntityDeviceInfo:
             ("esphome", "atoms3-bt-5"),
             ("esphome", "atoms3-bt-5-bluetooth"),
         }
+        mock_entry.connections = frozenset({("mac", "48:27:e2:e3:f2:da")})
         entity.dr.async_get_device.return_value = mock_entry
 
         device_info = entity.device_info
@@ -428,6 +438,7 @@ class TestBermudaEntityDeviceInfo:
 
         mock_entry = MagicMock()
         mock_entry.identifiers = {("esphome", "test")}
+        mock_entry.connections = frozenset({("mac", "48:27:e2:e3:f2:da")})
         entity.dr.async_get_device.return_value = mock_entry
 
         entity.device_info
@@ -439,12 +450,12 @@ class TestBermudaEntityDeviceInfo:
         for conn_type, mac in connections:
             assert mac == "48:27:e2:e3:f2:da"  # Normalized lowercase
 
-    def test_device_info_scanner_priority3_mac_offset_finds_esphome(self) -> None:
-        """Test Priority 3: MAC-offset search finds ESPHome device when P1 and P2 fail.
+    def test_device_info_scanner_priority2_mac_offset_finds_esphome(self) -> None:
+        """Test Priority 2: MAC-offset search finds ESPHome device when P1 fails.
 
-        When address_wifi_mac is None and entry_id lookup fails, the code
-        searches MAC offsets (-3 to +2) from the BLE address to find an
-        ESPHome/Shelly device registered with CONNECTION_NETWORK_MAC.
+        When address_wifi_mac is None, the code searches MAC offsets (-3 to +2)
+        from the BLE address to find an ESPHome/Shelly device registered with
+        CONNECTION_NETWORK_MAC. Candidates with "bluetooth" connections are skipped.
         """
         # BLE address: offset -2 from WiFi MAC (typical ESP32)
         entity = self._create_entity(
@@ -458,6 +469,7 @@ class TestBermudaEntityDeviceInfo:
         # ESPHome device registered with WiFi MAC (offset -2 from BLE)
         mock_esphome_entry = MagicMock()
         mock_esphome_entry.identifiers = {("esphome", "atoms3-bt-5")}
+        mock_esphome_entry.connections = frozenset({("mac", "48:27:e2:e3:f2:d6")})
 
         def mock_get_device(connections=None, identifiers=None):
             if connections:
@@ -475,8 +487,8 @@ class TestBermudaEntityDeviceInfo:
         assert ("esphome", "atoms3-bt-5") in device_info["identifiers"]
         assert device_info["name"] == "Test Device"
 
-    def test_device_info_scanner_priority3_uses_address_ble_mac(self) -> None:
-        """Test Priority 3: uses address_ble_mac when available for offset search."""
+    def test_device_info_scanner_priority2_uses_address_ble_mac(self) -> None:
+        """Test Priority 2: uses address_ble_mac when available for offset search."""
         entity = self._create_entity(
             address="some:other:addr:00:00:01",
             is_scanner=True,
@@ -487,6 +499,7 @@ class TestBermudaEntityDeviceInfo:
 
         mock_esphome_entry = MagicMock()
         mock_esphome_entry.identifiers = {("esphome", "my-scanner")}
+        mock_esphome_entry.connections = frozenset({("mac", "48:27:e2:e3:f2:d6")})
 
         def mock_get_device(connections=None, identifiers=None):
             if connections:
@@ -503,8 +516,8 @@ class TestBermudaEntityDeviceInfo:
         assert device_info is not None
         assert ("esphome", "my-scanner") in device_info["identifiers"]
 
-    def test_device_info_scanner_priority3_skips_no_identifiers(self) -> None:
-        """Test Priority 3: skips candidates without identifiers and keeps searching."""
+    def test_device_info_scanner_priority2_skips_no_identifiers(self) -> None:
+        """Test Priority 2: skips candidates without identifiers and keeps searching."""
         entity = self._create_entity(
             address="48:27:e2:e3:f2:d8",
             is_scanner=True,
@@ -516,8 +529,10 @@ class TestBermudaEntityDeviceInfo:
         # First candidate has no identifiers, second one does
         mock_empty = MagicMock()
         mock_empty.identifiers = set()
+        mock_empty.connections = frozenset({("mac", "48:27:e2:e3:f2:d5")})
         mock_good = MagicMock()
         mock_good.identifiers = {("esphome", "found-it")}
+        mock_good.connections = frozenset({("mac", "48:27:e2:e3:f2:d6")})
 
         call_count = 0
 
@@ -542,8 +557,8 @@ class TestBermudaEntityDeviceInfo:
         assert device_info is not None
         assert ("esphome", "found-it") in device_info["identifiers"]
 
-    def test_device_info_scanner_priority3_after_entry_id_no_identifiers(self) -> None:
-        """Test Priority 3: runs after entry_id lookup returns device without identifiers."""
+    def test_device_info_scanner_priority2_finds_before_entry_id(self) -> None:
+        """Test Priority 2 (MAC offset) finds ESPHome before Priority 3 (entry_id)."""
         entity = self._create_entity(
             address="48:27:e2:e3:f2:d8",
             is_scanner=True,
@@ -552,14 +567,16 @@ class TestBermudaEntityDeviceInfo:
             address_ble_mac="48:27:e2:e3:f2:d8",
         )
 
-        # entry_id returns a device but with empty identifiers
+        # entry_id would return BT device (should NOT be used if P2 succeeds)
         mock_bt_entry = MagicMock()
-        mock_bt_entry.identifiers = set()
+        mock_bt_entry.identifiers = {("bluetooth", "48:27:e2:e3:f2:d8")}
+        mock_bt_entry.connections = frozenset({("bluetooth", "48:27:e2:e3:f2:d8")})
         entity.dr.async_get.return_value = mock_bt_entry
 
-        # Priority 3 finds ESPHome device
+        # Priority 2 finds ESPHome device via MAC offset
         mock_esphome_entry = MagicMock()
         mock_esphome_entry.identifiers = {("esphome", "my-esp")}
+        mock_esphome_entry.connections = frozenset({("mac", "48:27:e2:e3:f2:d6")})
 
         def mock_get_device(connections=None, identifiers=None):
             if connections:
@@ -573,7 +590,10 @@ class TestBermudaEntityDeviceInfo:
         device_info = entity.device_info
 
         assert device_info is not None
+        # Should use ESPHome (from MAC offset), NOT bluetooth (from entry_id)
         assert ("esphome", "my-esp") in device_info["identifiers"]
+        # entry_id lookup should NOT have been called
+        entity.dr.async_get.assert_not_called()
 
     def test_device_info_scanner_fallback_no_wifi_mac_no_network_mac_connection(self) -> None:
         """Test fallback: when WiFi MAC is None, CONNECTION_NETWORK_MAC is NOT added.
@@ -625,6 +645,221 @@ class TestBermudaEntityDeviceInfo:
         conn_dict = {ct: m for ct, m in device_info["connections"]}
         assert conn_dict["mac"] == "48:27:e2:e3:f2:da"
         assert conn_dict["bluetooth"] == "48:27:e2:e3:f2:d8"
+
+
+class TestScannerPollutionFix:
+    """Tests for scanner device congealment pollution fix.
+
+    The root cause: old Bermuda code added CONNECTION_NETWORK_MAC with the
+    BLE MAC address to BT devices via async_get_or_create(). HA merged this
+    into the BT device, creating a stale "mac" connection. This caused:
+    1. BT device classified as BOTH scanner_devreg_bt AND scanner_devreg_mac
+    2. address_wifi_mac set to BLE MAC (wrong)
+    3. entity.py congealed with BT device instead of ESPHome device
+    """
+
+    def _create_entity(
+        self,
+        address: str = "48:27:e2:e3:f2:d8",
+        entry_id: str | None = None,
+        address_wifi_mac: str | None = None,
+        address_ble_mac: str | None = None,
+    ) -> BermudaEntity:
+        """Create a scanner BermudaEntity for testing."""
+        mock_device = MagicMock()
+        mock_device.name = "Test Scanner"
+        mock_device.unique_id = "test_unique_id"
+        mock_device.address = address
+        mock_device.address_type = None
+        mock_device.is_scanner = True
+        mock_device.address_wifi_mac = address_wifi_mac
+        mock_device.address_ble_mac = address_ble_mac
+        mock_device.fmdn_device_id = None
+        mock_device.fmdn_canonical_id = None
+        mock_device.entry_id = entry_id
+
+        mock_dr = MagicMock()
+        mock_dr.async_get.return_value = None
+        mock_dr.async_get_device.return_value = None
+
+        entity = object.__new__(BermudaEntity)
+        entity._device = mock_device
+        entity.dr = mock_dr
+
+        return entity
+
+    def test_p1_wifi_mac_skips_polluted_bt_device(self) -> None:
+        """Priority 1: WiFi MAC lookup skips BT device with polluted 'mac' connection.
+
+        When old Bermuda code added a 'mac' connection to a BT device, a WiFi MAC
+        lookup might find that BT device. The fix verifies the result has no
+        'bluetooth' connection before accepting it.
+        """
+        entity = self._create_entity(
+            address_wifi_mac="48:27:e2:e3:f2:d8",  # Actually the BLE MAC (wrong)
+            address_ble_mac="48:27:e2:e3:f2:d8",
+        )
+
+        # WiFi MAC lookup finds the POLLUTED BT device
+        mock_polluted_bt = MagicMock()
+        mock_polluted_bt.identifiers = {("bluetooth", "48:27:e2:e3:f2:d8")}
+        mock_polluted_bt.connections = frozenset(
+            {
+                ("bluetooth", "48:27:e2:e3:f2:d8"),
+                ("mac", "48:27:e2:e3:f2:d8"),  # POLLUTED!
+            }
+        )
+
+        entity.dr.async_get_device.return_value = mock_polluted_bt
+
+        device_info = entity.device_info
+
+        assert device_info is not None
+        # Should NOT use the polluted BT device identifiers
+        assert ("bluetooth", "48:27:e2:e3:f2:d8") not in device_info.get("identifiers", set())
+
+    def test_p2_mac_offset_skips_polluted_bt_device(self) -> None:
+        """Priority 2: MAC offset search skips BT device with 'bluetooth' connection.
+
+        When searching MAC offsets, a BT device with a polluted 'mac' connection
+        at offset 0 should be skipped in favor of the real ESPHome device at offset -2.
+        """
+        entity = self._create_entity(
+            address_wifi_mac=None,
+            address_ble_mac="48:27:e2:e3:f2:d8",
+        )
+
+        # Polluted BT device found at offset 0
+        mock_polluted_bt = MagicMock()
+        mock_polluted_bt.identifiers = {("bluetooth", "48:27:e2:e3:f2:d8")}
+        mock_polluted_bt.connections = frozenset(
+            {
+                ("bluetooth", "48:27:e2:e3:f2:d8"),
+                ("mac", "48:27:e2:e3:f2:d8"),  # POLLUTED!
+            }
+        )
+
+        # Real ESPHome device found at offset -2
+        mock_esphome = MagicMock()
+        mock_esphome.identifiers = {("esphome", "my-scanner")}
+        mock_esphome.connections = frozenset({("mac", "48:27:e2:e3:f2:d6")})
+
+        def mock_get_device(connections=None, identifiers=None):
+            if connections:
+                for conn_type, mac in connections:
+                    if conn_type == "mac":
+                        if mac == "48:27:e2:e3:f2:d8":
+                            return mock_polluted_bt
+                        if mac == "48:27:e2:e3:f2:d6":
+                            return mock_esphome
+            return None
+
+        entity.dr.async_get_device.side_effect = mock_get_device
+
+        device_info = entity.device_info
+
+        assert device_info is not None
+        # Should use ESPHome (skipped polluted BT), NOT bluetooth
+        assert ("esphome", "my-scanner") in device_info["identifiers"]
+
+    def test_full_pollution_scenario_esphome_at_offset(self) -> None:
+        """Full scenario: BT device polluted, ESPHome found via MAC offset.
+
+        This tests the complete fix:
+        1. address_wifi_mac is BLE MAC (wrong, from polluted classification)
+        2. P1 finds polluted BT device → SKIPPED (has 'bluetooth' connection)
+        3. P2 MAC offset finds real ESPHome at offset -2 → USED
+        """
+        entity = self._create_entity(
+            address="48:27:e2:e3:f2:d8",
+            entry_id="bt_entry_id",
+            address_wifi_mac="48:27:e2:e3:f2:d8",  # Wrong: BLE MAC as WiFi MAC
+            address_ble_mac="48:27:e2:e3:f2:d8",
+        )
+
+        # Polluted BT device
+        mock_polluted_bt = MagicMock()
+        mock_polluted_bt.identifiers = {("bluetooth", "48:27:e2:e3:f2:d8")}
+        mock_polluted_bt.connections = frozenset(
+            {
+                ("bluetooth", "48:27:e2:e3:f2:d8"),
+                ("mac", "48:27:e2:e3:f2:d8"),
+            }
+        )
+
+        # Real ESPHome device (WiFi MAC = BLE - 2)
+        mock_esphome = MagicMock()
+        mock_esphome.identifiers = {("esphome", "my-scanner")}
+        mock_esphome.connections = frozenset({("mac", "48:27:e2:e3:f2:d6")})
+
+        def mock_get_device(connections=None, identifiers=None):
+            if connections:
+                for conn_type, mac in connections:
+                    if conn_type == "mac":
+                        if mac == "48:27:e2:e3:f2:d8":
+                            return mock_polluted_bt
+                        if mac == "48:27:e2:e3:f2:d6":
+                            return mock_esphome
+            return None
+
+        entity.dr.async_get_device.side_effect = mock_get_device
+
+        # entry_id returns BT device (last resort)
+        mock_bt_entry = MagicMock()
+        mock_bt_entry.identifiers = {("bluetooth", "48:27:e2:e3:f2:d8")}
+        entity.dr.async_get.return_value = mock_bt_entry
+
+        device_info = entity.device_info
+
+        assert device_info is not None
+        # Should congeal with ESPHome, NOT bluetooth
+        assert ("esphome", "my-scanner") in device_info["identifiers"]
+        # entry_id should NOT have been called (P2 found ESPHome)
+        entity.dr.async_get.assert_not_called()
+
+    def test_p3_entry_id_used_when_no_esphome_found(self) -> None:
+        """Priority 3: entry_id used as last resort when no ESPHome/Shelly found.
+
+        When MAC offset search finds only polluted BT devices and no ESPHome,
+        the entry_id lookup is the last resort.
+        """
+        entity = self._create_entity(
+            address="48:27:e2:e3:f2:d8",
+            entry_id="bt_entry_id",
+            address_wifi_mac=None,
+            address_ble_mac="48:27:e2:e3:f2:d8",
+        )
+
+        # Only polluted BT device found via MAC offset
+        mock_polluted_bt = MagicMock()
+        mock_polluted_bt.identifiers = {("bluetooth", "48:27:e2:e3:f2:d8")}
+        mock_polluted_bt.connections = frozenset(
+            {
+                ("bluetooth", "48:27:e2:e3:f2:d8"),
+                ("mac", "48:27:e2:e3:f2:d8"),
+            }
+        )
+
+        def mock_get_device(connections=None, identifiers=None):
+            if connections:
+                for conn_type, mac in connections:
+                    if conn_type == "mac" and mac == "48:27:e2:e3:f2:d8":
+                        return mock_polluted_bt
+            return None
+
+        entity.dr.async_get_device.side_effect = mock_get_device
+
+        # entry_id returns BT device as last resort
+        mock_entry = MagicMock()
+        mock_entry.identifiers = {("bluetooth", "48:27:e2:e3:f2:d8")}
+        entity.dr.async_get.return_value = mock_entry
+
+        device_info = entity.device_info
+
+        assert device_info is not None
+        # Falls back to entry_id (the BT device is all we have)
+        assert ("bluetooth", "48:27:e2:e3:f2:d8") in device_info["identifiers"]
+        entity.dr.async_get.assert_called_with("bt_entry_id")
 
 
 class TestBermudaEntityDeviceStateAttributes:

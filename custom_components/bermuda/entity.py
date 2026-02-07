@@ -137,28 +137,27 @@ class BermudaEntity(CoordinatorEntity):
             # HA device as ESPHome/Shelly/Bluetooth entities.
             # This follows the same pattern as FMDN device congealment.
             #
-            # Priority: Prefer ESPHome/Shelly device (via WiFi MAC) over HA
-            # Bluetooth auto-created device. The ESPHome device has proper
-            # firmware info, manufacturer, model etc. The entry_id may point
-            # to the BT device (bermuda_device.py prefers BT for area/name)
-            # which would congeal with the wrong HA device.
+            # Priority: Prefer ESPHome/Shelly device (via WiFi MAC or MAC
+            # offset) over HA Bluetooth auto-created device. The ESPHome
+            # device has proper firmware info, manufacturer, model etc.
             congealment_device = None
 
             # Priority 1: ESPHome/Shelly via WiFi MAC connection
             if self._device.address_wifi_mac:
-                congealment_device = self.dr.async_get_device(
+                candidate = self.dr.async_get_device(
                     connections={(dr.CONNECTION_NETWORK_MAC, normalize_mac(self._device.address_wifi_mac))}
                 )
+                # Verify it's NOT a BT device with a polluted "mac" connection
+                if candidate is not None and not any(c[0] == "bluetooth" for c in candidate.connections):
+                    congealment_device = candidate
 
-            # Priority 2: Fall back to entry_id (may be BT or ESPHome)
-            if congealment_device is None and self._device.entry_id:
-                congealment_device = self.dr.async_get(self._device.entry_id)
-
-            # Priority 3: Direct MAC-offset search for ESPHome/Shelly device.
+            # Priority 2: MAC-offset search for ESPHome/Shelly device.
             # Handles cases where scanner resolution failed (ESPHome not yet
             # loaded, non-standard MAC offset, etc.). Searches device registry
             # for any device with CONNECTION_NETWORK_MAC matching a MAC offset
             # (-3 to +2) from the scanner's BLE address.
+            # Skip candidates that have "bluetooth" connections — those are
+            # BT devices with polluted "mac" entries, not ESPHome/Shelly.
             if congealment_device is None or not congealment_device.identifiers:
                 base_addr = self._device.address_ble_mac or self._device.address
                 for offset in range(-3, 3):
@@ -170,9 +169,19 @@ class BermudaEntity(CoordinatorEntity):
                     except ValueError:
                         continue
                     candidate = self.dr.async_get_device(connections={(dr.CONNECTION_NETWORK_MAC, alt_mac_norm)})
-                    if candidate is not None and candidate.identifiers:
+                    if (
+                        candidate is not None
+                        and candidate.identifiers
+                        and not any(c[0] == "bluetooth" for c in candidate.connections)
+                    ):
                         congealment_device = candidate
                         break
+
+            # Priority 3: Fall back to entry_id (may be BT or ESPHome).
+            # This is the last resort — entry_id often points to the BT
+            # device, which is acceptable if no ESPHome device was found.
+            if congealment_device is None and self._device.entry_id:
+                congealment_device = self.dr.async_get(self._device.entry_id)
 
             if congealment_device is not None and congealment_device.identifiers:
                 return DeviceInfo(
