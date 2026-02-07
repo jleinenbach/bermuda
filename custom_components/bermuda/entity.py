@@ -136,14 +136,30 @@ class BermudaEntity(CoordinatorEntity):
             # device entry identifiers so Bermuda entities appear in the same
             # HA device as ESPHome/Shelly/Bluetooth entities.
             # This follows the same pattern as FMDN device congealment.
-            if self._device.entry_id:
-                scanner_device_entry = self.dr.async_get(self._device.entry_id)
-                if scanner_device_entry and scanner_device_entry.identifiers:
-                    return DeviceInfo(
-                        identifiers=scanner_device_entry.identifiers,
-                        name=self._device.name,
-                    )
-            # Fallback: use connections for congealment if entry_id lookup fails.
+            #
+            # Priority: Prefer ESPHome/Shelly device (via WiFi MAC) over HA
+            # Bluetooth auto-created device. The ESPHome device has proper
+            # firmware info, manufacturer, model etc. The entry_id may point
+            # to the BT device (bermuda_device.py prefers BT for area/name)
+            # which would congeal with the wrong HA device.
+            congealment_device = None
+
+            # Priority 1: ESPHome/Shelly via WiFi MAC connection
+            if self._device.address_wifi_mac:
+                congealment_device = self.dr.async_get_device(
+                    connections={(dr.CONNECTION_NETWORK_MAC, normalize_mac(self._device.address_wifi_mac))}
+                )
+
+            # Priority 2: Fall back to entry_id (may be BT or ESPHome)
+            if congealment_device is None and self._device.entry_id:
+                congealment_device = self.dr.async_get(self._device.entry_id)
+
+            if congealment_device is not None and congealment_device.identifiers:
+                return DeviceInfo(
+                    identifiers=congealment_device.identifiers,
+                    name=self._device.name,
+                )
+            # Fallback: use connections for congealment if all lookups fail.
             # ESPHome proxies prior to 2025.3 report their WIFI MAC for any address,
             # except for received iBeacons.
             connections = set()

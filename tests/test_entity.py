@@ -150,6 +150,8 @@ class TestBermudaEntityDeviceInfo:
         fmdn_device_id: str | None = None,
         fmdn_canonical_id: str | None = None,
         entry_id: str | None = None,
+        address_wifi_mac: str | None = None,
+        address_ble_mac: str | None = None,
     ) -> BermudaEntity:
         """Create a BermudaEntity instance for testing."""
         mock_device = MagicMock()
@@ -158,14 +160,15 @@ class TestBermudaEntityDeviceInfo:
         mock_device.address = address
         mock_device.address_type = address_type
         mock_device.is_scanner = is_scanner
-        mock_device.address_wifi_mac = None
-        mock_device.address_ble_mac = None
+        mock_device.address_wifi_mac = address_wifi_mac
+        mock_device.address_ble_mac = address_ble_mac
         mock_device.fmdn_device_id = fmdn_device_id
         mock_device.fmdn_canonical_id = fmdn_canonical_id
         mock_device.entry_id = entry_id
 
         mock_dr = MagicMock()
         mock_dr.async_get.return_value = None
+        mock_dr.async_get_device.return_value = None
 
         entity = object.__new__(BermudaEntity)
         entity._device = mock_device
@@ -256,58 +259,94 @@ class TestBermudaEntityDeviceInfo:
         # Scanner without entry_id should fall back to bluetooth connections
         assert len(device_info["connections"]) > 0
 
-    def test_device_info_for_scanner_with_congealment(self) -> None:
-        """Test device_info for scanner device congeals with native integration device.
+    def test_device_info_for_scanner_wifi_mac_priority(self) -> None:
+        """Test scanner congealment prefers ESPHome device via WiFi MAC.
 
-        When a scanner has an entry_id (from ESPHome/Shelly/Bluetooth), the
-        device_info should return the native integration's identifiers so that
-        Bermuda entities appear in the same HA device.
+        When a scanner has address_wifi_mac, it should look up the ESPHome/Shelly
+        device via CONNECTION_NETWORK_MAC first (Priority 1), before falling back
+        to entry_id (Priority 2). This ensures congealment targets the ESPHome
+        device (with firmware info, manufacturer etc.) rather than the HA
+        Bluetooth auto-created device.
         """
         entity = self._create_entity(
-            address="48:27:e2:e3:f2:da",
+            address="48:27:e2:e3:f2:d8",
             is_scanner=True,
-            entry_id="scanner_device_registry_id",
+            entry_id="bt_device_registry_id",
+            address_wifi_mac="48:27:e2:e3:f2:da",
         )
 
-        # Mock the ESPHome/Shelly device registry entry
-        mock_scanner_entry = MagicMock()
-        mock_scanner_entry.identifiers = {("esphome", "atoms3-bt-5")}
-        entity.dr.async_get.return_value = mock_scanner_entry
+        # WiFi MAC lookup returns the ESPHome device
+        mock_esphome_entry = MagicMock()
+        mock_esphome_entry.identifiers = {("esphome", "atoms3-bt-5")}
+        entity.dr.async_get_device.return_value = mock_esphome_entry
+
+        # entry_id lookup would return the BT device (should NOT be used)
+        mock_bt_entry = MagicMock()
+        mock_bt_entry.identifiers = {("bluetooth", "48:27:E2:E3:F2:D8")}
+        entity.dr.async_get.return_value = mock_bt_entry
 
         device_info = entity.device_info
 
         assert device_info is not None
-        # Should use the native integration's identifiers for congealment
+        # Should use ESPHome identifiers (from WiFi MAC lookup), NOT bluetooth
         assert ("esphome", "atoms3-bt-5") in device_info["identifiers"]
         assert device_info["name"] == "Test Device"
-        # Should NOT have bermuda domain identifier (congealment replaces it)
-        assert (DOMAIN, "test_unique_id") not in device_info.get("identifiers", set())
+        # entry_id lookup should NOT have been called (WiFi MAC succeeded)
+        entity.dr.async_get.assert_not_called()
 
-    def test_device_info_for_scanner_congealment_calls_dr_async_get(self) -> None:
-        """Test that scanner congealment looks up the entry_id in device registry."""
+    def test_device_info_for_scanner_fallback_to_entry_id(self) -> None:
+        """Test scanner congealment falls back to entry_id when no WiFi MAC."""
         entity = self._create_entity(
             address="48:27:e2:e3:f2:da",
             is_scanner=True,
-            entry_id="my_scanner_entry_id",
+            entry_id="scanner_device_registry_id",
+            address_wifi_mac=None,
         )
 
         mock_entry = MagicMock()
-        mock_entry.identifiers = {("esphome", "my_device")}
+        mock_entry.identifiers = {("esphome", "atoms3-bt-5")}
         entity.dr.async_get.return_value = mock_entry
 
-        entity.device_info
+        device_info = entity.device_info
 
-        entity.dr.async_get.assert_called_with("my_scanner_entry_id")
+        assert device_info is not None
+        assert ("esphome", "atoms3-bt-5") in device_info["identifiers"]
+        entity.dr.async_get.assert_called_with("scanner_device_registry_id")
+
+    def test_device_info_for_scanner_fallback_wifi_mac_not_found(self) -> None:
+        """Test scanner congealment falls back to entry_id when WiFi MAC lookup fails."""
+        entity = self._create_entity(
+            address="48:27:e2:e3:f2:d8",
+            is_scanner=True,
+            entry_id="bt_device_registry_id",
+            address_wifi_mac="48:27:e2:e3:f2:da",
+        )
+
+        # WiFi MAC lookup returns None (device not found)
+        entity.dr.async_get_device.return_value = None
+
+        # Fall back to entry_id
+        mock_bt_entry = MagicMock()
+        mock_bt_entry.identifiers = {("bluetooth", "48:27:E2:E3:F2:D8")}
+        entity.dr.async_get.return_value = mock_bt_entry
+
+        device_info = entity.device_info
+
+        assert device_info is not None
+        # Should use entry_id fallback
+        assert ("bluetooth", "48:27:E2:E3:F2:D8") in device_info["identifiers"]
+        entity.dr.async_get.assert_called_with("bt_device_registry_id")
 
     def test_device_info_for_scanner_congealment_fallback_no_entry(self) -> None:
-        """Test scanner congealment falls back to connections when entry not found."""
+        """Test scanner congealment falls back to connections when all lookups fail."""
         entity = self._create_entity(
             address="aa:bb:cc:dd:ee:ff",
             is_scanner=True,
             entry_id="nonexistent_entry_id",
         )
 
-        # async_get returns None (entry not found)
+        # Both lookups return None
+        entity.dr.async_get_device.return_value = None
         entity.dr.async_get.return_value = None
 
         device_info = entity.device_info
@@ -325,6 +364,8 @@ class TestBermudaEntityDeviceInfo:
             entry_id="entry_with_no_identifiers",
         )
 
+        entity.dr.async_get_device.return_value = None
+
         mock_entry = MagicMock()
         mock_entry.identifiers = set()  # Empty identifiers
         entity.dr.async_get.return_value = mock_entry
@@ -341,13 +382,13 @@ class TestBermudaEntityDeviceInfo:
         entity = self._create_entity(
             address="48:27:e2:e3:f2:da",
             is_scanner=True,
-            entry_id="scanner_entry_id",
+            address_wifi_mac="48:27:e2:e3:f2:da",
         )
         entity._device.name = "BT Scanner 5 Wohnzimmer"
 
         mock_entry = MagicMock()
         mock_entry.identifiers = {("esphome", "atoms3-bt-5")}
-        entity.dr.async_get.return_value = mock_entry
+        entity.dr.async_get_device.return_value = mock_entry
 
         device_info = entity.device_info
 
@@ -357,25 +398,46 @@ class TestBermudaEntityDeviceInfo:
     def test_device_info_scanner_congealment_with_multiple_identifiers(self) -> None:
         """Test scanner congealment works with multiple native identifiers."""
         entity = self._create_entity(
-            address="48:27:e2:e3:f2:da",
+            address="48:27:e2:e3:f2:d8",
             is_scanner=True,
-            entry_id="scanner_entry_id",
+            address_wifi_mac="48:27:e2:e3:f2:da",
         )
 
         # Some integrations register multiple identifiers
         mock_entry = MagicMock()
         mock_entry.identifiers = {
             ("esphome", "atoms3-bt-5"),
-            ("bluetooth", "48:27:E2:E3:F2:DA"),
+            ("esphome", "atoms3-bt-5-bluetooth"),
         }
-        entity.dr.async_get.return_value = mock_entry
+        entity.dr.async_get_device.return_value = mock_entry
 
         device_info = entity.device_info
 
         assert device_info is not None
         # All native identifiers should be passed through
         assert ("esphome", "atoms3-bt-5") in device_info["identifiers"]
-        assert ("bluetooth", "48:27:E2:E3:F2:DA") in device_info["identifiers"]
+        assert ("esphome", "atoms3-bt-5-bluetooth") in device_info["identifiers"]
+
+    def test_device_info_scanner_wifi_mac_normalizes_address(self) -> None:
+        """Test that WiFi MAC is normalized before device registry lookup."""
+        entity = self._create_entity(
+            address="48:27:e2:e3:f2:d8",
+            is_scanner=True,
+            address_wifi_mac="48:27:E2:E3:F2:DA",  # Uppercase
+        )
+
+        mock_entry = MagicMock()
+        mock_entry.identifiers = {("esphome", "test")}
+        entity.dr.async_get_device.return_value = mock_entry
+
+        entity.device_info
+
+        # Verify the MAC was normalized (lowercase, colon-delimited)
+        call_args = entity.dr.async_get_device.call_args
+        connections = call_args.kwargs.get("connections") or call_args[1].get("connections")
+        assert connections is not None
+        for conn_type, mac in connections:
+            assert mac == "48:27:e2:e3:f2:da"  # Normalized lowercase
 
 
 class TestBermudaEntityDeviceStateAttributes:
