@@ -286,23 +286,35 @@ class BermudaEntity(CoordinatorEntity):
 
     def _find_ibeacon_scanner_device(self) -> dr.DeviceEntry | None:
         """
-        Find the ESPHome/Shelly device for an iBeacon from a scanner.
+        Find the HA device entry for an iBeacon's source scanner.
 
         When an ESPHome scanner broadcasts an iBeacon, the resulting
-        metadevice should be congealed with the scanner's native HA device
+        metadevice should be congealed with the scanner's HA device
         instead of creating a separate device entry.  This looks up the
-        source scanner via ``metadevice_sources`` and finds its
-        ESPHome/Shelly device entry using the same priority logic as
-        scanner entity congealment.
+        source scanner via ``metadevice_sources`` and finds its device
+        entry via CONNECTION_BLUETOOTH (works for both merged and
+        unmerged ESPHome+BT devices).
         """
         for source_addr in self._device.metadevice_sources:
             source_dev = self.coordinator.devices.get(source_addr)
             if source_dev is None or not source_dev.is_scanner:
                 continue
 
-            # Found source scanner — find its ESPHome/Shelly device.
+            # Found source scanner — find its HA device entry.
+            # After BT proxy merging, the ESPHome device has both
+            # CONNECTION_NETWORK_MAC and CONNECTION_BLUETOOTH entries.
+            # Use CONNECTION_BLUETOOTH first (always present for scanners).
 
-            # Priority 1: WiFi MAC
+            # Priority 1: BLE MAC (works for merged and unmerged devices)
+            ble_mac = source_dev.address_ble_mac or source_dev.address
+            try:
+                candidate = self.dr.async_get_device(connections={(dr.CONNECTION_BLUETOOTH, normalize_mac(ble_mac))})
+            except ValueError:
+                candidate = None
+            if candidate is not None and candidate.identifiers:
+                return candidate
+
+            # Priority 2: WiFi MAC
             if source_dev.address_wifi_mac:
                 try:
                     candidate = self.dr.async_get_device(
@@ -310,34 +322,6 @@ class BermudaEntity(CoordinatorEntity):
                     )
                 except ValueError:
                     candidate = None
-                if (
-                    candidate is not None
-                    and candidate.identifiers
-                    and not any(c[0] == "bluetooth" for c in candidate.connections)
-                ):
-                    return candidate
-
-            # Priority 2: MAC offset search (Espressif base-MAC scheme)
-            base_addr = source_dev.address_ble_mac or source_dev.address
-            for offset in range(-3, 3):
-                alt_mac = mac_math_offset(base_addr, offset)
-                if alt_mac is None:
-                    continue
-                try:
-                    alt_mac_norm = normalize_mac(alt_mac)
-                except ValueError:
-                    continue
-                candidate = self.dr.async_get_device(connections={(dr.CONNECTION_NETWORK_MAC, alt_mac_norm)})
-                if (
-                    candidate is not None
-                    and candidate.identifiers
-                    and not any(c[0] == "bluetooth" for c in candidate.connections)
-                ):
-                    return candidate
-
-            # Priority 3: entry_id fallback
-            if source_dev.entry_id:
-                candidate = self.dr.async_get(source_dev.entry_id)
                 if candidate is not None and candidate.identifiers:
                     return candidate
 
