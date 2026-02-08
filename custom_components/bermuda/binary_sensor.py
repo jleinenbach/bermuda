@@ -73,6 +73,7 @@ class BermudaScannerOnlineSensor(BermudaEntity, BinarySensorEntity):
     timeout window (default 30 seconds), OFF otherwise.
     """
 
+    _scanner_entity = True
     _attr_has_entity_name = True
     _attr_translation_key = "scanner_online"
     _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY

@@ -798,6 +798,49 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                 duplicate_count,
             )
 
+        # After entity cleanup, remove empty Bermuda device entries (no entities from any integration).
+        # This handles leftover devices when congealment moved entities to another device.
+        await self.async_cleanup_empty_bermuda_devices()
+
+    async def async_cleanup_empty_bermuda_devices(self) -> None:
+        """
+        Remove Bermuda device registry entries that have no entities.
+
+        After congealment changes (e.g., scanner entities moving to ESPHome device),
+        the old Bermuda device entry may be left empty (zero entities from any
+        integration).  These empty "ghost" devices clutter the UI.
+        """
+        removed_count = 0
+
+        if self.config_entry is None:
+            return
+
+        for device_entry in list(self.dr.devices.values()):
+            # Only consider devices that belong to Bermuda
+            if not any(len(ident) == 2 and ident[0] == DOMAIN for ident in device_entry.identifiers):
+                continue
+
+            # Skip the global Bermuda device
+            if any(ident == (DOMAIN, "BERMUDA_GLOBAL") for ident in device_entry.identifiers):
+                continue
+
+            # Check if this device has ANY entities (from any integration)
+            device_entities = er.async_entries_for_device(self.er, device_entry.id, include_disabled_entities=True)
+            if len(device_entities) == 0:
+                _LOGGER.debug(
+                    "Removing empty Bermuda device: %s (%s)",
+                    device_entry.name,
+                    device_entry.id,
+                )
+                self.dr.async_remove_device(device_entry.id)
+                removed_count += 1
+
+        if removed_count > 0:
+            _LOGGER.info(
+                "Cleaned up %d empty Bermuda device entries",
+                removed_count,
+            )
+
     def check_for_duplicate_entities(self, address: str) -> str | None:
         """
         Check if entities already exist for a device that might be a duplicate.
