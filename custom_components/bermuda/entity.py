@@ -38,6 +38,14 @@ class BermudaEntity(CoordinatorEntity):
     distances etc.
     """
 
+    # Subclasses that represent scanner-specific entities (e.g., scanner
+    # online binary sensor) should set this to True.  Only those entities
+    # will be congealed onto the scanner's native device (ESPHome/Shelly).
+    # Tracking entities (distance, area, device_tracker) for dual-role
+    # devices (both scanner AND tracked) must NOT be congealed — they
+    # belong on the Bermuda device instead.
+    _scanner_entity: bool = False
+
     def __init__(
         self,
         coordinator: BermudaDataUpdateCoordinator,
@@ -131,11 +139,12 @@ class BermudaEntity(CoordinatorEntity):
         domain_name = DOMAIN
         model = None
 
-        if self._device.is_scanner:
+        if self._device.is_scanner and self._scanner_entity:
             # Scanner device congealment: use the scanner's native integration
-            # device entry identifiers so Bermuda entities appear in the same
-            # HA device as ESPHome/Shelly/Bluetooth entities.
-            # This follows the same pattern as FMDN device congealment.
+            # device entry identifiers so Bermuda scanner-specific entities
+            # appear in the same HA device as ESPHome/Shelly/Bluetooth entities.
+            # Only _scanner_entity=True entities are congealed here; tracking
+            # entities for dual-role devices use the regular Bermuda device path.
             #
             # Priority: Prefer ESPHome/Shelly device (via WiFi MAC or MAC
             # offset) over HA Bluetooth auto-created device. The ESPHome

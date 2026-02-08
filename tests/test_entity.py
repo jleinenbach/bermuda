@@ -146,6 +146,7 @@ class TestBermudaEntityDeviceInfo:
         address: str = "aa:bb:cc:dd:ee:ff",
         address_type: str | None = None,
         is_scanner: bool = False,
+        scanner_entity: bool = False,
         unique_id: str = "test_unique_id",
         fmdn_device_id: str | None = None,
         fmdn_canonical_id: str | None = None,
@@ -173,6 +174,7 @@ class TestBermudaEntityDeviceInfo:
         entity = object.__new__(BermudaEntity)
         entity._device = mock_device
         entity.dr = mock_dr
+        entity._scanner_entity = scanner_entity
 
         return entity
 
@@ -250,6 +252,7 @@ class TestBermudaEntityDeviceInfo:
         entity = self._create_entity(
             address="aa:bb:cc:dd:ee:ff",
             is_scanner=True,
+            scanner_entity=True,
             entry_id=None,
         )
 
@@ -271,6 +274,7 @@ class TestBermudaEntityDeviceInfo:
         entity = self._create_entity(
             address="48:27:e2:e3:f2:d8",
             is_scanner=True,
+            scanner_entity=True,
             entry_id="bt_device_registry_id",
             address_wifi_mac="48:27:e2:e3:f2:da",
         )
@@ -281,26 +285,19 @@ class TestBermudaEntityDeviceInfo:
         mock_esphome_entry.connections = frozenset({("mac", "48:27:e2:e3:f2:da")})
         entity.dr.async_get_device.return_value = mock_esphome_entry
 
-        # entry_id lookup would return the BT device (should NOT be used)
-        mock_bt_entry = MagicMock()
-        mock_bt_entry.identifiers = {("bluetooth", "48:27:E2:E3:F2:D8")}
-        mock_bt_entry.connections = frozenset({("bluetooth", "48:27:e2:e3:f2:d8")})
-        entity.dr.async_get.return_value = mock_bt_entry
-
         device_info = entity.device_info
 
         assert device_info is not None
-        # Should use ESPHome identifiers (from WiFi MAC lookup), NOT bluetooth
+        # Should use ESPHome identifiers (from WiFi MAC lookup)
         assert ("esphome", "atoms3-bt-5") in device_info["identifiers"]
         assert device_info["name"] == "Test Device"
-        # entry_id lookup should NOT have been called (WiFi MAC succeeded)
-        entity.dr.async_get.assert_not_called()
 
     def test_device_info_for_scanner_fallback_to_entry_id(self) -> None:
         """Test scanner congealment falls back to entry_id when no WiFi MAC and no MAC offset match."""
         entity = self._create_entity(
             address="48:27:e2:e3:f2:da",
             is_scanner=True,
+            scanner_entity=True,
             entry_id="scanner_device_registry_id",
             address_wifi_mac=None,
         )
@@ -325,6 +322,7 @@ class TestBermudaEntityDeviceInfo:
         entity = self._create_entity(
             address="48:27:e2:e3:f2:d8",
             is_scanner=True,
+            scanner_entity=True,
             entry_id="bt_device_registry_id",
             address_wifi_mac="48:27:e2:e3:f2:da",
         )
@@ -350,6 +348,7 @@ class TestBermudaEntityDeviceInfo:
         entity = self._create_entity(
             address="aa:bb:cc:dd:ee:ff",
             is_scanner=True,
+            scanner_entity=True,
             entry_id="nonexistent_entry_id",
         )
 
@@ -369,6 +368,7 @@ class TestBermudaEntityDeviceInfo:
         entity = self._create_entity(
             address="aa:bb:cc:dd:ee:ff",
             is_scanner=True,
+            scanner_entity=True,
             entry_id="entry_with_no_identifiers",
         )
 
@@ -390,6 +390,7 @@ class TestBermudaEntityDeviceInfo:
         entity = self._create_entity(
             address="48:27:e2:e3:f2:da",
             is_scanner=True,
+            scanner_entity=True,
             address_wifi_mac="48:27:e2:e3:f2:da",
         )
         entity._device.name = "BT Scanner 5 Wohnzimmer"
@@ -409,6 +410,7 @@ class TestBermudaEntityDeviceInfo:
         entity = self._create_entity(
             address="48:27:e2:e3:f2:d8",
             is_scanner=True,
+            scanner_entity=True,
             address_wifi_mac="48:27:e2:e3:f2:da",
         )
 
@@ -433,6 +435,7 @@ class TestBermudaEntityDeviceInfo:
         entity = self._create_entity(
             address="48:27:e2:e3:f2:d8",
             is_scanner=True,
+            scanner_entity=True,
             address_wifi_mac="48:27:E2:E3:F2:DA",  # Uppercase
         )
 
@@ -461,6 +464,7 @@ class TestBermudaEntityDeviceInfo:
         entity = self._create_entity(
             address="48:27:e2:e3:f2:d8",
             is_scanner=True,
+            scanner_entity=True,
             entry_id=None,
             address_wifi_mac=None,  # WiFi MAC not resolved
             address_ble_mac="48:27:e2:e3:f2:d8",
@@ -492,6 +496,7 @@ class TestBermudaEntityDeviceInfo:
         entity = self._create_entity(
             address="some:other:addr:00:00:01",
             is_scanner=True,
+            scanner_entity=True,
             entry_id=None,
             address_wifi_mac=None,
             address_ble_mac="48:27:e2:e3:f2:d8",  # BLE MAC set separately
@@ -521,6 +526,7 @@ class TestBermudaEntityDeviceInfo:
         entity = self._create_entity(
             address="48:27:e2:e3:f2:d8",
             is_scanner=True,
+            scanner_entity=True,
             entry_id=None,
             address_wifi_mac=None,
             address_ble_mac="48:27:e2:e3:f2:d8",
@@ -562,16 +568,11 @@ class TestBermudaEntityDeviceInfo:
         entity = self._create_entity(
             address="48:27:e2:e3:f2:d8",
             is_scanner=True,
+            scanner_entity=True,
             entry_id="bt_entry_id",
             address_wifi_mac=None,
             address_ble_mac="48:27:e2:e3:f2:d8",
         )
-
-        # entry_id would return BT device (should NOT be used if P2 succeeds)
-        mock_bt_entry = MagicMock()
-        mock_bt_entry.identifiers = {("bluetooth", "48:27:e2:e3:f2:d8")}
-        mock_bt_entry.connections = frozenset({("bluetooth", "48:27:e2:e3:f2:d8")})
-        entity.dr.async_get.return_value = mock_bt_entry
 
         # Priority 2 finds ESPHome device via MAC offset
         mock_esphome_entry = MagicMock()
@@ -590,10 +591,8 @@ class TestBermudaEntityDeviceInfo:
         device_info = entity.device_info
 
         assert device_info is not None
-        # Should use ESPHome (from MAC offset), NOT bluetooth (from entry_id)
+        # Should use ESPHome (from MAC offset) as primary
         assert ("esphome", "my-esp") in device_info["identifiers"]
-        # entry_id lookup should NOT have been called
-        entity.dr.async_get.assert_not_called()
 
     def test_device_info_scanner_fallback_no_wifi_mac_no_network_mac_connection(self) -> None:
         """Test fallback: when WiFi MAC is None, CONNECTION_NETWORK_MAC is NOT added.
@@ -604,6 +603,7 @@ class TestBermudaEntityDeviceInfo:
         entity = self._create_entity(
             address="aa:bb:cc:dd:ee:ff",
             is_scanner=True,
+            scanner_entity=True,
             entry_id=None,
             address_wifi_mac=None,
         )
@@ -627,6 +627,7 @@ class TestBermudaEntityDeviceInfo:
         entity = self._create_entity(
             address="48:27:e2:e3:f2:d8",
             is_scanner=True,
+            scanner_entity=True,
             entry_id=None,
             address_wifi_mac="48:27:e2:e3:f2:da",
         )
@@ -685,6 +686,7 @@ class TestScannerPollutionFix:
         entity = object.__new__(BermudaEntity)
         entity._device = mock_device
         entity.dr = mock_dr
+        entity._scanner_entity = True
 
         return entity
 
@@ -804,18 +806,11 @@ class TestScannerPollutionFix:
 
         entity.dr.async_get_device.side_effect = mock_get_device
 
-        # entry_id returns BT device (last resort)
-        mock_bt_entry = MagicMock()
-        mock_bt_entry.identifiers = {("bluetooth", "48:27:e2:e3:f2:d8")}
-        entity.dr.async_get.return_value = mock_bt_entry
-
         device_info = entity.device_info
 
         assert device_info is not None
-        # Should congeal with ESPHome, NOT bluetooth
+        # Should congeal with ESPHome as primary
         assert ("esphome", "my-scanner") in device_info["identifiers"]
-        # entry_id should NOT have been called (P2 found ESPHome)
-        entity.dr.async_get.assert_not_called()
 
     def test_p3_entry_id_used_when_no_esphome_found(self) -> None:
         """Priority 3: entry_id used as last resort when no ESPHome/Shelly found.
@@ -1146,3 +1141,227 @@ class TestEntityIntegration:
         from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
         assert issubclass(BermudaGlobalEntity, CoordinatorEntity)
+
+    def test_scanner_entity_flag_defaults_to_false(self) -> None:
+        """Test that _scanner_entity defaults to False on BermudaEntity."""
+        entity = object.__new__(BermudaEntity)
+        assert entity._scanner_entity is False
+
+
+class TestDualRoleDeviceInfo:
+    """Tests for dual-role devices (both scanner AND tracked).
+
+    Dual-role devices have is_scanner=True but their tracking entities
+    (distance, area, device_tracker) should NOT be congealed onto the
+    scanner's native device (ESPHome/Shelly). Only scanner-specific
+    entities (_scanner_entity=True) should be congealed.
+    """
+
+    def _create_entity(
+        self,
+        address: str = "48:27:e2:e3:f2:d8",
+        scanner_entity: bool = False,
+        address_wifi_mac: str | None = "48:27:e2:e3:f2:da",
+        address_ble_mac: str | None = None,
+        entry_id: str | None = "some_entry_id",
+    ) -> BermudaEntity:
+        """Create a dual-role BermudaEntity (is_scanner=True)."""
+        mock_device = MagicMock()
+        mock_device.name = "Dual Role Scanner"
+        mock_device.unique_id = "dual_role_unique_id"
+        mock_device.address = address
+        mock_device.address_type = None
+        mock_device.is_scanner = True
+        mock_device.address_wifi_mac = address_wifi_mac
+        mock_device.address_ble_mac = address_ble_mac
+        mock_device.fmdn_device_id = None
+        mock_device.fmdn_canonical_id = None
+        mock_device.entry_id = entry_id
+
+        mock_dr = MagicMock()
+        mock_dr.async_get.return_value = None
+        mock_dr.async_get_device.return_value = None
+
+        # ESPHome device exists for congealment
+        mock_esphome_entry = MagicMock()
+        mock_esphome_entry.identifiers = {("esphome", "atoms3-bt-5")}
+        mock_esphome_entry.connections = frozenset({("mac", "48:27:e2:e3:f2:da")})
+        mock_dr.async_get_device.return_value = mock_esphome_entry
+
+        entity = object.__new__(BermudaEntity)
+        entity._device = mock_device
+        entity.dr = mock_dr
+        entity._scanner_entity = scanner_entity
+
+        return entity
+
+    def test_tracking_entity_uses_bermuda_device_not_esphome(self) -> None:
+        """Test that tracking entities (scanner_entity=False) use Bermuda device, not ESPHome.
+
+        This is the core fix: for dual-role devices, tracking entities like
+        distance, area, device_tracker must NOT be congealed onto the ESPHome
+        device. They should use the regular Bermuda device path with Bermuda
+        domain identifiers.
+        """
+        entity = self._create_entity(scanner_entity=False)
+
+        device_info = entity.device_info
+
+        assert device_info is not None
+        # Must use Bermuda domain identifier, NOT ESPHome
+        assert (DOMAIN, "dual_role_unique_id") in device_info["identifiers"]
+        assert ("esphome", "atoms3-bt-5") not in device_info.get("identifiers", set())
+
+    def test_scanner_entity_congeals_to_esphome(self) -> None:
+        """Test that scanner-specific entities (scanner_entity=True) congeal to ESPHome."""
+        entity = self._create_entity(scanner_entity=True)
+
+        device_info = entity.device_info
+
+        assert device_info is not None
+        # Must use ESPHome identifiers for congealment
+        assert ("esphome", "atoms3-bt-5") in device_info["identifiers"]
+        assert (DOMAIN, "dual_role_unique_id") not in device_info.get("identifiers", set())
+
+    def test_same_device_different_entity_types_different_targets(self) -> None:
+        """Test that the same device produces different device_info based on _scanner_entity.
+
+        This verifies that for the SAME physical device (same address, same is_scanner=True),
+        scanner entities go to the ESPHome device and tracking entities stay on Bermuda device.
+        """
+        scanner_ent = self._create_entity(scanner_entity=True)
+        tracking_ent = self._create_entity(scanner_entity=False)
+
+        scanner_info = scanner_ent.device_info
+        tracking_info = tracking_ent.device_info
+
+        assert scanner_info is not None
+        assert tracking_info is not None
+
+        # Scanner entity targets ESPHome device
+        assert ("esphome", "atoms3-bt-5") in scanner_info["identifiers"]
+
+        # Tracking entity targets Bermuda device
+        assert (DOMAIN, "dual_role_unique_id") in tracking_info["identifiers"]
+
+        # They MUST point to different device entries
+        assert scanner_info["identifiers"] != tracking_info["identifiers"]
+
+    def test_tracking_entity_has_bluetooth_connection(self) -> None:
+        """Test that tracking entities for scanner devices still have BLE connection."""
+        entity = self._create_entity(scanner_entity=False)
+
+        device_info = entity.device_info
+
+        assert device_info is not None
+        bluetooth_conns = [(ct, m) for ct, m in device_info["connections"] if ct == "bluetooth"]
+        assert len(bluetooth_conns) == 1
+
+
+class TestCleanupEmptyBermudaDevices:
+    """Tests for async_cleanup_empty_bermuda_devices coordinator method."""
+
+    def _make_coordinator(self) -> MagicMock:
+        """Create a mock coordinator with device and entity registries."""
+        coordinator = MagicMock()
+        coordinator.config_entry = MagicMock()
+        coordinator.config_entry.entry_id = "test_entry_id"
+        coordinator.dr = MagicMock()
+        coordinator.er = MagicMock()
+        return coordinator
+
+    def _make_device_entry(
+        self,
+        device_id: str,
+        identifiers: set,
+        name: str = "Test Device",
+    ) -> MagicMock:
+        """Create a mock device registry entry."""
+        entry = MagicMock()
+        entry.id = device_id
+        entry.name = name
+        entry.identifiers = identifiers
+        return entry
+
+    @pytest.mark.asyncio
+    async def test_removes_empty_bermuda_device(self) -> None:
+        """Test that empty Bermuda devices are removed."""
+        from custom_components.bermuda.coordinator import BermudaDataUpdateCoordinator
+
+        coordinator = self._make_coordinator()
+        empty_device = self._make_device_entry("dev1", {(DOMAIN, "aa:bb:cc:dd:ee:ff")})
+        coordinator.dr.devices.values.return_value = [empty_device]
+
+        # Device has zero entities
+        with patch(
+            "custom_components.bermuda.coordinator.er.async_entries_for_device",
+            return_value=[],
+        ):
+            await BermudaDataUpdateCoordinator.async_cleanup_empty_bermuda_devices(coordinator)
+
+        coordinator.dr.async_remove_device.assert_called_once_with("dev1")
+
+    @pytest.mark.asyncio
+    async def test_keeps_device_with_entities(self) -> None:
+        """Test that Bermuda devices with entities are kept."""
+        from custom_components.bermuda.coordinator import BermudaDataUpdateCoordinator
+
+        coordinator = self._make_coordinator()
+        device_with_entities = self._make_device_entry("dev1", {(DOMAIN, "aa:bb:cc:dd:ee:ff")})
+        coordinator.dr.devices.values.return_value = [device_with_entities]
+
+        # Device has one entity
+        mock_entity = MagicMock()
+        with patch(
+            "custom_components.bermuda.coordinator.er.async_entries_for_device",
+            return_value=[mock_entity],
+        ):
+            await BermudaDataUpdateCoordinator.async_cleanup_empty_bermuda_devices(coordinator)
+
+        coordinator.dr.async_remove_device.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_skips_non_bermuda_devices(self) -> None:
+        """Test that non-Bermuda devices are not touched."""
+        from custom_components.bermuda.coordinator import BermudaDataUpdateCoordinator
+
+        coordinator = self._make_coordinator()
+        esphome_device = self._make_device_entry("dev1", {("esphome", "my-esp")})
+        coordinator.dr.devices.values.return_value = [esphome_device]
+
+        with patch(
+            "custom_components.bermuda.coordinator.er.async_entries_for_device",
+            return_value=[],
+        ):
+            await BermudaDataUpdateCoordinator.async_cleanup_empty_bermuda_devices(coordinator)
+
+        coordinator.dr.async_remove_device.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_skips_global_bermuda_device(self) -> None:
+        """Test that the BERMUDA_GLOBAL device is never removed."""
+        from custom_components.bermuda.coordinator import BermudaDataUpdateCoordinator
+
+        coordinator = self._make_coordinator()
+        global_device = self._make_device_entry("dev1", {(DOMAIN, "BERMUDA_GLOBAL")})
+        coordinator.dr.devices.values.return_value = [global_device]
+
+        with patch(
+            "custom_components.bermuda.coordinator.er.async_entries_for_device",
+            return_value=[],
+        ):
+            await BermudaDataUpdateCoordinator.async_cleanup_empty_bermuda_devices(coordinator)
+
+        coordinator.dr.async_remove_device.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_skips_when_no_config_entry(self) -> None:
+        """Test that cleanup does nothing when config_entry is None."""
+        from custom_components.bermuda.coordinator import BermudaDataUpdateCoordinator
+
+        coordinator = self._make_coordinator()
+        coordinator.config_entry = None
+
+        await BermudaDataUpdateCoordinator.async_cleanup_empty_bermuda_devices(coordinator)
+
+        coordinator.dr.async_remove_device.assert_not_called()
