@@ -50,6 +50,7 @@ from .const import (
     CONF_DEVICES,
     CONF_DEVTRACK_TIMEOUT,
     CONF_FMDN_MODE,
+    CONF_REFERENCE_TRACKERS,
     DEFAULT_DEVTRACK_TIMEOUT,
     DEFAULT_FMDN_MODE,
     DISTANCE_RETENTION_SECONDS,
@@ -194,6 +195,7 @@ class BermudaDevice:
         self.create_select_done: bool = False  # Select entities should now exist
         self.create_button_done: bool = False
         self.create_all_done: bool = False  # All platform entities are done and ready.
+        self.is_reference_tracker: bool = False  # Set in calculate_data() from options
         self.last_seen: float = 0  # stamp from most recent scanner spotting. monotonic_time_coarse
         self.last_no_winner_log: float = 0.0
         self.last_retained_log: float = 0.0
@@ -1361,6 +1363,13 @@ class BermudaDevice:
             and self.address not in configured_devices
         ):
             self.create_sensor = False
+
+        # Reference Tracker flag: mark devices that serve as stationary room beacons
+        reference_trackers_option = self.options.get(CONF_REFERENCE_TRACKERS, [])
+        if not isinstance(reference_trackers_option, list):
+            reference_trackers_option = []
+        reference_trackers = {normalize_address(addr) for addr in reference_trackers_option if isinstance(addr, str)}
+        self.is_reference_tracker = self.address in reference_trackers
 
     def process_advertisement(self, scanner_device: BermudaDevice, advertisementdata: AdvertisementData):
         """

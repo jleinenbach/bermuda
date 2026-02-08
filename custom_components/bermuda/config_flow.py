@@ -32,6 +32,7 @@ from .const import (
     CONF_MAX_VELOCITY,
     CONF_RECORDER_FRIENDLY,
     CONF_REF_POWER,
+    CONF_REFERENCE_TRACKERS,
     CONF_RSSI_OFFSETS,
     CONF_SAVE_AND_CLOSE,
     CONF_SCANNER_INFO,
@@ -279,6 +280,10 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
                     for addr in user_input[CONF_DEVICES]
                     if isinstance(addr, str) and normalize_address(addr) not in auto_configured_addresses
                 ]
+            if user_input.get(CONF_REFERENCE_TRACKERS):
+                user_input[CONF_REFERENCE_TRACKERS] = [
+                    normalize_address(addr) for addr in user_input[CONF_REFERENCE_TRACKERS] if isinstance(addr, str)
+                ]
             self.options.update(user_input)
             return await self._update_options()
 
@@ -405,10 +410,20 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
         # (auto-configured devices are shown as selected since they're actively being tracked)
         default_selection = sorted(configured_devices | auto_configured_addresses)
 
+        # Reference tracker defaults from saved options
+        ref_trackers_option = self.options.get(CONF_REFERENCE_TRACKERS, [])
+        if not isinstance(ref_trackers_option, list):
+            ref_trackers_option = []
+        default_ref_trackers = sorted(normalize_address(addr) for addr in ref_trackers_option if isinstance(addr, str))
+
         data_schema = {
             vol.Optional(
                 CONF_DEVICES,
                 default=default_selection,
+            ): SelectSelector(SelectSelectorConfig(options=options_list, multiple=True)),
+            vol.Optional(
+                CONF_REFERENCE_TRACKERS,
+                default=default_ref_trackers,
             ): SelectSelector(SelectSelectorConfig(options=options_list, multiple=True)),
         }
 

@@ -12,8 +12,9 @@ from __future__ import annotations
 
 import logging
 import math
+import statistics
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from bluetooth_data_tools import monotonic_time_coarse
 
@@ -26,6 +27,7 @@ from .const import (
     AUTO_LEARNING_MAX_VELOCITY,
     AUTO_LEARNING_MIN_CONFIDENCE,
     CONF_MAX_RADIUS,
+    CONF_REFERENCE_TRACKERS,
     CONF_USE_PHYSICAL_RSSI_PRIORITY,
     CONFIDENCE_WINNER_MARGIN,
     CONFIDENCE_WINNER_MIN,
@@ -66,11 +68,14 @@ from .const import (
     MINDIST_SIGNIFICANT_IMPROVEMENT,
     MOVEMENT_STATE_MOVING,
     MOVEMENT_STATE_SETTLING,
+    MOVEMENT_STATE_STATIONARY,
     NEAR_FIELD_ABS_WIN_METERS,
     NEAR_FIELD_CUTOFF,
     NEAR_FIELD_THRESHOLD,
     PDIFF_HISTORICAL,
     PDIFF_OUTRIGHT,
+    REFERENCE_TRACKER_CONFIDENCE,
+    REFERENCE_TRACKER_DEVICE_PREFIX,
     ROOM_AMBIGUITY_MAX_DIFF,
     ROOM_AMBIGUITY_MIN_SCORE,
     RSSI_CONSISTENCY_MARGIN_DB,
@@ -416,6 +421,30 @@ class AreaTests:
         return "\n".join(lines)
 
 
+@dataclass(slots=True)
+class _ReferenceTrackerProxy:
+    """
+    Lightweight proxy for aggregated reference tracker data.
+
+    Mimics the minimal BermudaDevice interface needed by
+    _update_device_correlations() without creating a full BermudaDevice.
+    """
+
+    address: str  # "ref:<area_id>"
+    name: str  # "Reference Tracker (<area_name>)"
+    area_id: str | None = None
+    area_changed_at: float = 0.0
+    adverts: dict[str, Any] = field(default_factory=dict)
+
+    def get_movement_state(self, *, stamp_now: float | None = None) -> str:
+        """Always stationary — reference trackers don't move."""
+        return MOVEMENT_STATE_STATIONARY
+
+    def get_dwell_time(self, *, stamp_now: float | None = None) -> float:
+        """Always long dwell — reference trackers are permanently placed."""
+        return 86400.0  # 24 hours
+
+
 class AreaSelectionHandler:
     """
     Handles all area/room selection logic for Bermuda devices.
@@ -449,6 +478,8 @@ class AreaSelectionHandler:
         self._scanner_status: dict[str, ScannerOnlineStatus] = {}
         # Per-cycle cache of offline scanner addresses (computed once, used 4x per device)
         self._cycle_offline_addrs: frozenset[str] = frozenset()
+        # Reference tracker diagnostic data (last aggregation results)
+        self._last_ref_tracker_aggregation: dict[str, tuple[float, str | None, dict[str, float], dict[str, float]]] = {}
 
     # =========================================================================
     # Property accessors for coordinator state
@@ -630,6 +661,35 @@ class AreaSelectionHandler:
                 ),
             }
         return result
+
+    def get_reference_tracker_diagnostics(self) -> dict[str, Any]:
+        """Return diagnostic info about reference tracker state."""
+        configured = self.options.get(CONF_REFERENCE_TRACKERS, [])
+        if not isinstance(configured, list):
+            configured = []
+
+        aggregation: dict[str, Any] = {}
+        for area_id, (
+            primary_rssi,
+            primary_addr,
+            other_readings,
+            _stamps,
+        ) in self._last_ref_tracker_aggregation.items():
+            tracker_count = sum(
+                1 for d in self.devices.values() if getattr(d, "is_reference_tracker", False) and d.area_id == area_id
+            )
+            aggregation[area_id] = {
+                "tracker_count": tracker_count,
+                "primary_scanner": primary_addr,
+                "primary_rssi": round(primary_rssi, 1),
+                "other_readings": {k: round(v, 1) for k, v in other_readings.items()},
+            }
+
+        return {
+            "configured_count": len(configured),
+            "configured_addresses": configured,
+            "aggregation_by_area": aggregation,
+        }
 
     # =========================================================================
     # Pure helper functions (no coordinator state access)
@@ -1083,16 +1143,20 @@ class AreaSelectionHandler:
         # auto-learning this is dangerous: the initial assignment may be wrong,
         # and we have no evidence of sustained presence. Block explicitly.
         # =====================================================================
-        skip_reason = self._check_movement_state_for_learning(device, nowstamp)
-        if skip_reason is not None:
-            if nowstamp is not None:
-                self._auto_learning_stats.record_update(
-                    performed=False,
-                    stamp=nowstamp,
-                    device_address=device.address,
-                    skip_reason=skip_reason,
-                )
-            return
+        # Reference Tracker Proxy devices bypass the movement state check.
+        # They are explicitly marked as stationary by the user (L-08).
+        is_reference_device = device.address.startswith(REFERENCE_TRACKER_DEVICE_PREFIX)
+        if not is_reference_device:
+            skip_reason = self._check_movement_state_for_learning(device, nowstamp)
+            if skip_reason is not None:
+                if nowstamp is not None:
+                    self._auto_learning_stats.record_update(
+                        performed=False,
+                        stamp=nowstamp,
+                        device_address=device.address,
+                        skip_reason=skip_reason,
+                    )
+                return
 
         # =====================================================================
         # Quality Filter: Feature 5 - Velocity Filter
@@ -1431,6 +1495,111 @@ class AreaSelectionHandler:
         return virtual_distances
 
     # =========================================================================
+    # Reference Tracker: Aggregated learning from stationary room beacons
+    # =========================================================================
+
+    def _aggregate_reference_tracker_readings(
+        self,
+        nowstamp: float,
+    ) -> dict[str, tuple[float, str | None, dict[str, float], dict[str, float]]]:
+        """
+        Aggregate RSSI from reference trackers, grouped by area.
+
+        Multiple trackers in the same room produce exactly ONE aggregated
+        entry via per-scanner median. Returns one tuple per area:
+        (primary_rssi, primary_scanner_addr, other_readings, scanner_stamps).
+        """
+        result: dict[str, tuple[float, str | None, dict[str, float], dict[str, float]]] = {}
+
+        # Step 1: Group reference trackers by area_id
+        ref_by_area: dict[str, list[Any]] = {}
+        for device in self.devices.values():
+            if not getattr(device, "is_reference_tracker", False):
+                continue
+            if device.area_id is None:
+                continue
+            ref_by_area.setdefault(device.area_id, []).append(device)
+
+        if not ref_by_area:
+            return result
+
+        # Step 2: Per area, collect all RSSI readings and compute median
+        for area_id, trackers in ref_by_area.items():
+            scanner_rssi_lists: dict[str, list[float]] = {}
+            scanner_stamps: dict[str, float] = {}
+
+            for tracker in trackers:
+                for advert in tracker.adverts.values():
+                    if (
+                        advert.rssi is not None
+                        and advert.stamp is not None
+                        and nowstamp - advert.stamp < EVIDENCE_WINDOW_SECONDS
+                        and advert.scanner_address is not None
+                    ):
+                        scanner_rssi_lists.setdefault(advert.scanner_address, []).append(advert.rssi)
+                        scanner_stamps[advert.scanner_address] = max(
+                            scanner_stamps.get(advert.scanner_address, 0.0),
+                            advert.stamp,
+                        )
+
+            if not scanner_rssi_lists:
+                continue
+
+            # Step 3: Compute per-scanner median
+            scanner_medians: dict[str, float] = {
+                addr: statistics.median(rssis) for addr, rssis in scanner_rssi_lists.items()
+            }
+
+            # Step 4: Determine primary scanner (strongest median)
+            primary_addr = max(scanner_medians, key=lambda k: scanner_medians[k])
+            primary_rssi = scanner_medians[primary_addr]
+            other_readings = {k: v for k, v in scanner_medians.items() if k != primary_addr}
+
+            result[area_id] = (primary_rssi, primary_addr, other_readings, scanner_stamps)
+
+        return result
+
+    def _update_reference_tracker_learning(self, nowstamp: float) -> None:
+        """
+        Perform one aggregated auto-learning update per area from reference trackers.
+
+        Called once per coordinator cycle, BEFORE individual device learning.
+        N reference trackers in the same room produce exactly ONE learning update.
+        """
+        aggregated = self._aggregate_reference_tracker_readings(nowstamp)
+
+        # Cache for diagnostics
+        self._last_ref_tracker_aggregation = aggregated
+
+        if not aggregated:
+            return
+
+        for area_id, (primary_rssi, primary_addr, other_readings, _stamps) in aggregated.items():
+            device_key = f"{REFERENCE_TRACKER_DEVICE_PREFIX}{area_id}"
+
+            # Resolve area name for logging/diagnostics
+            area_name = self.resolve_area_name(area_id) or area_id
+
+            # Create lightweight proxy that mimics BermudaDevice interface
+            proxy = _ReferenceTrackerProxy(
+                address=device_key,
+                name=f"Reference Tracker ({area_name})",
+                area_id=area_id,
+            )
+
+            # Call shared learning method with elevated confidence.
+            # Filter 3 (Movement State) is bypassed via ref: prefix check (Phase 6).
+            self._update_device_correlations(
+                device=cast("BermudaDevice", proxy),
+                area_id=area_id,
+                primary_rssi=primary_rssi,
+                primary_scanner_addr=primary_addr,
+                other_readings=other_readings,
+                nowstamp=nowstamp,
+                confidence=REFERENCE_TRACKER_CONFIDENCE,
+            )
+
+    # =========================================================================
     # Main entry point - refresh areas for all devices
     # =========================================================================
 
@@ -1446,6 +1615,10 @@ class AreaSelectionHandler:
         # Cache offline scanner addresses once per cycle to avoid redundant
         # frozenset creation (was called 4x per device before).
         self._cycle_offline_addrs = self._get_offline_scanner_addrs()
+
+        # Reference Tracker: Aggregated learning BEFORE individual device processing.
+        # This ensures N trackers in the same room produce exactly ONE learning update.
+        self._update_reference_tracker_learning(nowstamp)
 
         # Check if we have mature room profiles (scanner-pairs with sufficient samples)
         has_mature_profiles = any(

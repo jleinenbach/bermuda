@@ -296,6 +296,12 @@ AUTO_LEARNING_MIN_DWELL_TIME: Final = 30.0  # seconds
 ROOM_AMBIGUITY_MIN_SCORE: Final = 0.4  # Minimum score for a room to be considered a competitor
 ROOM_AMBIGUITY_MAX_DIFF: Final = 0.15  # Max score difference to consider ambiguous
 
+# Reference Tracker: Stationary devices providing ground truth for auto-learning
+# Implemented in: AreaSelectionHandler._update_reference_tracker_learning()
+CONF_REFERENCE_TRACKERS: Final = "reference_trackers"
+REFERENCE_TRACKER_CONFIDENCE: Final = 0.80  # Above gate (0.50), below button (~0.95)
+REFERENCE_TRACKER_DEVICE_PREFIX: Final = "ref:"  # Virtual device key prefix
+
 # Sentinel values for distance/RSSI
 DISTANCE_INFINITE_SENTINEL: Final = 999.0  # Sentinel value for unknown/infinite distance
 RSSI_INVALID_SENTINEL: Final = -999.0  # Sentinel value for invalid/missing RSSI
