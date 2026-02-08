@@ -208,8 +208,16 @@ class BermudaEntity(CoordinatorEntity):
             if ble_address and is_mac_address(ble_address):
                 connections.add((dr.CONNECTION_BLUETOOTH, normalize_mac(ble_address)))
         elif self._device.address_type == ADDR_TYPE_IBEACON:
-            # ibeacon doesn't (yet) actually set a "connection", but
-            # this "matches" what it stores for identifier.
+            # If this iBeacon is broadcast by an ESPHome/Shelly scanner,
+            # congeal with the scanner's native HA device so iBeacon
+            # entities appear alongside scanner diagnostics.
+            congealment_device = self._find_ibeacon_scanner_device()
+            if congealment_device is not None and congealment_device.identifiers:
+                return DeviceInfo(
+                    identifiers=congealment_device.identifiers,
+                    name=self._device.name,
+                )
+            # Fallback: standalone iBeacon, create separate device
             connections = {("ibeacon", self._device.address.lower())}
             model = f"iBeacon: {self._device.address.lower()}"
         elif self._device.address_type == ADDR_TYPE_PRIVATE_BLE_DEVICE:
@@ -275,6 +283,69 @@ class BermudaEntity(CoordinatorEntity):
             name=self._device.name,
             model=model,
         )
+
+    def _find_ibeacon_scanner_device(self) -> dr.DeviceEntry | None:
+        """
+        Find the ESPHome/Shelly device for an iBeacon from a scanner.
+
+        When an ESPHome scanner broadcasts an iBeacon, the resulting
+        metadevice should be congealed with the scanner's native HA device
+        instead of creating a separate device entry.  This looks up the
+        source scanner via ``metadevice_sources`` and finds its
+        ESPHome/Shelly device entry using the same priority logic as
+        scanner entity congealment.
+        """
+        for source_addr in self._device.metadevice_sources:
+            source_dev = self.coordinator.devices.get(source_addr)
+            if source_dev is None or not source_dev.is_scanner:
+                continue
+
+            # Found source scanner — find its ESPHome/Shelly device.
+
+            # Priority 1: WiFi MAC
+            if source_dev.address_wifi_mac:
+                try:
+                    candidate = self.dr.async_get_device(
+                        connections={(dr.CONNECTION_NETWORK_MAC, normalize_mac(source_dev.address_wifi_mac))}
+                    )
+                except ValueError:
+                    candidate = None
+                if (
+                    candidate is not None
+                    and candidate.identifiers
+                    and not any(c[0] == "bluetooth" for c in candidate.connections)
+                ):
+                    return candidate
+
+            # Priority 2: MAC offset search (Espressif base-MAC scheme)
+            base_addr = source_dev.address_ble_mac or source_dev.address
+            for offset in range(-3, 3):
+                alt_mac = mac_math_offset(base_addr, offset)
+                if alt_mac is None:
+                    continue
+                try:
+                    alt_mac_norm = normalize_mac(alt_mac)
+                except ValueError:
+                    continue
+                candidate = self.dr.async_get_device(connections={(dr.CONNECTION_NETWORK_MAC, alt_mac_norm)})
+                if (
+                    candidate is not None
+                    and candidate.identifiers
+                    and not any(c[0] == "bluetooth" for c in candidate.connections)
+                ):
+                    return candidate
+
+            # Priority 3: entry_id fallback
+            if source_dev.entry_id:
+                candidate = self.dr.async_get(source_dev.entry_id)
+                if candidate is not None and candidate.identifiers:
+                    return candidate
+
+            # Found a scanner source but couldn't resolve its device entry.
+            return None
+
+        # No scanner source found — this is a standalone iBeacon.
+        return None
 
     @property
     def device_state_attributes(self) -> dict[str, str]:
