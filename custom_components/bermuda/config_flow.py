@@ -416,6 +416,21 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
             ref_trackers_option = []
         default_ref_trackers = sorted(normalize_address(addr) for addr in ref_trackers_option if isinstance(addr, str))
 
+        # Build reference tracker options: only devices already being tracked.
+        # Reference trackers are stationary BLE devices in a known room — they must
+        # be tracked devices (configured or auto-configured).  Showing ALL discovered
+        # devices (random MACs, FMDN sources, etc.) is confusing and inappropriate.
+        # Also include previously saved reference trackers so they don't disappear.
+        trackable_addresses = configured_devices | auto_configured_addresses
+        saved_ref_addrs = {normalize_address(addr) for addr in ref_trackers_option if isinstance(addr, str)}
+        ref_eligible = trackable_addresses | saved_ref_addrs
+        ref_tracker_options = [opt for opt in options_list if normalize_address(opt["value"]) in ref_eligible]
+        # Add back any saved reference trackers not found in discovered devices
+        ref_tracker_options.extend(
+            SelectOptionDict(value=addr, label=f"[{addr}] (saved)")
+            for addr in sorted(saved_ref_addrs - {normalize_address(opt["value"]) for opt in ref_tracker_options})
+        )
+
         data_schema = {
             vol.Optional(
                 CONF_DEVICES,
@@ -424,7 +439,7 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
             vol.Optional(
                 CONF_REFERENCE_TRACKERS,
                 default=default_ref_trackers,
-            ): SelectSelector(SelectSelectorConfig(options=options_list, multiple=True)),
+            ): SelectSelector(SelectSelectorConfig(options=ref_tracker_options, multiple=True)),
         }
 
         return self.async_show_form(step_id="selectdevices", data_schema=vol.Schema(data_schema))
