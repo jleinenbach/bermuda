@@ -1258,13 +1258,25 @@ class AreaSelectionHandler:
         # Feature 1: Collect current advertisement timestamps
         # Used to detect genuinely new data vs re-reading cached RSSI values
         # =====================================================================
-        current_stamps: dict[str, float] = {}
-        for advert in device.adverts.values():
-            if advert.scanner_address is not None and advert.stamp is not None:
-                current_stamps[advert.scanner_address] = advert.stamp
+        current_stamps: dict[str, float] | None
+        last_stamps: dict[str, float] | None
 
-        # Get last timestamps for this device (empty dict if first update)
-        last_stamps = self._device_last_stamps.get(device.address, {})
+        if is_reference_device:
+            # Reference tracker proxies carry no adverts (data comes from median
+            # aggregation of real tracker adverts).  Bypass Feature 1 new-data
+            # check: the aggregation step already ensures freshness via
+            # EVIDENCE_WINDOW_SECONDS.  The minimum-interval check inside
+            # AreaProfile.update() still runs (keyed on _last_update_stamp).
+            current_stamps = None
+            last_stamps = None
+        else:
+            current_stamps = {}
+            for advert in device.adverts.values():
+                if advert.scanner_address is not None and advert.stamp is not None:
+                    current_stamps[advert.scanner_address] = advert.stamp
+
+            # Get last timestamps for this device (empty dict if first update)
+            last_stamps = self._device_last_stamps.get(device.address, {})
 
         # Ensure device has correlation entry
         if device.address not in self.correlations:
@@ -1304,8 +1316,11 @@ class AreaSelectionHandler:
                 current_stamps=current_stamps,
             )
 
-            # Store current stamps for next call (only on successful update)
-            self._device_last_stamps[device.address] = current_stamps
+            # Store current stamps for next call (only on successful update).
+            # Reference tracker proxies use None stamps (Feature 1 bypassed),
+            # so skip storing to avoid polluting the cache.
+            if current_stamps is not None:
+                self._device_last_stamps[device.address] = current_stamps
 
         # Record stats for diagnostic purposes
         # Use area_update_performed as the primary indicator (both have the same interval logic)

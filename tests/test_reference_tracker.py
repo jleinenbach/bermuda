@@ -955,3 +955,118 @@ class TestMedianEdgeCases:
         _, _, _, stamps = result["area.kitchen"]
         # Should use the maximum stamp (1002.0)
         assert stamps["scanner_a"] == 1002.0
+
+
+# =============================================================================
+# TestEndToEndLearning — Verifies data actually reaches AreaProfile
+# =============================================================================
+
+
+class TestEndToEndLearning:
+    """End-to-end tests that verify learning data reaches AreaProfile/RoomProfile.
+
+    These tests do NOT mock _update_device_correlations — they call the real
+    pipeline and assert on the resulting AreaProfile state.  This catches bugs
+    where the call is made but the data is silently rejected (e.g., Feature 1
+    new-data check rejecting empty current_stamps from proxy's empty adverts).
+    """
+
+    def test_learning_writes_area_profile(self) -> None:
+        """Reference tracker learning must produce a non-empty AreaProfile.
+
+        Regression test for Bug #1: proxy's empty adverts caused Feature 1
+        (new-data check) to always reject updates because current_stamps was
+        an empty dict, and any() over an empty iterable returns False.
+        """
+        handler = _make_handler()
+        dev = _make_ref_device(
+            "aa:bb:cc:dd:ee:01",
+            "area.kitchen",
+            {"scanner_a": -55.0, "scanner_b": -70.0},
+        )
+        handler.coordinator.devices = {dev.address: dev}
+
+        # Run learning (calls _update_device_correlations without mocking it)
+        handler._update_reference_tracker_learning(nowstamp=1001.0)
+
+        device_key = f"{REFERENCE_TRACKER_DEVICE_PREFIX}area.kitchen"
+
+        # AreaProfile must exist and have been updated
+        assert device_key in handler.correlations, "BUG: ref tracker correlations entry was never created"
+        assert "area.kitchen" in handler.correlations[device_key], "BUG: AreaProfile for area.kitchen was never created"
+        profile = handler.correlations[device_key]["area.kitchen"]
+        assert profile.sample_count > 0, "BUG: AreaProfile has zero samples — learning was silently rejected"
+
+    def test_learning_writes_room_profile(self) -> None:
+        """Reference tracker learning must also update the RoomProfile."""
+        handler = _make_handler()
+        dev = _make_ref_device(
+            "aa:bb:cc:dd:ee:01",
+            "area.kitchen",
+            {"scanner_a": -55.0, "scanner_b": -70.0},
+        )
+        handler.coordinator.devices = {dev.address: dev}
+
+        handler._update_reference_tracker_learning(nowstamp=1001.0)
+
+        assert "area.kitchen" in handler.room_profiles, "BUG: RoomProfile for area.kitchen was never created"
+        room_profile = handler.room_profiles["area.kitchen"]
+        assert room_profile.total_samples > 0, "BUG: RoomProfile has zero samples — learning was silently rejected"
+
+    def test_learning_respects_min_interval(self) -> None:
+        """Consecutive calls within AUTO_LEARNING_MIN_INTERVAL are throttled."""
+        handler = _make_handler()
+        dev = _make_ref_device(
+            "aa:bb:cc:dd:ee:01",
+            "area.kitchen",
+            {"scanner_a": -55.0, "scanner_b": -70.0},
+        )
+        handler.coordinator.devices = {dev.address: dev}
+
+        # First call at t=1001 — succeeds
+        handler._update_reference_tracker_learning(nowstamp=1001.0)
+        device_key = f"{REFERENCE_TRACKER_DEVICE_PREFIX}area.kitchen"
+        profile = handler.correlations[device_key]["area.kitchen"]
+        count_after_first = profile.sample_count
+
+        # Second call at t=1002 (1s later, < 5s MIN_INTERVAL) — throttled
+        handler._update_reference_tracker_learning(nowstamp=1002.0)
+        assert profile.sample_count == count_after_first, "Learning should be throttled by minimum interval"
+
+        # Third call at t=1007 (6s after first, > 5s MIN_INTERVAL) — succeeds
+        handler._update_reference_tracker_learning(nowstamp=1007.0)
+        assert profile.sample_count > count_after_first, "Learning should proceed after minimum interval elapsed"
+
+    def test_learning_two_areas_independent_profiles(self) -> None:
+        """Two areas with reference trackers get independent AreaProfiles."""
+        handler = _make_handler()
+        devices: dict[str, Any] = {}
+
+        dev_k = _make_ref_device(
+            "aa:bb:cc:dd:ee:01",
+            "area.kitchen",
+            {"scanner_a": -55.0, "scanner_b": -70.0},
+        )
+        devices[dev_k.address] = dev_k
+
+        dev_o = _make_ref_device(
+            "aa:bb:cc:dd:ee:02",
+            "area.office",
+            {"scanner_b": -60.0, "scanner_c": -75.0},
+        )
+        devices[dev_o.address] = dev_o
+
+        handler.coordinator.devices = devices
+        handler._update_reference_tracker_learning(nowstamp=1001.0)
+
+        key_k = f"{REFERENCE_TRACKER_DEVICE_PREFIX}area.kitchen"
+        key_o = f"{REFERENCE_TRACKER_DEVICE_PREFIX}area.office"
+
+        assert key_k in handler.correlations
+        assert key_o in handler.correlations
+        assert "area.kitchen" in handler.correlations[key_k]
+        assert "area.office" in handler.correlations[key_o]
+
+        # Each has its own profile with data
+        assert handler.correlations[key_k]["area.kitchen"].sample_count > 0
+        assert handler.correlations[key_o]["area.office"].sample_count > 0
