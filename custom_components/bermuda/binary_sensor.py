@@ -9,7 +9,7 @@ from homeassistant.components.binary_sensor import (
     BinarySensorDeviceClass,
     BinarySensorEntity,
 )
-from homeassistant.const import EntityCategory
+from homeassistant.const import MATCH_ALL, EntityCategory
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
@@ -78,6 +78,13 @@ class BermudaScannerOnlineSensor(BermudaEntity, BinarySensorEntity):
     _attr_translation_key = "scanner_online"
     _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
     _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    # Exclude ALL extra_state_attributes from the recorder database.
+    # last_seen_age_seconds is recalculated every coordinator cycle (~1.05s),
+    # creating a new DB row per cycle per scanner entity. This is pure
+    # real-time diagnostic info with no historical value.
+    # The binary state itself (ON/OFF) is still recorded normally.
+    _unrecorded_attributes = frozenset({MATCH_ALL})
 
     @property
     def unique_id(self) -> str:

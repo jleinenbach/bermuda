@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.device_tracker.config_entry import BaseTrackerEntity
 from homeassistant.components.device_tracker.const import SourceType
-from homeassistant.const import STATE_HOME
+from homeassistant.const import MATCH_ALL, STATE_HOME
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
@@ -81,6 +81,13 @@ class BermudaDeviceTracker(BermudaEntity, BaseTrackerEntity):
     # BaseTrackerEntity narrows Entity's EntityCategory | None to EntityCategory,
     # but we intentionally want None here (no category = primary entity).
     _attr_entity_category = None  # type: ignore[assignment]
+
+    # Exclude ALL extra_state_attributes from the recorder database.
+    # The "scanner" and "area" attributes duplicate data already available
+    # from dedicated sensor entities (BermudaSensor, BermudaSensorScanner).
+    # Recording them here creates redundant DB writes on every area change.
+    # The device_tracker state itself (home/not_home/zone) is still recorded.
+    _unrecorded_attributes = frozenset({MATCH_ALL})
 
     @property
     def unique_id(self) -> str:
