@@ -1225,3 +1225,150 @@ async def test_calibration2_ref_power_from_device(hass: HomeAssistant, setup_ber
     suffix = placeholders.get("suffix", "")
     # Results table should contain scanner data (device ref_power=-50 used)
     assert "Test Scanner" in suffix
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Reference Tracker selector scope tests (Bug #2 fix)
+# ──────────────────────────────────────────────────────────────────────
+
+
+async def test_reference_tracker_selector_only_shows_tracked_devices(
+    hass: HomeAssistant, setup_bermuda_entry: MockConfigEntry
+) -> None:
+    """Test CONF_REFERENCE_TRACKERS selector only shows tracked devices, not all discovered."""
+    from custom_components.bermuda.const import (
+        BDADDR_TYPE_RANDOM_RESOLVABLE,
+        CONF_REFERENCE_TRACKERS,
+    )
+    from bluetooth_data_tools import monotonic_time_coarse
+
+    coordinator = setup_bermuda_entry.runtime_data.coordinator
+
+    # --- Tracked devices (should appear in ref tracker selector) ---
+    tracked1 = coordinator._get_or_create_device("aa:bb:cc:dd:ee:01")
+    tracked1.name = "Tracked Device 1"
+    tracked1.last_seen = monotonic_time_coarse()
+
+    tracked2 = coordinator._get_or_create_device("aa:bb:cc:dd:ee:02")
+    tracked2.name = "Tracked Device 2"
+    tracked2.last_seen = monotonic_time_coarse()
+
+    # Save tracked devices in options
+    hass.config_entries.async_update_entry(
+        setup_bermuda_entry,
+        options={CONF_DEVICES: ["aa:bb:cc:dd:ee:01", "aa:bb:cc:dd:ee:02"]},
+    )
+    await hass.async_block_till_done()
+
+    # --- Non-tracked devices (should NOT appear in ref tracker selector) ---
+    random_dev = coordinator._get_or_create_device("44:bb:cc:dd:ee:03")
+    random_dev.address_type = BDADDR_TYPE_RANDOM_RESOLVABLE
+    random_dev.name = "Random Device"
+    random_dev.last_seen = monotonic_time_coarse()
+
+    other_dev = coordinator._get_or_create_device("aa:bb:cc:dd:ee:04")
+    other_dev.name = "Other Device"
+    other_dev.last_seen = monotonic_time_coarse()
+
+    # Navigate to selectdevices step
+    result = await hass.config_entries.options.async_init(setup_bermuda_entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={"next_step_id": "selectdevices"}
+    )
+    assert result["step_id"] == "selectdevices"
+
+    # Extract CONF_REFERENCE_TRACKERS selector options from the schema
+    ref_tracker_values: list[str] = []
+    all_device_values: list[str] = []
+    for key, validator in result["data_schema"].schema.items():
+        if key.schema == CONF_REFERENCE_TRACKERS:
+            ref_tracker_values = [opt["value"] for opt in validator.config["options"]]
+        elif key.schema == CONF_DEVICES:
+            all_device_values = [opt["value"] for opt in validator.config["options"]]
+
+    # CONF_DEVICES should show ALL discovered devices (including non-tracked)
+    assert len(all_device_values) >= 4, f"Expected at least 4 devices, got {len(all_device_values)}"
+
+    # CONF_REFERENCE_TRACKERS should ONLY show tracked devices
+    assert "aa:bb:cc:dd:ee:01" in ref_tracker_values
+    assert "aa:bb:cc:dd:ee:02" in ref_tracker_values
+    # Non-tracked devices must NOT appear
+    assert "44:bb:cc:dd:ee:03" not in ref_tracker_values, "Random device should not be in ref tracker options"
+    assert "aa:bb:cc:dd:ee:04" not in ref_tracker_values, "Non-configured device should not be in ref tracker options"
+
+
+async def test_reference_tracker_selector_includes_auto_configured(
+    hass: HomeAssistant, setup_bermuda_entry: MockConfigEntry
+) -> None:
+    """Test CONF_REFERENCE_TRACKERS selector includes auto-configured metadevices (FMDN, IRK)."""
+    from custom_components.bermuda.const import (
+        ADDR_TYPE_FMDN_DEVICE,
+        CONF_REFERENCE_TRACKERS,
+        METADEVICE_FMDN_DEVICE,
+    )
+    from bluetooth_data_tools import monotonic_time_coarse
+
+    coordinator = setup_bermuda_entry.runtime_data.coordinator
+
+    # Create an auto-configured FMDN metadevice
+    fmdn_dev = coordinator._get_or_create_device("fmdn:test-uuid-1234")
+    fmdn_dev.address_type = ADDR_TYPE_FMDN_DEVICE
+    fmdn_dev.metadevice_type.add(METADEVICE_FMDN_DEVICE)
+    fmdn_dev.name = "FMDN Tracker"
+    fmdn_dev.last_seen = monotonic_time_coarse()
+    coordinator.metadevices["fmdn:test-uuid-1234"] = fmdn_dev
+
+    # Create a non-tracked regular device
+    other_dev = coordinator._get_or_create_device("aa:bb:cc:dd:ee:99")
+    other_dev.name = "Random Other"
+    other_dev.last_seen = monotonic_time_coarse()
+
+    result = await hass.config_entries.options.async_init(setup_bermuda_entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={"next_step_id": "selectdevices"}
+    )
+    assert result["step_id"] == "selectdevices"
+
+    ref_tracker_values: list[str] = []
+    for key, validator in result["data_schema"].schema.items():
+        if key.schema == CONF_REFERENCE_TRACKERS:
+            ref_tracker_values = [opt["value"] for opt in validator.config["options"]]
+            break
+
+    # Auto-configured FMDN device should appear in ref tracker selector
+    assert "fmdn:test-uuid-1234" in ref_tracker_values
+    # Non-tracked device should NOT
+    assert "aa:bb:cc:dd:ee:99" not in ref_tracker_values
+
+
+async def test_reference_tracker_selector_preserves_saved_trackers(
+    hass: HomeAssistant, setup_bermuda_entry: MockConfigEntry
+) -> None:
+    """Test CONF_REFERENCE_TRACKERS selector preserves previously saved trackers even if not discovered."""
+    from custom_components.bermuda.const import CONF_REFERENCE_TRACKERS
+
+    # Save a reference tracker address that is NOT currently discovered
+    saved_addr = "aa:bb:cc:dd:ee:77"
+    hass.config_entries.async_update_entry(
+        setup_bermuda_entry,
+        options={
+            CONF_DEVICES: ["aa:bb:cc:dd:ee:77"],
+            CONF_REFERENCE_TRACKERS: [saved_addr],
+        },
+    )
+    await hass.async_block_till_done()
+
+    result = await hass.config_entries.options.async_init(setup_bermuda_entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={"next_step_id": "selectdevices"}
+    )
+    assert result["step_id"] == "selectdevices"
+
+    ref_tracker_values: list[str] = []
+    for key, validator in result["data_schema"].schema.items():
+        if key.schema == CONF_REFERENCE_TRACKERS:
+            ref_tracker_values = [opt["value"] for opt in validator.config["options"]]
+            break
+
+    # Saved reference tracker should still appear even though device wasn't discovered
+    assert saved_addr in ref_tracker_values

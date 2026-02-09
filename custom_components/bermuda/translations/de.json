@@ -56,7 +56,15 @@
       },
       "selectdevices": {
         "title": "Geräte auswählen",
-        "description": "Wählen Sie, welche Geräte Sie verfolgen möchten. Wenn unten keine Geräte erscheinen, sieht Bermuda keine Daten von Bluetooth-Scannern. Stellen Sie sicher, dass Sie ein ESPHome ble_proxy-Gerät, Shelly-Geräte mit konfiguriertem Bluetooth-Proxy oder einen lokalen Bluetooth-Adapter haben.\n\nGeräte, die mit **[Auto: ...]** gekennzeichnet sind, werden automatisch über ihre jeweiligen Integrationen verfolgt (Private BLE Device oder Google Find My). Diese können hier nicht abgewählt werden - verwalten Sie sie über ihre Quellintegration."
+        "description": "Wählen Sie, welche Geräte Sie verfolgen möchten. Wenn unten keine Geräte erscheinen, sieht Bermuda keine Daten von Bluetooth-Scannern. Stellen Sie sicher, dass Sie ein ESPHome ble_proxy-Gerät, Shelly-Geräte mit konfiguriertem Bluetooth-Proxy oder einen lokalen Bluetooth-Adapter haben.\n\nGeräte, die mit **[Auto: ...]** gekennzeichnet sind, werden automatisch über ihre jeweiligen Integrationen verfolgt (Private BLE Device oder Google Find My). Diese können hier nicht abgewählt werden - verwalten Sie sie über ihre Quellintegration.",
+        "data": {
+          "devices": "Zu verfolgende Geräte",
+          "reference_trackers": "Referenz-Tracker (stationäre Raum-Beacons)"
+        },
+        "data_description": {
+          "devices": "Wählen Sie, welche BLE-Geräte Bermuda für die Raumlokalisierung verfolgen soll.",
+          "reference_trackers": "Wählen Sie Geräte, die dauerhaft in einem bestimmten Raum platziert sind. Diese stationären Beacons liefern Referenzdaten für das automatische Lernen von Fingerabdrücken und verbessern die Raumerkennung für alle verfolgten Geräte."
+        }
       },
       "calibration1_global": {
         "title": "Kalibrierung 1: Global",

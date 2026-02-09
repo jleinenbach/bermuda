@@ -7393,6 +7393,160 @@ def _is_signal_ambiguous(self, device, area_id, readings):
 
 **Rule of Thumb**: When auto-learning affects shared state (like RoomProfiles), always check for ambiguity against that shared state, not just device-specific state. New devices without device-specific data are especially vulnerable to self-reinforcing errors.
 
+## Reference Tracker System
+
+### Overview
+
+Reference Trackers are stationary BLE devices permanently placed in a specific room (e.g., cheap iBeacons on shelves). They provide continuous ground-truth RSSI data for auto-learning fingerprints, improving room detection accuracy for ALL tracked devices without requiring manual button training.
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                    Reference Tracker Data Flow                                   │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  CONFIG FLOW (Phase 2)                                                           │
+│  ┌────────────────────────────────────────────────────────────────────────────┐ │
+│  │ User selects reference trackers in "Select Devices" step                   │ │
+│  │ Stored in: options[CONF_REFERENCE_TRACKERS] = ["addr1", "addr2", ...]     │ │
+│  └───────────────────────────────────┬────────────────────────────────────────┘ │
+│                                      │                                           │
+│                                      ▼                                           │
+│  DEVICE FLAG (Phase 1)                                                           │
+│  ┌────────────────────────────────────────────────────────────────────────────┐ │
+│  │ bermuda_device.calculate_data() sets:                                      │ │
+│  │   device.is_reference_tracker = address in configured_ref_trackers        │ │
+│  └───────────────────────────────────┬────────────────────────────────────────┘ │
+│                                      │                                           │
+│                                      ▼                                           │
+│  AGGREGATION (Phase 4) — Per coordinator cycle                                  │
+│  ┌────────────────────────────────────────────────────────────────────────────┐ │
+│  │ _aggregate_reference_tracker_readings(nowstamp)                            │ │
+│  │                                                                             │ │
+│  │ Group trackers by area_id → For each area:                                 │ │
+│  │   Per scanner: collect RSSI from all trackers → compute MEDIAN            │ │
+│  │   Result: {area_id: (primary_rssi, primary_addr, other_readings, stamps)} │ │
+│  │                                                                             │ │
+│  │ Key: Median aggregation ensures N trackers produce 1 learning update      │ │
+│  └───────────────────────────────────┬────────────────────────────────────────┘ │
+│                                      │                                           │
+│                                      ▼                                           │
+│  LEARNING (Phase 5) — Via _ReferenceTrackerProxy                                │
+│  ┌────────────────────────────────────────────────────────────────────────────┐ │
+│  │ _update_reference_tracker_learning(nowstamp)                               │ │
+│  │                                                                             │ │
+│  │ For each area with aggregated data:                                        │ │
+│  │   1. Create _ReferenceTrackerProxy (mimics BermudaDevice interface)       │ │
+│  │   2. Set proxy.address = "ref:<area_id>" (virtual, no collision)          │ │
+│  │   3. Set proxy.confidence = REFERENCE_TRACKER_CONFIDENCE (0.80)           │ │
+│  │   4. Call _update_device_correlations(proxy, area_id, ...)                │ │
+│  │      → Passes through all 7 quality filters (except Movement State)       │ │
+│  │      → Updates AreaProfile + RoomProfile via auto-learning Kalman path    │ │
+│  └────────────────────────────────────────────────────────────────────────────┘ │
+│                                                                                  │
+│  WIRING (Phase 7)                                                                │
+│  ┌────────────────────────────────────────────────────────────────────────────┐ │
+│  │ Called in refresh_areas_by_min_distance() ONCE per cycle:                  │ │
+│  │   self._update_reference_tracker_learning(nowstamp)                       │ │
+│  │ Runs BEFORE individual device processing → aggregated data ready          │ │
+│  └────────────────────────────────────────────────────────────────────────────┘ │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Key Design Decisions
+
+1. **Median Aggregation (Learning Rate Invariance)**: N trackers in the same room produce
+   exactly 1 learning update per cycle. Per-scanner RSSI values are median-aggregated.
+   This prevents rooms with more trackers from learning faster (Spec L-04/L-06).
+
+2. **`ref:<area_id>` Virtual Address**: The proxy device uses a virtual address prefix
+   to prevent collision with real MAC addresses. This key is used in `self.correlations`
+   to store reference tracker fingerprint data.
+
+3. **Filter 3 Bypass Only**: The Movement State filter is the ONLY filter bypassed for
+   reference trackers (stationary devices don't have movement state). All other 6 quality
+   filters (Confidence, Velocity, RSSI Variance, Ambiguity, Scanner Offline, New Data)
+   remain active for data quality.
+
+4. **Confidence = 0.80**: Above the auto-learning gate (0.50) to ensure reference tracker
+   data always passes the confidence filter, but below button training (~0.95) to maintain
+   user authority hierarchy.
+
+5. **No `create_sensor` Flag**: Reference trackers feed the learning pipeline only. They
+   do NOT create additional sensor entities in HA.
+
+### Constants
+
+| Constant | Value | File | Purpose |
+|----------|-------|------|---------|
+| `CONF_REFERENCE_TRACKERS` | `"reference_trackers"` | `const.py` | Config key for selected trackers |
+| `REFERENCE_TRACKER_CONFIDENCE` | `0.80` | `const.py` | Confidence value for proxy device |
+| `REFERENCE_TRACKER_DEVICE_PREFIX` | `"ref:"` | `const.py` | Virtual address prefix |
+
+### Files and Methods
+
+| File | Method/Class | Purpose |
+|------|--------------|---------|
+| `const.py` | 3 constants | Configuration keys and thresholds |
+| `bermuda_device.py` | `is_reference_tracker` attribute | Device flag set in `calculate_data()` |
+| `config_flow.py` | `async_step_selectdevices()` | Second multi-select for reference trackers |
+| `area_selection.py` | `_ReferenceTrackerProxy` | Dataclass mimicking BermudaDevice for learning pipeline |
+| `area_selection.py` | `_aggregate_reference_tracker_readings()` | Groups trackers by area, computes per-scanner median RSSI |
+| `area_selection.py` | `_update_reference_tracker_learning()` | Creates proxies, calls `_update_device_correlations()` |
+| `area_selection.py` | `_update_device_correlations()` | Filter 3 bypass for `ref:` prefix addresses |
+| `area_selection.py` | `get_reference_tracker_diagnostics()` | Returns diagnostic dict for observability |
+| `diagnostics.py` | `async_get_config_entry_diagnostics()` | Includes reference tracker diagnostics |
+| `translations/en.json` | `selectdevices` step | UI labels and descriptions |
+| `translations/de.json` | `selectdevices` step | German translations |
+| `tests/test_reference_tracker.py` | 38 test methods | Full coverage of all spec requirements |
+
+### _ReferenceTrackerProxy Dataclass
+
+```python
+@dataclass(slots=True)
+class _ReferenceTrackerProxy:
+    """Lightweight proxy that mimics BermudaDevice for _update_device_correlations()."""
+    address: str              # "ref:<area_id>"
+    area_id: str | None       # Current area (always set for ref trackers)
+    area_name: str | None     # Resolved area name
+    confidence: float         # REFERENCE_TRACKER_CONFIDENCE (0.80)
+    adverts: dict             # Scanner address → FakeAdvert-like objects
+    last_seen: float          # Latest stamp across all adverts
+```
+
+### Lesson Learned
+
+### 74. Median Aggregation Ensures Learning Rate Invariance
+
+When multiple sensors report overlapping data for the same location, aggregating before
+learning prevents the learning rate from scaling with sensor count.
+
+**Bug Pattern:**
+```python
+# BAD - Each tracker triggers its own learning update
+for tracker in trackers_in_room:
+    learn_from(tracker.rssi_readings)
+# 5 trackers in Kitchen → 5x learning rate vs 1 tracker in Office!
+```
+
+**Fix Pattern:**
+```python
+# GOOD - Aggregate first, learn once
+per_scanner_rssi: dict[str, list[float]] = {}
+for tracker in trackers_in_room:
+    for scanner, rssi in tracker.readings.items():
+        per_scanner_rssi.setdefault(scanner, []).append(rssi)
+
+median_readings = {s: median(vals) for s, vals in per_scanner_rssi.items()}
+learn_from(median_readings)  # Exactly 1 update regardless of tracker count
+```
+
+**Rule of Thumb**: When multiple data sources report about the same entity/location,
+aggregate (preferably with median for outlier robustness) before feeding into learning
+pipelines. This ensures the learning rate depends on cycle frequency, not source count.
+
 ## Scanner Offline Detection System
 
 ### Overview
