@@ -1383,18 +1383,19 @@ class TestRecorderBaseline:
         assert "last_good_distance_age_s" in unrecorded
         assert "area_retention_seconds_remaining" in unrecorded
 
-    def test_area_sensor_stable_attributes_not_excluded(self) -> None:
-        """STAGE 1: Stable attributes are NOT excluded from recorder.
+    def test_area_sensor_metadata_attributes_excluded(self) -> None:
+        """All area_state_metadata() attributes are excluded from recorder.
 
-        area_is_stale, area_retained, area_source change rarely and are
-        valuable for history analysis.
+        area_is_stale, area_retained, area_source change on state transitions
+        and force new attribute DB rows even though the primary state hasn't
+        changed. They are available in live state but excluded from recording.
         """
         sensor = self._create_area_sensor("Area")
         unrecorded = getattr(sensor, "_unrecorded_attributes", frozenset())
 
-        assert "area_is_stale" not in unrecorded
-        assert "area_retained" not in unrecorded
-        assert "area_source" not in unrecorded
+        assert "area_is_stale" in unrecorded
+        assert "area_retained" in unrecorded
+        assert "area_source" in unrecorded
 
     def test_area_sensor_includes_time_metadata_in_attributes(self) -> None:
         """BASELINE: Area sensor includes time-based metadata in extra_state_attributes.

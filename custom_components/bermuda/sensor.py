@@ -168,16 +168,21 @@ class BermudaSensor(BermudaEntity, SensorEntity):
     _attr_has_entity_name = True
     _attr_translation_key = "area"
 
-    # Exclude time-based metadata from HA recorder database.
-    # These 3 float attributes change every coordinator cycle (~1.05s),
-    # forcing a new DB row per cycle per entity (Area, Floor, Distance).
+    # Exclude volatile metadata from HA recorder database.
+    # These attributes change frequently (every coordinator cycle or on
+    # state transitions), forcing new DB rows that bloat the database.
     # They are pure real-time diagnostics with no historical value.
     # Live state, UI, automations and templates are NOT affected.
     _unrecorded_attributes = frozenset(
         {
+            # Time-based floats that change every cycle (~1.05s):
             "last_good_area_age_s",
             "last_good_distance_age_s",
             "area_retention_seconds_remaining",
+            # Boolean/string metadata that changes on state transitions:
+            "area_is_stale",
+            "area_retained",
+            "area_source",
         }
     )
 
@@ -493,6 +498,13 @@ class BermudaSensorAreaSwitchReason(BermudaSensor):
     _attr_translation_key = "area_switch_diagnostic"
     _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_entity_registry_enabled_default = False
+
+    # Exclude ALL extra_state_attributes from the recorder database.
+    # area_tests.to_dict() returns a large diagnostic dict that changes
+    # every coordinator cycle (~1.05s). Recording this would create massive
+    # DB writes with no historical value. The current state is still
+    # available in the UI and via templates.
+    _unrecorded_attributes = frozenset({MATCH_ALL})
 
     @property
     def unique_id(self) -> str:
