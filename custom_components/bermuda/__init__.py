@@ -16,6 +16,7 @@ from homeassistant.core import callback
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.entity_registry import async_migrate_entries
+from homeassistant.helpers.event import async_call_later
 
 from .const import _LOGGER, DOMAIN, PLATFORMS, STARTUP_MESSAGE
 from .coordinator import BermudaDataUpdateCoordinator
@@ -37,6 +38,11 @@ class BermudaData:
 
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+
+# Seconds after setup before orphaned entities are cleaned up. Devices are only
+# created as adverts arrive, so the device list right after the first refresh is
+# empty or partial and every entity of a not-yet-seen device would look orphaned.
+ORPHAN_CLEANUP_DELAY = 300
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: BermudaConfigEntry) -> bool:
@@ -65,12 +71,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: BermudaConfigEntry) -> b
     if not coordinator.last_update_success:
         await on_failure()
 
-    # Clean up orphaned entities from previous sessions AFTER first refresh
-    # This MUST run after async_refresh() because self.devices is populated during refresh.
-    # Running before would incorrectly mark ALL entities as orphaned (devices would be empty).
+    # Clean up orphaned entities from previous sessions once the device list has
+    # filled up (see ORPHAN_CLEANUP_DELAY). Running it right after the first refresh
+    # removed nearly every entity on each start: the refresh returns early while the
+    # Bluetooth ID data loads, and devices only appear as their adverts arrive.
     # Handles cases where devices were re-discovered with different address formats
     # (e.g., FMDN device_id vs canonical_id changes) or entities weren't properly removed.
-    await coordinator.async_cleanup_orphaned_entities()
+    async def _async_cleanup_orphaned_entities(_now) -> None:
+        await coordinator.async_cleanup_orphaned_entities()
+
+    entry.async_on_unload(async_call_later(hass, ORPHAN_CLEANUP_DELAY, _async_cleanup_orphaned_entities))
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 

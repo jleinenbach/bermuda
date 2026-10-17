@@ -648,22 +648,45 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         return False
 
     # Known suffixes used in unique_id generation for entity type detection
+    # Longer suffixes first: "_training_floor" must not be cut as "_floor".
     _ENTITY_UNIQUE_ID_SUFFIXES = [
+        "_area_switch_reason",
+        "_area_last_seen",
+        "_training_learn",
+        "_reset_training",
+        "_training_floor",
+        "_training_room",
+        "_range_raw",
+        "_scanner",
         "_floor",
         "_range",
         "_rssi",
-        "_scanner",
-        "_area_last_seen",
-        "_area_switch_reason",
-        "_training_learn",
-        "_reset_training",
-        "_training_room",
-        "_training_floor",
-        "_range_raw",
     ]
+
+    def _known_address_for_unique_id(self, unique_id: str) -> str | None:
+        """
+        Return the coordinator.devices key that a unique_id belongs to, if any.
+
+        Matches the longest known address that is the whole unique_id or its
+        "<address>_" prefix. This works for addresses containing underscores
+        (iBeacon "<uuid>_<major>_<minor>") and for any entity suffix. Scanner
+        entities are keyed by the scanner's WiFi MAC, so that is matched too.
+        """
+        uid = unique_id.lower()
+        best: tuple[int, str] | None = None
+        for address, device in self.devices.items():
+            for candidate in (address, getattr(device, "address_wifi_mac", None)):
+                if not candidate:
+                    continue
+                cand = candidate.lower()
+                if (uid == cand or uid.startswith(cand + "_")) and (best is None or len(cand) > best[0]):
+                    best = (len(cand), address)
+        return best[1] if best else None
 
     def _extract_base_address_from_unique_id(self, unique_id: str) -> str:
         """Extract the base device address from an entity's unique_id."""
+        if (known := self._known_address_for_unique_id(unique_id)) is not None:
+            return known
         base_address = unique_id
         for suffix in self._ENTITY_UNIQUE_ID_SUFFIXES:
             if base_address.endswith(suffix):
@@ -680,9 +703,18 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         return base_address
 
     def _get_entity_type_key(self, entity: er.RegistryEntry) -> str:
-        """Get a stable key for entity type based on platform and unique_id suffix."""
+        """
+        Get a stable key for entity type: platform plus the unique_id after the base address.
+
+        The remainder keeps the scanner address of per-scanner entities
+        ("<device>_<scanner>_range"), so one device's distance sensors for
+        different scanners are not mistaken for duplicates of each other.
+        """
         ent_type = entity.domain
         if entity.unique_id:
+            base = self._extract_base_address_from_unique_id(entity.unique_id)
+            if base and entity.unique_id.lower().startswith(base.lower()):
+                return f"{entity.domain}{entity.unique_id[len(base) :]}"
             for suffix in self._ENTITY_UNIQUE_ID_SUFFIXES:
                 if entity.unique_id.endswith(suffix):
                     ent_type = f"{entity.domain}{suffix}"
@@ -746,6 +778,16 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         if self.config_entry is None:
             return
 
+        # Without a populated device list every entity looks orphaned. While the
+        # Bluetooth ID data loads, _async_update_data() returns early and builds nothing.
+        if self._waitingfor_load_manufacturer_ids or not self.devices:
+            _LOGGER.debug(
+                "Skipping orphaned entity cleanup: device list not populated (loading=%s, devices=%d)",
+                self._waitingfor_load_manufacturer_ids,
+                len(self.devices),
+            )
+            return
+
         bermuda_entities = er.async_entries_for_config_entry(registry, self.config_entry.entry_id)
         if not bermuda_entities:
             return
@@ -761,7 +803,8 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             base_address = self._extract_base_address_from_unique_id(entity.unique_id)
             entities_by_base_address.setdefault(base_address, []).append(entity)
 
-            if entity.device_id:
+            # Global sensors share one device but are distinct entities, never duplicates.
+            if entity.device_id and not base_address.startswith("BERMUDA_GLOBAL"):
                 entities_by_device_id.setdefault(entity.device_id, []).append(entity)
 
         # Find orphaned entities (address no longer exists)
