@@ -1,4 +1,24 @@
 ---
+# Fork versioning: releases carry the upstream base version plus a fork prerelease
+# suffix, e.g. v0.8.7-FMDN-RC1.2. Without the two settings below the drafter
+# increments "patch", which drops the suffix and proposes the plain upstream tag
+# (v0.8.7). With them, and as long as the highest published release (by version,
+# not by date) carries a prerelease suffix, it only bumps its prerelease number
+# (v0.8.7-FMDN-RC1.1 -> v0.8.7-FMDN-RC1.2); "major"/"minor" labels then have no
+# effect on the version.
+# The identifier is fixed: the highest release must be tagged v<base>-FMDN-RC1[.<n>]
+# (upper case). A tag without suffix (e.g. v0.8.8) or with another identifier
+# (e.g. -FMDN-RC2.3) yields a wrong base or a lower version.
+# After syncing onto a new upstream base, name the first release by hand
+# (v<upstream>-FMDN-RC1) in the same step as publishing; a draft that is only
+# renamed and saved gets its tag reset by the next drafter run. The next draft
+# is then v<upstream>-FMDN-RC1.0.
+# Drafts are created as GitHub prereleases and not marked "Latest". To publish a
+# release as "Latest", clear the prerelease flag and set "Latest" in the same
+# step as publishing; a draft saved without the flag is not found again by the
+# next drafter run, which then creates a second draft.
+prerelease: true
+prerelease-identifier: "FMDN-RC1"
 name-template: "v$RESOLVED_VERSION"
 tag-template: "v$RESOLVED_VERSION"
 change-template: "- $TITLE @$AUTHOR (#$NUMBER)"
