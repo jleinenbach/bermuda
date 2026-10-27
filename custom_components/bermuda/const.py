@@ -192,10 +192,19 @@ UKF_MIN_SCANNERS: Final = 2  # Minimum scanners needed for UKF to make a decisio
 # profile is only known from the shared room profile and must not compete at
 # full weight. The value lies in [UKF_MIN_MATCH_SCORE, 2 * UKF_MIN_MATCH_SCORE):
 # a perfect room match (1.0) still passes the switching threshold, a neutral
-# 0.5 does not. Chosen by replaying the stored learning data (19 button-trained
-# devices): every factor below 1.0 raised the own area to first place from 10
-# to 14 devices; 0.55 kept the most room-only detections in other areas.
+# 0.5 does not. The factor only applies while one of the button-trained areas
+# matches the current readings (see UKF_ROOM_ONLY_ANCHOR_GATE).
 UKF_ROOM_ONLY_ANCHORED_FACTOR: Final = 0.55
+# Minimum device score of the best button-trained area for the room-only factor
+# to apply. Below it no anchor matches, so the device is most likely somewhere
+# else, and down-weighting the room-only areas would hide the area it is in.
+# Equal to UKF_MIN_MATCH_SCORE, the score at which a fingerprint counts as a
+# match. Replay of the stored learning data (19 button-trained devices, 235
+# placements in an area they were never trained in): the own area ranks first
+# for 14 devices with or without the gate (10 without the factor); the area a
+# device was moved to ranks first in 82 placements with the gate, 54 without it
+# and 97 without the factor.
+UKF_ROOM_ONLY_ANCHOR_GATE: Final = UKF_MIN_MATCH_SCORE
 
 # FIX: Sticky Virtual Rooms - Prevent flickering for scannerless rooms
 # When device is already in a UKF-detected area, add bonus to prevent marginal switches

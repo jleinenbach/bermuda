@@ -230,6 +230,11 @@ class AreaTests:
     coverage_penalty_applied: float = 0.0  # UKF coverage penalty (0.0-1.0, 0=no penalty)
     auto_learning_blocked_offline: bool = False  # True if auto-learning was skipped due to offline
 
+    # === ANCHOR (button-trained devices) ===
+    # Best device score among the button-trained areas; None without button training.
+    # The room-only factor applies only while it reaches UKF_ROOM_ONLY_ANCHOR_GATE.
+    ukf_anchor_score: float | None = None
+
     # === RESULT ===
     reason: str | None = None  # Human-readable reason/result string
 
@@ -461,6 +466,9 @@ class AreaTests:
         # Timing
         if self.winner_advert_age is not None:
             attrs["winner_advert_age_s"] = round(self.winner_advert_age, 1)
+
+        if self.ukf_anchor_score is not None:
+            attrs["ukf_anchor_score"] = round(self.ukf_anchor_score, 3)
 
         # Top candidates (for debugging)
         if self.top_candidates:
@@ -2076,6 +2084,7 @@ class AreaSelectionHandler:
         # Pass offline scanner addresses so match_fingerprints() can apply coverage penalty
         offline_addrs = self._cycle_offline_addrs
         matches = ukf.match_fingerprints(device_profiles, self.room_profiles, offline_addrs)
+        tests.ukf_anchor_score = ukf.last_anchor_score
 
         # Populate offline diagnostics into AreaTests
         if offline_addrs:
