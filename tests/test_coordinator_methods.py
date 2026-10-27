@@ -999,6 +999,29 @@ class TestResetRoomAutoLearning:
 
         assert "no mature room profile is left" not in caplog.text
 
+    async def test_save_failure_keeps_reset_and_logs(
+        self, hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A failing save keeps the in-memory reset, returns the counts and logs the error."""
+        coordinator = _make_coordinator(hass)
+        coordinator.correlation_store.async_save = AsyncMock(side_effect=OSError("disk full"))
+        coordinator.room_profiles["kinderzimmer_mion"] = _room("kinderzimmer_mion", button=False)
+
+        result = await coordinator.async_reset_room_auto_learning(["kinderzimmer_mion"])
+
+        assert result == {"kinderzimmer_mion": 90}
+        assert "kinderzimmer_mion" not in coordinator.room_profiles
+        assert "Failed to persist room profile reset" in caplog.text
+
+    async def test_service_call_is_delegated_to_handler(self, hass: HomeAssistant) -> None:
+        """The coordinator service method delegates to the service handler."""
+        coordinator = _make_coordinator(hass)
+        coordinator.service_handler = MagicMock(async_reset_room_auto_learning=AsyncMock(return_value={"buero": 3}))
+        call = MagicMock()
+
+        assert await coordinator.service_reset_room_auto_learning(call) == {"buero": 3}
+        coordinator.service_handler.async_reset_room_auto_learning.assert_awaited_once_with(call)
+
     async def test_device_reset_points_to_room_profile_reset(
         self, hass: HomeAssistant, caplog: pytest.LogCaptureFixture
     ) -> None:
