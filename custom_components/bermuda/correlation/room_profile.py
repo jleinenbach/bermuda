@@ -254,6 +254,19 @@ class RoomProfile:
             Returns 0.5 if no mature pairs to compare.
 
         """
+        return self.get_match_score_with_support(readings)[0]
+
+    def get_match_score_with_support(self, readings: dict[str, float]) -> tuple[float, int]:
+        """
+        Calculate the match score together with the data that supports it.
+
+        Returns
+        -------
+            Tuple of the score from get_match_score and the number of mature
+            scanner pairs that overlap the readings. A support of 0 means the
+            score is the neutral 0.5 without any data behind it.
+
+        """
         z_scores: list[float] = []
         weights: list[int] = []
         scanner_list = list(readings.keys())
@@ -275,12 +288,12 @@ class RoomProfile:
                 weights.append(pair.sample_count)
 
         if not z_scores:
-            return 0.5  # No data, neutral
+            return 0.5, 0  # No data, neutral
 
         # Weighted average z-score → confidence using Cauchy-like sigmoid
         total_weight = sum(weights)
         weighted_z = sum(z * w for z, w in zip(z_scores, weights, strict=True)) / total_weight
-        return 1.0 / (1.0 + (weighted_z / MATCH_SCORE_Z_THRESHOLD) ** 2)
+        return 1.0 / (1.0 + (weighted_z / MATCH_SCORE_Z_THRESHOLD) ** 2), len(z_scores)
 
     @property
     def total_samples(self) -> int:

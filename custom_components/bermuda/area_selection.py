@@ -1088,7 +1088,9 @@ class AreaSelectionHandler:
            absolute z-scores for the current readings; a profile emptied by
            a training reset or overlapping a single scanner does not cover it.
         2. RoomProfiles (device-independent): Compares match scores for every
-           competitor area that layer 1 did not cover. Reference trackers with
+           competitor area that layer 1 did not cover. A competitor counts only
+           with at least one overlapping mature scanner pair; the target keeps
+           its score either way. Reference trackers with
            own profiles stop after layer 1, because they are the source that
            repairs the shared room profiles.
         """
@@ -1130,7 +1132,9 @@ class AreaSelectionHandler:
         if target_profile is None:
             return False
 
-        target_score = target_profile.get_match_score(all_readings)
+        # The target keeps its score even without supporting data (neutral 0.5):
+        # dropping it would weaken the check instead of sharpening it.
+        target_score, _ = target_profile.get_match_score_with_support(all_readings)
 
         # Only check for ambiguity if target room has a decent match
         # and there are other RoomProfiles to compare against
@@ -1142,7 +1146,11 @@ class AreaSelectionHandler:
             if other_area_id == area_id or other_area_id in covered_areas:
                 continue
 
-            other_score = room_profile.get_match_score(all_readings)
+            other_score, other_support = room_profile.get_match_score_with_support(all_readings)
+            if other_support < 1:
+                # Neutral 0.5 without overlapping mature pairs is no evidence
+                # that the competitor matches.
+                continue
 
             # Ambiguous if: other room has good score AND is close to target
             if other_score >= ROOM_AMBIGUITY_MIN_SCORE and target_score - other_score < ROOM_AMBIGUITY_MAX_DIFF:

@@ -479,10 +479,8 @@ class TestFilterBehavior:
         own_profile.get_absolute_z_scores.return_value = [("scanner_a", 0.5)]
         handler.coordinator.correlations = {address: {"area.yuna": own_profile}}
         target_room = MagicMock()
-        target_room.get_match_score.return_value = 0.70
         target_room.get_match_score_with_support.return_value = (0.70, 1)
         neighbor_room = MagicMock()
-        neighbor_room.get_match_score.return_value = 0.68
         neighbor_room.get_match_score_with_support.return_value = (0.68, 1)
         handler.coordinator.room_profiles = {"area.yuna": target_room, "area.buero": neighbor_room}
         device = FakeRefDevice(address=address, name="Ref Yuna", area_id="area.yuna")

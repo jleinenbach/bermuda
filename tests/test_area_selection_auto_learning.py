@@ -959,7 +959,6 @@ class TestRoomProfileAmbiguityCheck:
 
         # Only another room has a profile, not the target
         mock_other_profile = MagicMock()
-        mock_other_profile.get_match_score.return_value = 0.8
         mock_other_profile.get_match_score_with_support.return_value = (0.8, 1)
         handler.coordinator.room_profiles = {"area.kitchen": mock_other_profile}
 
@@ -980,11 +979,9 @@ class TestRoomProfileAmbiguityCheck:
 
         # Target has low score (below ROOM_AMBIGUITY_MIN_SCORE = 0.4)
         mock_target = MagicMock()
-        mock_target.get_match_score.return_value = 0.3
         mock_target.get_match_score_with_support.return_value = (0.3, 1)
 
         mock_other = MagicMock()
-        mock_other.get_match_score.return_value = 0.8
         mock_other.get_match_score_with_support.return_value = (0.8, 1)
 
         handler.coordinator.room_profiles = {
@@ -1009,11 +1006,9 @@ class TestRoomProfileAmbiguityCheck:
 
         # Target: 0.6, Competitor: 0.55 → diff = 0.05 < ROOM_AMBIGUITY_MAX_DIFF (0.15)
         mock_target = MagicMock()
-        mock_target.get_match_score.return_value = 0.6
         mock_target.get_match_score_with_support.return_value = (0.6, 1)
 
         mock_competitor = MagicMock()
-        mock_competitor.get_match_score.return_value = 0.55
         mock_competitor.get_match_score_with_support.return_value = (0.55, 1)
 
         handler.coordinator.room_profiles = {
@@ -1038,11 +1033,9 @@ class TestRoomProfileAmbiguityCheck:
 
         # Target: 0.8, Competitor: 0.5 → diff = 0.3 > ROOM_AMBIGUITY_MAX_DIFF (0.15)
         mock_target = MagicMock()
-        mock_target.get_match_score.return_value = 0.8
         mock_target.get_match_score_with_support.return_value = (0.8, 1)
 
         mock_competitor = MagicMock()
-        mock_competitor.get_match_score.return_value = 0.5
         mock_competitor.get_match_score_with_support.return_value = (0.5, 1)
 
         handler.coordinator.room_profiles = {
@@ -1068,11 +1061,9 @@ class TestRoomProfileAmbiguityCheck:
         # Target: 0.5, Competitor: 0.35 (below ROOM_AMBIGUITY_MIN_SCORE)
         # Even though diff = 0.15 = ROOM_AMBIGUITY_MAX_DIFF, competitor is ignored
         mock_target = MagicMock()
-        mock_target.get_match_score.return_value = 0.5
         mock_target.get_match_score_with_support.return_value = (0.5, 1)
 
         mock_competitor = MagicMock()
-        mock_competitor.get_match_score.return_value = 0.35  # Below 0.4
         mock_competitor.get_match_score_with_support.return_value = (0.35, 1)
 
         handler.coordinator.room_profiles = {
@@ -1108,7 +1099,6 @@ class TestRoomProfileAmbiguityCheck:
 
         # RoomProfiles also exist but shouldn't be used
         mock_room_profile = MagicMock()
-        mock_room_profile.get_match_score.return_value = 0.9
         mock_room_profile.get_match_score_with_support.return_value = (0.9, 1)
         handler.coordinator.room_profiles = {
             "area.living_room": mock_room_profile,
@@ -1126,7 +1116,6 @@ class TestRoomProfileAmbiguityCheck:
         # Should return True because AreaProfile check found ambiguity
         assert result is True
         # The AreaProfile veto short-circuits: no RoomProfile is scored
-        mock_room_profile.get_match_score.assert_not_called()
         mock_room_profile.get_match_score_with_support.assert_not_called()
 
     def test_single_room_profile_returns_false(self) -> None:
@@ -1136,7 +1125,6 @@ class TestRoomProfileAmbiguityCheck:
         handler.coordinator.correlations = {}
 
         mock_target = MagicMock()
-        mock_target.get_match_score.return_value = 0.8
         mock_target.get_match_score_with_support.return_value = (0.8, 1)
 
         # Only one room profile exists
@@ -1153,9 +1141,8 @@ class TestRoomProfileAmbiguityCheck:
 
     @staticmethod
     def _room_profile(score: float, support: int = 1) -> MagicMock:
-        """Return a RoomProfile mock that answers both scoring methods alike."""
+        """Return a RoomProfile mock with a fixed score and support."""
         profile = MagicMock()
-        profile.get_match_score.return_value = score
         profile.get_match_score_with_support.return_value = (score, support)
         return profile
 
