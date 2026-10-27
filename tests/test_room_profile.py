@@ -370,6 +370,19 @@ class TestRoomProfileGetMatchScore:
         # Should return neutral (no matching pairs)
         assert score == 0.5
 
+    def test_match_score_with_support_counts_mature_overlapping_pairs(self) -> None:
+        """Support counts the mature pairs that overlap the readings; the score matches get_match_score."""
+        profile = RoomProfile(area_id="test_area")
+        for _ in range(50):
+            profile.update({"scanner_a": -60.0, "scanner_b": -70.0, "scanner_c": -75.0})
+
+        readings = {"scanner_a": -60.0, "scanner_b": -70.0, "scanner_x": -80.0}
+        score, support = profile.get_match_score_with_support(readings)
+
+        assert support == 1
+        assert score == profile.get_match_score(readings)
+        assert profile.get_match_score_with_support({"scanner_x": -60.0, "scanner_y": -70.0}) == (0.5, 0)
+
 
 class TestRoomProfileSerialization:
     """Tests for to_dict and from_dict methods."""
