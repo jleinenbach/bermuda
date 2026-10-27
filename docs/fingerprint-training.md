@@ -30,6 +30,7 @@ Bermuda can determine which room a device is in by comparing the pattern of sign
 - [Step-by-step: Training from multiple positions](#step-by-step-training-from-multiple-positions)
 - [When to reset training data](#when-to-reset-training-data)
 - [Step-by-step: Resetting training data](#step-by-step-resetting-training-data)
+- [Resetting auto-learned shared room profiles](#resetting-auto-learned-shared-room-profiles)
 - [Frequently asked questions](#frequently-asked-questions)
 - [Troubleshooting](#troubleshooting)
 
@@ -258,7 +259,7 @@ When you press **"Reset Training"**, the following data is cleared **for this de
 
 **What is NOT affected:**
 - Training data for other devices is untouched.
-- Shared room profiles (the general fingerprints used by all devices) are untouched.
+- Shared room profiles (the general fingerprints used by all devices) are untouched. To clean them, see [Resetting auto-learned shared room profiles](#resetting-auto-learned-shared-room-profiles).
 - Scanner calibration settings are untouched.
 - Global configuration is untouched.
 
@@ -287,6 +288,21 @@ The device should now use distance-based detection or shared room profiles. If t
 If the device still behaves incorrectly after resetting, the issue is likely not related to training data. Check the [Bermuda Troubleshooting Guide](troubleshooting.md) for other possible causes.
 
 ---
+
+## Resetting auto-learned shared room profiles
+
+Shared room profiles learn automatically from devices whose room Bermuda is confident about. If a device was assigned to the wrong room for a long time (for example a key fob in a car parked next to the house), the shared profile of that room may have learned the wrong pattern, and "Reset Training" of the device does not remove it.
+
+The service `bermuda.reset_room_auto_learning` removes the automatically learned data from the shared room profiles of the areas you choose. Button training of these rooms stays. A room profile without any remaining data is removed and will be relearned.
+
+```yaml
+action: bermuda.reset_room_auto_learning
+data:
+  area_id:
+    - kids_room
+```
+
+The response lists how many auto-learned samples were removed per area. The shared profiles do not record which device taught them what, so the reset removes the auto-learned data of all devices for these rooms. Removing the last mature room profile is logged as a warning, because devices without own training then use pure distance-based detection until the room profiles are relearned.
 
 ## Frequently asked questions
 

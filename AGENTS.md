@@ -45,7 +45,7 @@
   - `device_tracker.py` surfaces presence for `Person` linking and honors configurable timeouts.
   - `diagnostics.py` redacts addresses using the coordinator’s redaction helpers.
 - Metadevices group rotating identities: IRK and iBeacon sources are merged so their changing MACs map back to a stable logical device before entity updates.
-- The `bermuda.dump_devices` service (declared in `services.yaml`) returns the coordinator’s cached device graph for troubleshooting; outputs may change between releases.
+- The `bermuda.dump_devices` service (declared in `services.yaml`) returns the coordinator’s cached device graph for troubleshooting; outputs may change between releases. The `bermuda.reset_room_auto_learning` service removes the auto-learned data from the shared room profiles of the given areas and keeps button training.
 
 ## Clean & Secure Coding Standard (Python 3.14 + Home Assistant 2026.6)
 - **Logging (ruff G004):** Use lazy `%`-style logging; never suppress `G004` above debug level.

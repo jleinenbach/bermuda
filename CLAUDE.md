@@ -758,11 +758,12 @@ The auto-learning system uses multiple quality controls to ensure statistically 
 
 | Feature | Status | Constant | Description |
 |---------|--------|----------|-------------|
-| 1. New Data Check | ❌ Planned | - | Prevents duplicate sampling from cached RSSI |
+| 1. New Data Check | ✅ Complete | - | Prevents duplicate sampling from cached RSSI (`area_selection.py`, `# Feature 1:` comments) |
 | 2. Minimum Interval | ✅ Complete | `AUTO_LEARNING_MIN_INTERVAL = 5.0s` | Reduces autocorrelation |
-| 3. Confidence Filter | ❌ Planned | `AUTO_LEARNING_MIN_CONFIDENCE = 0.5` | Only learns from confident assignments |
+| 3. Confidence Filter | ✅ Complete | `AUTO_LEARNING_MIN_CONFIDENCE = 0.5` | Only learns from confident assignments |
 | 4. Variance Floor | ✅ Complete | `AUTO_LEARNING_VARIANCE_FLOOR = 4.0 dB²` | Prevents z-score explosion |
-| 5. Quality Filters | ❌ Planned | Multiple | Movement, stability, dwell time checks |
+| 5. Quality Filters | ✅ Complete | `AUTO_LEARNING_MAX_VELOCITY`, `AUTO_LEARNING_MAX_RSSI_VARIANCE` | Movement state, velocity and RSSI variance checks |
+| 6. Ambiguity Check | ✅ Complete | `ROOM_AMBIGUITY_MIN_SCORE = 0.4`, `ROOM_AMBIGUITY_MAX_DIFF = 0.15` | Skips learning when another room matches almost as well (`_is_signal_ambiguous`) |
 
 **AutoLearningStats (Diagnostics):**
 
@@ -3416,7 +3417,7 @@ Test file: `tests/test_multi_position_training.py` (98 tests, 100% coverage)
 
 ### Lessons Learned from Implementation
 
-**62. Kalman Filter Variance Reset Enables Equal Position Weighting**
+**76. Kalman Filter Variance Reset Enables Equal Position Weighting**
 
 When training a device from multiple positions, the Kalman filter's converged variance causes diminishing influence for later positions. Reset variance (but preserve estimate) to allow each position equal contribution.
 
@@ -3442,7 +3443,7 @@ def train_new_position(self, rssi):
 
 ---
 
-**63. Test Edge Cases via Direct State Manipulation**
+**77. Test Edge Cases via Direct State Manipulation**
 
 When a code path guards against impossible states (like `variance <= 0`), test it by directly manipulating internal state rather than trying to trigger it through normal API calls.
 
@@ -3470,7 +3471,7 @@ def test_z_score_zero_variance(self):
 
 ---
 
-**64. Serialization Round-Trip Must Preserve All Behavioral State**
+**78. Serialization Round-Trip Must Preserve All Behavioral State**
 
 When testing serialization, verify not just that values match, but that the restored object behaves identically to the original.
 
@@ -3507,7 +3508,7 @@ def test_serialization(self):
 
 ---
 
-**65. Variance Reset Gives MORE Influence, Not Equal Influence**
+**79. Variance Reset Gives MORE Influence, Not Equal Influence**
 
 A common misconception: resetting Kalman filter variance to match measurement noise creates "equal weighting" between old and new samples. This is **wrong**. Higher variance means the filter TRUSTS NEW MEASUREMENTS MORE.
 
@@ -3552,7 +3553,7 @@ def test_multi_position_more_influence(self):
 
 ---
 
-**66. Always Verify Field Names Against Production Code**
+**80. Always Verify Field Names Against Production Code**
 
 When testing backward compatibility with "old format" serialization, never assume field names - always check the production `from_dict()` implementation.
 
@@ -3581,7 +3582,7 @@ def test_from_dict_old_format(self):
 
 ---
 
-**67. Pytest Coverage Uses Module Paths, Not File Paths**
+**81. Pytest Coverage Uses Module Paths, Not File Paths**
 
 The `--cov` parameter expects Python module paths (with dots), not filesystem paths (with slashes).
 
@@ -3603,7 +3604,7 @@ pytest --cov=custom_components.bermuda.filters.kalman tests/
 
 ---
 
-**68. Verify Actual Behavior Before Writing Integration Test Assertions**
+**82. Verify Actual Behavior Before Writing Integration Test Assertions**
 
 Integration tests that assert specific numeric outcomes often fail because the assertion was based on theoretical understanding rather than actual system behavior. Always run the code first and observe what it actually does.
 
@@ -7359,34 +7360,43 @@ def _is_signal_ambiguous(self, device, area_id, readings):
 
 **Fix Pattern:**
 ```python
-# GOOD - Two-layer ambiguity check
+# GOOD - Compare every competitor area through the layer that actually covers it
 def _is_signal_ambiguous(self, device, area_id, readings):
-    # Layer 1: Check device-specific AreaProfiles (if they exist)
+    covered = set()
+    # Layer 1: device-specific AreaProfiles
     if device.address in self.correlations:
         for other_area_id, profile in self.correlations[device.address].items():
-            if profile.matches_too_well(readings):
+            if other_area_id == area_id:
+                continue
+            z_scores = profile.get_absolute_z_scores(readings)
+            if len(z_scores) >= 2:
+                covered.add(other_area_id)  # own profile covers this competitor
+            if z_scores and max(abs(z) for _, z in z_scores) < 2.0:
                 return True
-        return False  # AreaProfiles exist and are unambiguous
+        if is_reference_tracker(device):
+            return False  # reference trackers repair room profiles, stop here
 
-    # Layer 2: Check device-independent RoomProfiles (for NEW devices)
-    target_profile = self.room_profiles.get(area_id)
-    if target_profile is None or len(self.room_profiles) < 2:
+    # Layer 2: shared RoomProfiles for every competitor not covered above
+    target = self.room_profiles.get(area_id)
+    if target is None:
         return False
-
-    target_score = target_profile.get_match_score(readings)
-    if target_score < ROOM_AMBIGUITY_MIN_SCORE:
+    target_score, _ = target.get_match_score_with_support(readings)
+    if target_score < ROOM_AMBIGUITY_MIN_SCORE or len(self.room_profiles) < 2:
         return False
-
     for other_area_id, room_profile in self.room_profiles.items():
-        if other_area_id == area_id:
+        if other_area_id == area_id or other_area_id in covered:
             continue
-        other_score = room_profile.get_match_score(readings)
+        other_score, support = room_profile.get_match_score_with_support(readings)
+        if support == 0:
+            continue  # neutral 0.5 without data is no competitor
         if (other_score >= ROOM_AMBIGUITY_MIN_SCORE
             and target_score - other_score < ROOM_AMBIGUITY_MAX_DIFF):
             return True  # Ambiguous!
 
     return False
 ```
+
+An earlier version returned `False` as soon as the device had any own AreaProfile. A device with only one (wrongly learned) profile, or with profiles emptied by "Reset Training", then skipped the shared layer for every other area and kept confirming its wrong room. Reference trackers with own profiles stop after layer 1, because they are the source that repairs poisoned room profiles.
 
 **Key Constants:**
 | Constant | Value | Purpose |
@@ -7395,6 +7405,14 @@ def _is_signal_ambiguous(self, device, area_id, readings):
 | `ROOM_AMBIGUITY_MAX_DIFF` | 0.15 | Maximum score difference to consider ambiguous |
 
 **Rule of Thumb**: When auto-learning affects shared state (like RoomProfiles), always check for ambiguity against that shared state, not just device-specific state. New devices without device-specific data are especially vulnerable to self-reinforcing errors.
+
+### 83. A Neutral Score Is Not Evidence, and a Trained Anchor Outranks Room-Only Matches
+
+`RoomProfile.get_match_score` returns 0.5 when no mature scanner pair overlaps the readings. That value carries no data, yet it passed the switching threshold `UKF_MIN_MATCH_SCORE` (0.3) and the competitor threshold `ROOM_AMBIGUITY_MIN_SCORE` (0.4): an area with an empty room profile ("Praxis 0.50") could beat the area a key fob was trained in. Use `get_match_score_with_support` and treat a support of 0 as "no score" wherever the score competes.
+
+For a device trained with the button, an area without a mature own profile is only known from the shared room profile. `match_fingerprints` scores such areas with `UKF_ROOM_ONLY_ANCHORED_FACTOR` (0.55): a perfect room match (1.0) still passes `UKF_MIN_MATCH_SCORE` (0.3), a neutral 0.5 does not. "No mature own profile" means `mature_absolute_count == 0` or no profile at all; a profile key left over after a reset does not count, and `device_score is None` is not the condition (that also happens when the filter sees only one scanner of a trained area, and would cost scannerless rooms their virtual distance).
+
+**Rule of Thumb**: A default value that means "unknown" must never be compared as if it were a measurement, and user-confirmed data should be weighted above data inferred from other devices.
 
 ## Reference Tracker System
 
