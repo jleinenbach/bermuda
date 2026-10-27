@@ -4599,7 +4599,7 @@ device_has_correlations = any(
     for profile in self.correlations.get(device.address, {}).values()
 )
 if (has_mature_profiles or device_has_correlations) and self._refresh_area_by_ukf(device):
-    continue
+    return
 ```
 
 ### Lesson Learned
