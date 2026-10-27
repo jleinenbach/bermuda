@@ -121,6 +121,22 @@ class TestAreaTestsDataclass:
         assert "ukf_score" not in result
         assert "ukf_threshold" not in result
 
+    def test_area_tests_to_dict_anchor_score(self) -> None:
+        """to_dict() reports the anchor score of a button-trained device, rounded to 3 places."""
+        tests = AreaTests()
+        tests.ukf_anchor_score = 0.41234
+
+        result = tests.to_dict()
+
+        assert result["ukf_anchor_score"] == 0.412
+
+    def test_area_tests_to_dict_anchor_score_absent_when_none(self) -> None:
+        """to_dict() omits the anchor score for devices without button training."""
+        tests = AreaTests()
+
+        assert tests.ukf_anchor_score is None
+        assert "ukf_anchor_score" not in tests.to_dict()
+
     def test_area_tests_to_dict_profile_fields(self) -> None:
         """Test that to_dict() includes profile fields when source is not NONE."""
         tests = AreaTests()

@@ -373,9 +373,9 @@ class TestRoomOnlyAnchoredPenalty:
         return {area_id: score for area_id, _d2, score, _pen in matches}
 
     def test_room_only_area_penalized_for_button_trained_device(self) -> None:
-        """A room-only area of a button-trained device gets the factor."""
+        """A room-only area gets the factor while a button-trained area of the device matches."""
         ukf = self._ukf({self.S1: -60.0, self.S2: -70.0})
-        home = self._area("home", {self.S1: -85.0, self.S2: -90.0}, button=True)
+        home = self._area("home", {self.S1: -62.0, self.S2: -72.0}, button=True)
         other = self._room("other", {self.S1: -60.0, self.S2: -70.0})
 
         scores = self._scores(ukf.match_fingerprints({"home": home}, {"other": other}))
@@ -386,7 +386,7 @@ class TestRoomOnlyAnchoredPenalty:
     def test_room_only_area_with_empty_own_profile_penalized(self) -> None:
         """An own profile emptied by a training reset does not count as mature."""
         ukf = self._ukf({self.S1: -60.0, self.S2: -70.0})
-        home = self._area("home", {self.S1: -85.0, self.S2: -90.0}, button=True)
+        home = self._area("home", {self.S1: -62.0, self.S2: -72.0}, button=True)
         emptied = AreaProfile(area_id="other")
         assert emptied.mature_absolute_count == 0
         other = self._room("other", {self.S1: -60.0, self.S2: -70.0})
@@ -399,7 +399,7 @@ class TestRoomOnlyAnchoredPenalty:
     def test_room_only_perfect_match_stays_above_min_match_score(self) -> None:
         """A perfect room-only match still passes the switching threshold of 0.3."""
         ukf = self._ukf({self.S1: -60.0, self.S2: -70.0})
-        home = self._area("home", {self.S1: -85.0, self.S2: -90.0}, button=True)
+        home = self._area("home", {self.S1: -62.0, self.S2: -72.0}, button=True)
         other = self._room("other", {self.S1: -60.0, self.S2: -70.0})
 
         scores = self._scores(ukf.match_fingerprints({"home": home}, {"other": other}))
@@ -420,7 +420,7 @@ class TestRoomOnlyAnchoredPenalty:
     def test_room_only_area_with_single_mature_own_scanner_not_penalized(self) -> None:
         """A mature own profile is not down-weighted when the filter sees only one of its scanners."""
         ukf = self._ukf({self.S1: -60.0, self.S3: -70.0})
-        home = self._area("home", {self.S1: -85.0, self.S2: -90.0}, button=True)
+        home = self._area("home", {self.S1: -62.0, self.S3: -72.0}, button=True)
         own = self._area("other", {self.S1: -60.0, self.S2: -66.0}, button=True)
         assert own.mature_absolute_count == 2
         other = self._room("other", {self.S1: -60.0, self.S3: -70.0})
@@ -456,6 +456,85 @@ class TestRoomOnlyAnchoredPenalty:
         device_only = self._scores(ukf.match_fingerprints({"home": home}, None))
 
         assert fused["home"] == pytest.approx(device_only["home"])
+
+    def test_room_only_area_not_penalized_when_anchor_does_not_match(self) -> None:
+        """No button-trained area matches, so the device is elsewhere: full room weight."""
+        ukf = self._ukf({self.S1: -60.0, self.S2: -70.0})
+        home = self._area("home", {self.S1: -85.0, self.S2: -90.0}, button=True)
+        other = self._room("other", {self.S1: -60.0, self.S2: -70.0})
+
+        scores = self._scores(ukf.match_fingerprints({"home": home}, {"other": other}))
+
+        assert scores["other"] == pytest.approx(other.get_match_score(self._state(ukf)))
+
+    def test_auto_learned_match_does_not_open_the_gate(self) -> None:
+        """Only button-trained areas count as anchor; a matching auto-learned area does not."""
+        ukf = self._ukf({self.S1: -60.0, self.S2: -70.0})
+        home = self._area("home", {self.S1: -85.0, self.S2: -90.0}, button=True)
+        kitchen = self._area("kitchen", {self.S1: -61.0, self.S2: -71.0}, button=False)
+        other = self._room("other", {self.S1: -60.0, self.S2: -70.0})
+
+        scores = self._scores(ukf.match_fingerprints({"home": home, "kitchen": kitchen}, {"other": other}))
+
+        assert scores["other"] == pytest.approx(other.get_match_score(self._state(ukf)))
+
+    def test_best_button_trained_area_opens_the_gate(self) -> None:
+        """The best of several button-trained areas decides, not the first or the worst."""
+        ukf = self._ukf({self.S1: -60.0, self.S2: -70.0})
+        far = self._area("far", {self.S1: -85.0, self.S2: -90.0}, button=True)
+        near = self._area("near", {self.S1: -62.0, self.S2: -72.0}, button=True)
+        other = self._room("other", {self.S1: -60.0, self.S2: -70.0})
+
+        scores = self._scores(ukf.match_fingerprints({"far": far, "near": near}, {"other": other}))
+
+        assert scores["other"] == pytest.approx(other.get_match_score(self._state(ukf)) * self.FACTOR)
+
+    def test_anchor_score_reported(self) -> None:
+        """The best button-trained device score is kept for diagnostics."""
+        ukf = self._ukf({self.S1: -60.0, self.S2: -70.0})
+        far = self._area("far", {self.S1: -85.0, self.S2: -90.0}, button=True)
+        near = self._area("near", {self.S1: -62.0, self.S2: -72.0}, button=True)
+        device_only = self._scores(ukf.match_fingerprints({"far": far, "near": near}, None))
+
+        ukf.match_fingerprints({"far": far, "near": near}, None)
+
+        assert ukf.last_anchor_score == pytest.approx(max(device_only["far"], device_only["near"]))
+        assert ukf.last_anchor_score == pytest.approx(device_only["near"])
+
+    def test_anchor_score_none_without_button_training(self) -> None:
+        """A device without button training has no anchor score."""
+        ukf = self._ukf({self.S1: -60.0, self.S2: -70.0})
+        home = self._area("home", {self.S1: -61.0, self.S2: -71.0}, button=False)
+
+        ukf.match_fingerprints({"home": home}, None)
+
+        assert ukf.last_anchor_score is None
+
+    def test_anchor_score_zero_when_no_button_area_is_scored(self) -> None:
+        """A button-trained area the filter cannot score gives an anchor score of 0.0."""
+        ukf = self._ukf({self.S3: -60.0, self.S4: -70.0})
+        home = self._area("home", {self.S1: -61.0, self.S2: -71.0}, button=True)
+
+        ukf.match_fingerprints({"home": home}, None)
+
+        assert ukf.last_anchor_score == 0.0
+
+    def test_anchor_gate_threshold(self) -> None:
+        """The gate opens at the minimum match score and not below it."""
+        import math  # noqa: PLC0415
+
+        from custom_components.bermuda.const import (  # noqa: PLC0415
+            UKF_MIN_MATCH_SCORE,
+            UKF_ROOM_ONLY_ANCHOR_GATE,
+        )
+        from custom_components.bermuda.filters.ukf import room_only_anchored_factor  # noqa: PLC0415
+
+        assert UKF_ROOM_ONLY_ANCHOR_GATE == UKF_MIN_MATCH_SCORE
+        assert room_only_anchored_factor(None) == 1.0
+        assert room_only_anchored_factor(0.0) == 1.0
+        assert room_only_anchored_factor(math.nextafter(UKF_ROOM_ONLY_ANCHOR_GATE, 0.0)) == 1.0
+        assert room_only_anchored_factor(UKF_ROOM_ONLY_ANCHOR_GATE) == self.FACTOR
+        assert room_only_anchored_factor(1.0) == self.FACTOR
 
     def test_unsupported_room_score_still_fused_without_button_training(self) -> None:
         """Without button training the neutral room score is still fused as before."""

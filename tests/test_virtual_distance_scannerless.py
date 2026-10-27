@@ -589,7 +589,10 @@ def test_button_trained_scannerless_room_keeps_virtual_distance_for_anchored_dev
     room_area = "area-lagerraum"
     trained = _create_button_trained_profile(room_area, ["scanner-1", "scanner-2"], [-75.0, -72.0])
     assert trained.mature_absolute_count == 2
-    coordinator.correlations[device.address] = {room_area: trained}
+    # A second button-trained area that matches the readings keeps the anchor gate
+    # open, so this test fails if the room-only factor reached a mature own profile.
+    anchor = _create_button_trained_profile("area-buero", ["scanner-1", "scanner-3"], [-76.0, -81.0])
+    coordinator.correlations[device.address] = {room_area: trained, "area-buero": anchor}
 
     room = RoomProfile(area_id=room_area)
     for _ in range(50):
@@ -603,6 +606,8 @@ def test_button_trained_scannerless_room_keeps_virtual_distance_for_anchored_dev
     state = {addr: ukf._x[i] for i, addr in enumerate(ukf.scanner_addresses)}
     max_radius = coordinator.options.get(CONF_MAX_RADIUS, DEFAULT_MAX_RADIUS)
     expected = coordinator.area_selection._calculate_virtual_distance(room.get_match_score(state), max_radius)
+    assert ukf.last_anchor_score is not None
+    assert ukf.last_anchor_score >= 0.3
     assert virtual_distances[room_area] == pytest.approx(expected)
 
 
