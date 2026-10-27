@@ -164,8 +164,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: BermudaConfigEntry) -> 
     """Handle removal of an entry."""
     # Save learned scanner correlations before shutdown
     coordinator: BermudaDataUpdateCoordinator = entry.runtime_data.coordinator
-    if coordinator._correlations_loaded and coordinator.correlations:
-        await coordinator.correlation_store.async_save(coordinator.correlations)
+    if coordinator._correlations_loaded and (coordinator.correlations or coordinator.room_profiles):
+        await coordinator.correlation_store.async_save(coordinator.correlations, coordinator.room_profiles)
         _LOGGER.debug("Saved scanner correlations on shutdown")
 
     if unload_result := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
