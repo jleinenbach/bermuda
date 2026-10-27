@@ -498,8 +498,34 @@ class TestRoomOnlyAnchoredPenalty:
 
         ukf.match_fingerprints({"far": far, "near": near}, None)
 
-        assert ukf.last_anchor_score == pytest.approx(max(device_only["far"], device_only["near"]))
+        assert device_only["far"] < 0.3 <= device_only["near"]
         assert ukf.last_anchor_score == pytest.approx(device_only["near"])
+
+    def test_offline_scanners_lower_the_anchor_below_the_gate(self) -> None:
+        """The anchor score is taken after the coverage penalty; offline anchor scanners close the gate."""
+        ukf = self._ukf({self.S1: -60.0, self.S2: -70.0})
+        home = self._area("home", {self.S1: -62.0, self.S2: -72.0}, button=True)
+        other = self._room("other", {self.S1: -60.0, self.S2: -70.0})
+        online = self._scores(ukf.match_fingerprints({"home": home}, None))
+        assert online["home"] >= 0.3
+
+        scores = self._scores(ukf.match_fingerprints({"home": home}, {"other": other}, frozenset({self.S1, self.S2})))
+
+        assert ukf.last_anchor_score is not None
+        assert ukf.last_anchor_score < 0.3
+        assert scores["other"] == pytest.approx(other.get_match_score(self._state(ukf)))
+
+    def test_anchor_score_reset_when_button_training_is_gone(self) -> None:
+        """A later call without button training clears the anchor score of the same filter."""
+        ukf = self._ukf({self.S1: -60.0, self.S2: -70.0})
+        trained = self._area("home", {self.S1: -62.0, self.S2: -72.0}, button=True)
+        auto = self._area("home", {self.S1: -62.0, self.S2: -72.0}, button=False)
+        ukf.match_fingerprints({"home": trained}, None)
+        assert ukf.last_anchor_score is not None
+
+        ukf.match_fingerprints({"home": auto}, None)
+
+        assert ukf.last_anchor_score is None
 
     def test_anchor_score_none_without_button_training(self) -> None:
         """A device without button training has no anchor score."""
