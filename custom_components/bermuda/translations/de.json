@@ -188,6 +188,16 @@
           "description": "Auf TRUE setzen, um sicherzustellen, dass MAC-Adressen in der Ausgabe aus Datenschutzgründen geschwärzt werden."
         }
       }
+    },
+    "reset_room_auto_learning": {
+      "name": "Automatisch Gelerntes eines Raums zurücksetzen",
+      "description": "Entfernt die automatisch gelernten Daten aus den gemeinsamen Raumprofilen der gewählten Bereiche. Das Anlernen per Knopf bleibt erhalten. Nutzen Sie dies, wenn ein Gerät einem Raum einen falschen Ort beigebracht hat.",
+      "fields": {
+        "area_id": {
+          "name": "Bereiche",
+          "description": "Bereiche, deren gemeinsame Raumprofile bereinigt werden sollen."
+        }
+      }
     }
   },
   "issues": {

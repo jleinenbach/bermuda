@@ -62,6 +62,23 @@ class BermudaServiceHandler:
         )
         self._redact_generic_sub = r"\g<start>:xx:xx:xx:xx:\g<end>"
 
+    async def async_reset_room_auto_learning(self, call: ServiceCall) -> ServiceResponse:
+        """
+        Remove auto-learned data from the shared room profiles of the given areas.
+
+        Args:
+        ----
+            call: The service call with the required field area_id (one or more
+                Home Assistant area ids).
+
+        Returns:
+        -------
+            Number of removed auto-learned samples per area id.
+
+        """
+        removed = await self.coordinator.async_reset_room_auto_learning(list(call.data["area_id"]))
+        return cast("ServiceResponse", removed)
+
     async def async_dump_devices(self, call: ServiceCall) -> ServiceResponse:
         """
         Return a dump of beacon advertisements by receiver.

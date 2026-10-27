@@ -13,3 +13,12 @@ dump_devices:
       required: false
       example: "False"
       default: false
+reset_room_auto_learning:
+  name: Reset room auto learning
+  fields:
+    area_id:
+      required: true
+      example: "living_room"
+      selector:
+        area:
+          multiple: true

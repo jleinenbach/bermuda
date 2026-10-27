@@ -188,6 +188,16 @@
           "description": "Set to TRUE to ensure MAC addresses are redacted in output for privacy."
         }
       }
+    },
+    "reset_room_auto_learning": {
+      "name": "Reset room auto learning",
+      "description": "Removes the automatically learned data from the shared room profiles of the selected areas. Button training stays. Use this after a device taught a room the wrong place.",
+      "fields": {
+        "area_id": {
+          "name": "Areas",
+          "description": "Areas whose shared room profiles should be cleaned."
+        }
+      }
     }
   },
   "issues": {
