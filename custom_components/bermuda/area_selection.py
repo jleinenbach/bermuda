@@ -1829,7 +1829,11 @@ class AreaSelectionHandler:
 
         # Primary: UKF with RoomProfile (when profiles are mature)
         # Fallback: Simple min-distance (bootstrap phase)
-        device_has_correlations = device.address in self.correlations and len(self.correlations[device.address]) > 0
+        # Profiles emptied by a training reset keep their keys; only a mature own
+        # profile makes the device "trained" for the fingerprint path.
+        device_has_correlations = any(
+            profile.mature_absolute_count > 0 for profile in self.correlations.get(device.address, {}).values()
+        )
         if (has_mature_profiles or device_has_correlations) and self._refresh_area_by_ukf(device):
             return
         self._refresh_area_by_min_distance(device)
