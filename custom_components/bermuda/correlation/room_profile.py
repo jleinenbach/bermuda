@@ -202,6 +202,30 @@ class RoomProfile:
         for pair in self._scanner_pairs.values():
             pair.reset_training()
 
+    def reset_auto_samples(self) -> int:
+        """
+        Remove the auto-learned data of this room and keep the button training.
+
+        Scanner pairs without button data are dropped entirely, the others keep
+        their button filter and lose their auto filter. The room profile does
+        not record which device contributed which sample, so this removes the
+        auto-learned data of all devices in this room.
+
+        Returns
+        -------
+            Number of auto-learned samples that were removed.
+
+        """
+        removed = 0
+        for pair_key in list(self._scanner_pairs):
+            pair = self._scanner_pairs[pair_key]
+            removed += pair.auto_sample_count
+            if pair.has_button_training:
+                pair.reset_auto_only()
+            else:
+                del self._scanner_pairs[pair_key]
+        return removed
+
     @property
     def has_button_training(self) -> bool:
         """
