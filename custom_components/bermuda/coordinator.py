@@ -1400,6 +1400,8 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             )
             return {}
 
+        # A repeated id would overwrite its own count with 0 and skip the save.
+        area_ids = list(dict.fromkeys(area_ids))
         had_mature_profile = any(
             profile.mature_pair_count >= MATURE_PROFILE_MIN_PAIRS for profile in self.room_profiles.values()
         )
