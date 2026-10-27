@@ -34,7 +34,7 @@ class BermudaEntity(CoordinatorEntity):
     """
     Co-ordinator for Bermuda data.
 
-    Gathers the device infor for receivers and transmitters, calculates
+    Gathers the device info for receivers and transmitters, calculates
     distances etc.
     """
 
@@ -78,7 +78,7 @@ class BermudaEntity(CoordinatorEntity):
         or an older, cached value. Helps to reduce excess sensor churn without compromising latency.
 
         Mostly suitable for MEASUREMENTS, but should work with strings, too.
-        If interval is specified the cache will use that (in seconds), otherwise the deafult is
+        If interval is specified the cache will use that (in seconds), otherwise the default is
         the CONF_UPPDATE_INTERVAL (typically suitable for fast-close slow-far sensors)
         """
         if interval is not None:

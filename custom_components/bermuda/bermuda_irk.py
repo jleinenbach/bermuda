@@ -112,7 +112,7 @@ class BermudaIrkManager:
         Check for expired MACs and expunge them.
 
         We cannot know if an old MAC will return, so we keep them around for the
-        max permissable time (according to the Bluetooth spec), then let them go.
+        max permissible time (according to the Bluetooth spec), then let them go.
         """
         nowstamp = monotonic_time_coarse()
         expired = [macirk.mac for macirk in self._macs.values() if macirk.expires < nowstamp]

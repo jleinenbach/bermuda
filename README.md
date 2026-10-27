@@ -198,7 +198,7 @@ See the information on parameters in the `Services` page in Home Assistant, unde
 
 Important: If you decide to use the results of this call for your own templates etc, bear in mind that
 the format might change in any release, and won't necessarily be considered a "breaking change".
-This is beacuse the structure is used internally, rather than being a published API. That said, efforts will be made
+This is because the structure is used internally, rather than being a published API. That said, efforts will be made
 to indicate in the release notes if fields in the structure are renamed or moved, but not for adding new
 items.
 

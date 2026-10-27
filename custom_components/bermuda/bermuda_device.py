@@ -412,7 +412,7 @@ class BermudaDevice:
         # scanner_devreg_bt: DeviceEntry from HA's device_registry from Bluetooth integration
         # scanner_devreg_mac: DeviceEntry from HA's *other* integrations, like ESPHome, Shelly.
 
-        connlist = set()  # For macthing against device_registry connections
+        connlist = set()  # For matching against device_registry connections
         maclist = set()  # For matching against device_registry identifier
 
         # The device registry devices for the bluetooth and ESPHome/Shelly devices.

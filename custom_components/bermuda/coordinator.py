@@ -281,7 +281,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
         if hasattr(entry, "options"):
             # Firstly, on some calls (specifically during reload after settings changes)
-            # we seem to get called with a non-existant config_entry.
+            # we seem to get called with a non-existent config_entry.
             # Anyway... if we DO have one, convert it to a plain dict so we can
             # serialise it properly when it goes into the device and scanner classes.
             for key, val in entry.options.items():
@@ -394,11 +394,11 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
         - uuid must be four hex chars in a string, or an `int`
 
-        Retreives the manufacturer name from the Bluetooth SIG Member UUID listing,
+        Retrieves the manufacturer name from the Bluetooth SIG Member UUID listing,
         using a cached copy of https://bitbucket.org/bluetooth-SIG/public/src/main/assigned_numbers/uuids/member_uuids.yaml
 
         HOWEVER: Bermuda adds some opinionated overrides for the benefit of user clarity:
-        - Legal entity names may be overriden with well-known brand names
+        - Legal entity names may be overridden with well-known brand names
         - Special-use prefixes may be tagged as such (eg iBeacon etc)
         - Generics can be excluded by setting exclude_generics=True
         """

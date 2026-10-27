@@ -48,7 +48,7 @@ PLATFORMS = [
     # Platform.SWITCH,
 ]
 
-# Should probably retreive this from the component, but it's in "DOMAIN" *shrug*
+# Should probably retrieve this from the component, but it's in "DOMAIN" *shrug*
 DOMAIN_PRIVATE_BLE_DEVICE = "private_ble_device"
 
 # Signal names we are using:
@@ -408,7 +408,7 @@ class IrkTypes(Enum):
 #
 # IRK devices typically change their MAC every 15 minutes, so 96 addresses/day.
 #
-# Accoring to the backend comments, BlueZ times out adverts at 180 seconds, and HA
+# According to the backend comments, BlueZ times out adverts at 180 seconds, and HA
 # expires adverts at 195 seconds to avoid churning.
 #
 PRUNE_MAX_COUNT = 1000  # How many device entries to allow at maximum
