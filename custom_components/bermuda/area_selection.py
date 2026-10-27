@@ -126,6 +126,11 @@ _LOGGER = logging.getLogger(__name__)
 # fire a state_changed event on every coordinator cycle.
 _NUM = re.compile(r"[-+]?\d+(?:\.\d+)?")
 
+# An own AreaProfile decides the ambiguity check for its area alone only if it
+# yields at least this many absolute z-scores for the current readings. With a
+# single overlapping scanner the RoomProfile of that area is checked as well.
+_MIN_COVERING_Z_SCORES = 2
+
 
 @dataclass(slots=True)
 class ScannerOnlineStatus:
@@ -1078,21 +1083,29 @@ class AreaSelectionHandler:
         same signal as the correct room.
 
         Two-layer check:
-        1. AreaProfiles (device-specific): Uses z-score matching
-        2. RoomProfiles (device-independent): Used as fallback when no
-           AreaProfiles exist - compares match scores
+        1. AreaProfiles (device-specific): Uses z-score matching. An area is
+           covered by layer 1 only if its own profile yields at least two
+           absolute z-scores for the current readings; a profile emptied by
+           a training reset or overlapping a single scanner does not cover it.
+        2. RoomProfiles (device-independent): Compares match scores for every
+           competitor area that layer 1 did not cover. Reference trackers with
+           own profiles stop after layer 1, because they are the source that
+           repairs the shared room profiles.
         """
         all_readings = dict(other_readings)
         if primary_scanner_addr is not None:
             all_readings[primary_scanner_addr] = primary_rssi
 
-        # Layer 1: Check device-specific AreaProfiles (existing behavior)
+        # Layer 1: Check device-specific AreaProfiles
+        covered_areas: set[str] = set()
         if device.address in self.correlations:
             device_profiles = self.correlations[device.address]
             for other_area_id, other_profile in device_profiles.items():
                 if other_area_id == area_id:
                     continue
                 abs_z_scores = other_profile.get_absolute_z_scores(all_readings)
+                if len(abs_z_scores) >= _MIN_COVERING_Z_SCORES:
+                    covered_areas.add(other_area_id)
                 if not abs_z_scores:
                     continue
                 # If ALL z-scores for another room are below 2.0, the signal
@@ -1107,10 +1120,10 @@ class AreaSelectionHandler:
                             max_z,
                         )
                     return True
-            # AreaProfiles checked, not ambiguous
-            return False
+            if device.address.startswith(REFERENCE_TRACKER_DEVICE_PREFIX):
+                return False
 
-        # Layer 2: Check device-independent RoomProfiles (for new devices)
+        # Layer 2: Check device-independent RoomProfiles for uncovered areas
         # This is critical to prevent the self-reinforcing feedback loop
         # where wrong assignments corrupt RoomProfiles for ALL devices.
         target_profile = self.room_profiles.get(area_id) if self.room_profiles else None
@@ -1126,7 +1139,7 @@ class AreaSelectionHandler:
 
         # Check if any other RoomProfile matches almost as well
         for other_area_id, room_profile in self.room_profiles.items():
-            if other_area_id == area_id:
+            if other_area_id == area_id or other_area_id in covered_areas:
                 continue
 
             other_score = room_profile.get_match_score(all_readings)
