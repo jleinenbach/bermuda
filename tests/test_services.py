@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+import json
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import yaml
 from homeassistant.helpers.json import json_bytes
 
 from custom_components.bermuda.area_selection import AreaTests
@@ -316,3 +319,30 @@ class TestServicesIntegration:
         """Test that DUMP_DEVICE_SOFT_LIMIT is a reasonable value."""
         assert DUMP_DEVICE_SOFT_LIMIT > 100
         assert DUMP_DEVICE_SOFT_LIMIT < 10000
+
+
+class TestResetRoomAutoLearningService:
+    """Tests for the reset_room_auto_learning service handler."""
+
+    @pytest.mark.asyncio
+    async def test_service_passes_areas_and_returns_counts(self) -> None:
+        """The handler passes the area ids to the coordinator and returns its counts."""
+        mock_coordinator = MagicMock()
+        mock_coordinator.async_reset_room_auto_learning = AsyncMock(return_value={"buero": 7})
+        handler = BermudaServiceHandler(mock_coordinator)
+        mock_call = MagicMock()
+        mock_call.data = {"area_id": ["buero"]}
+
+        result = await handler.async_reset_room_auto_learning(mock_call)
+
+        mock_coordinator.async_reset_room_auto_learning.assert_awaited_once_with(["buero"])
+        assert result == {"buero": 7}
+
+
+def test_every_translation_describes_every_service() -> None:
+    """Each translation describes exactly the services declared in services.yaml."""
+    base = Path(__file__).parent.parent / "custom_components" / "bermuda"
+    declared = set(yaml.safe_load((base / "services.yaml").read_text(encoding="utf-8")))
+    for translation in sorted((base / "translations").glob("*.json")):
+        services = json.loads(translation.read_text(encoding="utf-8")).get("services", {})
+        assert set(services) == declared, translation.name

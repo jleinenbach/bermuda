@@ -13,6 +13,7 @@ import pytest
 from homeassistant.core import HomeAssistant
 
 from custom_components.bermuda.correlation.area_profile import AreaProfile
+from custom_components.bermuda.correlation.room_profile import RoomProfile
 from custom_components.bermuda.correlation.store import (
     STORAGE_KEY,
     STORAGE_VERSION,
@@ -36,6 +37,24 @@ def _create_trained_profile(area_id: str, num_samples: int = 50) -> AreaProfile:
 
 class TestCorrelationStoreRoundtrip:
     """Tests for save/load roundtrip."""
+
+    @pytest.mark.asyncio
+    async def test_room_auto_reset_survives_roundtrip(self, hass: HomeAssistant) -> None:
+        """A room profile with only its auto part reset keeps that state after save and load."""
+        room = RoomProfile(area_id="buero")
+        for _ in range(5):
+            room.update_button({"scanner_a": -60.0, "scanner_b": -70.0})
+        for _ in range(30):
+            room.update({"scanner_a": -60.0, "scanner_b": -70.0})
+        room.reset_auto_samples()
+
+        await CorrelationStore(hass).async_save({}, {"buero": room})
+        loaded = (await CorrelationStore(hass).async_load_all()).room_profiles["buero"]
+
+        pairs = list(loaded._scanner_pairs.values())
+        assert len(pairs) == 1
+        assert pairs[0].auto_sample_count == 0
+        assert pairs[0].button_sample_count == 5
 
     @pytest.mark.asyncio
     async def test_save_and_load_roundtrip(self, hass: HomeAssistant) -> None:
