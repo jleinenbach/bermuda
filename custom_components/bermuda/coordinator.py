@@ -1325,18 +1325,20 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
     async def async_reset_device_training(self, device_address: str) -> bool:
         """
-        Reset all user training data for a device across ALL areas.
+        Reset all training data for a device across ALL areas.
 
-        This is the "nuclear option" for fixing incorrect manual training.
-        It clears all button filter data (Frozen Layers) for this device,
-        reverting to automatic learning (Shadow Learning) only.
+        This is the "nuclear option" for fixing incorrect training. It clears
+        the button filter data (Frozen Layers) and the auto-learned data
+        (Shadow Learning) of this device, so learning starts over.
 
         Use cases:
         - "Ghost Scanner" problem: Device was trained in wrong room
         - User wants to start fresh with automatic learning
         - Incorrect training in rooms that are no longer visible
 
-        The auto-filter data is preserved, providing immediate fallback.
+        Both the button data and the auto-learned data of this device are
+        reset. The shared room profiles are untouched; use the service
+        bermuda.reset_room_auto_learning to clean them.
 
         Args:
         ----
@@ -1380,6 +1382,11 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             "Reset all training data for device %s across %d areas",
             device_address,
             area_count,
+        )
+        _LOGGER.info(
+            "Shared room profiles still contain what device %s learned; "
+            "use the service bermuda.reset_room_auto_learning to clean affected areas",
+            device_address,
         )
 
         # Persist changes immediately
