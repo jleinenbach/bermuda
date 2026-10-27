@@ -193,13 +193,16 @@ UKF_MIN_SCANNERS: Final = 2  # Minimum scanners needed for UKF to make a decisio
 # full weight. The value lies in [UKF_MIN_MATCH_SCORE, 2 * UKF_MIN_MATCH_SCORE):
 # a perfect room match (1.0) still passes the switching threshold, a neutral
 # 0.5 does not. The factor only applies while one of the button-trained areas
-# matches the current readings (see UKF_ROOM_ONLY_ANCHOR_GATE).
+# matches the current readings (see UKF_ROOM_ONLY_ANCHOR_GATE). In the replay
+# below, every factor below 1.0 raised the own area to first place from 10 to
+# 14 devices; 0.55 kept the most room-only detections in other areas.
 UKF_ROOM_ONLY_ANCHORED_FACTOR: Final = 0.55
 # Minimum device score of the best button-trained area for the room-only factor
 # to apply. Below it no anchor matches, so the device is most likely somewhere
 # else, and down-weighting the room-only areas would hide the area it is in.
 # Equal to UKF_MIN_MATCH_SCORE, the score at which a fingerprint counts as a
-# match. Replay of the stored learning data (19 button-trained devices, 235
+# match. Replay of the stored learning data of one installation on 2026-10-27
+# (19 button-trained devices, 235
 # placements in an area they were never trained in): the own area ranks first
 # for 14 devices with or without the gate (10 without the factor); the area a
 # device was moved to ranks first in 82 placements with the gate, 54 without it

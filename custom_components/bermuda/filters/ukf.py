@@ -761,10 +761,13 @@ class UnscentedKalmanFilter(SignalFilter):
         a mature own profile is scored by the room profile alone. It is
         down-weighted by UKF_ROOM_ONLY_ANCHORED_FACTOR only while the best device
         score among the button-trained areas (after the coverage penalty) reaches
-        UKF_ROOM_ONLY_ANCHOR_GATE; that score is kept in last_anchor_score. Room
-        scores without supporting scanner
-        pairs (the neutral 0.5) are ignored for such a device, both as room-only
-        candidates and in the fusion with the device score.
+        UKF_ROOM_ONLY_ANCHOR_GATE; that score is kept in last_anchor_score. A
+        button-trained area that cannot be scored (fewer than two of its mature
+        scanners in the state) counts as 0.0: the device does not hear the place
+        it was trained in, which is evidence that it is elsewhere. Room scores
+        without supporting scanner pairs (the neutral 0.5) are ignored for such a
+        device, both as room-only candidates and in the fusion with the device
+        score.
 
         Args:
         ----
