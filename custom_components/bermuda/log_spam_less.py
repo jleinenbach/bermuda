@@ -62,7 +62,7 @@ class BermudaLogSpamLess:
     def _prep_message(self, key: str, msg: str) -> str | None:
         """
         Checks if message should be logged and returns the message reformatted
-        to indicate how many previous messages were supressed.
+        to indicate how many previous messages were suppressed.
         """
         count = self._check_key(key)
         if count == 0:

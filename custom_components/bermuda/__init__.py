@@ -20,6 +20,7 @@ from homeassistant.helpers.event import async_call_later
 
 from .const import _LOGGER, DOMAIN, PLATFORMS, STARTUP_MESSAGE
 from .coordinator import BermudaDataUpdateCoordinator
+from .services import async_setup_services
 from .util import mac_math_offset, normalize_address
 
 if TYPE_CHECKING:
@@ -28,6 +29,7 @@ if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant
     from homeassistant.helpers.device_registry import DeviceEntry
+    from homeassistant.helpers.typing import ConfigType
 
 type BermudaConfigEntry = "ConfigEntry[BermudaData]"
 
@@ -47,6 +49,12 @@ CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 ORPHAN_CLEANUP_DELAY = 300
 
 
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    """Register the integration services once, independent of config entries."""
+    async_setup_services(hass)
+    return True
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: BermudaConfigEntry) -> bool:
     """Set up this integration using UI."""
     if hass.data.get(DOMAIN) is None:
@@ -55,7 +63,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: BermudaConfigEntry) -> b
     entry.runtime_data = BermudaData(coordinator)
 
     async def on_failure():
-        _LOGGER.debug("Coordinator last update failed, rasing ConfigEntryNotReady")
+        _LOGGER.debug("Coordinator last update failed, raising ConfigEntryNotReady")
         raise ConfigEntryNotReady
 
     await coordinator.async_cleanup_device_registry_connections()
@@ -164,8 +172,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: BermudaConfigEntry) -> 
     """Handle removal of an entry."""
     # Save learned scanner correlations before shutdown
     coordinator: BermudaDataUpdateCoordinator = entry.runtime_data.coordinator
-    if coordinator._correlations_loaded and coordinator.correlations:
-        await coordinator.correlation_store.async_save(coordinator.correlations)
+    if coordinator._correlations_loaded and (coordinator.correlations or coordinator.room_profiles):
+        await coordinator.correlation_store.async_save(coordinator.correlations, coordinator.room_profiles)
         _LOGGER.debug("Saved scanner correlations on shutdown")
 
     if unload_result := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):

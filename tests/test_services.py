@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+import json
+import re
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import voluptuous as vol
+import yaml
+from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers.json import json_bytes
 
 from custom_components.bermuda.area_selection import AreaTests
-from custom_components.bermuda.const import ADDR_TYPE_PRIVATE_BLE_DEVICE, CONF_DEVICES
+from custom_components.bermuda.const import ADDR_TYPE_PRIVATE_BLE_DEVICE, CONF_DEVICES, DOMAIN
 from custom_components.bermuda.services import (
     DUMP_DEVICE_SOFT_LIMIT,
     BermudaServiceHandler,
@@ -316,3 +324,128 @@ class TestServicesIntegration:
         """Test that DUMP_DEVICE_SOFT_LIMIT is a reasonable value."""
         assert DUMP_DEVICE_SOFT_LIMIT > 100
         assert DUMP_DEVICE_SOFT_LIMIT < 10000
+
+
+class TestResetRoomAutoLearningService:
+    """Tests for the reset_room_auto_learning service handler."""
+
+    @pytest.mark.asyncio
+    async def test_service_passes_areas_and_returns_counts(self) -> None:
+        """The handler passes the area ids to the coordinator and returns its counts."""
+        mock_coordinator = MagicMock()
+        mock_coordinator.async_reset_room_auto_learning = AsyncMock(return_value={"buero": 7})
+        handler = BermudaServiceHandler(mock_coordinator)
+        mock_call = MagicMock()
+        mock_call.data = {"area_id": ["buero"]}
+
+        result = await handler.async_reset_room_auto_learning(mock_call)
+
+        mock_coordinator.async_reset_room_auto_learning.assert_awaited_once_with(["buero"])
+        assert result == {"buero": 7}
+
+
+def test_every_translation_describes_every_service() -> None:
+    """Each translation names and describes every declared service and each of its fields."""
+    base = Path(__file__).parent.parent / "custom_components" / "bermuda"
+    declared = yaml.safe_load((base / "services.yaml").read_text(encoding="utf-8"))
+    for translation in sorted((base / "translations").glob("*.json")):
+        services = json.loads(translation.read_text(encoding="utf-8")).get("services", {})
+        assert set(services) == set(declared), translation.name
+        for name, spec in declared.items():
+            entry = services[name]
+            assert _text(entry, "name") and _text(entry, "description"), (translation.name, name)
+            fields = entry.get("fields", {})
+            assert set(fields) == set(spec.get("fields", {})), (translation.name, name)
+            for field_name, field in fields.items():
+                assert _text(field, "name") and _text(field, "description"), (translation.name, name, field_name)
+
+
+def test_every_raised_translation_key_has_an_english_message() -> None:
+    """Each translation_key raised in services.py has a non-empty English message."""
+    base = Path(__file__).parent.parent / "custom_components" / "bermuda"
+    keys = set(re.findall(r'translation_key="([a-z_]+)"', (base / "services.py").read_text(encoding="utf-8")))
+    assert keys, "no translation_key found in services.py"
+    exceptions = json.loads((base / "translations" / "en.json").read_text(encoding="utf-8")).get("exceptions", {})
+    for key in keys:
+        assert _text(exceptions.get(key, {}), "message"), key
+
+
+def _text(entry: dict[str, object], key: str) -> bool:
+    """Return whether entry[key] is a string with visible text."""
+    value = entry.get(key)
+    return isinstance(value, str) and bool(value.strip())
+
+
+async def _async_setup(hass: HomeAssistant) -> bool:
+    """Run the integration's async_setup, imported here so the module collects without it."""
+    from custom_components.bermuda import async_setup  # noqa: PLC0415
+
+    return await async_setup(hass, {})
+
+
+class TestServicesRegisteredInAsyncSetup:
+    """The services exist without a loaded entry and route to the loaded one."""
+
+    @pytest.mark.asyncio
+    async def test_services_registered_without_entry(self, hass: HomeAssistant) -> None:
+        """async_setup registers both services before any config entry is set up."""
+        assert await _async_setup(hass) is True
+
+        assert hass.services.has_service(DOMAIN, "dump_devices")
+        assert hass.services.has_service(DOMAIN, "reset_room_auto_learning")
+
+    @pytest.mark.asyncio
+    async def test_service_without_loaded_entry_raises_validation_error(self, hass: HomeAssistant) -> None:
+        """Without a loaded entry the service fails with a validation error."""
+        await _async_setup(hass)
+
+        with pytest.raises(ServiceValidationError):
+            await hass.services.async_call(
+                DOMAIN, "reset_room_auto_learning", {"area_id": ["buero"]}, blocking=True, return_response=True
+            )
+
+    @pytest.mark.asyncio
+    async def test_dump_devices_routes_to_loaded_entry(self, hass: HomeAssistant) -> None:
+        """dump_devices reaches the loaded entry's coordinator and keeps its schema."""
+        await _async_setup(hass)
+        coordinator = MagicMock(service_dump_devices=AsyncMock(return_value={"aa": {"name": "x"}}))
+        entry = SimpleNamespace(runtime_data=SimpleNamespace(coordinator=coordinator))
+
+        with patch.object(hass.config_entries, "async_loaded_entries", return_value=[entry]):
+            response = await hass.services.async_call(
+                DOMAIN, "dump_devices", {"redact": True}, blocking=True, return_response=True
+            )
+            with pytest.raises(vol.Invalid):
+                await hass.services.async_call(
+                    DOMAIN, "dump_devices", {"unknown": 1}, blocking=True, return_response=True
+                )
+
+        assert response == {"aa": {"name": "x"}}
+        assert coordinator.service_dump_devices.await_args.args[0].data == {"redact": True}
+
+    @pytest.mark.asyncio
+    async def test_validation_error_uses_translated_key(self, hass: HomeAssistant) -> None:
+        """The validation error without a loaded entry carries the integration's translation key."""
+        await _async_setup(hass)
+
+        with pytest.raises(ServiceValidationError) as err:
+            await hass.services.async_call(DOMAIN, "dump_devices", {}, blocking=True, return_response=True)
+
+        assert err.value.translation_domain == DOMAIN
+        assert err.value.translation_key == "integration_not_loaded"
+
+    @pytest.mark.asyncio
+    async def test_service_routes_to_loaded_entry(self, hass: HomeAssistant) -> None:
+        """With a loaded entry the call reaches its coordinator and returns its response."""
+        await _async_setup(hass)
+        coordinator = MagicMock(service_reset_room_auto_learning=AsyncMock(return_value={"buero": 2}))
+        entry = SimpleNamespace(runtime_data=SimpleNamespace(coordinator=coordinator))
+
+        with patch.object(hass.config_entries, "async_loaded_entries", return_value=[entry]):
+            response = await hass.services.async_call(
+                DOMAIN, "reset_room_auto_learning", {"area_id": "buero"}, blocking=True, return_response=True
+            )
+
+        assert response == {"buero": 2}
+        call = coordinator.service_reset_room_auto_learning.await_args.args[0]
+        assert call.data["area_id"] == ["buero"]

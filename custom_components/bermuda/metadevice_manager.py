@@ -387,7 +387,7 @@ class MetadeviceManager:
                     # Note that this won't quick-away devices that change their MAC at the
                     # same time as changing their uuid (like manually altering the beacon
                     # in an Android 15+), since the old source device will still be a match.
-                    # and will be subject to the nomal DEVTRACK_TIMEOUT.
+                    # and will be subject to the normal DEVTRACK_TIMEOUT.
                     #
                     _LOGGER.debug(
                         "Source %s for metadev %s changed iBeacon identifiers, severing",

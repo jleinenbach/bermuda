@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -37,6 +38,8 @@ from custom_components.bermuda.const import (
     DOMAIN,
 )
 from custom_components.bermuda.coordinator import BermudaDataUpdateCoordinator
+from custom_components.bermuda.correlation.area_profile import AreaProfile
+from custom_components.bermuda.correlation.room_profile import RoomProfile
 from custom_components.bermuda.area_selection import AreaSelectionHandler
 from custom_components.bermuda.services import BermudaServiceHandler
 
@@ -903,3 +906,162 @@ class TestActiveScannerCycleCache:
             assert coordinator.count_active_scanners(10) == 1  # cached within the cycle
             coordinator._cycle_active_scanners = None
             assert coordinator.count_active_scanners(10) == 0  # fresh outside the cycle
+
+
+def _room(area_id: str, *, button: bool) -> RoomProfile:
+    """Build a room profile with 30 auto samples per pair and optional button data."""
+    room = RoomProfile(area_id=area_id)
+    if button:
+        for _ in range(5):
+            room.update_button({"scanner_a": -60.0, "scanner_b": -70.0})
+    for _ in range(30):
+        room.update({"scanner_a": -60.0, "scanner_b": -70.0, "scanner_c": -75.0})
+    return room
+
+
+class TestResetRoomAutoLearning:
+    """Tests for async_reset_room_auto_learning."""
+
+    async def test_area_without_button_data_is_removed_and_saved(self, hass: HomeAssistant) -> None:
+        """A room profile without button data disappears and the change is saved."""
+        coordinator = _make_coordinator(hass)
+        coordinator.room_profiles["kinderzimmer_mion"] = _room("kinderzimmer_mion", button=False)
+        coordinator.room_profiles["buero"] = _room("buero", button=True)
+
+        result = await coordinator.async_reset_room_auto_learning(["kinderzimmer_mion"])
+
+        assert result == {"kinderzimmer_mion": 90}
+        assert "kinderzimmer_mion" not in coordinator.room_profiles
+        assert "buero" in coordinator.room_profiles
+        coordinator.correlation_store.async_save.assert_awaited_once_with(
+            coordinator.correlations, coordinator.room_profiles
+        )
+
+    async def test_area_with_button_data_keeps_button_part(self, hass: HomeAssistant) -> None:
+        """A room profile with button data stays, with its auto part removed."""
+        coordinator = _make_coordinator(hass)
+        coordinator.room_profiles["buero"] = _room("buero", button=True)
+
+        result = await coordinator.async_reset_room_auto_learning(["buero"])
+
+        assert result == {"buero": 90}
+        room = coordinator.room_profiles["buero"]
+        assert room.has_button_training is True
+        assert all(pair.auto_sample_count == 0 for pair in room._scanner_pairs.values())
+
+    async def test_duplicate_area_ids_keep_count_and_save_for_removed_profile(self, hass: HomeAssistant) -> None:
+        """A repeated area id does not overwrite the count of a removed profile with 0."""
+        coordinator = _make_coordinator(hass)
+        coordinator.room_profiles["kueche"] = _room("kueche", button=False)
+
+        result = await coordinator.async_reset_room_auto_learning(["kueche", "kueche"])
+
+        assert result == {"kueche": 90}
+        coordinator.correlation_store.async_save.assert_awaited_once_with(
+            coordinator.correlations, coordinator.room_profiles
+        )
+
+    async def test_duplicate_area_ids_keep_count_and_save_for_button_profile(self, hass: HomeAssistant) -> None:
+        """A repeated area id does not overwrite the count of a kept button profile with 0."""
+        coordinator = _make_coordinator(hass)
+        coordinator.room_profiles["buero"] = _room("buero", button=True)
+
+        result = await coordinator.async_reset_room_auto_learning(["buero", "buero"])
+
+        assert result == {"buero": 90}
+        coordinator.correlation_store.async_save.assert_awaited_once_with(
+            coordinator.correlations, coordinator.room_profiles
+        )
+
+    async def test_unknown_area_reports_zero_without_saving(self, hass: HomeAssistant) -> None:
+        """An unknown area is no error, reports 0 and does not write the store."""
+        coordinator = _make_coordinator(hass)
+
+        result = await coordinator.async_reset_room_auto_learning(["unknown_area"])
+
+        assert result == {"unknown_area": 0}
+        coordinator.correlation_store.async_save.assert_not_awaited()
+
+    async def test_call_before_first_load_changes_nothing(
+        self, hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Before the learning data is loaded, nothing is changed or saved."""
+        coordinator = _make_coordinator(hass)
+        coordinator._correlations_loaded = False
+        coordinator.room_profiles["kinderzimmer_mion"] = _room("kinderzimmer_mion", button=False)
+
+        with caplog.at_level(logging.WARNING, logger="custom_components.bermuda"):
+            result = await coordinator.async_reset_room_auto_learning(["kinderzimmer_mion"])
+
+        assert result == {}
+        assert "kinderzimmer_mion" in coordinator.room_profiles
+        coordinator.correlation_store.async_save.assert_not_awaited()
+        assert "not loaded yet" in caplog.text
+
+    async def test_removing_last_mature_room_profile_warns(
+        self, hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Removing the last mature room profile warns about the min-distance fallback."""
+        coordinator = _make_coordinator(hass)
+        coordinator.room_profiles["kinderzimmer_mion"] = _room("kinderzimmer_mion", button=False)
+
+        with caplog.at_level(logging.WARNING, logger="custom_components.bermuda"):
+            await coordinator.async_reset_room_auto_learning(["kinderzimmer_mion"])
+
+        assert "no mature room profile is left" in caplog.text
+
+    async def test_remaining_mature_room_profile_does_not_warn(
+        self, hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """While another mature room profile remains, no fallback warning is written."""
+        coordinator = _make_coordinator(hass)
+        coordinator.room_profiles["kinderzimmer_mion"] = _room("kinderzimmer_mion", button=False)
+        coordinator.room_profiles["buero"] = _room("buero", button=False)
+
+        with caplog.at_level(logging.WARNING, logger="custom_components.bermuda"):
+            await coordinator.async_reset_room_auto_learning(["kinderzimmer_mion"])
+
+        assert "no mature room profile is left" not in caplog.text
+
+    async def test_save_failure_keeps_reset_and_logs(
+        self, hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A failing save keeps the in-memory reset, returns the counts and logs the error."""
+        coordinator = _make_coordinator(hass)
+        coordinator.correlation_store.async_save = AsyncMock(side_effect=OSError("disk full"))
+        coordinator.room_profiles["kinderzimmer_mion"] = _room("kinderzimmer_mion", button=False)
+
+        result = await coordinator.async_reset_room_auto_learning(["kinderzimmer_mion"])
+
+        assert result == {"kinderzimmer_mion": 90}
+        assert "kinderzimmer_mion" not in coordinator.room_profiles
+        assert "Failed to persist room profile reset" in caplog.text
+
+    async def test_service_call_is_delegated_to_handler(self, hass: HomeAssistant) -> None:
+        """The coordinator service method delegates to the service handler."""
+        coordinator = _make_coordinator(hass)
+        coordinator.service_handler = MagicMock(async_reset_room_auto_learning=AsyncMock(return_value={"buero": 3}))
+        call = MagicMock()
+
+        assert await coordinator.service_reset_room_auto_learning(call) == {"buero": 3}
+        coordinator.service_handler.async_reset_room_auto_learning.assert_awaited_once_with(call)
+
+    async def test_device_reset_points_to_room_profile_reset(
+        self, hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The device reset hints at the room profile reset and logs no form of the address."""
+        coordinator = _make_coordinator(hass)
+        device = coordinator._get_or_create_device("aa:bb:cc:dd:ee:ff")
+        assert "aa_bb_cc_dd_ee_ff" in device.name  # default name is built from the address
+        coordinator.correlations[device.address] = {"buero": AreaProfile(area_id="buero")}
+        coordinator.correlation_store.async_save = AsyncMock(side_effect=OSError("disk full"))
+
+        caplog.clear()
+        with caplog.at_level(logging.INFO, logger="custom_components.bermuda"):
+            assert await coordinator.async_reset_device_training(device.address) is True
+
+        records = [r for r in caplog.records if r.levelno >= logging.INFO]
+        text = "\n".join(r.getMessage() for r in records).lower()
+        assert "bermuda.reset_room_auto_learning" in text
+        for form in ("aa:bb:cc:dd:ee:ff", "aa_bb_cc_dd_ee_ff", "aabbccddeeff"):
+            assert form not in text

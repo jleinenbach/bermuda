@@ -9,6 +9,7 @@ from custom_components.bermuda.correlation.room_profile import (
     RoomProfile,
     _make_pair_key,
 )
+from custom_components.bermuda.correlation.scanner_pair import ScannerPairCorrelation
 
 
 class TestMakePairKey:
@@ -258,6 +259,50 @@ class TestRoomProfileResetTraining:
             assert pair.has_button_training is False
 
 
+class TestRoomProfileResetAutoSamples:
+    """Tests for removing only the auto-learned part of a room profile."""
+
+    def test_reset_auto_only_clears_auto_and_keeps_button(self) -> None:
+        """reset_auto_only empties the auto filter and leaves the button filter as trained."""
+        pair = ScannerPairCorrelation(scanner_address="a|b")
+        for _ in range(5):
+            pair.update_button(5.0)
+        for _ in range(20):
+            pair.update(-3.0)
+
+        pair.reset_auto_only()
+
+        assert pair.auto_sample_count == 0
+        assert pair.button_sample_count == 5
+        assert pair.expected_delta == pytest.approx(5.0, abs=0.01)
+
+    def test_reset_auto_samples_drops_auto_only_pairs_and_counts_removed(self) -> None:
+        """Pairs without button data are removed; the return value counts removed auto samples."""
+        profile = RoomProfile(area_id="test_area")
+        for _ in range(5):
+            profile.update_button({"scanner_a": -60.0, "scanner_b": -70.0})
+        for _ in range(20):
+            profile.update({"scanner_a": -60.0, "scanner_b": -70.0, "scanner_c": -75.0})
+
+        removed = profile.reset_auto_samples()
+
+        assert removed == 60  # three pairs with 20 auto samples each
+        kept_key = _make_pair_key("scanner_a", "scanner_b")
+        assert set(profile._scanner_pairs) == {kept_key}
+        kept = profile._scanner_pairs[kept_key]
+        assert kept.auto_sample_count == 0
+        assert kept.button_sample_count == 5
+
+    def test_reset_auto_samples_on_button_only_profile_removes_nothing(self) -> None:
+        """A purely button-trained profile is left as it is."""
+        profile = RoomProfile(area_id="test_area")
+        for _ in range(5):
+            profile.update_button({"scanner_a": -60.0, "scanner_b": -70.0})
+
+        assert profile.reset_auto_samples() == 0
+        assert profile.has_button_training is True
+
+
 class TestRoomProfileHasButtonTraining:
     """Tests for has_button_training property."""
 
@@ -369,6 +414,19 @@ class TestRoomProfileGetMatchScore:
 
         # Should return neutral (no matching pairs)
         assert score == 0.5
+
+    def test_match_score_with_support_counts_mature_overlapping_pairs(self) -> None:
+        """Support counts the mature pairs that overlap the readings; the score matches get_match_score."""
+        profile = RoomProfile(area_id="test_area")
+        for _ in range(50):
+            profile.update({"scanner_a": -60.0, "scanner_b": -70.0, "scanner_c": -75.0})
+
+        readings = {"scanner_a": -60.0, "scanner_b": -70.0, "scanner_x": -80.0}
+        score, support = profile.get_match_score_with_support(readings)
+
+        assert support == 1
+        assert score == profile.get_match_score(readings)
+        assert profile.get_match_score_with_support({"scanner_x": -60.0, "scanner_y": -70.0}) == (0.5, 0)
 
 
 class TestRoomProfileSerialization:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -17,6 +18,7 @@ from custom_components.bermuda import (
     async_migrate_entry,
     async_reload_entry,
     async_remove_config_entry_device,
+    async_unload_entry,
 )
 from custom_components.bermuda.const import DOMAIN, IrkTypes
 from custom_components.bermuda.coordinator import BermudaDataUpdateCoordinator
@@ -193,3 +195,39 @@ class TestAsyncReloadEntry:
             await async_reload_entry(hass, setup_bermuda_entry)
 
             mock_reload.assert_called_once()
+
+
+class TestAsyncUnloadEntry:
+    """Tests for saving the learning data in async_unload_entry."""
+
+    @staticmethod
+    def _entry(*, loaded: bool, correlations: dict[str, Any], room_profiles: dict[str, Any]) -> Any:
+        coordinator = SimpleNamespace(
+            _correlations_loaded=loaded,
+            correlations=correlations,
+            room_profiles=room_profiles,
+            correlation_store=MagicMock(async_save=AsyncMock()),
+        )
+        return SimpleNamespace(runtime_data=SimpleNamespace(coordinator=coordinator))
+
+    @pytest.mark.asyncio
+    async def test_unload_saves_room_profiles(self, hass: HomeAssistant) -> None:
+        """Unloading saves the room profiles, even when no device profile exists."""
+        room_profiles = {"buero": object()}
+        entry = self._entry(loaded=True, correlations={}, room_profiles=room_profiles)
+
+        with patch.object(hass.config_entries, "async_unload_platforms", AsyncMock(return_value=True)):
+            assert await async_unload_entry(hass, entry) is True
+
+        store = entry.runtime_data.coordinator.correlation_store
+        store.async_save.assert_awaited_once_with({}, room_profiles)
+
+    @pytest.mark.asyncio
+    async def test_unload_before_load_does_not_save(self, hass: HomeAssistant) -> None:
+        """Before the learning data is loaded, unloading must not overwrite the store."""
+        entry = self._entry(loaded=False, correlations={}, room_profiles={})
+
+        with patch.object(hass.config_entries, "async_unload_platforms", AsyncMock(return_value=True)):
+            await async_unload_entry(hass, entry)
+
+        entry.runtime_data.coordinator.correlation_store.async_save.assert_not_awaited()

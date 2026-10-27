@@ -338,6 +338,15 @@ class ScannerPairCorrelation:
         self._kalman_button.reset()
         self._kalman_auto.reset()
 
+    def reset_auto_only(self) -> None:
+        """
+        Reset the auto-learned filter and keep the button-trained filter.
+
+        Used to remove automatically learned data that may have been learned
+        in the wrong context, while the explicit user training stays intact.
+        """
+        self._kalman_auto.reset()
+
     def reset_variance_only(self) -> None:
         """
         Reset button filter variance while preserving estimate.

@@ -471,6 +471,30 @@ class TestFilterBehavior:
         # No correlations should have been created
         assert f"{REFERENCE_TRACKER_DEVICE_PREFIX}area.kitchen" not in handler.coordinator.correlations
 
+    def test_reference_tracker_with_own_profile_ignores_poisoned_neighbor_room_profile(self) -> None:
+        """A reference tracker with its own profile keeps learning despite a matching neighbor RoomProfile."""
+        handler = _make_handler()
+        address = f"{REFERENCE_TRACKER_DEVICE_PREFIX}area.yuna"
+        own_profile = MagicMock()
+        own_profile.get_absolute_z_scores.return_value = [("scanner_a", 0.5)]
+        handler.coordinator.correlations = {address: {"area.yuna": own_profile}}
+        target_room = MagicMock()
+        target_room.get_match_score_with_support.return_value = (0.70, 1)
+        neighbor_room = MagicMock()
+        neighbor_room.get_match_score_with_support.return_value = (0.68, 1)
+        handler.coordinator.room_profiles = {"area.yuna": target_room, "area.buero": neighbor_room}
+        device = FakeRefDevice(address=address, name="Ref Yuna", area_id="area.yuna")
+
+        result = handler._is_signal_ambiguous(
+            device=device,  # type: ignore[arg-type]
+            area_id="area.yuna",
+            primary_rssi=-65.0,
+            primary_scanner_addr="scanner_a",
+            other_readings={"scanner_b": -66.0},
+        )
+
+        assert result is False
+
 
 # =============================================================================
 # TestLearningRateInvariance (T-RATE)

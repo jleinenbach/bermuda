@@ -8,7 +8,6 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 
 import aiofiles
-import voluptuous as vol
 import yaml
 from bluetooth_data_tools import monotonic_time_coarse
 from homeassistant.components import bluetooth
@@ -21,14 +20,10 @@ from homeassistant.core import (
     HomeAssistant,
     ServiceCall,
     ServiceResponse,
-    SupportsResponse,
     callback,
 )
 from homeassistant.helpers import (
     area_registry as ar,
-)
-from homeassistant.helpers import (
-    config_validation as cv,
 )
 from homeassistant.helpers import (
     device_registry as dr,
@@ -84,6 +79,7 @@ from .const import (
     DOMAIN,
     DOMAIN_GOOGLEFINDMY,
     EVIDENCE_WINDOW_SECONDS,
+    MATURE_PROFILE_MIN_PAIRS,
     PRUNE_MAX_COUNT,
     PRUNE_TIME_DEFAULT,
     PRUNE_TIME_FMDN,
@@ -279,7 +275,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
         if hasattr(entry, "options"):
             # Firstly, on some calls (specifically during reload after settings changes)
-            # we seem to get called with a non-existant config_entry.
+            # we seem to get called with a non-existent config_entry.
             # Anyway... if we DO have one, convert it to a plain dict so we can
             # serialise it properly when it goes into the device and scanner classes.
             for key, val in entry.options.items():
@@ -301,21 +297,6 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
         self.devices: dict[str, BermudaDevice] = {}
         # self.updaters: dict[str, BermudaPBDUCoordinator] = {}
-
-        # Register the dump_devices service
-        hass.services.async_register(
-            DOMAIN,
-            "dump_devices",
-            self.service_dump_devices,
-            vol.Schema(
-                {
-                    vol.Optional("addresses"): cv.string,
-                    vol.Optional("configured_devices"): cv.boolean,
-                    vol.Optional("redact"): cv.boolean,
-                }
-            ),
-            SupportsResponse.ONLY,
-        )
 
         # Register for newly discovered / changed BLE devices
         if self.config_entry is not None:
@@ -405,11 +386,11 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
         - uuid must be four hex chars in a string, or an `int`
 
-        Retreives the manufacturer name from the Bluetooth SIG Member UUID listing,
+        Retrieves the manufacturer name from the Bluetooth SIG Member UUID listing,
         using a cached copy of https://bitbucket.org/bluetooth-SIG/public/src/main/assigned_numbers/uuids/member_uuids.yaml
 
         HOWEVER: Bermuda adds some opinionated overrides for the benefit of user clarity:
-        - Legal entity names may be overriden with well-known brand names
+        - Legal entity names may be overridden with well-known brand names
         - Special-use prefixes may be tagged as such (eg iBeacon etc)
         - Generics can be excluded by setting exclude_generics=True
         """
@@ -1315,18 +1296,20 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
 
     async def async_reset_device_training(self, device_address: str) -> bool:
         """
-        Reset all user training data for a device across ALL areas.
+        Reset all training data for a device across ALL areas.
 
-        This is the "nuclear option" for fixing incorrect manual training.
-        It clears all button filter data (Frozen Layers) for this device,
-        reverting to automatic learning (Shadow Learning) only.
+        This is the "nuclear option" for fixing incorrect training. It clears
+        the button filter data (Frozen Layers) and the auto-learned data
+        (Shadow Learning) of this device, so learning starts over.
 
         Use cases:
         - "Ghost Scanner" problem: Device was trained in wrong room
         - User wants to start fresh with automatic learning
         - Incorrect training in rooms that are no longer visible
 
-        The auto-filter data is preserved, providing immediate fallback.
+        Both the button data and the auto-learned data of this device are
+        reset. The shared room profiles are untouched; use the service
+        bermuda.reset_room_auto_learning to clean them.
 
         Args:
         ----
@@ -1366,10 +1349,12 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                     area_id,
                 )
 
+        # No device identity in these records: the address, and the default
+        # device name built from it, are PII (AGENTS.md: redact PII in logs).
+        _LOGGER.info("Reset all training data of a device across %d areas", area_count)
         _LOGGER.info(
-            "Reset all training data for device %s across %d areas",
-            device_address,
-            area_count,
+            "Shared room profiles still contain what this device learned; "
+            "use the service bermuda.reset_room_auto_learning to clean affected areas"
         )
 
         # Persist changes immediately
@@ -1382,14 +1367,78 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             # User will see the reset immediately, but if HA restarts before
             # a successful save, the old training data would be restored.
             _LOGGER.exception(
-                "Failed to persist training reset for device %s. "
-                "Reset is active in memory but may not survive restart.",
-                device_address,
+                "Failed to persist a device training reset. Reset is active in memory but may not survive restart."
             )
             # Still return True - the in-memory reset succeeded
             # Next periodic save or manual action may succeed
 
         return True
+
+    async def async_reset_room_auto_learning(self, area_ids: list[str]) -> dict[str, int]:
+        """
+        Remove the auto-learned data of the shared room profiles of the given areas.
+
+        Button-trained data stays. A room profile without any remaining data is
+        removed, because an empty profile only yields the neutral score 0.5.
+        Nothing is changed before the learning data has been loaded, and the
+        store is only written when samples were actually removed.
+
+        Args:
+        ----
+            area_ids: Home Assistant area ids of the room profiles to clean.
+
+        Returns:
+        -------
+            Number of removed auto-learned samples per area id, or an empty dict
+            if the learning data is not loaded yet.
+
+        """
+        if not self._correlations_loaded:
+            _LOGGER.warning(
+                "Room profile reset for %s ignored: learning data not loaded yet",
+                ", ".join(area_ids),
+            )
+            return {}
+
+        # A repeated id would overwrite its own count with 0 and skip the save.
+        area_ids = list(dict.fromkeys(area_ids))
+        had_mature_profile = any(
+            profile.mature_pair_count >= MATURE_PROFILE_MIN_PAIRS for profile in self.room_profiles.values()
+        )
+        removed: dict[str, int] = {}
+        for area_id in area_ids:
+            room = self.room_profiles.get(area_id)
+            if room is None:
+                removed[area_id] = 0
+                continue
+            removed[area_id] = room.reset_auto_samples()
+            if room.total_samples == 0:
+                del self.room_profiles[area_id]
+
+        _LOGGER.info("Reset auto-learned room profile data: %s", removed)
+
+        if had_mature_profile and not any(
+            profile.mature_pair_count >= MATURE_PROFILE_MIN_PAIRS for profile in self.room_profiles.values()
+        ):
+            _LOGGER.warning(
+                "Room profile reset: no mature room profile is left, so devices without own "
+                "training use the min-distance selection until room profiles are relearned"
+            )
+
+        if sum(removed.values()) == 0:
+            return removed
+
+        # FIX: BUG 4 - Add error handling to prevent silent persistence failures
+        try:
+            await self.correlation_store.async_save(self.correlations, self.room_profiles)
+            self._last_correlation_save = monotonic_time_coarse()
+        except (OSError, TypeError, ValueError):
+            _LOGGER.exception(
+                "Failed to persist room profile reset for %s. Reset is active in memory but may not survive restart.",
+                ", ".join(area_ids),
+            )
+
+        return removed
 
     # def button_created(self, address):
     #     """Receives report from number platform that sensors have been set up."""
@@ -2080,6 +2129,14 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
     #             CONFDATA_SCANNERS: confdata_scanners,
     #         },
     #     )
+
+    async def service_reset_room_auto_learning(self, call: ServiceCall) -> ServiceResponse:
+        """
+        Remove auto-learned data from the shared room profiles of the given areas.
+
+        Delegates to the service handler for actual implementation.
+        """
+        return await self.service_handler.async_reset_room_auto_learning(call)
 
     async def service_dump_devices(self, call: ServiceCall) -> ServiceResponse:
         """

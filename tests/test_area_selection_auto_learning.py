@@ -959,7 +959,7 @@ class TestRoomProfileAmbiguityCheck:
 
         # Only another room has a profile, not the target
         mock_other_profile = MagicMock()
-        mock_other_profile.get_match_score.return_value = 0.8
+        mock_other_profile.get_match_score_with_support.return_value = (0.8, 1)
         handler.coordinator.room_profiles = {"area.kitchen": mock_other_profile}
 
         result = handler._is_signal_ambiguous(
@@ -979,10 +979,10 @@ class TestRoomProfileAmbiguityCheck:
 
         # Target has low score (below ROOM_AMBIGUITY_MIN_SCORE = 0.4)
         mock_target = MagicMock()
-        mock_target.get_match_score.return_value = 0.3
+        mock_target.get_match_score_with_support.return_value = (0.3, 1)
 
         mock_other = MagicMock()
-        mock_other.get_match_score.return_value = 0.8
+        mock_other.get_match_score_with_support.return_value = (0.8, 1)
 
         handler.coordinator.room_profiles = {
             "area.living_room": mock_target,
@@ -1006,10 +1006,10 @@ class TestRoomProfileAmbiguityCheck:
 
         # Target: 0.6, Competitor: 0.55 → diff = 0.05 < ROOM_AMBIGUITY_MAX_DIFF (0.15)
         mock_target = MagicMock()
-        mock_target.get_match_score.return_value = 0.6
+        mock_target.get_match_score_with_support.return_value = (0.6, 1)
 
         mock_competitor = MagicMock()
-        mock_competitor.get_match_score.return_value = 0.55
+        mock_competitor.get_match_score_with_support.return_value = (0.55, 1)
 
         handler.coordinator.room_profiles = {
             "area.living_room": mock_target,
@@ -1033,10 +1033,10 @@ class TestRoomProfileAmbiguityCheck:
 
         # Target: 0.8, Competitor: 0.5 → diff = 0.3 > ROOM_AMBIGUITY_MAX_DIFF (0.15)
         mock_target = MagicMock()
-        mock_target.get_match_score.return_value = 0.8
+        mock_target.get_match_score_with_support.return_value = (0.8, 1)
 
         mock_competitor = MagicMock()
-        mock_competitor.get_match_score.return_value = 0.5
+        mock_competitor.get_match_score_with_support.return_value = (0.5, 1)
 
         handler.coordinator.room_profiles = {
             "area.living_room": mock_target,
@@ -1061,10 +1061,10 @@ class TestRoomProfileAmbiguityCheck:
         # Target: 0.5, Competitor: 0.35 (below ROOM_AMBIGUITY_MIN_SCORE)
         # Even though diff = 0.15 = ROOM_AMBIGUITY_MAX_DIFF, competitor is ignored
         mock_target = MagicMock()
-        mock_target.get_match_score.return_value = 0.5
+        mock_target.get_match_score_with_support.return_value = (0.5, 1)
 
         mock_competitor = MagicMock()
-        mock_competitor.get_match_score.return_value = 0.35  # Below 0.4
+        mock_competitor.get_match_score_with_support.return_value = (0.35, 1)
 
         handler.coordinator.room_profiles = {
             "area.living_room": mock_target,
@@ -1081,7 +1081,7 @@ class TestRoomProfileAmbiguityCheck:
         assert result is False
 
     def test_area_profiles_checked_first(self) -> None:
-        """When AreaProfiles exist, they should be checked (not RoomProfiles)."""
+        """An AreaProfile veto returns True before any RoomProfile is scored."""
         handler = make_handler_with_mock()
         device = FakeDevice()
 
@@ -1099,7 +1099,7 @@ class TestRoomProfileAmbiguityCheck:
 
         # RoomProfiles also exist but shouldn't be used
         mock_room_profile = MagicMock()
-        mock_room_profile.get_match_score.return_value = 0.9
+        mock_room_profile.get_match_score_with_support.return_value = (0.9, 1)
         handler.coordinator.room_profiles = {
             "area.living_room": mock_room_profile,
             "area.kitchen": mock_room_profile,
@@ -1115,8 +1115,8 @@ class TestRoomProfileAmbiguityCheck:
 
         # Should return True because AreaProfile check found ambiguity
         assert result is True
-        # RoomProfile.get_match_score should NOT have been called
-        mock_room_profile.get_match_score.assert_not_called()
+        # The AreaProfile veto short-circuits: no RoomProfile is scored
+        mock_room_profile.get_match_score_with_support.assert_not_called()
 
     def test_single_room_profile_returns_false(self) -> None:
         """When only one RoomProfile exists, no ambiguity possible."""
@@ -1125,7 +1125,7 @@ class TestRoomProfileAmbiguityCheck:
         handler.coordinator.correlations = {}
 
         mock_target = MagicMock()
-        mock_target.get_match_score.return_value = 0.8
+        mock_target.get_match_score_with_support.return_value = (0.8, 1)
 
         # Only one room profile exists
         handler.coordinator.room_profiles = {"area.living_room": mock_target}
@@ -1138,3 +1138,120 @@ class TestRoomProfileAmbiguityCheck:
             other_readings={"scanner_b": -60.0},
         )
         assert result is False
+
+    @staticmethod
+    def _room_profile(score: float, support: int = 1) -> MagicMock:
+        """Return a RoomProfile mock with a fixed score and support."""
+        profile = MagicMock()
+        profile.get_match_score_with_support.return_value = (score, support)
+        return profile
+
+    @staticmethod
+    def _area_profile(z_scores: list[tuple[str, float]]) -> MagicMock:
+        """Return a device AreaProfile mock with fixed absolute z-scores."""
+        profile = MagicMock()
+        profile.get_absolute_z_scores.return_value = z_scores
+        return profile
+
+    def _ambiguous(self, handler: AreaSelectionHandler, device: FakeDevice) -> bool:
+        return handler._is_signal_ambiguous(
+            device=device,
+            area_id="area.yuna",
+            primary_rssi=-65.0,
+            primary_scanner_addr="scanner_a",
+            other_readings={"scanner_b": -66.0},
+        )
+
+    def test_device_with_only_target_profile_still_checks_room_profiles(self) -> None:
+        """A device whose only own profile is the target must not skip the RoomProfile check."""
+        handler = make_handler_with_mock()
+        device = FakeDevice()
+        handler.coordinator.correlations = {device.address: {"area.yuna": self._area_profile([("scanner_a", 0.5)])}}
+        handler.coordinator.room_profiles = {
+            "area.yuna": self._room_profile(0.70),
+            "area.buero": self._room_profile(0.68),
+        }
+
+        assert self._ambiguous(handler, device) is True
+
+    def test_empty_own_profile_competitor_is_checked_via_room_profile(self) -> None:
+        """An own profile emptied by a training reset does not cover its area."""
+        handler = make_handler_with_mock()
+        device = FakeDevice()
+        handler.coordinator.correlations = {
+            device.address: {
+                "area.yuna": self._area_profile([("scanner_a", 0.5), ("scanner_b", 0.4)]),
+                "area.buero": self._area_profile([]),
+            }
+        }
+        handler.coordinator.room_profiles = {
+            "area.yuna": self._room_profile(0.70),
+            "area.buero": self._room_profile(0.68),
+        }
+
+        assert self._ambiguous(handler, device) is True
+
+    def test_mature_own_profile_competitor_not_rechecked_by_room_profile(self) -> None:
+        """An own profile with two overlapping scanners decides its area alone."""
+        handler = make_handler_with_mock()
+        device = FakeDevice()
+        handler.coordinator.correlations = {
+            device.address: {"area.buero": self._area_profile([("scanner_a", 2.5), ("scanner_b", 3.0)])}
+        }
+        handler.coordinator.room_profiles = {
+            "area.yuna": self._room_profile(0.70),
+            "area.buero": self._room_profile(0.68),
+        }
+
+        assert self._ambiguous(handler, device) is False
+
+    def test_competitor_with_single_overlapping_own_scanner_is_checked_via_room_profile(self) -> None:
+        """One overlapping own scanner is too little to cover the area."""
+        handler = make_handler_with_mock()
+        device = FakeDevice()
+        handler.coordinator.correlations = {device.address: {"area.buero": self._area_profile([("scanner_a", 2.5)])}}
+        handler.coordinator.room_profiles = {
+            "area.yuna": self._room_profile(0.70),
+            "area.buero": self._room_profile(0.68),
+        }
+
+        assert self._ambiguous(handler, device) is True
+
+    def test_competitor_with_two_overlapping_own_scanners_is_covered(self) -> None:
+        """Two overlapping own scanners cover the area; its RoomProfile is not consulted."""
+        handler = make_handler_with_mock()
+        device = FakeDevice()
+        competitor_room = self._room_profile(0.68)
+        handler.coordinator.correlations = {
+            device.address: {"area.buero": self._area_profile([("scanner_a", -2.5), ("scanner_b", 2.1)])}
+        }
+        handler.coordinator.room_profiles = {
+            "area.yuna": self._room_profile(0.70),
+            "area.buero": competitor_room,
+        }
+
+        assert self._ambiguous(handler, device) is False
+
+    def test_unsupported_room_profile_is_no_competitor(self) -> None:
+        """A RoomProfile without overlapping mature pairs (neutral 0.5) is no competitor."""
+        handler = make_handler_with_mock()
+        device = FakeDevice()
+        handler.coordinator.correlations = {}
+        handler.coordinator.room_profiles = {
+            "area.yuna": self._room_profile(0.55, support=2),
+            "area.buero": self._room_profile(0.5, support=0),
+        }
+
+        assert self._ambiguous(handler, device) is False
+
+    def test_unsupported_target_keeps_current_ambiguity_check(self) -> None:
+        """An unsupported target still competes against a supported competitor as before."""
+        handler = make_handler_with_mock()
+        device = FakeDevice()
+        handler.coordinator.correlations = {}
+        handler.coordinator.room_profiles = {
+            "area.yuna": self._room_profile(0.5, support=0),
+            "area.buero": self._room_profile(0.45, support=1),
+        }
+
+        assert self._ambiguous(handler, device) is True

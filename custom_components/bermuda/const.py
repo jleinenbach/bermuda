@@ -48,7 +48,7 @@ PLATFORMS = [
     # Platform.SWITCH,
 ]
 
-# Should probably retreive this from the component, but it's in "DOMAIN" *shrug*
+# Should probably retrieve this from the component, but it's in "DOMAIN" *shrug*
 DOMAIN_PRIVATE_BLE_DEVICE = "private_ble_device"
 
 # Signal names we are using:
@@ -187,6 +187,27 @@ UKF_MIN_MATCH_SCORE: Final = 0.3  # Minimum match score (0-1) to consider a fing
 # This keeps the device "sticky" in scannerless rooms even with noisy signals.
 UKF_RETENTION_THRESHOLD: Final = 0.15  # Much lower threshold when retaining current area
 UKF_MIN_SCANNERS: Final = 2  # Minimum scanners needed for UKF to make a decision
+# Weight of a room-only area for a device that was trained with the button.
+# Such a device has a trusted anchor, so an area where it has no mature own
+# profile is only known from the shared room profile and must not compete at
+# full weight. The value lies in [UKF_MIN_MATCH_SCORE, 2 * UKF_MIN_MATCH_SCORE):
+# a perfect room match (1.0) still passes the switching threshold, a neutral
+# 0.5 does not. The factor only applies while one of the button-trained areas
+# matches the current readings (see UKF_ROOM_ONLY_ANCHOR_GATE). In the replay
+# below, every factor below 1.0 raised the own area to first place from 10 to
+# 14 devices; 0.55 kept the most room-only detections in other areas.
+UKF_ROOM_ONLY_ANCHORED_FACTOR: Final = 0.55
+# Minimum device score of the best button-trained area for the room-only factor
+# to apply. Below it no anchor matches, so the device is most likely somewhere
+# else, and down-weighting the room-only areas would hide the area it is in.
+# Equal to UKF_MIN_MATCH_SCORE, the score at which a fingerprint counts as a
+# match. Replay of the stored learning data of one installation on 2026-10-27
+# (19 button-trained devices, 235
+# placements in an area they were never trained in): the own area ranks first
+# for 14 devices with or without the gate (10 without the factor); the area a
+# device was moved to ranks first in 82 placements with the gate, 54 without it
+# and 97 without the factor.
+UKF_ROOM_ONLY_ANCHOR_GATE: Final = UKF_MIN_MATCH_SCORE
 
 # FIX: Sticky Virtual Rooms - Prevent flickering for scannerless rooms
 # When device is already in a UKF-detected area, add bonus to prevent marginal switches
@@ -399,7 +420,7 @@ class IrkTypes(Enum):
 #
 # IRK devices typically change their MAC every 15 minutes, so 96 addresses/day.
 #
-# Accoring to the backend comments, BlueZ times out adverts at 180 seconds, and HA
+# According to the backend comments, BlueZ times out adverts at 180 seconds, and HA
 # expires adverts at 195 seconds to avoid churning.
 #
 PRUNE_MAX_COUNT = 1000  # How many device entries to allow at maximum

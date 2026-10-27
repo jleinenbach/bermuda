@@ -202,6 +202,30 @@ class RoomProfile:
         for pair in self._scanner_pairs.values():
             pair.reset_training()
 
+    def reset_auto_samples(self) -> int:
+        """
+        Remove the auto-learned data of this room and keep the button training.
+
+        Scanner pairs without button data are dropped entirely, the others keep
+        their button filter and lose their auto filter. The room profile does
+        not record which device contributed which sample, so this removes the
+        auto-learned data of all devices in this room.
+
+        Returns
+        -------
+            Number of auto-learned samples that were removed.
+
+        """
+        removed = 0
+        for pair_key in list(self._scanner_pairs):
+            pair = self._scanner_pairs[pair_key]
+            removed += pair.auto_sample_count
+            if pair.has_button_training:
+                pair.reset_auto_only()
+            else:
+                del self._scanner_pairs[pair_key]
+        return removed
+
     @property
     def has_button_training(self) -> bool:
         """
@@ -254,6 +278,19 @@ class RoomProfile:
             Returns 0.5 if no mature pairs to compare.
 
         """
+        return self.get_match_score_with_support(readings)[0]
+
+    def get_match_score_with_support(self, readings: dict[str, float]) -> tuple[float, int]:
+        """
+        Calculate the match score together with the data that supports it.
+
+        Returns
+        -------
+            Tuple of the score from get_match_score and the number of mature
+            scanner pairs that overlap the readings. A support of 0 means the
+            score is the neutral 0.5 without any data behind it.
+
+        """
         z_scores: list[float] = []
         weights: list[int] = []
         scanner_list = list(readings.keys())
@@ -275,12 +312,12 @@ class RoomProfile:
                 weights.append(pair.sample_count)
 
         if not z_scores:
-            return 0.5  # No data, neutral
+            return 0.5, 0  # No data, neutral
 
         # Weighted average z-score → confidence using Cauchy-like sigmoid
         total_weight = sum(weights)
         weighted_z = sum(z * w for z, w in zip(z_scores, weights, strict=True)) / total_weight
-        return 1.0 / (1.0 + (weighted_z / MATCH_SCORE_Z_THRESHOLD) ** 2)
+        return 1.0 / (1.0 + (weighted_z / MATCH_SCORE_Z_THRESHOLD) ** 2), len(z_scores)
 
     @property
     def total_samples(self) -> int:

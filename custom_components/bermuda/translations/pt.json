@@ -178,6 +178,16 @@
           "description": "Defina como VERDADEIRO para garantir que os endereços MAC sejam redigidos na saída, para maior privacidade."
         }
       }
+    },
+    "reset_room_auto_learning": {
+      "name": "Repor a aprendizagem automática da divisão",
+      "description": "Remove os dados aprendidos automaticamente dos perfis de divisão partilhados das áreas escolhidas. O treino com o botão é mantido. Use isto quando um dispositivo ensinou um local errado a uma divisão.",
+      "fields": {
+        "area_id": {
+          "name": "Áreas",
+          "description": "Áreas cujos perfis de divisão partilhados devem ser limpos."
+        }
+      }
     }
   }
 }

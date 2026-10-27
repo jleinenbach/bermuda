@@ -343,6 +343,39 @@ class TestUKFIntegration:
         if result:
             assert device.address in coordinator.device_ukfs
 
+    def test_refresh_area_by_ukf_reports_anchor_score(self, mock_monotonic_time: None) -> None:
+        """The anchor score of a button-trained device reaches the area diagnostics."""
+        coordinator = create_coordinator_mock()
+        device = FakeDevice("AA:BB:CC:DD:EE:02", "Anchored Device")
+
+        scanner1 = FakeScanner("SC:AN:NE:R1:00:01", "Scanner1", "kitchen")
+        scanner2 = FakeScanner("SC:AN:NE:R2:00:02", "Scanner2", "living")
+        for scanner, rssi, area in ((scanner1, -65.0, "kitchen"), (scanner2, -75.0, "living")):
+            device.adverts[scanner.address] = FakeAdvert(
+                scanner_address=scanner.address,
+                rssi=rssi,
+                stamp=TEST_BASE_TIME,
+                area_id=area,
+                scanner_device=scanner,
+            )
+
+        kitchen_profile = AreaProfile(area_id="kitchen")
+        for _ in range(50):
+            kitchen_profile.update_button(
+                primary_rssi=-65.0,
+                other_readings={scanner2.address: -75.0},
+                primary_scanner_addr=scanner1.address,
+            )
+        assert kitchen_profile.has_button_training
+        coordinator.correlations[device.address] = {"kitchen": kitchen_profile}
+
+        assert coordinator.area_selection._refresh_area_by_ukf(device) is True  # type: ignore[arg-type]
+
+        ukf = coordinator.device_ukfs[device.address]
+        assert ukf.last_anchor_score is not None
+        assert ukf.last_anchor_score >= 0.3
+        assert device.area_tests.ukf_anchor_score == ukf.last_anchor_score  # type: ignore[attr-defined]
+
     def test_ukf_option_default_enabled(self) -> None:
         """Test that UKF is enabled by default."""
         coordinator = create_coordinator_mock()

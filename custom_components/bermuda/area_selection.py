@@ -126,6 +126,11 @@ _LOGGER = logging.getLogger(__name__)
 # fire a state_changed event on every coordinator cycle.
 _NUM = re.compile(r"[-+]?\d+(?:\.\d+)?")
 
+# An own AreaProfile decides the ambiguity check for its area alone only if it
+# yields at least this many absolute z-scores for the current readings. With a
+# single overlapping scanner the RoomProfile of that area is checked as well.
+_MIN_COVERING_Z_SCORES = 2
+
 
 @dataclass(slots=True)
 class ScannerOnlineStatus:
@@ -224,6 +229,11 @@ class AreaTests:
     offline_scanner_addrs: str = ""  # Comma-separated offline scanner addresses
     coverage_penalty_applied: float = 0.0  # UKF coverage penalty (0.0-1.0, 0=no penalty)
     auto_learning_blocked_offline: bool = False  # True if auto-learning was skipped due to offline
+
+    # === ANCHOR (button-trained devices) ===
+    # Best device score among the button-trained areas; None without button training.
+    # The room-only factor applies only while it reaches UKF_ROOM_ONLY_ANCHOR_GATE.
+    ukf_anchor_score: float | None = None
 
     # === RESULT ===
     reason: str | None = None  # Human-readable reason/result string
@@ -456,6 +466,9 @@ class AreaTests:
         # Timing
         if self.winner_advert_age is not None:
             attrs["winner_advert_age_s"] = round(self.winner_advert_age, 1)
+
+        if self.ukf_anchor_score is not None:
+            attrs["ukf_anchor_score"] = round(self.ukf_anchor_score, 3)
 
         # Top candidates (for debugging)
         if self.top_candidates:
@@ -1078,21 +1091,31 @@ class AreaSelectionHandler:
         same signal as the correct room.
 
         Two-layer check:
-        1. AreaProfiles (device-specific): Uses z-score matching
-        2. RoomProfiles (device-independent): Used as fallback when no
-           AreaProfiles exist - compares match scores
+        1. AreaProfiles (device-specific): Uses z-score matching. An area is
+           covered by layer 1 only if its own profile yields at least two
+           absolute z-scores for the current readings; a profile emptied by
+           a training reset or overlapping a single scanner does not cover it.
+        2. RoomProfiles (device-independent): Compares match scores for every
+           competitor area that layer 1 did not cover. A competitor counts only
+           with at least one overlapping mature scanner pair; the target keeps
+           its score either way. Reference trackers with
+           own profiles stop after layer 1, because they are the source that
+           repairs the shared room profiles.
         """
         all_readings = dict(other_readings)
         if primary_scanner_addr is not None:
             all_readings[primary_scanner_addr] = primary_rssi
 
-        # Layer 1: Check device-specific AreaProfiles (existing behavior)
+        # Layer 1: Check device-specific AreaProfiles
+        covered_areas: set[str] = set()
         if device.address in self.correlations:
             device_profiles = self.correlations[device.address]
             for other_area_id, other_profile in device_profiles.items():
                 if other_area_id == area_id:
                     continue
                 abs_z_scores = other_profile.get_absolute_z_scores(all_readings)
+                if len(abs_z_scores) >= _MIN_COVERING_Z_SCORES:
+                    covered_areas.add(other_area_id)
                 if not abs_z_scores:
                     continue
                 # If ALL z-scores for another room are below 2.0, the signal
@@ -1107,17 +1130,19 @@ class AreaSelectionHandler:
                             max_z,
                         )
                     return True
-            # AreaProfiles checked, not ambiguous
-            return False
+            if device.address.startswith(REFERENCE_TRACKER_DEVICE_PREFIX):
+                return False
 
-        # Layer 2: Check device-independent RoomProfiles (for new devices)
+        # Layer 2: Check device-independent RoomProfiles for uncovered areas
         # This is critical to prevent the self-reinforcing feedback loop
         # where wrong assignments corrupt RoomProfiles for ALL devices.
         target_profile = self.room_profiles.get(area_id) if self.room_profiles else None
         if target_profile is None:
             return False
 
-        target_score = target_profile.get_match_score(all_readings)
+        # The target keeps its score even without supporting data (neutral 0.5):
+        # dropping it would weaken the check instead of sharpening it.
+        target_score, _ = target_profile.get_match_score_with_support(all_readings)
 
         # Only check for ambiguity if target room has a decent match
         # and there are other RoomProfiles to compare against
@@ -1126,10 +1151,14 @@ class AreaSelectionHandler:
 
         # Check if any other RoomProfile matches almost as well
         for other_area_id, room_profile in self.room_profiles.items():
-            if other_area_id == area_id:
+            if other_area_id == area_id or other_area_id in covered_areas:
                 continue
 
-            other_score = room_profile.get_match_score(all_readings)
+            other_score, other_support = room_profile.get_match_score_with_support(all_readings)
+            if other_support < 1:
+                # Neutral 0.5 without overlapping mature pairs is no evidence
+                # that the competitor matches.
+                continue
 
             # Ambiguous if: other room has good score AND is close to target
             if other_score >= ROOM_AMBIGUITY_MIN_SCORE and target_score - other_score < ROOM_AMBIGUITY_MAX_DIFF:
@@ -1808,7 +1837,11 @@ class AreaSelectionHandler:
 
         # Primary: UKF with RoomProfile (when profiles are mature)
         # Fallback: Simple min-distance (bootstrap phase)
-        device_has_correlations = device.address in self.correlations and len(self.correlations[device.address]) > 0
+        # Profiles emptied by a training reset keep their keys; only a mature own
+        # profile makes the device "trained" for the fingerprint path.
+        device_has_correlations = any(
+            profile.mature_absolute_count > 0 for profile in self.correlations.get(device.address, {}).values()
+        )
         if (has_mature_profiles or device_has_correlations) and self._refresh_area_by_ukf(device):
             return
         self._refresh_area_by_min_distance(device)
@@ -2051,6 +2084,7 @@ class AreaSelectionHandler:
         # Pass offline scanner addresses so match_fingerprints() can apply coverage penalty
         offline_addrs = self._cycle_offline_addrs
         matches = ukf.match_fingerprints(device_profiles, self.room_profiles, offline_addrs)
+        tests.ukf_anchor_score = ukf.last_anchor_score
 
         # Populate offline diagnostics into AreaTests
         if offline_addrs:

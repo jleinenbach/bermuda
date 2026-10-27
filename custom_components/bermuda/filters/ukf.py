@@ -39,6 +39,8 @@ import math
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from custom_components.bermuda.const import UKF_ROOM_ONLY_ANCHOR_GATE, UKF_ROOM_ONLY_ANCHORED_FACTOR
+
 from .base import SignalFilter
 from .const import (
     DEFAULT_UPDATE_DT,
@@ -271,6 +273,21 @@ def _identity_matrix(n: int, scale: float = 1.0) -> list[list[float]]:
     return [[scale if i == j else 0.0 for j in range(n)] for i in range(n)]
 
 
+def room_only_anchored_factor(anchor_score: float | None) -> float:
+    """
+    Return the weight of a room-only area for a device with the given anchor score.
+
+    The anchor score is the best device score among the device's button-trained
+    areas, or None for a device without button training. The room-only area is
+    down-weighted only while that score reaches UKF_ROOM_ONLY_ANCHOR_GATE: then
+    the device is near a place it was trained in. Below it no anchor matches and
+    the room-only area keeps its full weight.
+    """
+    if anchor_score is not None and anchor_score >= UKF_ROOM_ONLY_ANCHOR_GATE:
+        return UKF_ROOM_ONLY_ANCHORED_FACTOR
+    return 1.0
+
+
 @dataclass
 class UnscentedKalmanFilter(SignalFilter):
     """
@@ -321,6 +338,10 @@ class UnscentedKalmanFilter(SignalFilter):
 
     # Time-aware filtering: track last timestamp for dt calculation
     _last_timestamp: float | None = field(default=None, repr=False)
+
+    # Best device score among the button-trained areas in the last
+    # match_fingerprints() call; None when the device has no button training.
+    last_anchor_score: float | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         """Initialize state vector and covariance if scanners provided."""
@@ -736,6 +757,18 @@ class UnscentedKalmanFilter(SignalFilter):
         The penalty is RSSI-weighted: losing a strong scanner (close proximity) penalizes
         more than losing a weak scanner (distant/marginal).
 
+        For a device that was trained with the button in any area, an area without
+        a mature own profile is scored by the room profile alone. It is
+        down-weighted by UKF_ROOM_ONLY_ANCHORED_FACTOR only while the best device
+        score among the button-trained areas (after the coverage penalty) reaches
+        UKF_ROOM_ONLY_ANCHOR_GATE; that score is kept in last_anchor_score. A
+        button-trained area that cannot be scored (fewer than two of its mature
+        scanners in the state) counts as 0.0: the device does not hear the place
+        it was trained in, which is evidence that it is elsewhere. Room scores
+        without supporting scanner pairs (the neutral 0.5) are ignored for such a
+        device, both as room-only candidates and in the fusion with the device
+        score.
+
         Args:
         ----
             area_profiles: Dict of area_id -> AreaProfile with device-specific fingerprints
@@ -761,6 +794,11 @@ class UnscentedKalmanFilter(SignalFilter):
             if i < len(self._x):
                 current_readings[addr] = self._x[i]
 
+        device_is_anchored = any(p.has_button_training for p in area_profiles.values())
+
+        # First pass: device and room scores per area. The room-only weight depends
+        # on the best button-trained area, so scores are combined in a second pass.
+        scored: list[tuple[str, float | None, int, float | None, float]] = []
         for area_id in all_area_ids:
             device_score: float | None = None
             device_samples = 0
@@ -869,9 +907,28 @@ class UnscentedKalmanFilter(SignalFilter):
             # Room-level matching (delta patterns)
             if room_profiles and area_id in room_profiles and len(current_readings) >= 2:
                 room_profile = room_profiles[area_id]
-                room_score = room_profile.get_match_score(current_readings)
+                room_score, room_support = room_profile.get_match_score_with_support(current_readings)
+                if device_is_anchored and room_support == 0:
+                    # A neutral score without data must not compete against a trained anchor.
+                    room_score = None
 
-            # Combine scores with weighted fusion
+            scored.append((area_id, device_score, device_samples, room_score, coverage_penalty))
+
+        anchor_score: float | None = None
+        if device_is_anchored:
+            anchor_score = max(
+                (
+                    score
+                    for area_id, score, _samples, _room, _penalty in scored
+                    if score is not None and area_id in area_profiles and area_profiles[area_id].has_button_training
+                ),
+                default=0.0,
+            )
+        self.last_anchor_score = anchor_score
+        room_only_factor = room_only_anchored_factor(anchor_score)
+
+        # Second pass: combine scores with weighted fusion
+        for area_id, device_score, device_samples, room_score, coverage_penalty in scored:
             if device_score is not None and room_score is not None:
                 # Both available: weight by sample maturity
                 device_weight = min(device_samples / 50.0, 1.0)
@@ -886,7 +943,17 @@ class UnscentedKalmanFilter(SignalFilter):
             elif room_score is not None:
                 # Room-only: use as fallback for new devices
                 combined_score = room_score
-                d_squared = -2 * math.log(max(room_score, 0.001))
+                own_profile = area_profiles.get(area_id)
+                if room_only_factor != 1.0 and (own_profile is None or own_profile.mature_absolute_count == 0):
+                    combined_score = room_score * room_only_factor
+                    _LOGGER.debug(
+                        "UKF room-only area=%s for button-trained device (anchor %.4f): score %.4f -> %.4f",
+                        area_id,
+                        anchor_score,
+                        room_score,
+                        combined_score,
+                    )
+                d_squared = -2 * math.log(max(combined_score, 0.001))
             else:
                 continue  # No data for this area
 

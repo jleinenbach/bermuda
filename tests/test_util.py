@@ -52,7 +52,7 @@ def test_mac_explode_formats() -> None:
 
 def test_mac_redact() -> None:
     assert util.mac_redact("aa:bb:cc:77:ee:ff", "tEstMe") == "aa::tEstMe::ff"
-    assert util.mac_redact("howdy::doody::friend", "PLEASENOE") == "ho::PLEASENOE::nd"
+    assert util.mac_redact("howdy::doody::friend", "PLEASENOE") == "ho::PLEASENOE::nd"  # codespell:ignore
 
 
 def test_rssi_to_metres() -> None:

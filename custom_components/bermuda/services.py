@@ -12,24 +12,69 @@ import dataclasses
 import re
 from typing import TYPE_CHECKING, Any, cast
 
+import voluptuous as vol
 from bluetooth_data_tools import monotonic_time_coarse
+from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse, callback
+from homeassistant.exceptions import ServiceValidationError
+from homeassistant.helpers import config_validation as cv
 
 from .const import (
     _LOGGER,
     ADDR_TYPE_PRIVATE_BLE_DEVICE,
     CONF_DEVICES,
+    DOMAIN,
     PRUNE_TIME_REDACTIONS,
 )
 from .util import mac_explode_formats
 
 if TYPE_CHECKING:
-    from homeassistant.core import ServiceCall, ServiceResponse
-
     from .coordinator import BermudaDataUpdateCoordinator
 
 
 # Soft limit for device dump to prevent excessive response sizes
 DUMP_DEVICE_SOFT_LIMIT = 1200
+
+
+DUMP_DEVICES_SCHEMA = vol.Schema(
+    {
+        vol.Optional("addresses"): cv.string,
+        vol.Optional("configured_devices"): cv.boolean,
+        vol.Optional("redact"): cv.boolean,
+    }
+)
+RESET_ROOM_AUTO_LEARNING_SCHEMA = vol.Schema({vol.Required("area_id"): vol.All(cv.ensure_list, [cv.string])})
+
+
+@callback
+def async_setup_services(hass: HomeAssistant) -> None:
+    """
+    Register the integration services.
+
+    The services are registered once in async_setup, so they exist while no
+    config entry is loaded; a call without a loaded entry fails with a
+    ServiceValidationError. Bermuda allows a single config entry.
+    """
+
+    def _coordinator() -> BermudaDataUpdateCoordinator:
+        entries = hass.config_entries.async_loaded_entries(DOMAIN)
+        if not entries:
+            raise ServiceValidationError(translation_domain=DOMAIN, translation_key="integration_not_loaded")
+        return cast("BermudaDataUpdateCoordinator", entries[0].runtime_data.coordinator)
+
+    async def _dump_devices(call: ServiceCall) -> ServiceResponse:
+        return await _coordinator().service_dump_devices(call)
+
+    async def _reset_room_auto_learning(call: ServiceCall) -> ServiceResponse:
+        return await _coordinator().service_reset_room_auto_learning(call)
+
+    hass.services.async_register(DOMAIN, "dump_devices", _dump_devices, DUMP_DEVICES_SCHEMA, SupportsResponse.ONLY)
+    hass.services.async_register(
+        DOMAIN,
+        "reset_room_auto_learning",
+        _reset_room_auto_learning,
+        RESET_ROOM_AUTO_LEARNING_SCHEMA,
+        SupportsResponse.OPTIONAL,
+    )
 
 
 class BermudaServiceHandler:
@@ -61,6 +106,23 @@ class BermudaServiceHandler:
             r"(?P<start>[0-9A-Fa-f]{2})[:_-]([0-9A-Fa-f]{2}[:_-]){4}(?P<end>[0-9A-Fa-f]{2})"
         )
         self._redact_generic_sub = r"\g<start>:xx:xx:xx:xx:\g<end>"
+
+    async def async_reset_room_auto_learning(self, call: ServiceCall) -> ServiceResponse:
+        """
+        Remove auto-learned data from the shared room profiles of the given areas.
+
+        Args:
+        ----
+            call: The service call with the required field area_id (one or more
+                Home Assistant area ids).
+
+        Returns:
+        -------
+            Number of removed auto-learned samples per area id.
+
+        """
+        removed = await self.coordinator.async_reset_room_auto_learning(list(call.data["area_id"]))
+        return cast("ServiceResponse", removed)
 
     async def async_dump_devices(self, call: ServiceCall) -> ServiceResponse:
         """
