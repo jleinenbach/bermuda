@@ -7,6 +7,7 @@ import math
 import pytest
 
 from custom_components.bermuda.correlation.area_profile import AreaProfile
+from custom_components.bermuda.correlation.room_profile import RoomProfile
 from custom_components.bermuda.filters.ukf import (
     DEFAULT_RSSI,
     MIN_VARIANCE,
@@ -321,6 +322,151 @@ class TestUKFFingerprintMatching:
         kitchen_score = next(r[2] for r in results if r[0] == "area_kitchen")
         bedroom_score = next(r[2] for r in results if r[0] == "area_bedroom")
         assert kitchen_score > bedroom_score
+
+
+class TestRoomOnlyAnchoredPenalty:
+    """Room-only scoring for devices that were trained with the button.
+
+    A device that the user trained in at least one area has a trusted anchor.
+    Areas where it has no mature own profile are only known from the shared
+    room profiles; for such a device they are down-weighted, and room scores
+    without any supporting data are not used at all.
+    """
+
+    S1 = "AA:BB:CC:DD:EE:01"
+    S2 = "AA:BB:CC:DD:EE:02"
+    S3 = "AA:BB:CC:DD:EE:03"
+    S4 = "AA:BB:CC:DD:EE:04"
+    FACTOR = 0.55  # literal value of the down-weighting factor (V-1)
+
+    def _ukf(self, readings: dict[str, float]) -> UnscentedKalmanFilter:
+        ukf = UnscentedKalmanFilter(scanner_addresses=sorted(readings))
+        for _ in range(30):
+            ukf.update_multi(dict(readings))
+        return ukf
+
+    @staticmethod
+    def _state(ukf: UnscentedKalmanFilter) -> dict[str, float]:
+        return {addr: ukf._x[i] for i, addr in enumerate(ukf.scanner_addresses)}
+
+    def _area(self, area_id: str, readings: dict[str, float], *, button: bool) -> AreaProfile:
+        profile = AreaProfile(area_id=area_id)
+        primary, *others = sorted(readings)
+        for _ in range(40):
+            update = profile.update_button if button else profile.update
+            update(
+                primary_rssi=readings[primary],
+                other_readings={addr: readings[addr] for addr in others},
+                primary_scanner_addr=primary,
+            )
+        return profile
+
+    @staticmethod
+    def _room(area_id: str, readings: dict[str, float]) -> RoomProfile:
+        room = RoomProfile(area_id=area_id)
+        for _ in range(50):
+            room.update(dict(readings))
+        return room
+
+    @staticmethod
+    def _scores(matches: list[tuple[str, float, float, float]]) -> dict[str, float]:
+        return {area_id: score for area_id, _d2, score, _pen in matches}
+
+    def test_room_only_area_penalized_for_button_trained_device(self) -> None:
+        """A room-only area of a button-trained device gets the factor."""
+        ukf = self._ukf({self.S1: -60.0, self.S2: -70.0})
+        home = self._area("home", {self.S1: -85.0, self.S2: -90.0}, button=True)
+        other = self._room("other", {self.S1: -60.0, self.S2: -70.0})
+
+        scores = self._scores(ukf.match_fingerprints({"home": home}, {"other": other}))
+
+        room_score = other.get_match_score(self._state(ukf))
+        assert scores["other"] == pytest.approx(room_score * self.FACTOR)
+
+    def test_room_only_area_with_empty_own_profile_penalized(self) -> None:
+        """An own profile emptied by a training reset does not count as mature."""
+        ukf = self._ukf({self.S1: -60.0, self.S2: -70.0})
+        home = self._area("home", {self.S1: -85.0, self.S2: -90.0}, button=True)
+        emptied = AreaProfile(area_id="other")
+        assert emptied.mature_absolute_count == 0
+        other = self._room("other", {self.S1: -60.0, self.S2: -70.0})
+
+        scores = self._scores(ukf.match_fingerprints({"home": home, "other": emptied}, {"other": other}))
+
+        room_score = other.get_match_score(self._state(ukf))
+        assert scores["other"] == pytest.approx(room_score * self.FACTOR)
+
+    def test_room_only_perfect_match_stays_above_min_match_score(self) -> None:
+        """A perfect room-only match still passes the switching threshold of 0.3."""
+        ukf = self._ukf({self.S1: -60.0, self.S2: -70.0})
+        home = self._area("home", {self.S1: -85.0, self.S2: -90.0}, button=True)
+        other = self._room("other", {self.S1: -60.0, self.S2: -70.0})
+
+        scores = self._scores(ukf.match_fingerprints({"home": home}, {"other": other}))
+
+        assert scores["other"] >= 0.3
+
+    def test_room_only_area_unchanged_without_button_training(self) -> None:
+        """Without button training the room-only score keeps its full weight."""
+        ukf = self._ukf({self.S1: -60.0, self.S2: -70.0})
+        home = self._area("home", {self.S1: -85.0, self.S2: -90.0}, button=False)
+        assert home.has_button_training is False
+        other = self._room("other", {self.S1: -60.0, self.S2: -70.0})
+
+        scores = self._scores(ukf.match_fingerprints({"home": home}, {"other": other}))
+
+        assert scores["other"] == pytest.approx(other.get_match_score(self._state(ukf)))
+
+    def test_room_only_area_with_single_mature_own_scanner_not_penalized(self) -> None:
+        """A mature own profile is not down-weighted when the filter sees only one of its scanners."""
+        ukf = self._ukf({self.S1: -60.0, self.S3: -70.0})
+        home = self._area("home", {self.S1: -85.0, self.S2: -90.0}, button=True)
+        own = self._area("other", {self.S1: -60.0, self.S2: -66.0}, button=True)
+        assert own.mature_absolute_count == 2
+        other = self._room("other", {self.S1: -60.0, self.S3: -70.0})
+
+        scores = self._scores(ukf.match_fingerprints({"home": home, "other": own}, {"other": other}))
+
+        assert scores["other"] == pytest.approx(other.get_match_score(self._state(ukf)))
+
+    def test_room_only_anchored_factor_within_interval(self) -> None:
+        """The factor keeps a perfect match above 0.3 and a neutral 0.5 below it."""
+        from custom_components.bermuda.const import UKF_ROOM_ONLY_ANCHORED_FACTOR  # noqa: PLC0415
+
+        assert 0.3 <= UKF_ROOM_ONLY_ANCHORED_FACTOR < 0.6
+
+    def test_unsupported_room_only_area_skipped_for_button_trained_device(self) -> None:
+        """A room score without supporting data is not a candidate for a button-trained device."""
+        ukf = self._ukf({self.S1: -60.0, self.S2: -70.0})
+        home = self._area("home", {self.S1: -85.0, self.S2: -90.0}, button=True)
+        unrelated = self._room("unrelated", {self.S3: -60.0, self.S4: -70.0})
+        assert unrelated.get_match_score_with_support(self._state(ukf)) == (0.5, 0)
+
+        scores = self._scores(ukf.match_fingerprints({"home": home}, {"unrelated": unrelated}))
+
+        assert "unrelated" not in scores
+
+    def test_unsupported_room_score_not_fused_for_button_trained_device(self) -> None:
+        """An unsupported room score is not mixed into the device score of a button-trained device."""
+        ukf = self._ukf({self.S1: -60.0, self.S2: -70.0})
+        home = self._area("home", {self.S1: -61.0, self.S2: -71.0}, button=True)
+        unrelated = self._room("home", {self.S3: -60.0, self.S4: -70.0})
+
+        fused = self._scores(ukf.match_fingerprints({"home": home}, {"home": unrelated}))
+        device_only = self._scores(ukf.match_fingerprints({"home": home}, None))
+
+        assert fused["home"] == pytest.approx(device_only["home"])
+
+    def test_unsupported_room_score_still_fused_without_button_training(self) -> None:
+        """Without button training the neutral room score is still fused as before."""
+        ukf = self._ukf({self.S1: -60.0, self.S2: -70.0})
+        home = self._area("home", {self.S1: -61.0, self.S2: -71.0}, button=False)
+        unrelated = self._room("home", {self.S3: -60.0, self.S4: -70.0})
+
+        fused = self._scores(ukf.match_fingerprints({"home": home}, {"home": unrelated}))
+        device_only = self._scores(ukf.match_fingerprints({"home": home}, None))
+
+        assert fused["home"] != pytest.approx(device_only["home"])
 
 
 class TestUKFNumericalStability:

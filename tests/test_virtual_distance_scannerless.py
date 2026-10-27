@@ -41,6 +41,7 @@ from custom_components.bermuda.const import (
 from custom_components.bermuda.coordinator import BermudaDataUpdateCoordinator
 from custom_components.bermuda.area_selection import AreaSelectionHandler
 from custom_components.bermuda.correlation.area_profile import AreaProfile
+from custom_components.bermuda.correlation.room_profile import RoomProfile
 from custom_components.bermuda.correlation.scanner_absolute import ScannerAbsoluteRssi
 from custom_components.bermuda.filters import UnscentedKalmanFilter
 from custom_components.bermuda.fmdn import FmdnIntegration
@@ -575,6 +576,36 @@ class TestScannerlessRoomScenarios:
         assert len(virtual_distances) == 0, "Rooms with scanners should not get virtual distances"
 
 
+def test_button_trained_scannerless_room_keeps_virtual_distance_for_anchored_device(
+    coordinator: BermudaDataUpdateCoordinator,
+) -> None:
+    """A button-trained scannerless room keeps its full virtual distance.
+
+    The filter sees only one of the two trained scanners, so the area is scored
+    by its room profile alone. Its own profile is mature, so the room-only
+    down-weighting for button-trained devices must not apply here.
+    """
+    device = _configure_device(coordinator, "AA:BB:CC:DD:EE:20")
+    room_area = "area-lagerraum"
+    trained = _create_button_trained_profile(room_area, ["scanner-1", "scanner-2"], [-75.0, -72.0])
+    assert trained.mature_absolute_count == 2
+    coordinator.correlations[device.address] = {room_area: trained}
+
+    room = RoomProfile(area_id=room_area)
+    for _ in range(50):
+        room.update({"scanner-1": -75.0, "scanner-3": -80.0})
+    coordinator.room_profiles[room_area] = room
+
+    rssi_readings = {"scanner-1": -75.0, "scanner-3": -80.0}
+    virtual_distances = coordinator.area_selection._get_virtual_distances_for_scannerless_rooms(device, rssi_readings)
+
+    ukf = coordinator.device_ukfs[device.address]
+    state = {addr: ukf._x[i] for i, addr in enumerate(ukf.scanner_addresses)}
+    max_radius = coordinator.options.get(CONF_MAX_RADIUS, DEFAULT_MAX_RADIUS)
+    expected = coordinator.area_selection._calculate_virtual_distance(room.get_match_score(state), max_radius)
+    assert virtual_distances[room_area] == pytest.approx(expected)
+
+
 class TestVirtualDistanceEdgeCases:
     """Edge case tests for virtual distance calculation."""
 
@@ -721,3 +752,38 @@ class TestAreaProfileHasButtonTraining:
 
         # Should be True because at least one is button-trained
         assert profile.has_button_training is True
+
+
+class TestUntrainedDeviceRouting:
+    """Routing to the fingerprint path depends on usable own profiles."""
+
+    @staticmethod
+    def _route(coordinator: BermudaDataUpdateCoordinator, profiles: dict[str, AreaProfile]) -> tuple[bool, bool]:
+        device = _configure_device(coordinator, "AA:BB:CC:DD:EE:30")
+        device.create_sensor = True
+        coordinator.correlations[device.address] = profiles
+        handler = coordinator.area_selection
+        ukf_mock = MagicMock(return_value=True)
+        min_distance_mock = MagicMock()
+        handler._refresh_area_by_ukf = ukf_mock  # type: ignore[method-assign]
+        handler._refresh_area_by_min_distance = min_distance_mock  # type: ignore[method-assign]
+        handler._determine_area_for_device(device, has_mature_profiles=False)
+        return ukf_mock.called, min_distance_mock.called
+
+    def test_device_with_only_empty_profiles_uses_min_distance(self, coordinator: BermudaDataUpdateCoordinator) -> None:
+        """Profiles emptied by a training reset do not route the device to the fingerprint path."""
+        ukf_called, min_distance_called = self._route(
+            coordinator, {"area-a": AreaProfile(area_id="area-a"), "area-b": AreaProfile(area_id="area-b")}
+        )
+
+        assert ukf_called is False
+        assert min_distance_called is True
+
+    def test_device_with_mature_own_profile_uses_fingerprints(self, coordinator: BermudaDataUpdateCoordinator) -> None:
+        """A mature own profile still routes the device to the fingerprint path."""
+        trained = _create_button_trained_profile("area-a", ["scanner-1", "scanner-2"], [-70.0, -75.0])
+
+        ukf_called, min_distance_called = self._route(coordinator, {"area-a": trained})
+
+        assert ukf_called is True
+        assert min_distance_called is False
