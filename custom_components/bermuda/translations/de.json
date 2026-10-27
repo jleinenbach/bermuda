@@ -205,5 +205,10 @@
       "title": "Einige Bluetooth-Proxys haben keinen BEREICH",
       "description": "Bermuda erfordert, dass alle Bluetooth-Proxys einen gültigen Bereich zugewiesen haben, um korrekt zu funktionieren. Weisen Sie einen Bereich zu, indem Sie die Geräteseite jedes Proxys besuchen (über `Geräte und Dienste`) und auf das Stiftsymbol oben rechts klicken, um einen Bereich zuzuweisen. Die folgenden Proxys haben keine Bereichszuweisung:\n\n{scannerlist}"
     }
+  },
+  "exceptions": {
+    "integration_not_loaded": {
+      "message": "Bermuda ist nicht geladen. Richten Sie die Integration ein oder laden Sie sie neu und versuchen Sie es erneut."
+    }
   }
 }

@@ -20,6 +20,7 @@ from homeassistant.helpers.event import async_call_later
 
 from .const import _LOGGER, DOMAIN, PLATFORMS, STARTUP_MESSAGE
 from .coordinator import BermudaDataUpdateCoordinator
+from .services import async_setup_services
 from .util import mac_math_offset, normalize_address
 
 if TYPE_CHECKING:
@@ -28,6 +29,7 @@ if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant
     from homeassistant.helpers.device_registry import DeviceEntry
+    from homeassistant.helpers.typing import ConfigType
 
 type BermudaConfigEntry = "ConfigEntry[BermudaData]"
 
@@ -45,6 +47,12 @@ CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 # created as adverts arrive, so the device list right after the first refresh is
 # empty or partial and every entity of a not-yet-seen device would look orphaned.
 ORPHAN_CLEANUP_DELAY = 300
+
+
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    """Register the integration services once, independent of config entries."""
+    async_setup_services(hass)
+    return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: BermudaConfigEntry) -> bool:
