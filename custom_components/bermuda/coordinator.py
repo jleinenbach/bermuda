@@ -1349,15 +1349,18 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                     area_id,
                 )
 
+        # Log the device name, not its address (AGENTS.md: redact PII in logs).
+        device = self.devices.get(device_address)
+        device_name = device.name if device is not None else "unknown device"
         _LOGGER.info(
-            "Reset all training data for device %s across %d areas",
-            device_address,
+            "Reset all training data for %s across %d areas",
+            device_name,
             area_count,
         )
         _LOGGER.info(
-            "Shared room profiles still contain what device %s learned; "
+            "Shared room profiles still contain what %s learned; "
             "use the service bermuda.reset_room_auto_learning to clean affected areas",
-            device_address,
+            device_name,
         )
 
         # Persist changes immediately
