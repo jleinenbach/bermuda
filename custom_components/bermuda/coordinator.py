@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta
+from functools import partial
 from typing import TYPE_CHECKING, Any, cast
 
 import aiofiles
@@ -303,29 +304,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
         self.devices: dict[str, BermudaDevice] = {}
         # self.updaters: dict[str, BermudaPBDUCoordinator] = {}
 
-        # Register the dump_devices service
-        hass.services.async_register(
-            DOMAIN,
-            "dump_devices",
-            self.service_dump_devices,
-            vol.Schema(
-                {
-                    vol.Optional("addresses"): cv.string,
-                    vol.Optional("configured_devices"): cv.boolean,
-                    vol.Optional("redact"): cv.boolean,
-                }
-            ),
-            SupportsResponse.ONLY,
-        )
-
-        # Register the reset_room_auto_learning service
-        hass.services.async_register(
-            DOMAIN,
-            "reset_room_auto_learning",
-            self.service_reset_room_auto_learning,
-            vol.Schema({vol.Required("area_id"): vol.All(cv.ensure_list, [cv.string])}),
-            SupportsResponse.OPTIONAL,
-        )
+        self._register_services()
 
         # Register for newly discovered / changed BLE devices
         if self.config_entry is not None:
@@ -1407,6 +1386,37 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             # Next periodic save or manual action may succeed
 
         return True
+
+    def _register_services(self) -> None:
+        """
+        Register the integration services and remove them when the entry unloads.
+
+        Bermuda allows a single config entry, so the services belong to it.
+        """
+        services: list[tuple[str, Any, vol.Schema, SupportsResponse]] = [
+            (
+                "dump_devices",
+                self.service_dump_devices,
+                vol.Schema(
+                    {
+                        vol.Optional("addresses"): cv.string,
+                        vol.Optional("configured_devices"): cv.boolean,
+                        vol.Optional("redact"): cv.boolean,
+                    }
+                ),
+                SupportsResponse.ONLY,
+            ),
+            (
+                "reset_room_auto_learning",
+                self.service_reset_room_auto_learning,
+                vol.Schema({vol.Required("area_id"): vol.All(cv.ensure_list, [cv.string])}),
+                SupportsResponse.OPTIONAL,
+            ),
+        ]
+        for name, handler, schema, supports_response in services:
+            self.hass.services.async_register(DOMAIN, name, handler, schema, supports_response)
+            if self.config_entry is not None:
+                self.config_entry.async_on_unload(partial(self.hass.services.async_remove, DOMAIN, name))
 
     async def async_reset_room_auto_learning(self, area_ids: list[str]) -> dict[str, int]:
         """
