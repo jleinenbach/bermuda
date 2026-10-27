@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import yaml
+from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers.json import json_bytes
 
 from custom_components.bermuda.area_selection import AreaTests
-from custom_components.bermuda.const import ADDR_TYPE_PRIVATE_BLE_DEVICE, CONF_DEVICES
+from custom_components.bermuda.const import ADDR_TYPE_PRIVATE_BLE_DEVICE, CONF_DEVICES, DOMAIN
 from custom_components.bermuda.services import (
     DUMP_DEVICE_SOFT_LIMIT,
     BermudaServiceHandler,
@@ -340,9 +343,61 @@ class TestResetRoomAutoLearningService:
 
 
 def test_every_translation_describes_every_service() -> None:
-    """Each translation describes exactly the services declared in services.yaml."""
+    """Each translation names and describes every declared service and each of its fields."""
     base = Path(__file__).parent.parent / "custom_components" / "bermuda"
-    declared = set(yaml.safe_load((base / "services.yaml").read_text(encoding="utf-8")))
+    declared = yaml.safe_load((base / "services.yaml").read_text(encoding="utf-8"))
     for translation in sorted((base / "translations").glob("*.json")):
         services = json.loads(translation.read_text(encoding="utf-8")).get("services", {})
-        assert set(services) == declared, translation.name
+        assert set(services) == set(declared), translation.name
+        for name, spec in declared.items():
+            entry = services[name]
+            assert entry.get("name") and entry.get("description"), (translation.name, name)
+            fields = entry.get("fields", {})
+            assert set(fields) == set(spec.get("fields", {})), (translation.name, name)
+            for field_name, field in fields.items():
+                assert field.get("name") and field.get("description"), (translation.name, name, field_name)
+
+
+async def _async_setup(hass: HomeAssistant) -> bool:
+    """Run the integration's async_setup, imported here so the module collects without it."""
+    from custom_components.bermuda import async_setup  # noqa: PLC0415
+
+    return await async_setup(hass, {})
+
+
+class TestServicesRegisteredInAsyncSetup:
+    """The services exist without a loaded entry and route to the loaded one."""
+
+    @pytest.mark.asyncio
+    async def test_services_registered_without_entry(self, hass: HomeAssistant) -> None:
+        """async_setup registers both services before any config entry is set up."""
+        assert await _async_setup(hass) is True
+
+        assert hass.services.has_service(DOMAIN, "dump_devices")
+        assert hass.services.has_service(DOMAIN, "reset_room_auto_learning")
+
+    @pytest.mark.asyncio
+    async def test_service_without_loaded_entry_raises_validation_error(self, hass: HomeAssistant) -> None:
+        """Without a loaded entry the service fails with a validation error."""
+        await _async_setup(hass)
+
+        with pytest.raises(ServiceValidationError):
+            await hass.services.async_call(
+                DOMAIN, "reset_room_auto_learning", {"area_id": ["buero"]}, blocking=True, return_response=True
+            )
+
+    @pytest.mark.asyncio
+    async def test_service_routes_to_loaded_entry(self, hass: HomeAssistant) -> None:
+        """With a loaded entry the call reaches its coordinator and returns its response."""
+        await _async_setup(hass)
+        coordinator = MagicMock(service_reset_room_auto_learning=AsyncMock(return_value={"buero": 2}))
+        entry = SimpleNamespace(runtime_data=SimpleNamespace(coordinator=coordinator))
+
+        with patch.object(hass.config_entries, "async_loaded_entries", return_value=[entry]):
+            response = await hass.services.async_call(
+                DOMAIN, "reset_room_auto_learning", {"area_id": "buero"}, blocking=True, return_response=True
+            )
+
+        assert response == {"buero": 2}
+        call = coordinator.service_reset_room_auto_learning.await_args.args[0]
+        assert call.data["area_id"] == ["buero"]

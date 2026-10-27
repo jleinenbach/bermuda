@@ -1033,22 +1033,4 @@ class TestResetRoomAutoLearning:
             assert await coordinator.async_reset_device_training("aa:bb:cc:dd:ee:ff") is True
 
         assert "bermuda.reset_room_auto_learning" in caplog.text
-
-
-class TestServiceRegistration:
-    """Tests for registering and removing the integration services."""
-
-    async def test_unload_removes_services(self, hass: HomeAssistant) -> None:
-        """Both services are registered and removed again when the entry unloads."""
-        coordinator = _make_coordinator(hass)
-        unload_callbacks: list[Any] = []
-        coordinator.config_entry = SimpleNamespace(async_on_unload=unload_callbacks.append)
-
-        coordinator._register_services()
-
-        assert hass.services.has_service(DOMAIN, "dump_devices")
-        assert hass.services.has_service(DOMAIN, "reset_room_auto_learning")
-        for callback in unload_callbacks:
-            callback()
-        assert not hass.services.has_service(DOMAIN, "dump_devices")
-        assert not hass.services.has_service(DOMAIN, "reset_room_auto_learning")
+        assert "aa:bb:cc:dd:ee:ff" not in caplog.text.lower()
