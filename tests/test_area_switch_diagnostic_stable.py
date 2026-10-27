@@ -95,6 +95,7 @@ VOLATILE_KEYS = {
     "winner_advert_age_s",
     "top_candidates",
     "coverage_penalty",
+    "ukf_anchor_score",
 }
 
 PROBE_ADDRESS = "aa:bb:cc:dd:ee:21"
@@ -171,6 +172,7 @@ def _full_tests(**overrides: Any) -> AreaTests:
         "offline_scanner_addrs": "aa:bb:cc:dd:ee:99",
         "coverage_penalty_applied": 0.2,
         "auto_learning_blocked_offline": True,
+        "ukf_anchor_score": 0.71,
     }
     values.update(overrides)
     return AreaTests(**values)
@@ -184,6 +186,7 @@ def _volatile_full_tests() -> AreaTests:
         ukf_current_area_score=0.61,
         top_candidates=[{"area": "buero", "score": 0.64, "type": "ukf"}, {"area": "flur", "score": 0.2}],
         coverage_penalty_applied=0.4,
+        ukf_anchor_score=0.38,
         nearest_scanner_distance=2.7,
         virtual_distance=3.25,
         distance=(1.9, 3.1),
