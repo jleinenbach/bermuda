@@ -293,7 +293,7 @@ If the device still behaves incorrectly after resetting, the issue is likely not
 
 Shared room profiles learn automatically from devices whose room Bermuda is confident about. If a device was assigned to the wrong room for a long time (for example a key fob in a car parked next to the house), the shared profile of that room may have learned the wrong pattern, and "Reset Training" of the device does not remove it.
 
-The service `bermuda.reset_room_auto_learning` removes the automatically learned data from the shared room profiles of the areas you choose. Button training of these rooms stays. A room profile without any remaining data is removed and will be relearned.
+Fix the cause first: train or reset the device that was placed wrongly (or move it), otherwise the room profile learns the same wrong pattern again. Then the service `bermuda.reset_room_auto_learning` removes the automatically learned data from the shared room profiles of the areas you choose. Button training of these rooms stays. A room profile without any remaining data is removed and will be relearned.
 
 ```yaml
 action: bermuda.reset_room_auto_learning

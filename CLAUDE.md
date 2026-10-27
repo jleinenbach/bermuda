@@ -4593,9 +4593,10 @@ Day 1: Scannerless room works immediately!
 **Key Code Change:**
 ```python
 # NEW - Allow UKF if device has its own trained profiles
-device_has_correlations = (
-    device.address in self.correlations
-    and len(self.correlations[device.address]) > 0
+# (only mature ones: a training reset keeps empty profile keys)
+device_has_correlations = any(
+    profile.mature_absolute_count > 0
+    for profile in self.correlations.get(device.address, {}).values()
 )
 if (has_mature_profiles or device_has_correlations) and self._refresh_area_by_ukf(device):
     continue
@@ -7408,7 +7409,7 @@ An earlier version returned `False` as soon as the device had any own AreaProfil
 
 ### 83. A Neutral Score Is Not Evidence, and a Trained Anchor Outranks Room-Only Matches
 
-`RoomProfile.get_match_score` returns 0.5 when no mature scanner pair overlaps the readings. That value carries no data, yet it passed the switching threshold `UKF_MIN_MATCH_SCORE` (0.3) and the competitor threshold `ROOM_AMBIGUITY_MIN_SCORE` (0.4): an area with an empty room profile ("Praxis 0.50") could beat the area a key fob was trained in. Use `get_match_score_with_support` and treat a support of 0 as "no score" wherever the score competes.
+`RoomProfile.get_match_score` returns 0.5 when no mature scanner pair overlaps the readings. That value carries no data, yet it passed the switching threshold `UKF_MIN_MATCH_SCORE` (0.3) and the competitor threshold `ROOM_AMBIGUITY_MIN_SCORE` (0.4): an area with an empty room profile ("Praxis 0.50") could beat the area a key fob was trained in. Use `get_match_score_with_support` and treat a support of 0 as "no score" where it competes against trusted data: for a competitor in the ambiguity check (the target keeps its score, dropping it would weaken the check), and in `match_fingerprints` for button-trained devices. For devices without button training the neutral score still takes part, as before.
 
 For a device trained with the button, an area without a mature own profile is only known from the shared room profile. `match_fingerprints` scores such areas with `UKF_ROOM_ONLY_ANCHORED_FACTOR` (0.55): a perfect room match (1.0) still passes `UKF_MIN_MATCH_SCORE` (0.3), a neutral 0.5 does not. "No mature own profile" means `mature_absolute_count == 0` or no profile at all; a profile key left over after a reset does not count, and `device_score is None` is not the condition (that also happens when the filter sees only one scanner of a trained area, and would cost scannerless rooms their virtual distance).
 
