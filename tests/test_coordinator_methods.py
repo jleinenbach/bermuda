@@ -1025,12 +1025,19 @@ class TestResetRoomAutoLearning:
     async def test_device_reset_points_to_room_profile_reset(
         self, hass: HomeAssistant, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """The device training reset tells the user how to clean the shared room profiles."""
+        """The device reset hints at the room profile reset and logs no form of the address."""
         coordinator = _make_coordinator(hass)
-        coordinator.correlations["aa:bb:cc:dd:ee:ff"] = {"buero": AreaProfile(area_id="buero")}
+        device = coordinator._get_or_create_device("aa:bb:cc:dd:ee:ff")
+        assert "aa_bb_cc_dd_ee_ff" in device.name  # default name is built from the address
+        coordinator.correlations[device.address] = {"buero": AreaProfile(area_id="buero")}
+        coordinator.correlation_store.async_save = AsyncMock(side_effect=OSError("disk full"))
 
+        caplog.clear()
         with caplog.at_level(logging.INFO, logger="custom_components.bermuda"):
-            assert await coordinator.async_reset_device_training("aa:bb:cc:dd:ee:ff") is True
+            assert await coordinator.async_reset_device_training(device.address) is True
 
-        assert "bermuda.reset_room_auto_learning" in caplog.text
-        assert "aa:bb:cc:dd:ee:ff" not in caplog.text.lower()
+        records = [r for r in caplog.records if r.levelno >= logging.INFO]
+        text = "\n".join(r.getMessage() for r in records).lower()
+        assert "bermuda.reset_room_auto_learning" in text
+        for form in ("aa:bb:cc:dd:ee:ff", "aa_bb_cc_dd_ee_ff", "aabbccddeeff"):
+            assert form not in text

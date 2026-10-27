@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import voluptuous as vol
 import yaml
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ServiceValidationError
@@ -351,11 +353,27 @@ def test_every_translation_describes_every_service() -> None:
         assert set(services) == set(declared), translation.name
         for name, spec in declared.items():
             entry = services[name]
-            assert entry.get("name") and entry.get("description"), (translation.name, name)
+            assert _text(entry, "name") and _text(entry, "description"), (translation.name, name)
             fields = entry.get("fields", {})
             assert set(fields) == set(spec.get("fields", {})), (translation.name, name)
             for field_name, field in fields.items():
-                assert field.get("name") and field.get("description"), (translation.name, name, field_name)
+                assert _text(field, "name") and _text(field, "description"), (translation.name, name, field_name)
+
+
+def test_every_raised_translation_key_has_an_english_message() -> None:
+    """Each translation_key raised in services.py has a non-empty English message."""
+    base = Path(__file__).parent.parent / "custom_components" / "bermuda"
+    keys = set(re.findall(r'translation_key="([a-z_]+)"', (base / "services.py").read_text(encoding="utf-8")))
+    assert keys, "no translation_key found in services.py"
+    exceptions = json.loads((base / "translations" / "en.json").read_text(encoding="utf-8")).get("exceptions", {})
+    for key in keys:
+        assert _text(exceptions.get(key, {}), "message"), key
+
+
+def _text(entry: dict[str, object], key: str) -> bool:
+    """Return whether entry[key] is a string with visible text."""
+    value = entry.get(key)
+    return isinstance(value, str) and bool(value.strip())
 
 
 async def _async_setup(hass: HomeAssistant) -> bool:
@@ -385,6 +403,36 @@ class TestServicesRegisteredInAsyncSetup:
             await hass.services.async_call(
                 DOMAIN, "reset_room_auto_learning", {"area_id": ["buero"]}, blocking=True, return_response=True
             )
+
+    @pytest.mark.asyncio
+    async def test_dump_devices_routes_to_loaded_entry(self, hass: HomeAssistant) -> None:
+        """dump_devices reaches the loaded entry's coordinator and keeps its schema."""
+        await _async_setup(hass)
+        coordinator = MagicMock(service_dump_devices=AsyncMock(return_value={"aa": {"name": "x"}}))
+        entry = SimpleNamespace(runtime_data=SimpleNamespace(coordinator=coordinator))
+
+        with patch.object(hass.config_entries, "async_loaded_entries", return_value=[entry]):
+            response = await hass.services.async_call(
+                DOMAIN, "dump_devices", {"redact": True}, blocking=True, return_response=True
+            )
+            with pytest.raises(vol.Invalid):
+                await hass.services.async_call(
+                    DOMAIN, "dump_devices", {"unknown": 1}, blocking=True, return_response=True
+                )
+
+        assert response == {"aa": {"name": "x"}}
+        assert coordinator.service_dump_devices.await_args.args[0].data == {"redact": True}
+
+    @pytest.mark.asyncio
+    async def test_validation_error_uses_translated_key(self, hass: HomeAssistant) -> None:
+        """The validation error without a loaded entry carries the integration's translation key."""
+        await _async_setup(hass)
+
+        with pytest.raises(ServiceValidationError) as err:
+            await hass.services.async_call(DOMAIN, "dump_devices", {}, blocking=True, return_response=True)
+
+        assert err.value.translation_domain == DOMAIN
+        assert err.value.translation_key == "integration_not_loaded"
 
     @pytest.mark.asyncio
     async def test_service_routes_to_loaded_entry(self, hass: HomeAssistant) -> None:
