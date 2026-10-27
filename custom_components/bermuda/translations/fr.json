@@ -110,5 +110,35 @@
         "name": "Scanner en ligne"
       }
     }
+  },
+  "services": {
+    "dump_devices": {
+      "name": "Exporter les appareils",
+      "description": "Renvoie la structure de données interne, éventuellement limitée aux adresses indiquées. Contient le RSSI et d'autres informations de chaque scanner.",
+      "fields": {
+        "addresses": {
+          "name": "Adresses",
+          "description": "Liste facultative d'adresses MAC séparées par des espaces. Si vide, toutes les adresses sont renvoyées."
+        },
+        "configured_devices": {
+          "name": "Appareils configurés",
+          "description": "Cocher pour n'inclure dans la sortie que les scanners et les appareils configurés."
+        },
+        "redact": {
+          "name": "Masquer",
+          "description": "Mettre à TRUE pour masquer les adresses MAC dans la sortie, pour la confidentialité."
+        }
+      }
+    },
+    "reset_room_auto_learning": {
+      "name": "Réinitialiser l'apprentissage automatique d'une pièce",
+      "description": "Supprime les données apprises automatiquement des profils de pièce partagés des zones choisies. L'entraînement par bouton est conservé. À utiliser lorsqu'un appareil a appris un mauvais emplacement à une pièce.",
+      "fields": {
+        "area_id": {
+          "name": "Zones",
+          "description": "Zones dont les profils de pièce partagés doivent être nettoyés."
+        }
+      }
+    }
   }
 }

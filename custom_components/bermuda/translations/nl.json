@@ -183,6 +183,16 @@
           "description": "Stel deze waarde in op `TRUE` om ervoor te zorgen dat MAC-adressen in de uitvoer worden onleesbaar gemaakt vanwege de privacy."
         }
       }
+    },
+    "reset_room_auto_learning": {
+      "name": "Automatisch leren van ruimte resetten",
+      "description": "Verwijdert de automatisch geleerde gegevens uit de gedeelde ruimteprofielen van de gekozen gebieden. Training met de knop blijft behouden. Gebruik dit wanneer een apparaat een ruimte een verkeerde plaats heeft geleerd.",
+      "fields": {
+        "area_id": {
+          "name": "Gebieden",
+          "description": "Gebieden waarvan de gedeelde ruimteprofielen moeten worden opgeschoond."
+        }
+      }
     }
   }
 }

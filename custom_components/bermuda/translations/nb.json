@@ -110,5 +110,35 @@
         "name": "Skanner tilkoblet"
       }
     }
+  },
+  "services": {
+    "dump_devices": {
+      "name": "Eksporter enheter",
+      "description": "Returnerer den interne datastrukturen, eventuelt begrenset til de oppgitte adressene. Inneholder RSSI og annen informasjon fra hver skanner.",
+      "fields": {
+        "addresses": {
+          "name": "Adresser",
+          "description": "En valgfri mellomromsseparert liste med MAC-adresser. Hvis tom, returneres alle adresser."
+        },
+        "configured_devices": {
+          "name": "Konfigurerte enheter",
+          "description": "Velg for å bare ta med skannere og konfigurerte enheter i utdataene."
+        },
+        "redact": {
+          "name": "Skjul",
+          "description": "Sett til TRUE for å skjule MAC-adresser i utdataene av personvernhensyn."
+        }
+      }
+    },
+    "reset_room_auto_learning": {
+      "name": "Tilbakestill automatisk læring for rom",
+      "description": "Fjerner automatisk lærte data fra de delte romprofilene for de valgte områdene. Trening med knappen beholdes. Bruk dette når en enhet har lært et rom feil plassering.",
+      "fields": {
+        "area_id": {
+          "name": "Områder",
+          "description": "Områder der de delte romprofilene skal ryddes."
+        }
+      }
+    }
   }
 }
