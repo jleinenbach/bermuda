@@ -187,6 +187,15 @@ UKF_MIN_MATCH_SCORE: Final = 0.3  # Minimum match score (0-1) to consider a fing
 # This keeps the device "sticky" in scannerless rooms even with noisy signals.
 UKF_RETENTION_THRESHOLD: Final = 0.15  # Much lower threshold when retaining current area
 UKF_MIN_SCANNERS: Final = 2  # Minimum scanners needed for UKF to make a decision
+# Weight of a room-only area for a device that was trained with the button.
+# Such a device has a trusted anchor, so an area where it has no mature own
+# profile is only known from the shared room profile and must not compete at
+# full weight. The value lies in [UKF_MIN_MATCH_SCORE, 2 * UKF_MIN_MATCH_SCORE):
+# a perfect room match (1.0) still passes the switching threshold, a neutral
+# 0.5 does not. Chosen by replaying the stored learning data (19 button-trained
+# devices): every factor below 1.0 raised the own area to first place from 10
+# to 14 devices; 0.55 kept the most room-only detections in other areas.
+UKF_ROOM_ONLY_ANCHORED_FACTOR: Final = 0.55
 
 # FIX: Sticky Virtual Rooms - Prevent flickering for scannerless rooms
 # When device is already in a UKF-detected area, add bonus to prevent marginal switches

@@ -39,6 +39,8 @@ import math
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from custom_components.bermuda.const import UKF_ROOM_ONLY_ANCHORED_FACTOR
+
 from .base import SignalFilter
 from .const import (
     DEFAULT_UPDATE_DT,
@@ -736,6 +738,12 @@ class UnscentedKalmanFilter(SignalFilter):
         The penalty is RSSI-weighted: losing a strong scanner (close proximity) penalizes
         more than losing a weak scanner (distant/marginal).
 
+        For a device that was trained with the button in any area, an area without
+        a mature own profile is scored by the room profile alone and down-weighted
+        by UKF_ROOM_ONLY_ANCHORED_FACTOR. Room scores without supporting scanner
+        pairs (the neutral 0.5) are ignored for such a device, both as room-only
+        candidates and in the fusion with the device score.
+
         Args:
         ----
             area_profiles: Dict of area_id -> AreaProfile with device-specific fingerprints
@@ -760,6 +768,8 @@ class UnscentedKalmanFilter(SignalFilter):
         for i, addr in enumerate(self.scanner_addresses):
             if i < len(self._x):
                 current_readings[addr] = self._x[i]
+
+        device_is_anchored = any(p.has_button_training for p in area_profiles.values())
 
         for area_id in all_area_ids:
             device_score: float | None = None
@@ -869,7 +879,10 @@ class UnscentedKalmanFilter(SignalFilter):
             # Room-level matching (delta patterns)
             if room_profiles and area_id in room_profiles and len(current_readings) >= 2:
                 room_profile = room_profiles[area_id]
-                room_score = room_profile.get_match_score(current_readings)
+                room_score, room_support = room_profile.get_match_score_with_support(current_readings)
+                if device_is_anchored and room_support == 0:
+                    # A neutral score without data must not compete against a trained anchor.
+                    room_score = None
 
             # Combine scores with weighted fusion
             if device_score is not None and room_score is not None:
@@ -886,7 +899,16 @@ class UnscentedKalmanFilter(SignalFilter):
             elif room_score is not None:
                 # Room-only: use as fallback for new devices
                 combined_score = room_score
-                d_squared = -2 * math.log(max(room_score, 0.001))
+                own_profile = area_profiles.get(area_id)
+                if device_is_anchored and (own_profile is None or own_profile.mature_absolute_count == 0):
+                    combined_score = room_score * UKF_ROOM_ONLY_ANCHORED_FACTOR
+                    _LOGGER.debug(
+                        "UKF room-only area=%s for button-trained device: score %.4f -> %.4f",
+                        area_id,
+                        room_score,
+                        combined_score,
+                    )
+                d_squared = -2 * math.log(max(combined_score, 0.001))
             else:
                 continue  # No data for this area
 
