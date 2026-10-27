@@ -1349,18 +1349,12 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
                     area_id,
                 )
 
-        # Log the device name, not its address (AGENTS.md: redact PII in logs).
-        device = self.devices.get(device_address)
-        device_name = device.name if device is not None else "unknown device"
+        # No device identity in these records: the address, and the default
+        # device name built from it, are PII (AGENTS.md: redact PII in logs).
+        _LOGGER.info("Reset all training data of a device across %d areas", area_count)
         _LOGGER.info(
-            "Reset all training data for %s across %d areas",
-            device_name,
-            area_count,
-        )
-        _LOGGER.info(
-            "Shared room profiles still contain what %s learned; "
-            "use the service bermuda.reset_room_auto_learning to clean affected areas",
-            device_name,
+            "Shared room profiles still contain what this device learned; "
+            "use the service bermuda.reset_room_auto_learning to clean affected areas"
         )
 
         # Persist changes immediately
@@ -1373,9 +1367,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator[Any]):
             # User will see the reset immediately, but if HA restarts before
             # a successful save, the old training data would be restored.
             _LOGGER.exception(
-                "Failed to persist training reset for device %s. "
-                "Reset is active in memory but may not survive restart.",
-                device_address,
+                "Failed to persist a device training reset. Reset is active in memory but may not survive restart."
             )
             # Still return True - the in-memory reset succeeded
             # Next periodic save or manual action may succeed
