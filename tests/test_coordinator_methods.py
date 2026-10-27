@@ -949,6 +949,30 @@ class TestResetRoomAutoLearning:
         assert room.has_button_training is True
         assert all(pair.auto_sample_count == 0 for pair in room._scanner_pairs.values())
 
+    async def test_duplicate_area_ids_keep_count_and_save_for_removed_profile(self, hass: HomeAssistant) -> None:
+        """A repeated area id does not overwrite the count of a removed profile with 0."""
+        coordinator = _make_coordinator(hass)
+        coordinator.room_profiles["kueche"] = _room("kueche", button=False)
+
+        result = await coordinator.async_reset_room_auto_learning(["kueche", "kueche"])
+
+        assert result == {"kueche": 90}
+        coordinator.correlation_store.async_save.assert_awaited_once_with(
+            coordinator.correlations, coordinator.room_profiles
+        )
+
+    async def test_duplicate_area_ids_keep_count_and_save_for_button_profile(self, hass: HomeAssistant) -> None:
+        """A repeated area id does not overwrite the count of a kept button profile with 0."""
+        coordinator = _make_coordinator(hass)
+        coordinator.room_profiles["buero"] = _room("buero", button=True)
+
+        result = await coordinator.async_reset_room_auto_learning(["buero", "buero"])
+
+        assert result == {"buero": 90}
+        coordinator.correlation_store.async_save.assert_awaited_once_with(
+            coordinator.correlations, coordinator.room_profiles
+        )
+
     async def test_unknown_area_reports_zero_without_saving(self, hass: HomeAssistant) -> None:
         """An unknown area is no error, reports 0 and does not write the store."""
         coordinator = _make_coordinator(hass)
