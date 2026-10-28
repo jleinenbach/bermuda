@@ -11,7 +11,7 @@ from homeassistant.const import Platform
 
 from .log_spam_less import BermudaLogSpamLess
 
-NAME = "Bermuda BLE Trilateration"
+NAME = "Bermuda BLE Trilateration + Google Find My (FMDN)"
 DOMAIN = "bermuda"
 DOMAIN_DATA = f"{DOMAIN}_data"
 # Inter-Integration constants

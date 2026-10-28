@@ -1,6 +1,6 @@
 # Bermuda Troubleshooting Guide
 
-This document covers common issues, warnings, and their solutions when using the Bermuda BLE Trilateration integration.
+This document covers common issues, warnings, and their solutions when using the Bermuda BLE Trilateration + Google Find My (FMDN) integration.
 
 ---
 

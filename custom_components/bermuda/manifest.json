@@ -1,6 +1,6 @@
 {
   "domain": "bermuda",
-  "name": "Bermuda BLE Trilateration",
+  "name": "Bermuda BLE Trilateration + Google Find My (FMDN)",
   "after_dependencies": [
     "googlefindmy"
   ],

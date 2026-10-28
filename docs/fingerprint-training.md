@@ -112,7 +112,7 @@ This example trains a phone for the kitchen.
 ### 1. Go to the device page
 
 1. Open **Settings > Devices & Services**.
-2. Find the **Bermuda BLE Trilateration** integration card.
+2. Find the **Bermuda BLE Trilateration + Google Find My (FMDN)** integration card.
 3. Click on the device count (e.g., "5 devices") to see the list of tracked devices.
 4. Click on the device you want to train.
 
@@ -274,7 +274,7 @@ After resetting, the device falls back to:
 ### 1. Go to the device page
 
 1. Open **Settings > Devices & Services**.
-2. Find the **Bermuda BLE Trilateration** integration card.
+2. Find the **Bermuda BLE Trilateration + Google Find My (FMDN)** integration card.
 3. Click on the device count, then click the device you want to reset.
 
 ### 2. Press "Reset Training"
