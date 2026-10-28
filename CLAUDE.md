@@ -89,6 +89,9 @@ coordinator.py (1487 lines, was 4274) - 65% reduction!
   - `async_redact_data()` - redaction for dumps and diagnostics: list refreshed on the loop in
     batches and copied; table build and data walk run in the executor on that snapshot, so the
     prune routine can clear `self.redactions` meanwhile. Never redact large data on the loop.
+  - The async list update builds the new list on a local copy and assigns `self.redactions`
+    in one step after its last suspension, so a prune between two batches cannot drop entries
+    (guard: `test_prune_between_batches_keeps_every_entry`).
   - `redaction_list_update()` - Redaction cache management
   - Dict keys are redacted only through `_redact_mapping`, which suffixes colliding keys with
     `~n`; the guard is `test_redact_structure_preserved` in `tests/test_redact_nonblocking.py`.
