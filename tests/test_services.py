@@ -291,14 +291,15 @@ class TestBermudaServiceHandler:
         assert "scanner:address" in result
 
     @pytest.mark.asyncio
-    async def test_async_dump_devices_with_redaction(self) -> None:
-        """Test async_dump_devices with redaction enabled."""
+    async def test_async_dump_devices_with_redaction(self, hass: HomeAssistant) -> None:
+        """Test async_dump_devices with redaction enabled (redaction runs in the executor)."""
         mock_device = MagicMock()
         mock_device.to_dict = MagicMock(return_value={"mac": "aa:bb:cc:dd:ee:ff"})
 
         handler = self._create_handler(
             devices={"aa:bb:cc:dd:ee:ff": mock_device},
         )
+        handler.coordinator.hass = hass
 
         mock_call = MagicMock()
         mock_call.data = {"redact": True}

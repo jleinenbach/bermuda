@@ -35,7 +35,7 @@ class TestAsyncGetConfigEntryDiagnostics:
 
         # Mock service handler
         mock_service_handler = MagicMock()
-        mock_service_handler.redact_data = MagicMock(side_effect=lambda x: f"redacted_{x}")
+        mock_service_handler.async_redact_data = AsyncMock(side_effect=lambda x: x)
         mock_coordinator.service_handler = mock_service_handler
 
         # Mock _manager for BT diagnostics
@@ -79,7 +79,7 @@ class TestAsyncGetConfigEntryDiagnostics:
 
         # Mock service handler
         mock_coordinator.service_handler = MagicMock()
-        mock_coordinator.service_handler.redact_data = MagicMock(side_effect=lambda x: x)
+        mock_coordinator.service_handler.async_redact_data = AsyncMock(side_effect=lambda x: x)
 
         # Mock _manager
         mock_coordinator._manager = MagicMock()
@@ -117,9 +117,9 @@ class TestAsyncGetConfigEntryDiagnostics:
         mock_coordinator.fmdn.manager = MagicMock()
         mock_coordinator.fmdn.manager.get_diagnostics_no_redactions = MagicMock(return_value={})
 
-        # Mock service handler - verify redact_data is called
+        # Mock service handler - verify the IRK data goes through redaction
         mock_coordinator.service_handler = MagicMock()
-        mock_coordinator.service_handler.redact_data = MagicMock(return_value={"redacted": True})
+        mock_coordinator.service_handler.async_redact_data = AsyncMock(return_value={"redacted": True})
 
         # Mock _manager
         mock_coordinator._manager = MagicMock()
@@ -134,12 +134,15 @@ class TestAsyncGetConfigEntryDiagnostics:
 
         result = await async_get_config_entry_diagnostics(hass, mock_entry)
 
-        # Verify redact_data was called with IRK manager data
-        mock_coordinator.service_handler.redact_data.assert_any_call({"irk_keys": "sensitive_data"})
+        # The IRK manager data is part of the one dict that is redacted
+        mock_coordinator.service_handler.async_redact_data.assert_awaited_once()
+        redacted_input = mock_coordinator.service_handler.async_redact_data.await_args.args[0]
+        assert redacted_input["irk_manager"] == {"irk_keys": "sensitive_data"}
+        assert result == {"redacted": True}
 
     @pytest.mark.asyncio
-    async def test_calls_service_dump_devices_with_redact(self, hass: HomeAssistant) -> None:
-        """Test that service_dump_devices is called with redact=True."""
+    async def test_dumps_devices_raw_and_redacts_whole_result(self, hass: HomeAssistant) -> None:
+        """The device dump is taken unredacted and redacted once with the rest of the result."""
         mock_coordinator = MagicMock()
         mock_coordinator.count_active_devices = MagicMock(return_value=0)
         mock_coordinator.count_active_scanners = MagicMock(return_value=0)
@@ -153,7 +156,7 @@ class TestAsyncGetConfigEntryDiagnostics:
         mock_coordinator.fmdn.manager = MagicMock()
         mock_coordinator.fmdn.manager.get_diagnostics_no_redactions = MagicMock(return_value={})
         mock_coordinator.service_handler = MagicMock()
-        mock_coordinator.service_handler.redact_data = MagicMock(side_effect=lambda x: x)
+        mock_coordinator.service_handler.async_redact_data = AsyncMock(side_effect=lambda x: x)
         mock_coordinator._manager = MagicMock()
         mock_coordinator._manager.async_diagnostics = AsyncMock(return_value={})
 
@@ -168,9 +171,11 @@ class TestAsyncGetConfigEntryDiagnostics:
 
         # Verify service_dump_devices was called
         mock_coordinator.service_dump_devices.assert_called_once()
-        # Check that the call had redact=True
+        # The dump itself is not redacted; the whole result is, in one call
         call_args = mock_coordinator.service_dump_devices.call_args[0][0]
-        assert call_args.data.get("redact") is True
+        assert call_args.data.get("redact") is False
+        mock_coordinator.service_handler.async_redact_data.assert_awaited_once()
+        assert result["devices"] == {"dump": "data"}
 
 
 class TestDiagnosticsIntegration:

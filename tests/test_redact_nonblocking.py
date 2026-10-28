@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import os
 import random
 import re
 import threading
+import time
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -133,6 +135,30 @@ async def run_with_max_lag(coro: Any) -> tuple[Any, float]:
     return result, lag
 
 
+async def _reference_spin_lag(seconds: float) -> float:
+    """Largest loop delay while a pure-Python thread computes for ``seconds``."""
+
+    def spin() -> None:
+        end = time.perf_counter() + seconds
+        while time.perf_counter() < end:
+            sum(range(1000))
+
+    loop = asyncio.get_running_loop()
+    _result, lag = await run_with_max_lag(loop.run_in_executor(None, spin))
+    return lag
+
+
+async def lag_limit(floor: float) -> float:
+    """
+    Allowed loop delay: ``floor`` or 1.5 times that of a pure-Python thread.
+
+    On a loaded host any computing worker thread delays the loop (GIL handoff
+    every 5 ms, scheduling); a fixed limit would measure the machine. The old
+    code blocks for seconds and stays far above this limit.
+    """
+    return max(floor, 1.5 * await _reference_spin_lag(1.0))
+
+
 def shape(value: Any) -> Any:
     """Container structure without the leaf values: key counts and lengths, recursively."""
     if isinstance(value, dict):
@@ -156,8 +182,9 @@ async def test_dump_devices_redact_nonblocking(hass: HomeAssistant) -> None:
     call.data = {"redact": True}
 
     result, lag = await run_with_max_lag(handler.async_dump_devices(call))
+    limit = await lag_limit(MAX_LOOP_LAG_S)
 
-    assert lag <= MAX_LOOP_LAG_S, f"event loop blocked for {lag:.3f} s"
+    assert lag <= limit, f"event loop blocked for {lag:.3f} s (limit {limit:.3f} s)"
     assert not raw_forms_pattern(attrappe).search(json_bytes(result).decode())
 
 
@@ -292,8 +319,9 @@ async def test_diagnostics_redact_nonblocking(hass: HomeAssistant) -> None:
     entry.runtime_data.coordinator = coord
 
     result, lag = await run_with_max_lag(async_get_config_entry_diagnostics(hass, entry))
+    limit = await lag_limit(MAX_LOOP_LAG_S)
 
-    assert lag <= MAX_LOOP_LAG_S, f"event loop blocked for {lag:.3f} s"
+    assert lag <= limit, f"event loop blocked for {lag:.3f} s (limit {limit:.3f} s)"
     assert not raw_forms_pattern(attrappe).search(json_bytes(result).decode())
 
 
@@ -353,3 +381,83 @@ def test_redact_uuid_inside_manufacturer_hex() -> None:
     result = handler.redact_data({"manufacturer_data": f"4c000215{uuid}0001000200c5"})
 
     assert uuid not in result["manufacturer_data"].lower()
+
+
+@pytest.mark.skipif(os.environ.get("BERMUDA_BENCH") != "1", reason="benchmark, set BERMUDA_BENCH=1")
+@pytest.mark.asyncio
+async def test_full_size_dump_does_not_block_loop(hass: HomeAssistant) -> None:
+    """
+    Z1 at production size: an 8 to 9.5 MB dump with about 25 000 keys.
+
+    A fixed millisecond limit would measure the machine: on a loaded host a
+    pure-Python worker thread alone delays the loop by 50 to 200 ms (GIL
+    handoff, scheduling). The limit is therefore the larger of 100 ms and
+    1.5 times the delay of such a reference thread in the same run.
+    """
+    attrappe = build_attrappe(5000, 21, seed=5)
+    size_mb = len(json_bytes(attrappe.devices)) / 1e6
+    assert 8.0 <= size_mb <= 9.5, f"dummy has {size_mb:.2f} MB"
+    handler = make_handler(hass, attrappe)
+
+    start = time.perf_counter()
+    handler.redaction_list_update()
+    list_update = time.perf_counter() - start
+
+    reference = await _reference_spin_lag(3.0)
+    handler.redactions.clear()  # the measured call below is a real first call
+    start = time.perf_counter()
+    result, lag = await run_with_max_lag(handler.async_redact_data(attrappe.devices))
+    total = time.perf_counter() - start
+    limit = max(0.100, 1.5 * reference)
+    print(  # noqa: T201
+        f"size {size_mb:.2f} MB, keys {len(handler.redactions)}, list_update {list_update:.3f} s, "
+        f"max_lag {lag:.3f} s, reference {reference:.3f} s, limit {limit:.3f} s, total {total:.2f} s"
+    )
+
+    assert lag <= limit
+    assert total <= 30.0
+    # One regex over 30 000 alternatives would not finish in time (the very
+    # problem fixed here); a sample of plain substring checks is enough.
+    rendered = json_bytes(result).decode().lower()
+    sample = attrappe.device_macs[::50] + attrappe.scanners
+    assert not [form for mac in sample for form in _forms(mac) if form.lower() in rendered]
+
+
+def test_trie_pattern_skips_empty_key() -> None:
+    """An empty key (e.g. an empty configured device) never becomes a match-all pattern."""
+    assert services._trie_pattern([""]) is None
+    pattern = services._trie_pattern(["", "ab"])
+    assert pattern is not None
+    assert re.fullmatch(pattern, "ab")
+    assert not re.fullmatch(pattern, "")
+
+
+def test_copy_retries_then_raises() -> None:
+    """A copy that hits a concurrent change is retried, and a lasting failure surfaces."""
+    calls: list[int] = []
+
+    def flaky(container: list[int]) -> tuple[int, ...]:
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("dictionary changed size during iteration")
+        return tuple(container)
+
+    assert services._copy(flaky, [1, 2]) == (1, 2)
+    assert len(calls) == 2
+
+    def broken(_container: list[int]) -> tuple[int, ...]:
+        raise RuntimeError("dictionary changed size during iteration")
+
+    with pytest.raises(RuntimeError):
+        services._copy(broken, [1])
+
+
+@pytest.mark.asyncio
+async def test_list_update_in_batches_covers_every_device(hass: HomeAssistant) -> None:
+    """More devices than one batch: the async list update still names every device."""
+    attrappe = build_attrappe(services._LIST_UPDATE_BATCH + 44, 1, seed=9)
+    handler = make_handler(hass, attrappe)
+
+    await handler._async_redaction_list_update()
+
+    assert all(mac in handler.redactions for mac in attrappe.device_macs)

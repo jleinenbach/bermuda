@@ -1,8 +1,8 @@
-"""Diagnostics support for WLED."""
+"""Diagnostics support for Bermuda BLE Trilateration."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from homeassistant.core import HomeAssistant, ServiceCall
 
@@ -22,21 +22,19 @@ async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: Bermuda
 
     bt_diags = await coordinator._manager.async_diagnostics()
 
-    # Param structure for service call
-    call = ServiceCall(hass, DOMAIN, "dump_devices", {"redact": True})
+    # Collect raw data first and redact it once, in the executor: the device
+    # dump alone can be several megabytes, and redacting it on the event loop
+    # froze Home Assistant for minutes.
+    call = ServiceCall(hass, DOMAIN, "dump_devices", {"redact": False})
 
     data: dict[str, Any] = {
         "active_devices": f"{coordinator.count_active_devices()}/{len(coordinator.devices)}",
         "active_scanners": f"{coordinator.count_active_scanners()}/{len(coordinator.scanner_list)}",
-        "irk_manager": coordinator.service_handler.redact_data(coordinator.irk_manager.get_diagnostics_no_redactions()),
-        "fmdn_manager": coordinator.service_handler.redact_data(
-            coordinator.fmdn.manager.get_diagnostics_no_redactions()
-        ),
-        "auto_learning": coordinator.service_handler.redact_data(
-            coordinator.area_selection.get_auto_learning_diagnostics()
-        ),
+        "irk_manager": coordinator.irk_manager.get_diagnostics_no_redactions(),
+        "fmdn_manager": coordinator.fmdn.manager.get_diagnostics_no_redactions(),
+        "auto_learning": coordinator.area_selection.get_auto_learning_diagnostics(),
         "reference_trackers": coordinator.area_selection.get_reference_tracker_diagnostics(),
         "devices": await coordinator.service_dump_devices(call),
-        "bt_manager": coordinator.service_handler.redact_data(bt_diags),
+        "bt_manager": bt_diags,
     }
-    return data
+    return cast("dict[str, Any]", await coordinator.service_handler.async_redact_data(data))
