@@ -85,8 +85,16 @@ coordinator.py (1487 lines, was 4274) - 65% reduction!
 **Phase 1-2 Complete:**
 - `services.py` - BermudaServiceHandler (~253 lines)
   - `async_dump_devices()` - Device dump service
-  - `redact_data()` - MAC address redaction for privacy
+  - `redact_data()` - MAC address redaction for privacy (synchronous, small data only)
+  - `async_redact_data()` - redaction for dumps and diagnostics: list refreshed on the loop in
+    batches and copied; table build and data walk run in the executor on that snapshot, so the
+    prune routine can clear `self.redactions` meanwhile. Never redact large data on the loop.
+  - The async list update builds the new list on a local copy and assigns `self.redactions`
+    in one step after its last suspension, so a prune between two batches cannot drop entries
+    (guard: `test_prune_between_batches_keeps_every_entry`).
   - `redaction_list_update()` - Redaction cache management
+  - Dict keys are redacted only through `_redact_mapping`, which suffixes colliding keys with
+    `~n`; the guard is `test_redact_structure_preserved` in `tests/test_redact_nonblocking.py`.
 
 **Phase 3 Complete:**
 - `area_selection.py` - AreaSelectionHandler (initial ~1171 lines)
@@ -1014,7 +1022,7 @@ FMDN (Find My Device Network) support enables Bermuda to track Google Find My de
 │  │ Seriennummer: 68419b51-0000-...         │                                    │
 │  ├─────────────────────────────────────────┤                                    │
 │  │ 🔍 Google Find My Device            →  │  ← GoogleFindMy entities           │
-│  │ 📍 Bermuda BLE Trilateration        →  │  ← Bermuda entities                │
+│  │ 📍 Bermuda … + Google Find My (FMDN)→  │  ← Bermuda entities                │
 │  └─────────────────────────────────────────┘                                    │
 │                                                                                  │
 └─────────────────────────────────────────────────────────────────────────────────┘

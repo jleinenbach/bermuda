@@ -234,6 +234,25 @@ class BermudaFmdnManager:
             return seen.resolution_status
         return None
 
+    def known_identifiers(self) -> tuple[tuple[str, str], ...]:
+        """
+        Return every identifier that names a tracker, as (kind, value) pairs.
+
+        Kinds are ``eid``, ``device_id`` and ``canonical_id``. The service
+        handler adds them to its redaction list, so the diagnostics and device
+        dumps with ``redact: true`` show placeholders instead.
+        """
+        found: list[tuple[str, str]] = []
+        for eid_hex, seen in tuple(self._seen_eids.items()):
+            found.append(("eid", eid_hex))
+            if seen.device_id:
+                found.append(("device_id", seen.device_id))
+            if seen.canonical_id:
+                found.append(("canonical_id", seen.canonical_id))
+        for eid_list in tuple(self._mac_to_eids.values()):
+            found.extend(("eid", eid_hex) for eid_hex in tuple(eid_list))
+        return tuple(dict.fromkeys(found))
+
     def get_diagnostics_no_redactions(self) -> dict[str, Any]:
         """
         Return diagnostic info for FMDN resolution.

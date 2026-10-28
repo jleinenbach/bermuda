@@ -1,5 +1,5 @@
 {
-  "name": "Bermuda BLE Trilateration",
+  "name": "Bermuda BLE Trilateration + Google Find My (FMDN)",
   "hacs": "1.6.0",
   "homeassistant": "2026.6.0",
   "render_readme": true,

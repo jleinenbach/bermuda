@@ -7,7 +7,7 @@
 
 [![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=jleinenbach&repository=bermuda&category=Integration)
 
-# Bermuda BLE Trilateration
+# Bermuda BLE Trilateration + Google Find My (FMDN)
 
 - Track bluetooth devices by Area (Room) in [Home Assistant](https://home-assistant.io/), using [ESPHome](https://esphome.io/) [Bluetooth Proxies](https://esphome.io/components/bluetooth_proxy.html) and Shelly Gen2 or later devices.
 
@@ -196,6 +196,10 @@ the `addresses` parameter is helpful to only return data relevant for one or mor
 (or iBeacon UUIDs).
 See the information on parameters in the `Services` page in Home Assistant, under `Developer Tools`.
 
+`bermuda.dump_devices` and `bermuda.reset_room_auto_learning` are admin services: call them as an
+admin user or from an automation. A script runs with the rights of the user who started it. With
+`redact: true` the redaction runs outside the Home Assistant event loop.
+
 Important: If you decide to use the results of this call for your own templates etc, bear in mind that
 the format might change in any release, and won't necessarily be considered a "breaking change".
 This is because the structure is used internally, rather than being a published API. That said, efforts will be made
@@ -225,13 +229,13 @@ Alternatively you can click the button below to be automatically redirected.
 
 [![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=jleinenbach&repository=bermuda&category=Integration)
 
-You should now be able to add the `Bermuda BLE Trilateration` integration. Once you have done that,
+You should now be able to add the `Bermuda BLE Trilateration + Google Find My (FMDN)` integration. Once you have done that,
 you need to restart Home Assistant, then in `Settings`, `Devices & Services` choose `Add Integration`
-and search for `Bermuda BLE Trilateration`. It's possible that it will autodetect for you just by
+and search for `Bermuda BLE Trilateration + Google Find My (FMDN)`. It's possible that it will autodetect for you just by
 noticing nearby bluetooth devices.
 
 Once the integration is added, you need to set up your devices by clicking `Configure` in `Devices and Services`,
-`Bermuda BLE Trilateration`.
+`Bermuda BLE Trilateration + Google Find My (FMDN)`.
 
 In the `Configuration` dialog, you can choose which bluetooth devices you would like the integration to track.
 
@@ -243,7 +247,7 @@ You can manually install Bermuda by doing the following:
 4. Download _all_ the files from the `custom_components/bermuda/` directory (folder) in this repository.
 5. Place the files you downloaded in the new directory (folder) you created.
 6. Restart Home Assistant
-7. In the HA UI go to "Configuration" -> "Integrations" click "+" and search for "Bermuda BLE Trilateration"
+7. In the HA UI go to "Configuration" -> "Integrations" click "+" and search for "Bermuda BLE Trilateration + Google Find My (FMDN)"
 
 <!---->
 

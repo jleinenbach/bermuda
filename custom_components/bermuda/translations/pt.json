@@ -2,7 +2,7 @@
   "config": {
     "step": {
       "user": {
-        "title": "Bermuda BLE Trilateration",
+        "title": "Bermuda BLE Trilateration + Google Find My (FMDN)",
         "description": "Se precisar de ajuda com a configuração, consulte a nossa [página no GitHub]({github_url})",
         "data": {
           "username": "Nome de utilizador",

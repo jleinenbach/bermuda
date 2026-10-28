@@ -205,6 +205,31 @@ class TestBermudaServiceHandler:
         assert "44" in result
         assert "xx" in result
 
+    def test_redact_data_two_hits_in_one_string(self) -> None:
+        """T-R3: two known addresses in one string are both replaced."""
+        handler = self._create_handler(scanner_list=["AA:BB:CC:DD:EE:01", "AA:BB:CC:DD:EE:02"])
+
+        result = handler.redact_data("aa:bb:cc:dd:ee:01__aa:bb:cc:dd:ee:02")
+
+        assert result.count("::SCANNER_") == 2
+        assert "xx:xx" not in result
+
+    def test_redact_other_no_raw_id(self) -> None:
+        """T-R13: placeholders for non-MAC ids carry no raw id and distinct numbers."""
+        seen = MagicMock()
+        seen.address_type = "fmdn"
+        handler = self._create_handler(
+            options={CONF_DEVICES: ["fmdn:cfgonealpha", "fmdn:cfgtwobravo"]},
+            devices={"fmdn:seencharlie": seen},
+        )
+
+        handler.redaction_list_update()
+
+        values = [handler.redactions[k] for k in ("fmdn:cfgonealpha", "fmdn:cfgtwobravo", "fmdn:seencharlie")]
+        for raw, value in zip(("cfgonealpha", "cfgtwobravo", "seencharlie"), values, strict=True):
+            assert raw not in value.lower()
+        assert len(set(values)) == 3
+
     @pytest.mark.asyncio
     async def test_async_dump_devices_all(self) -> None:
         """Test async_dump_devices returns all devices."""
@@ -266,14 +291,15 @@ class TestBermudaServiceHandler:
         assert "scanner:address" in result
 
     @pytest.mark.asyncio
-    async def test_async_dump_devices_with_redaction(self) -> None:
-        """Test async_dump_devices with redaction enabled."""
+    async def test_async_dump_devices_with_redaction(self, hass: HomeAssistant) -> None:
+        """Test async_dump_devices with redaction enabled (redaction runs in the executor)."""
         mock_device = MagicMock()
         mock_device.to_dict = MagicMock(return_value={"mac": "aa:bb:cc:dd:ee:ff"})
 
         handler = self._create_handler(
             devices={"aa:bb:cc:dd:ee:ff": mock_device},
         )
+        handler.coordinator.hass = hass
 
         mock_call = MagicMock()
         mock_call.data = {"redact": True}

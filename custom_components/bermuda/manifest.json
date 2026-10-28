@@ -1,6 +1,6 @@
 {
   "domain": "bermuda",
-  "name": "Bermuda BLE Trilateration",
+  "name": "Bermuda BLE Trilateration + Google Find My (FMDN)",
   "after_dependencies": [
     "googlefindmy"
   ],
@@ -23,6 +23,7 @@
   "integration_type": "device",
   "iot_class": "calculated",
   "issue_tracker": "https://github.com/jleinenbach/bermuda/issues",
+  "quality_scale": "platinum",
   "requirements": [],
   "version": "0.0.0"
 }

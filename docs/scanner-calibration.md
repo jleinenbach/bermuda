@@ -111,7 +111,7 @@ This example calibrates the global distance model using a phone and a kitchen sc
 
 ### 1. Open the calibration dialog
 
-Go to **Settings > Integrations > Bermuda BLE Trilateration**. Click **Configure**. In the menu, select **"Calibration 1: Global"**.
+Go to **Settings > Integrations > Bermuda BLE Trilateration + Google Find My (FMDN)**. Click **Configure**. In the menu, select **"Calibration 1: Global"**.
 
 ### 2. Select a reference pair
 
@@ -162,7 +162,7 @@ This step compensates for hardware differences between individual scanners. Some
 
 ### 1. Open the calibration dialog
 
-Go to **Settings > Integrations > Bermuda BLE Trilateration**. Click **Configure**. In the menu, select **"Calibration 2: Scanner RSSI Offsets"**.
+Go to **Settings > Integrations > Bermuda BLE Trilateration + Google Find My (FMDN)**. Click **Configure**. In the menu, select **"Calibration 2: Scanner RSSI Offsets"**.
 
 ### 2. Select a device first
 
