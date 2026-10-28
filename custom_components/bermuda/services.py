@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import collections
 import dataclasses
-import datetime
+import datetime as dt
 import itertools
 import numbers
 import re
@@ -270,12 +270,20 @@ def _redact_walk(table: RedactionTable, generic_re: re.Pattern[str], generic_sub
             f.name: _redact_walk(table, generic_re, generic_sub, getattr(data, f.name))
             for f in dataclasses.fields(data)
         }
-    if data is None or isinstance(data, (numbers.Number, datetime.date, datetime.time, datetime.timedelta)):
+    if data is None or isinstance(data, (numbers.Number, dt.date, dt.time, dt.timedelta)):
         return data
-    # Any other object (e.g. a BLEDevice in the Bluetooth diagnostics) would be
-    # serialized after redaction: the diagnostics endpoint uses ExtendedJSONEncoder,
-    # which calls as_dict() or falls back to repr(), MAC address included. Produce
-    # the same shape here, redacted.
+    return _redact_object(table, generic_re, generic_sub, data)
+
+
+def _redact_object(table: RedactionTable, generic_re: re.Pattern[str], generic_sub: str, data: object) -> Any:
+    """
+    Redact an object that is neither a container nor a plain value.
+
+    Such an object (e.g. a BLEDevice in the Bluetooth diagnostics) would be
+    serialized after redaction: the diagnostics endpoint uses ExtendedJSONEncoder,
+    which calls as_dict() or falls back to repr(), MAC address included. Produce
+    the same shape here, redacted.
+    """
     as_dict = getattr(data, "as_dict", None)
     if callable(as_dict):
         mapped = as_dict()
