@@ -239,8 +239,8 @@ class BermudaFmdnManager:
         Return every identifier that names a tracker, as (kind, value) pairs.
 
         Kinds are ``eid``, ``device_id`` and ``canonical_id``. The service
-        handler adds them to its redaction list, so diagnostics and device
-        dumps never show them in full.
+        handler adds them to its redaction list, so the diagnostics and device
+        dumps with ``redact: true`` show placeholders instead.
         """
         found: list[tuple[str, str]] = []
         for eid_hex, seen in tuple(self._seen_eids.items()):

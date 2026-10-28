@@ -87,7 +87,7 @@ def _trie_pattern(keys: Iterable[str]) -> str | None:
     does not scale (25 000 keys: 421 000 characters, 19 s to compile, and the
     parser's garbage delayed the event loop by 3.3 s through GC).
     """
-    end = ""  # marks "a key ends here"; keys are never empty
+    end = ""  # marks "a key ends here"; empty keys are skipped below, so it never collides
     root: dict[str, Any] = {}
     for key in keys:
         if not key:
