@@ -19,6 +19,7 @@ from bluetooth_data_tools import monotonic_time_coarse
 from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse, callback
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.service import async_register_admin_service
 
 from .const import (
     _LOGGER,
@@ -269,8 +270,13 @@ def async_setup_services(hass: HomeAssistant) -> None:
     async def _reset_room_auto_learning(call: ServiceCall) -> ServiceResponse:
         return await _coordinator().service_reset_room_auto_learning(call)
 
-    hass.services.async_register(DOMAIN, "dump_devices", _dump_devices, DUMP_DEVICES_SCHEMA, SupportsResponse.ONLY)
-    hass.services.async_register(
+    # Admin only: reset_room_auto_learning deletes learned data, dump_devices
+    # exposes every address. Automations run without a user and stay allowed.
+    async_register_admin_service(
+        hass, DOMAIN, "dump_devices", _dump_devices, DUMP_DEVICES_SCHEMA, SupportsResponse.ONLY
+    )
+    async_register_admin_service(
+        hass,
         DOMAIN,
         "reset_room_auto_learning",
         _reset_room_auto_learning,
