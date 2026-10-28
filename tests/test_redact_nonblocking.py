@@ -150,13 +150,14 @@ async def _reference_spin_lag(seconds: float) -> float:
 
 async def lag_limit(floor: float) -> float:
     """
-    Allowed loop delay: ``floor`` or 1.5 times that of a pure-Python thread.
+    Allowed loop delay: ``floor`` or 1.5 times that of a pure-Python thread, at most 1 s.
 
     On a loaded host any computing worker thread delays the loop (GIL handoff
     every 5 ms, scheduling); a fixed limit would measure the machine. The old
-    code blocks for seconds and stays far above this limit.
+    code blocks for seconds and stays far above this limit; the cap of 1 s keeps
+    a partial relapse visible even on a very busy host.
     """
-    return max(floor, 1.5 * await _reference_spin_lag(1.0))
+    return min(1.0, max(floor, 1.5 * await _reference_spin_lag(1.0)))
 
 
 def shape(value: Any) -> Any:
@@ -461,3 +462,84 @@ async def test_list_update_in_batches_covers_every_device(hass: HomeAssistant) -
     await handler._async_redaction_list_update()
 
     assert all(mac in handler.redactions for mac in attrappe.device_macs)
+
+
+def test_prune_between_batches_keeps_every_entry() -> None:
+    """R1-F1: a prune while the list update is suspended between batches loses nothing."""
+    attrappe = build_attrappe(services._LIST_UPDATE_BATCH + 44, 1, seed=13)
+    handler = make_handler(None, attrappe)
+    steps = handler._redaction_list_steps()
+
+    next(steps)  # suspended after the first batch, as the async update would be
+    handler.redactions.clear()  # what the prune routine does on the loop
+    for _ in steps:
+        pass
+
+    assert all(mac in handler.redactions for mac in attrappe.device_macs)
+    assert all(scanner.replace(":", "") in handler.redactions for scanner in attrappe.scanners)
+
+
+def test_redact_run_prefers_the_longer_key() -> None:
+    """R1-F2: inside a longer run the longer of two overlapping keys wins."""
+    table = services._build_table(
+        {"aabbccddeeff00112233445566778899": "SHORT", "aabbccddeeff00112233445566778899_1_2": "LONG"}
+    )
+    handler = make_handler(None, build_attrappe(1, 1))
+
+    result = services._redact_walk(
+        table, handler._redact_generic_re, handler._redact_generic_sub, "x0aabbccddeeff00112233445566778899_1_2 end"
+    )
+
+    assert result == "x0LONG end"
+
+
+def test_redact_sets_deques_and_other_mappings() -> None:
+    """R1-F8: set, frozenset, deque and read-only mappings are redacted too."""
+    from collections import deque  # noqa: PLC0415
+    from types import MappingProxyType  # noqa: PLC0415
+
+    handler = make_handler(None, build_attrappe(1, 1))
+    handler.redactions = {"a1b2c3d4e5f6": "HIDDEN"}
+    data = {
+        "set": {"a1b2c3d4e5f6", "plain"},
+        "frozen": frozenset({"a1b2c3d4e5f6"}),
+        "deque": deque(["a1b2c3d4e5f6"]),
+        "proxy": MappingProxyType({"a1b2c3d4e5f6": "a1b2c3d4e5f6"}),
+    }
+
+    result = handler.redact_data(data, first_recursion=False)
+
+    assert result["set"] == {"HIDDEN", "plain"}
+    assert result["frozen"] == frozenset({"HIDDEN"})
+    assert isinstance(result["deque"], deque)
+    assert list(result["deque"]) == ["HIDDEN"]
+    assert result["proxy"] == {"HIDDEN": "HIDDEN"}
+
+
+def test_seen_ibeacon_device_gets_both_placeholders() -> None:
+    """A seen (not configured) iBeacon device is redacted as full id and as raw UUID."""
+    beacon = "0123456789abcdef0123456789abcdef_7_8"
+    device = MagicMock()
+    device.address_type = "ibeacon"
+    coord = MagicMock()
+    coord.scanner_list = []
+    coord.options = {}
+    coord.devices = {beacon: device}
+    handler = BermudaServiceHandler(coord)
+
+    handler.redaction_list_update()
+
+    assert "::OTHER_iBea_" in handler.redactions[beacon]
+    assert "::OTHER_iBea_" in handler.redactions[beacon.split("_")[0]]
+
+
+def test_slow_list_update_is_logged_as_warning(caplog: pytest.LogCaptureFixture) -> None:
+    """An update slower than 0.5 s is reported with its size."""
+    handler = make_handler(None, build_attrappe(2, 1))
+    clock = iter([100.0] + [101.0] * 20)
+
+    with caplog.at_level("WARNING"), pytest.MonkeyPatch.context() as patcher:
+        patcher.setattr(services, "monotonic_time_coarse", lambda: next(clock))
+        handler.redaction_list_update()
+
+    assert "Redaction list update took" in caplog.text

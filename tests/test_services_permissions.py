@@ -2,8 +2,9 @@
 
 ``reset_room_auto_learning`` deletes learned data, and ``dump_devices`` exposes
 every address (and, until RC1.3, could freeze Home Assistant through its
-redaction). Both run for admins and for automations, which carry no user; any
-other user is refused before the coordinator is reached.
+redaction). Both run for admins and for calls without a user (automations); a
+script started by a user runs with that user's rights. Any other user is
+refused before the coordinator is reached.
 """
 
 from __future__ import annotations
@@ -71,7 +72,7 @@ async def test_admin_is_served(hass: HomeAssistant, hass_admin_user: User, servi
 @pytest.mark.asyncio
 @pytest.mark.parametrize("service", sorted(SERVICES))
 async def test_automation_without_user_is_served(hass: HomeAssistant, service: str) -> None:
-    """A call without a user (automation, script) is served."""
+    """A call without a user (an automation) is served."""
     method, data, response = SERVICES[service]
     coordinator = await _setup_with_entry(hass, method, response)
 
