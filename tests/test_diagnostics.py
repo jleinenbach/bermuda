@@ -280,8 +280,10 @@ class TestDiagnosticsRedaction:
     @pytest.mark.asyncio
     async def test_diagnostics_fmdn_ids_of_silent_tracker_redacted(self, hass: HomeAssistant) -> None:
         """T-R16: a tracker without an EID seen since start still has its FMDN ids redacted."""
+        from custom_components.bermuda.const import ADDR_TYPE_FMDN_DEVICE  # noqa: PLC0415
+
         meta = MagicMock()
-        meta.address_type = "fmdn"
+        meta.address_type = ADDR_TYPE_FMDN_DEVICE
         meta.fmdn_device_id = "devquiet0815"
         meta.fmdn_canonical_id = "canonquiet4711"
         meta.to_dict = MagicMock(

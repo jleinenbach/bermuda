@@ -28,6 +28,7 @@ from homeassistant.helpers.service import async_register_admin_service
 
 from .const import (
     _LOGGER,
+    ADDR_TYPE_FMDN_DEVICE,
     ADDR_TYPE_PRIVATE_BLE_DEVICE,
     CONF_DEVICES,
     DOMAIN,
@@ -541,11 +542,13 @@ class BermudaServiceHandler:
                     work[address] = f"OTHER_{i}"
             # FMDN ids from the device itself: the manager only knows a tracker once an
             # EID was seen since start, but the device dump lists every known tracker.
-            for attr, prefix in (("fmdn_device_id", "FMDN_DEV"), ("fmdn_canonical_id", "FMDN_CANON")):
-                value = getattr(device, attr, None)
-                if isinstance(value, str) and value and value.lower() not in work:
-                    i += 1
-                    work[value.lower()] = f"{prefix}_{i}"
+            # Only FMDN meta devices carry these ids (fmdn/integration.py sets both together).
+            if device.address_type == ADDR_TYPE_FMDN_DEVICE:
+                for attr, prefix in (("fmdn_device_id", "FMDN_DEV"), ("fmdn_canonical_id", "FMDN_CANON")):
+                    value = getattr(device, attr, None)
+                    if isinstance(value, str) and value and value.lower() not in work:
+                        i += 1
+                        work[value.lower()] = f"{prefix}_{i}"
         _LOGGER.debug("Redact therest: %ss, %d items", monotonic_time_coarse() - _stamp, len(work))
 
         # IRKS: key material, kept to the first two bytes like upstream #840.

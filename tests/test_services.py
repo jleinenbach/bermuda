@@ -242,17 +242,25 @@ class TestBermudaServiceHandler:
 
     def test_redaction_list_reads_fmdn_ids_from_devices(self) -> None:
         """FMDN ids of a device enter the list without the manager; non-string attributes are ignored."""
+        from custom_components.bermuda.const import ADDR_TYPE_FMDN_DEVICE  # noqa: PLC0415
+
         device = MagicMock()
-        device.address_type = "fmdn"
+        device.address_type = ADDR_TYPE_FMDN_DEVICE
         device.fmdn_device_id = "DevQuiet0815"
         device.fmdn_canonical_id = None
-        handler = self._create_handler(devices={"fmdn:k": device})
+        unset = MagicMock()  # attributes never set: MagicMock children, not strings
+        unset.address_type = ADDR_TYPE_FMDN_DEVICE
+        other = MagicMock()
+        other.address_type = "public"
+        other.fmdn_device_id = "devnotfmdn99"
+        handler = self._create_handler(devices={"fmdn:k": device, "fmdn:u": unset, "aa:bb:cc:dd:ee:01": other})
 
         with patch("custom_components.bermuda.services.monotonic_time_coarse", return_value=100.0):
             handler.redaction_list_update()
 
         assert handler.redactions["devquiet0815"].startswith("FMDN_DEV_")
-        assert not any(k.startswith("<magicmock") for k in handler.redactions)
+        assert all(isinstance(k, str) for k in handler.redactions)
+        assert "devnotfmdn99" not in handler.redactions
 
     def test_redact_data_generic_mac_redaction(self) -> None:
         """Test that redact_data handles generic MAC addresses."""
