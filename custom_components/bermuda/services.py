@@ -9,9 +9,12 @@ coordinator (similar to ESPHome, ZHA, and Bluetooth integrations).
 from __future__ import annotations
 
 import asyncio
+import collections
 import dataclasses
+import itertools
 import re
 import time
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, cast
 
 import voluptuous as vol
@@ -31,7 +34,7 @@ from .const import (
 from .util import mac_explode_formats
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Iterator, Mapping
+    from collections.abc import Iterable, Iterator
 
     from .coordinator import BermudaDataUpdateCoordinator
 
@@ -52,7 +55,22 @@ RESET_ROOM_AUTO_LEARNING_SCHEMA = vol.Schema({vol.Required("area_id"): vol.All(c
 # Attempts to copy a container that another thread mutates while it is copied.
 _COPY_ATTEMPTS = 3
 # Devices handled between two hand-backs to the event loop in the async list update.
-_LIST_UPDATE_BATCH = 256
+_LIST_UPDATE_BATCH = 64
+# The walk hands the GIL back once every this many mappings (time.sleep(0) costs
+# about 70 us on a loaded host; once per mapping added seconds to a large dump).
+_GIL_YIELD_EVERY = 8
+# Keys classified between two hand-backs while the table is built.
+_BUILD_YIELD_EVERY = 1024
+_mapping_counter = itertools.count()
+# Containers walked member by member, and the type they come back as. Subclasses
+# (a namedtuple, say) come back as the base type, as before.
+_SEQUENCE_KINDS: tuple[tuple[type, Any], ...] = (
+    (list, list),
+    (tuple, tuple),
+    (set, set),
+    (frozenset, frozenset),
+    (collections.deque, collections.deque),
+)
 
 
 # A "run" is a hex sequence with optional single separators, the shape of every
@@ -113,7 +131,9 @@ def _trie_pattern(keys: Iterable[str]) -> str | None:
 def _build_table(source: Mapping[str, str]) -> RedactionTable:
     """Compile the redaction list. Pure, so it may run in the executor."""
     mapping: dict[str, str] = {}
-    for key, placeholder in source.items():
+    for count, (key, placeholder) in enumerate(source.items()):
+        if count % _BUILD_YIELD_EVERY == 0:
+            time.sleep(0)  # hand the GIL to the event loop, see _redact_mapping
         # Keys that differ only in case collapse into one; the first one wins.
         mapping.setdefault(key.lower(), placeholder)
     run_keys = [key for key in mapping if _RUN_SHAPE.match(key)]
@@ -204,11 +224,12 @@ def _redact_mapping(
     with the smallest free ``n``. The test is ``in out`` and not ``!= key``:
     a collision is about the result, not about whether this key changed.
     """
-    # Hand the GIL to the event loop once per mapping. Without this, a waiting
-    # loop thread gets the GIL only every switch interval (5 ms) per handoff,
-    # and a heartbeat needs several handoffs (measured: 249 ms -> 31 ms delay
-    # at a 6.4 MB dump). time.sleep(0) releases the GIL without sleeping.
-    time.sleep(0)
+    # Hand the GIL to the event loop regularly. Without this, a waiting loop
+    # thread gets the GIL only every switch interval (5 ms) per handoff, and a
+    # heartbeat needs several handoffs (measured: 249 ms -> 31 ms delay at a
+    # 6.4 MB dump). time.sleep(0) releases the GIL without sleeping.
+    if next(_mapping_counter) % _GIL_YIELD_EVERY == 0:
+        time.sleep(0)
     out: dict[Any, Any] = {}
     for key, value in items:
         new_key = _redact_walk(table, generic_re, generic_sub, key)
@@ -227,16 +248,18 @@ def _redact_walk(table: RedactionTable, generic_re: re.Pattern[str], generic_sub
     Wash any collection of data of known identifiers and MAC addresses.
 
     Pure function of its arguments, so it may run in the executor. Every
-    container is copied before it is iterated (see ``_copy``).
+    mutable container is copied before it is iterated (see ``_copy``).
     """
     if isinstance(data, str):
         return _redact_str(table, generic_re, generic_sub, data)
-    if isinstance(data, dict):
+    if isinstance(data, Mapping):
+        # dict, and read-only or custom mappings (e.g. MappingProxyType) as a plain dict.
         return _redact_mapping(table, generic_re, generic_sub, _copy(lambda d: list(d.items()), data))
-    if isinstance(data, list):
-        return [_redact_walk(table, generic_re, generic_sub, v) for v in _copy(tuple, data)]
-    if isinstance(data, tuple):
-        return tuple(_redact_walk(table, generic_re, generic_sub, v) for v in data)
+    for kind, make in _SEQUENCE_KINDS:
+        if isinstance(data, kind):
+            # Redacted members of a set may coincide; a set has no place to keep both.
+            # tuple() of a tuple returns the same object, so this copies only what can change.
+            return make(_redact_walk(table, generic_re, generic_sub, v) for v in _copy(tuple, data))
     if dataclasses.is_dataclass(data) and not isinstance(data, type):
         # Dataclass values (e.g. AreaTests in BermudaDevice.to_dict) would otherwise be
         # serialized with their fields untouched, MAC addresses included. A shallow field
@@ -443,78 +466,83 @@ class BermudaServiceHandler:
 
         # counter for incrementing replacement names (eg, SCANNER_n). The length
         # of the existing redaction list is a decent enough starting point.
-        i = len(self.redactions)
+        # Work on a copy and publish it in one step at the end: the prune routine
+        # clears self.redactions on the loop and may run while the async caller
+        # is suspended between two batches.
+        work = dict(self.redactions)
+        i = len(work)
 
         # SCANNERS
         for non_lower_address in list(coord.scanner_list):
             address = non_lower_address.lower()
-            if address not in self.redactions:
+            if address not in work:
                 i += 1
                 for altmac in mac_explode_formats(address):
-                    self.redactions[altmac] = f"{address[:2]}::SCANNER_{i}::{address[-2:]}"
-        _LOGGER.debug("Redact scanners: %ss, %d items", monotonic_time_coarse() - _stamp, len(self.redactions))
+                    work[altmac] = f"{address[:2]}::SCANNER_{i}::{address[-2:]}"
+        _LOGGER.debug("Redact scanners: %ss, %d items", monotonic_time_coarse() - _stamp, len(work))
 
         # CONFIGURED DEVICES
         for non_lower_address in list(coord.options.get(CONF_DEVICES, [])):
             address = non_lower_address.lower()
-            if address not in self.redactions:
+            if address not in work:
                 i += 1
                 if address.count("_") == 2:
-                    self.redactions[address] = f"{address[:4]}::CFG_iBea_{i}::{address[32:]}"
+                    work[address] = f"{address[:4]}::CFG_iBea_{i}::{address[32:]}"
                     # Raw uuid in advert
-                    self.redactions[address.split("_")[0]] = f"{address[:4]}::CFG_iBea_{i}_{address[32:]}::"
+                    work[address.split("_")[0]] = f"{address[:4]}::CFG_iBea_{i}_{address[32:]}::"
                 elif len(address) == 17:
                     for altmac in mac_explode_formats(address):
-                        self.redactions[altmac] = f"{address[:2]}::CFG_MAC_{i}::{address[-2:]}"
+                        work[altmac] = f"{address[:2]}::CFG_MAC_{i}::{address[-2:]}"
                 else:
                     # Don't know what it is, but not a mac.
-                    self.redactions[address] = f"CFG_OTHER_{i}"
-        _LOGGER.debug("Redact confdevs: %ss, %d items", monotonic_time_coarse() - _stamp, len(self.redactions))
+                    work[address] = f"CFG_OTHER_{i}"
+        _LOGGER.debug("Redact confdevs: %ss, %d items", monotonic_time_coarse() - _stamp, len(work))
 
         # EVERYTHING ELSE
         for count, (non_lower_address, device) in enumerate(list(coord.devices.items()), start=1):
             if count % _LIST_UPDATE_BATCH == 0:
                 yield
             address = non_lower_address.lower()
-            if address not in self.redactions:
+            if address not in work:
                 # Only add if they are not already there.
                 i += 1
                 if device.address_type == ADDR_TYPE_PRIVATE_BLE_DEVICE:
-                    self.redactions[address] = f"{address[:4]}::IRK_DEV_{i}"
+                    work[address] = f"{address[:4]}::IRK_DEV_{i}"
                 elif address.count("_") == 2:
-                    self.redactions[address] = f"{address[:4]}::OTHER_iBea_{i}::{address[32:]}"
+                    work[address] = f"{address[:4]}::OTHER_iBea_{i}::{address[32:]}"
                     # Raw uuid in advert
-                    self.redactions[address.split("_")[0]] = f"{address[:4]}::OTHER_iBea_{i}_{address[32:]}::"
+                    work[address.split("_")[0]] = f"{address[:4]}::OTHER_iBea_{i}_{address[32:]}::"
                 elif len(address) == 17:  # a MAC
                     for altmac in mac_explode_formats(address):
-                        self.redactions[altmac] = f"{address[:2]}::OTHER_MAC_{i}::{address[-2:]}"
+                        work[altmac] = f"{address[:2]}::OTHER_MAC_{i}::{address[-2:]}"
                 else:
                     # Don't know what it is.
-                    self.redactions[address] = f"OTHER_{i}"
-        _LOGGER.debug("Redact therest: %ss, %d items", monotonic_time_coarse() - _stamp, len(self.redactions))
+                    work[address] = f"OTHER_{i}"
+        _LOGGER.debug("Redact therest: %ss, %d items", monotonic_time_coarse() - _stamp, len(work))
 
         # IRKS: key material, kept to the first two bytes like upstream #840.
         for irk_hex in coord.irk_manager.known_irks_hex():
             irk_lower = irk_hex.lower()
-            if irk_lower not in self.redactions:
+            if irk_lower not in work:
                 i += 1
-                self.redactions[irk_lower] = f"{irk_lower[:4]}::IRK_{i}"
+                work[irk_lower] = f"{irk_lower[:4]}::IRK_{i}"
 
         yield
         # FMDN: EIDs, device ids and canonical ids identify a tracker.
         prefixes = {"eid": "EID", "device_id": "FMDN_DEV", "canonical_id": "FMDN_CANON"}
         for kind, value in coord.fmdn.manager.known_identifiers():
             value_lower = value.lower()
-            if value_lower and value_lower not in self.redactions:
+            if value_lower and value_lower not in work:
                 i += 1
-                self.redactions[value_lower] = f"{prefixes.get(kind, 'FMDN_ID')}_{i}"
-        _LOGGER.debug("Redact irk/fmdn: %ss, %d items", monotonic_time_coarse() - _stamp, len(self.redactions))
+                work[value_lower] = f"{prefixes.get(kind, 'FMDN_ID')}_{i}"
+        _LOGGER.debug("Redact irk/fmdn: %ss, %d items", monotonic_time_coarse() - _stamp, len(work))
 
         _elapsed = monotonic_time_coarse() - _stamp
         if _elapsed > 0.5:
-            _LOGGER.warning("Redaction list update took %.3f seconds, has %d items", _elapsed, len(self.redactions))
+            _LOGGER.warning("Redaction list update took %.3f seconds, has %d items", _elapsed, len(work))
         else:
-            _LOGGER.debug("Redaction list update took %.3f seconds, has %d items", _elapsed, len(self.redactions))
+            _LOGGER.debug("Redaction list update took %.3f seconds, has %d items", _elapsed, len(work))
+        self.redactions = work
         self.stamp_redactions_expiry = monotonic_time_coarse() + PRUNE_TIME_REDACTIONS
 
     def _table_for(self, snapshot: Mapping[str, str]) -> RedactionTable | None:

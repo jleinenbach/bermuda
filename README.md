@@ -197,8 +197,8 @@ the `addresses` parameter is helpful to only return data relevant for one or mor
 See the information on parameters in the `Services` page in Home Assistant, under `Developer Tools`.
 
 `bermuda.dump_devices` and `bermuda.reset_room_auto_learning` are admin services: call them as an
-admin user, or from an automation or script. With `redact: true` the redaction runs outside the
-Home Assistant event loop.
+admin user or from an automation. A script runs with the rights of the user who started it. With
+`redact: true` the redaction runs outside the Home Assistant event loop.
 
 Important: If you decide to use the results of this call for your own templates etc, bear in mind that
 the format might change in any release, and won't necessarily be considered a "breaking change".
