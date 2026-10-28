@@ -11,7 +11,9 @@ from __future__ import annotations
 import asyncio
 import collections
 import dataclasses
+import datetime
 import itertools
+import numbers
 import re
 import time
 from collections.abc import Mapping
@@ -268,7 +270,18 @@ def _redact_walk(table: RedactionTable, generic_re: re.Pattern[str], generic_sub
             f.name: _redact_walk(table, generic_re, generic_sub, getattr(data, f.name))
             for f in dataclasses.fields(data)
         }
-    return data
+    if data is None or isinstance(data, (numbers.Number, datetime.date, datetime.time, datetime.timedelta)):
+        return data
+    # Any other object (e.g. a BLEDevice in the Bluetooth diagnostics) would be
+    # serialized after redaction: the diagnostics endpoint uses ExtendedJSONEncoder,
+    # which calls as_dict() or falls back to repr(), MAC address included. Produce
+    # the same shape here, redacted.
+    as_dict = getattr(data, "as_dict", None)
+    if callable(as_dict):
+        mapped = as_dict()
+        if isinstance(mapped, Mapping):
+            return _redact_walk(table, generic_re, generic_sub, mapped)
+    return {"__type": str(type(data)), "repr": _redact_str(table, generic_re, generic_sub, repr(data))}
 
 
 @callback
@@ -518,6 +531,13 @@ class BermudaServiceHandler:
                 else:
                     # Don't know what it is.
                     work[address] = f"OTHER_{i}"
+            # FMDN ids from the device itself: the manager only knows a tracker once an
+            # EID was seen since start, but the device dump lists every known tracker.
+            for attr, prefix in (("fmdn_device_id", "FMDN_DEV"), ("fmdn_canonical_id", "FMDN_CANON")):
+                value = getattr(device, attr, None)
+                if isinstance(value, str) and value and value.lower() not in work:
+                    i += 1
+                    work[value.lower()] = f"{prefix}_{i}"
         _LOGGER.debug("Redact therest: %ss, %d items", monotonic_time_coarse() - _stamp, len(work))
 
         # IRKS: key material, kept to the first two bytes like upstream #840.

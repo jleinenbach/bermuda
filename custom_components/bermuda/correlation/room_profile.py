@@ -107,8 +107,12 @@ class RoomProfile:
 
         # Minimum Interval Check: Skip updates that are too frequent
         # This reduces autocorrelation from rho=0.95 to rho=0.82, improving ESS
+        # The stamp is monotonic and is restored from storage. After a host reboot
+        # the clock restarts near zero, so a restored stamp can lie ahead of now;
+        # a negative difference means another clock, not a too-early update.
         if nowstamp is not None:
-            if nowstamp - self._last_update_stamp < AUTO_LEARNING_MIN_INTERVAL:
+            elapsed = nowstamp - self._last_update_stamp
+            if 0 <= elapsed < AUTO_LEARNING_MIN_INTERVAL:
                 return False
             self._last_update_stamp = nowstamp
 

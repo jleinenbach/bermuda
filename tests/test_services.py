@@ -191,6 +191,69 @@ class TestBermudaServiceHandler:
         assert "aa:bb:cc:dd:ee:ff" not in json_bytes(result).decode()
         assert result[1] == "other"
 
+    def test_redact_data_time_values_pass_through(self) -> None:
+        """Dates, times and durations keep their type: the encoder formats them itself."""
+        import datetime  # noqa: PLC0415
+
+        handler = self._create_handler()
+        handler.stamp_redactions_expiry = 200.0
+        values = (datetime.datetime(2026, 10, 28, 12, 0), datetime.time(12, 0), datetime.timedelta(seconds=5))
+
+        with patch("custom_components.bermuda.services.monotonic_time_coarse", return_value=100.0):
+            for value in values:
+                assert handler.redact_data(value) is value
+
+    def test_redact_data_object_with_as_dict(self) -> None:
+        """An object with as_dict() is redacted as that mapping, like the encoder would render it."""
+
+        class WithAsDict:
+            def as_dict(self) -> dict:
+                return {"address": "aa:bb:cc:dd:ee:ff", "name": "n"}
+
+        handler = self._create_handler()
+        handler.stamp_redactions_expiry = 200.0
+
+        with patch("custom_components.bermuda.services.monotonic_time_coarse", return_value=100.0):
+            result = handler.redact_data({"x": WithAsDict()})
+
+        assert result["x"]["name"] == "n"
+        assert "aa:bb:cc:dd:ee:ff" not in json.dumps(result)
+
+    def test_redact_data_object_as_repr(self) -> None:
+        """Any other object becomes the encoder's repr fallback, redacted; a non-mapping as_dict() counts as none."""
+
+        class Plain:
+            def __repr__(self) -> str:
+                return "Plain(aa:bb:cc:dd:ee:ff)"
+
+        class OddAsDict(Plain):
+            def as_dict(self) -> str:
+                return "aa:bb:cc:dd:ee:ff"
+
+        handler = self._create_handler()
+        handler.stamp_redactions_expiry = 200.0
+
+        with patch("custom_components.bermuda.services.monotonic_time_coarse", return_value=100.0):
+            for obj in (Plain(), OddAsDict()):
+                result = handler.redact_data(obj)
+                assert set(result) == {"__type", "repr"}
+                assert result["repr"].startswith("Plain(")
+                assert "aa:bb:cc:dd:ee:ff" not in result["repr"]
+
+    def test_redaction_list_reads_fmdn_ids_from_devices(self) -> None:
+        """FMDN ids of a device enter the list without the manager; non-string attributes are ignored."""
+        device = MagicMock()
+        device.address_type = "fmdn"
+        device.fmdn_device_id = "DevQuiet0815"
+        device.fmdn_canonical_id = None
+        handler = self._create_handler(devices={"fmdn:k": device})
+
+        with patch("custom_components.bermuda.services.monotonic_time_coarse", return_value=100.0):
+            handler.redaction_list_update()
+
+        assert handler.redactions["devquiet0815"].startswith("FMDN_DEV_")
+        assert not any(k.startswith("<magicmock") for k in handler.redactions)
+
     def test_redact_data_generic_mac_redaction(self) -> None:
         """Test that redact_data handles generic MAC addresses."""
         handler = self._create_handler()
