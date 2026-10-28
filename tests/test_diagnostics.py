@@ -276,3 +276,42 @@ class TestDiagnosticsRedaction:
         for raw in (eid.hex(), "devyankee17", "canonzulu42", "c1:d2:e3:f4:a5:b6", "c1d2e3f4a5b6"):
             assert raw not in text
         assert len(result["fmdn_manager"]["resolved_eids"]) == raw_eids
+
+    @pytest.mark.asyncio
+    async def test_diagnostics_fmdn_ids_of_silent_tracker_redacted(self, hass: HomeAssistant) -> None:
+        """T-R16: a tracker without an EID seen since start still has its FMDN ids redacted."""
+        meta = MagicMock()
+        meta.address_type = "fmdn"
+        meta.fmdn_device_id = "devquiet0815"
+        meta.fmdn_canonical_id = "canonquiet4711"
+        meta.to_dict = MagicMock(
+            return_value={"name": "tracker", "fmdn_device_id": "devquiet0815", "fmdn_canonical_id": "canonquiet4711"}
+        )
+        coord = _real_diag_coordinator(hass, devices={"fmdn:other-key": meta})
+
+        _result, text = await _diagnostics_text(hass, coord)
+
+        assert "devquiet0815" not in text
+        assert "canonquiet4711" not in text
+
+    @pytest.mark.asyncio
+    async def test_diagnostics_ble_device_object_redacted_for_endpoint_encoder(self, hass: HomeAssistant) -> None:
+        """T-R17: an object in the Bluetooth diagnostics is redacted before the endpoint encoder calls repr()."""
+        import json  # noqa: PLC0415
+
+        from bleak.backends.device import BLEDevice  # noqa: PLC0415
+        from homeassistant.helpers.json import ExtendedJSONEncoder  # noqa: PLC0415
+
+        coord = _real_diag_coordinator(hass)
+        coord._manager.async_diagnostics = AsyncMock(
+            return_value={"all_history": [{"device": BLEDevice("AB:CD:EF:01:23:45", "tracker", None)}]}
+        )
+
+        entry = MagicMock()
+        entry.runtime_data.coordinator = coord
+        result = await async_get_config_entry_diagnostics(hass, entry)
+        # The diagnostics endpoint serializes with ExtendedJSONEncoder, which falls back to repr().
+        text = json.dumps(result, cls=ExtendedJSONEncoder).lower()
+
+        assert "ab:cd:ef:01:23:45" not in text
+        assert "bledevice(" in text
