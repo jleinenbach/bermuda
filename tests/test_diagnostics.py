@@ -181,3 +181,93 @@ class TestDiagnosticsIntegration:
         from custom_components.bermuda import diagnostics
 
         assert hasattr(diagnostics, "async_get_config_entry_diagnostics")
+
+
+def _real_diag_coordinator(hass: HomeAssistant, devices: dict | None = None) -> MagicMock:
+    """Coordinator mock with a real service handler and real IRK/FMDN managers."""
+    from custom_components.bermuda.bermuda_irk import BermudaIrkManager  # noqa: PLC0415
+    from custom_components.bermuda.fmdn.manager import BermudaFmdnManager  # noqa: PLC0415
+    from custom_components.bermuda.services import BermudaServiceHandler  # noqa: PLC0415
+
+    coord = MagicMock()
+    coord.hass = hass
+    coord.scanner_list = []
+    coord.options = {}
+    coord.pb_state_sources = {}
+    coord.devices = devices or {}
+    coord.count_active_devices = MagicMock(return_value=0)
+    coord.count_active_scanners = MagicMock(return_value=0)
+    coord.irk_manager = BermudaIrkManager()
+    coord.fmdn.manager = BermudaFmdnManager()
+    coord.area_selection.get_auto_learning_diagnostics = MagicMock(return_value={})
+    coord.area_selection.get_reference_tracker_diagnostics = MagicMock(return_value={})
+    coord._manager.async_diagnostics = AsyncMock(return_value={})
+    handler = BermudaServiceHandler(coord)
+    coord.service_handler = handler
+    coord.service_dump_devices = handler.async_dump_devices
+    return coord
+
+
+async def _diagnostics_text(hass: HomeAssistant, coord: MagicMock) -> tuple[dict, str]:
+    from homeassistant.helpers.json import json_bytes  # noqa: PLC0415
+
+    entry = MagicMock()
+    entry.runtime_data.coordinator = coord
+    result = await async_get_config_entry_diagnostics(hass, entry)
+    return result, json_bytes(result).decode().lower()
+
+
+class TestDiagnosticsRedaction:
+    """The diagnostics never contain raw identifiers."""
+
+    @pytest.mark.asyncio
+    async def test_diagnostics_reference_tracker_redacted(self, hass: HomeAssistant) -> None:
+        """T-R7: reference tracker and scanner addresses are redacted."""
+        coord = _real_diag_coordinator(hass)
+        coord.area_selection.get_reference_tracker_diagnostics = MagicMock(
+            return_value={
+                "configured_count": 1,
+                "configured_addresses": ["a1:b2:c3:d4:e5:f6"],
+                "aggregation_by_area": {"area.raum_a": {"primary_scanner": "0a:1b:2c:3d:4e:5f"}},
+            }
+        )
+
+        _result, text = await _diagnostics_text(hass, coord)
+
+        assert "a1:b2:c3:d4:e5:f6" not in text
+        assert "0a:1b:2c:3d:4e:5f" not in text
+
+    @pytest.mark.asyncio
+    async def test_diagnostics_irk_truncated(self, hass: HomeAssistant) -> None:
+        """T-R11: an IRK without a meta device appears at most with its first two bytes."""
+        irk = bytes.fromhex("8f1e2d3c4b5a69788796a5b4c3d2e1f0")
+        coord = _real_diag_coordinator(hass)
+        coord.irk_manager.add_irk(irk)
+
+        _result, text = await _diagnostics_text(hass, coord)
+
+        assert irk.hex() not in text
+        assert irk.hex()[4:] not in text
+
+    @pytest.mark.asyncio
+    async def test_diagnostics_fmdn_ids_redacted(self, hass: HomeAssistant) -> None:
+        """T-R12: FMDN EIDs, device ids and canonical ids are redacted, entries kept."""
+        eid = bytes.fromhex("0f1e2d3c4b5a69788796a5b4c3d2e1f00102030a")
+        meta = MagicMock()
+        meta.address_type = "fmdn"
+        meta.to_dict = MagicMock(return_value={"name": "tracker"})
+        coord = _real_diag_coordinator(hass, devices={"fmdn:canonzulu42": meta})
+        coord.fmdn.manager.record_eid_seen(
+            eid,
+            "c1:d2:e3:f4:a5:b6",
+            resolution_status="devyankee17",
+            device_id="devyankee17",
+            canonical_id="canonzulu42",
+        )
+        raw_eids = len(coord.fmdn.manager.get_diagnostics_no_redactions()["resolved_eids"])
+
+        result, text = await _diagnostics_text(hass, coord)
+
+        for raw in (eid.hex(), "devyankee17", "canonzulu42", "c1:d2:e3:f4:a5:b6", "c1d2e3f4a5b6"):
+            assert raw not in text
+        assert len(result["fmdn_manager"]["resolved_eids"]) == raw_eids
