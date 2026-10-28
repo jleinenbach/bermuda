@@ -35,3 +35,10 @@ def test_domain_unchanged_and_first() -> None:
 
     assert manifest["domain"] == "bermuda"
     assert list(manifest)[:2] == ["domain", "name"]
+
+
+def test_manifest_declares_quality_scale() -> None:
+    """AGENTS.md: declare the platinum quality scale whenever the integration metadata changes."""
+    manifest = _load(COMPONENT / "manifest.json")
+
+    assert manifest.get("quality_scale") == "platinum"
