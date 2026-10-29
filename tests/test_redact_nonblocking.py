@@ -483,6 +483,38 @@ def test_copy_passes_recursion_error_through() -> None:
     assert not isinstance(err.value, services._CopyChangedError)
 
 
+def test_recursion_error_inside_an_object_aborts_with_a_fixed_text() -> None:
+    """
+    R6-F1/R6-F2: a RecursionError in ``as_dict()``, ``repr()`` or a type check is not swallowed.
+
+    Swallowed per object, a cycle through ``as_dict()`` grows with 2 ** depth. The
+    error leaves with a fixed text: a foreign RecursionError may carry an identifier.
+    """
+
+    class DeepAsDict:
+        def as_dict(self) -> dict[str, Any]:
+            msg = "maximum recursion depth exceeded near aa:bb:cc:dd:ee:ff"
+            raise RecursionError(msg)
+
+    class DeepRepr:
+        def __repr__(self) -> str:
+            msg = "maximum recursion depth exceeded near aa:bb:cc:dd:ee:ff"
+            raise RecursionError(msg)
+
+    class DeepClass:
+        @property  # type: ignore[misc]
+        def __class__(self) -> type:
+            msg = "maximum recursion depth exceeded near aa:bb:cc:dd:ee:ff"
+            raise RecursionError(msg)
+
+    table = services._build_table({})
+    for obj in (DeepAsDict(), DeepRepr(), DeepClass()):
+        with pytest.raises(RecursionError) as err:
+            services._redact_walk(table, re.compile(r"(?!x)x"), "", {"outer": [obj]})
+        assert "aa:bb:cc:dd:ee:ff" not in str(err.value)
+        assert err.value.__suppress_context__
+
+
 def _stack_depth() -> int:
     frame, depth = sys._getframe(), 0  # noqa: SLF001 - frame count for a tight recursion limit
     while frame is not None:
@@ -492,11 +524,12 @@ def _stack_depth() -> int:
 
 def test_walk_aborts_on_cyclic_data() -> None:
     """
-    R5-F1/R5-F3: a cycle ends in RecursionError.
+    R5-F1: a cycle of plain containers ends in RecursionError.
 
-    Not in placeholders (a walk that catches RecursionError per value grows with
-    2 ** depth at two back references per level), and not in a copy error. The tight
-    limit keeps the wrong outcome fast, so the test fails instead of hanging.
+    Not in placeholders: a walk that catches RecursionError per value grows with
+    2 ** depth at two back references per level. The tight limit keeps the wrong
+    outcome fast, so the test fails instead of hanging. A RecursionError inside
+    ``_copy`` has its own test (``test_copy_passes_recursion_error_through``).
     """
     cyclic: list[Any] = []
     cyclic.extend((cyclic, cyclic))
