@@ -485,19 +485,15 @@ def test_copy_passes_recursion_error_through() -> None:
 
 def test_recursion_error_inside_an_object_aborts_with_a_fixed_text() -> None:
     """
-    R6-F1/R6-F2: a RecursionError in ``as_dict()``, ``repr()`` or a type check is not swallowed.
+    R6-F1/R6-F2: a RecursionError in ``as_dict()`` or a type check is not swallowed.
 
     Swallowed per object, a cycle through ``as_dict()`` grows with 2 ** depth. The
-    error leaves with a fixed text: a foreign RecursionError may carry an identifier.
+    error leaves with a fixed text and without its cause (R7-F3: ``from None``, not
+    ``from err``): a foreign RecursionError may carry an identifier.
     """
 
     class DeepAsDict:
         def as_dict(self) -> dict[str, Any]:
-            msg = "maximum recursion depth exceeded near aa:bb:cc:dd:ee:ff"
-            raise RecursionError(msg)
-
-    class DeepRepr:
-        def __repr__(self) -> str:
             msg = "maximum recursion depth exceeded near aa:bb:cc:dd:ee:ff"
             raise RecursionError(msg)
 
@@ -508,11 +504,54 @@ def test_recursion_error_inside_an_object_aborts_with_a_fixed_text() -> None:
             raise RecursionError(msg)
 
     table = services._build_table({})
-    for obj in (DeepAsDict(), DeepRepr(), DeepClass()):
+    for obj in (DeepAsDict(), DeepClass()):
         with pytest.raises(RecursionError) as err:
             services._redact_walk(table, re.compile(r"(?!x)x"), "", {"outer": [obj]})
         assert "aa:bb:cc:dd:ee:ff" not in str(err.value)
+        assert err.value.__cause__ is None
         assert err.value.__suppress_context__
+
+
+class _EndlessRepr:
+    """An object whose own ``repr()`` recurses without end."""
+
+    def __repr__(self) -> str:
+        return repr(self)
+
+
+def test_endless_repr_is_replaced_not_aborting() -> None:
+    """
+    R7-F1: an object whose ``repr()`` recurses without end gets the replacement form.
+
+    ``repr()`` does not enter the walk again, so a RecursionError there cannot be
+    the depth of a cycle; the dump goes on with the neighbours, as before RC1.4.
+    """
+    table = services._build_table({})
+    result = services._redact_walk(table, re.compile(r"(?!x)x"), "", {"a": _EndlessRepr(), "b": "aa:bb:cc:dd:ee:ff"})
+    assert result["a"] == {"__type": str(_EndlessRepr), "repr": "<_EndlessRepr without repr>"}
+    assert result["b"] == "aa:bb:cc:dd:ee:ff"
+
+
+def test_cycle_with_endless_repr_leaves_still_aborts() -> None:
+    """
+    R7-F1 guard: replacing a failing ``repr()`` does not let a cycle run on.
+
+    Each level of the cycle holds a leaf whose ``repr()`` recurses without end, next
+    to two back references. Near the limit the leaf fails first; the walk must still
+    end in RecursionError at the next back reference, not in placeholders.
+    """
+    cyclic: list[Any] = []
+    cyclic.extend((_EndlessRepr(), cyclic, cyclic))
+    table = services._build_table({})
+    limit = sys.getrecursionlimit()
+    sys.setrecursionlimit(_stack_depth() + 120)
+    start = time.monotonic()
+    try:
+        with pytest.raises(RecursionError):
+            services._redact_walk(table, re.compile(r"(?!x)x"), "", cyclic)
+    finally:
+        sys.setrecursionlimit(limit)
+    assert time.monotonic() - start < 5
 
 
 def _stack_depth() -> int:

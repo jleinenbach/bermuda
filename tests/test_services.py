@@ -366,12 +366,21 @@ class TestBermudaServiceHandler:
         assert "aa:bb:cc:dd:ee:ff" not in caplog.text
 
     def test_redact_data_object_failing_type_check(self, caplog: pytest.LogCaptureFixture) -> None:
-        """R3-F2: an object that fails already at isinstance is replaced; the dump and its neighbours go on."""
+        """
+        R3-F2: an object that fails already at isinstance is replaced; the dump and its neighbours go on.
+
+        A raising ``__getattribute__`` fails the type check on every Python only with an error
+        other than AttributeError: since CPython 3.14.9 the ABC check looks up ``__class__``
+        as an optional attribute and falls back to the type on AttributeError (``_abc.c``).
+        """
 
         class RaisingGetattribute:
+            def __init__(self, error: type[Exception]) -> None:
+                object.__setattr__(self, "error", error)
+
             def __getattribute__(self, name: str) -> object:
                 msg = f"no {name} for aa:bb:cc:dd:ee:ff"
-                raise AttributeError(msg)
+                raise object.__getattribute__(self, "error")(msg)
 
         class RaisingClass:
             @property  # type: ignore[misc]
@@ -391,13 +400,21 @@ class TestBermudaServiceHandler:
             patch("custom_components.bermuda.services.monotonic_time_coarse", return_value=100.0),
         ):
             result = handler.redact_data(
-                {"a": RaisingGetattribute(), "b": [RaisingClass()], "c": "seen aa:bb:cc:dd:ee:ff"}
+                {
+                    "a": RaisingGetattribute(ValueError),
+                    "b": [RaisingClass()],
+                    "c": "seen aa:bb:cc:dd:ee:ff",
+                    "d": RaisingGetattribute(AttributeError),
+                }
             )
 
-        assert result["a"] == {"__type": "<unavailable>", "repr": "<redaction failed: AttributeError>"}
+        assert result["a"] == {"__type": "<unavailable>", "repr": "<redaction failed: ValueError>"}
         assert result["b"] == [{"__type": "<unavailable>", "repr": "<redaction failed: RuntimeError>"}]
         assert "aa:bb:cc:dd:ee:ff" not in result["c"]
-        assert "redaction failed (AttributeError)" in caplog.text
+        # Placeholder up to CPython 3.14.8, the repr form from 3.14.9 on; either way no abort and no MAC.
+        assert set(result["d"]) == {"__type", "repr"}
+        assert "aa:bb:cc:dd:ee:ff" not in str(result["d"])
+        assert "redaction failed (ValueError)" in caplog.text
         assert "redaction failed (RuntimeError)" in caplog.text
         # The exception text may carry an identifier, so it is never logged.
         assert "aa:bb:cc:dd:ee:ff" not in caplog.text
