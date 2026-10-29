@@ -7,6 +7,7 @@ import dataclasses
 import os
 import random
 import re
+import sys
 import threading
 import time
 from typing import Any
@@ -468,6 +469,38 @@ def test_walk_still_aborts_on_lasting_copy_failure() -> None:
     assert "aa:bb:cc:dd:ee:ff" not in str(err.value)
     assert err.value.__cause__ is None
     assert err.value.__suppress_context__
+
+
+def _stack_depth() -> int:
+    frame, depth = sys._getframe(), 0  # noqa: SLF001 - frame count for a tight recursion limit
+    while frame is not None:
+        frame, depth = frame.f_back, depth + 1
+    return depth
+
+
+def test_walk_aborts_on_cyclic_data() -> None:
+    """
+    R5-F1/R5-F3: a cycle ends in RecursionError.
+
+    Not in placeholders (a walk that catches RecursionError per value grows with
+    2 ** depth at two back references per level), and not in a copy error. The tight
+    limit keeps the wrong outcome fast, so the test fails instead of hanging.
+    """
+    cyclic: list[Any] = []
+    cyclic.extend((cyclic, cyclic))
+    cyclic_dict: dict[str, Any] = {}
+    cyclic_dict.update(a=cyclic_dict, b=cyclic_dict)
+    table = services._build_table({})
+    pattern = re.compile(r"(?!x)x")
+    limit = sys.getrecursionlimit()
+    for data in (cyclic, cyclic_dict):
+        sys.setrecursionlimit(_stack_depth() + 45)
+        try:
+            with pytest.raises(RecursionError) as err:
+                services._redact_walk(table, pattern, "", data)
+        finally:
+            sys.setrecursionlimit(limit)
+        assert not isinstance(err.value, services._CopyChangedError)
 
 
 @pytest.mark.asyncio

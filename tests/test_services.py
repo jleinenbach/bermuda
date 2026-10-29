@@ -402,6 +402,61 @@ class TestBermudaServiceHandler:
         # The exception text may carry an identifier, so it is never logged.
         assert "aa:bb:cc:dd:ee:ff" not in caplog.text
 
+    def test_redact_data_failing_key_and_set_member_keep_their_neighbours(self) -> None:
+        """R5-F2/R5-F4: a raising key or set member becomes a placeholder text; its mapping or set stays."""
+
+        class RaisingClass:
+            def __init__(self, error: type[Exception]) -> None:
+                self.error = error
+
+            def __hash__(self) -> int:
+                return 1
+
+            @property  # type: ignore[misc]
+            def __class__(self) -> type:
+                raise object.__getattribute__(self, "error")("aa:bb:cc:dd:ee:ff")
+
+        device = MagicMock()
+        device.address_type = "public"
+        handler = self._create_handler(devices={"aa:bb:cc:dd:ee:ff": device})
+        with patch("custom_components.bermuda.services.monotonic_time_coarse", return_value=100.0):
+            handler.redaction_list_update()
+        handler.stamp_redactions_expiry = 200.0
+
+        with patch("custom_components.bermuda.services.monotonic_time_coarse", return_value=100.0):
+            result = handler.redact_data(
+                {"ok": "aa:bb:cc:dd:ee:ff", RaisingClass(ValueError): 1, "s": {"x", RaisingClass(KeyError)}}
+            )
+
+        placeholder = "<redaction failed: {}>"
+        assert "aa:bb:cc:dd:ee:ff" not in result["ok"]
+        (key,) = (k for k in result if k not in {"ok", "s"})
+        assert placeholder.format("ValueError") in key
+        assert result[key] == 1
+        assert isinstance(result["s"], set)
+        assert "x" in result["s"]
+        assert any(placeholder.format("KeyError") in member for member in result["s"])
+        assert "aa:bb:cc:dd:ee:ff" not in repr(result)
+
+    def test_redact_data_does_not_swallow_base_exceptions(self) -> None:
+        """R5-F4: only Exception becomes a placeholder; a BaseException such as a cancellation passes."""
+
+        class Stop(BaseException):
+            pass
+
+        class RaisingClass:
+            @property  # type: ignore[misc]
+            def __class__(self) -> type:
+                raise Stop
+
+        handler = self._create_handler()
+        handler.stamp_redactions_expiry = 200.0
+        with (
+            patch("custom_components.bermuda.services.monotonic_time_coarse", return_value=100.0),
+            pytest.raises(Stop),
+        ):
+            handler.redact_data({"a": RaisingClass()})
+
     def test_redact_data_advert_bytes_scanned_per_byte(self) -> None:
         """R2-F5: inside advert bytes a key is only matched on a byte boundary, not between nibbles."""
         device = MagicMock()
