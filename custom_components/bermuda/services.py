@@ -281,13 +281,24 @@ def _redact_object(table: RedactionTable, generic_re: re.Pattern[str], generic_s
     Redact an object that is neither a container nor a plain value.
 
     Such an object (e.g. a BLEDevice in the Bluetooth diagnostics) would be
-    serialized after redaction: the diagnostics endpoint uses ExtendedJSONEncoder,
-    which calls as_dict() or falls back to repr(), MAC address included. Produce
-    the same shape here, redacted.
+    serialized after redaction, and the serializer would render it with its
+    MAC address. The object is therefore replaced before that: bytes by their
+    redacted hex, others by the redacted mapping their as_dict() returns, otherwise by {"__type": ..., "repr": ...}
+    with the repr redacted, the fallback form of Home Assistant's JSON encoder.
+    Any value without its own case here takes this form, also where a
+    serializer would have rendered it differently (an Enum, a UUID, a Path).
     """
+    if isinstance(data, (bytes, bytearray, memoryview)):
+        # Manufacturer and service data carry iBeacon UUIDs and FMDN EIDs. Their repr
+        # (b'\x02\x15...') hides the hex run from the lookup but not from a reader,
+        # so they are rendered as hex and redacted like any other string.
+        return _redact_str(table, generic_re, generic_sub, bytes(data).hex())
     as_dict = getattr(data, "as_dict", None)
     if callable(as_dict):
-        mapped = as_dict()
+        try:
+            mapped = as_dict()
+        except Exception:  # noqa: BLE001 - any failure falls back to the redacted repr
+            mapped = None
         if isinstance(mapped, Mapping):
             return _redact_walk(table, generic_re, generic_sub, mapped)
     return {"__type": str(type(data)), "repr": _redact_str(table, generic_re, generic_sub, repr(data))}
