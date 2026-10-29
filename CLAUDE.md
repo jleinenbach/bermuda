@@ -576,8 +576,9 @@ The auto-learning system has been enhanced with statistical quality improvements
 │  ┌─────────────────────────────────────────────────────────────────────┐    │
 │  │ Minimum Interval Check (5 seconds)                                   │    │
 │  │                                                                      │    │
-│  │   if nowstamp - last_update_stamp < AUTO_LEARNING_MIN_INTERVAL:     │    │
+│  │   if 0 <= nowstamp - last_update_stamp < AUTO_LEARNING_MIN_INTERVAL:│    │
 │  │       return False  // Skip update - reduces autocorrelation        │    │
+│  │   (a stamp ahead of the clock is from before a reboot: no block)    │    │
 │  └─────────────────────────────────────────────────────────────────────┘    │
 │       │                                                                      │
 │       ▼ (only if interval OK)                                               │
@@ -639,7 +640,10 @@ class AreaProfile:
 
     def update(self, ..., nowstamp: float | None = None) -> bool:
         if nowstamp is not None:
-            if nowstamp - self._last_update_stamp < AUTO_LEARNING_MIN_INTERVAL:
+            elapsed = nowstamp - self._last_update_stamp
+            # The stamp is monotonic and stored; after a host reboot it lies ahead
+            # of the new clock (negative elapsed) and must not block.
+            if 0 <= elapsed < AUTO_LEARNING_MIN_INTERVAL:
                 return False  # Skip - too soon
             self._last_update_stamp = nowstamp
         # ... rest of update logic ...
@@ -726,7 +730,7 @@ The auto-learning system uses multiple quality controls to ensure statistically 
 │       ▼                                                                          │
 │  ┌─────────────────────────────────────────────────────────────────────────┐    │
 │  │ Feature 2: Minimum Interval Check (5 seconds)              ✅ IMPLEMENTED │    │
-│  │   if nowstamp - last_update_stamp < AUTO_LEARNING_MIN_INTERVAL:         │    │
+│  │   if 0 <= nowstamp - last_update_stamp < AUTO_LEARNING_MIN_INTERVAL:    │    │
 │  │       return False  # Skip to reduce autocorrelation (ρ: 0.95 → 0.82)   │    │
 │  └─────────────────────────────────────────────────────────────────────────┘    │
 │       │ Pass                                                                     │

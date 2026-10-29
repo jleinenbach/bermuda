@@ -823,3 +823,58 @@ class TestRoomProfileNewDataCheck:
         )
         # Note: This will return False due to "no new data"
         assert result is False
+
+
+class TestIntervalStampAcrossRestart:
+    """
+    A stored interval stamp from an earlier clock must not block learning.
+
+    The stamp comes from the monotonic clock. After a host reboot that clock
+    starts near zero, and a stamp restored from storage lies in its future.
+    ``now - stamp`` is then negative and smaller than the minimum interval, so
+    every update was rejected until the clock caught up (measured live: up to
+    61 days, 0 updates in 2 h).
+    """
+
+    def test_area_profile_restored_future_stamp_does_not_block(self) -> None:
+        """AreaProfile.update learns although the restored stamp lies ahead of now."""
+        from custom_components.bermuda.correlation.area_profile import AreaProfile
+
+        profile = AreaProfile.from_dict(
+            {
+                "area_id": "area.office",
+                "correlations": [],
+                "absolute_profiles": [],
+                "last_update_stamp": 5_000_000.0,
+            }
+        )
+
+        performed = profile.update(
+            primary_rssi=-55.0,
+            other_readings={"scanner_b": -70.0},
+            primary_scanner_addr="scanner_a",
+            nowstamp=400_000.0,
+        )
+
+        assert performed is True
+
+    def test_area_profile_interval_still_enforced_after_reset(self) -> None:
+        """The minimum interval still holds once the stamp is from the current clock."""
+        from custom_components.bermuda.correlation.area_profile import AreaProfile
+
+        profile = AreaProfile.from_dict(
+            {"area_id": "area.office", "correlations": [], "absolute_profiles": [], "last_update_stamp": 5_000_000.0}
+        )
+        assert profile.update(primary_rssi=-55.0, other_readings={"scanner_b": -70.0}, nowstamp=400_000.0)
+        assert not profile.update(primary_rssi=-55.0, other_readings={"scanner_b": -70.0}, nowstamp=400_001.0)
+
+    def test_room_profile_restored_future_stamp_does_not_block(self) -> None:
+        """RoomProfile.update learns although the restored stamp lies ahead of now."""
+        from custom_components.bermuda.correlation.room_profile import RoomProfile
+
+        profile = RoomProfile(area_id="area.office")
+        data = profile.to_dict()
+        data["last_update_stamp"] = 5_000_000.0
+        restored = RoomProfile.from_dict(data)
+
+        assert restored.update({"scanner_a": -55.0, "scanner_b": -70.0}, nowstamp=400_000.0) is True

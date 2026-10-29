@@ -191,6 +191,249 @@ class TestBermudaServiceHandler:
         assert "aa:bb:cc:dd:ee:ff" not in json_bytes(result).decode()
         assert result[1] == "other"
 
+    def test_redact_data_time_values_pass_through(self) -> None:
+        """Dates, times and durations keep their type: the encoder formats them itself."""
+        import datetime  # noqa: PLC0415
+
+        handler = self._create_handler()
+        handler.stamp_redactions_expiry = 200.0
+        values = (datetime.datetime(2026, 10, 28, 12, 0), datetime.time(12, 0), datetime.timedelta(seconds=5))
+
+        with patch("custom_components.bermuda.services.monotonic_time_coarse", return_value=100.0):
+            for value in values:
+                assert handler.redact_data(value) is value
+
+    def test_redact_data_object_with_as_dict(self) -> None:
+        """An object with as_dict() is redacted as that mapping, like the encoder would render it."""
+
+        class WithAsDict:
+            def as_dict(self) -> dict:
+                return {"address": "aa:bb:cc:dd:ee:ff", "name": "n"}
+
+        handler = self._create_handler()
+        handler.stamp_redactions_expiry = 200.0
+
+        with patch("custom_components.bermuda.services.monotonic_time_coarse", return_value=100.0):
+            result = handler.redact_data({"x": WithAsDict()})
+
+        assert result["x"]["name"] == "n"
+        assert "aa:bb:cc:dd:ee:ff" not in json.dumps(result)
+
+    def test_redact_data_object_as_repr(self) -> None:
+        """Any other object becomes the encoder's repr fallback, redacted; a non-mapping as_dict() counts as none."""
+
+        class Plain:
+            def __repr__(self) -> str:
+                return "Plain(aa:bb:cc:dd:ee:ff)"
+
+        class OddAsDict(Plain):
+            def as_dict(self) -> str:
+                return "aa:bb:cc:dd:ee:ff"
+
+        handler = self._create_handler()
+        handler.stamp_redactions_expiry = 200.0
+
+        with patch("custom_components.bermuda.services.monotonic_time_coarse", return_value=100.0):
+            for obj in (Plain(), OddAsDict()):
+                result = handler.redact_data(obj)
+                assert set(result) == {"__type", "repr"}
+                assert result["repr"].startswith("Plain(")
+                assert "aa:bb:cc:dd:ee:ff" not in result["repr"]
+
+    def test_redact_data_object_as_dict_unusable(self) -> None:
+        """A class object or an as_dict() that raises falls back to the redacted repr instead of aborting."""
+
+        class WithAsDict:
+            def as_dict(self) -> dict:
+                return {"address": "aa:bb:cc:dd:ee:ff"}
+
+            def __repr__(self) -> str:
+                return "WithAsDict(aa:bb:cc:dd:ee:ff)"
+
+        class Broken(WithAsDict):
+            def as_dict(self) -> dict:
+                msg = "aa:bb:cc:dd:ee:ff"
+                raise TypeError(msg)
+
+        handler = self._create_handler()
+        handler.stamp_redactions_expiry = 200.0
+
+        with patch("custom_components.bermuda.services.monotonic_time_coarse", return_value=100.0):
+            for obj in (WithAsDict, Broken()):
+                result = handler.redact_data({"x": obj})["x"]
+                assert set(result) == {"__type", "repr"}
+                assert "aa:bb:cc:dd:ee:ff" not in result["repr"]
+
+    def test_redact_data_bytes_as_redacted_hex(self) -> None:
+        """Bytes (manufacturer and service data) become hex with known ids redacted, not an escaped repr."""
+        uuid = "fda50693a4e24fb1afcfc6eb07647825"
+        beacon = MagicMock()
+        beacon.address_type = "ibeacon"
+        handler = self._create_handler(devices={f"{uuid}_1_2": beacon})
+        with patch("custom_components.bermuda.services.monotonic_time_coarse", return_value=100.0):
+            handler.redaction_list_update()
+        handler.stamp_redactions_expiry = 200.0
+        advert = bytes.fromhex("0215" + uuid + "00010002c5")
+
+        with patch("custom_components.bermuda.services.monotonic_time_coarse", return_value=100.0):
+            for value in (advert, bytearray(advert), memoryview(advert)):
+                result = handler.redact_data({"manufacturer_data": {76: value}})["manufacturer_data"][76]
+                assert isinstance(result, str)
+                assert uuid not in result.lower()
+                assert result.startswith("0215")
+            unknown = handler.redact_data(bytes.fromhex("0a0b0c"))
+
+        assert unknown == "0a0b0c"
+
+    def test_redact_data_reversed_mac_in_advert_bytes(self) -> None:
+        """R2-F1: a MAC in reversed byte order (Xiaomi fe95, pvvx 181a service data) is redacted."""
+        device = MagicMock()
+        device.address_type = "public"
+        handler = self._create_handler(devices={"a4:c1:38:12:34:56": device})
+        with patch("custom_components.bermuda.services.monotonic_time_coarse", return_value=100.0):
+            handler.redaction_list_update()
+        handler.stamp_redactions_expiry = 200.0
+        reversed_hex = "563412" + "38c1a4"
+        advert = bytes.fromhex("3050" + reversed_hex + "0d")
+
+        with patch("custom_components.bermuda.services.monotonic_time_coarse", return_value=100.0):
+            result = handler.redact_data({"service_data": {"fe95": advert}})["service_data"]["fe95"]
+            text = handler.redact_data(f"mac_le={reversed_hex}")
+
+        assert reversed_hex not in result
+        assert result.startswith("3050")
+        assert result.endswith("0d")
+        assert reversed_hex not in text
+        assert handler.redactions[reversed_hex] == handler.redactions["a4:c1:38:12:34:56"]
+
+    def test_redact_data_beacon_uuid_with_hyphens(self) -> None:
+        """R2-F6: the beacon UUID is redacted in its hyphenated text form and as uuid.UUID."""
+        import uuid as uuid_mod  # noqa: PLC0415
+
+        plain = "fda50693a4e24fb1afcfc6eb07647825"
+        hyphen = "fda50693-a4e2-4fb1-afcf-c6eb07647825"
+        beacon = MagicMock()
+        beacon.address_type = "ibeacon"
+        handler = self._create_handler(devices={f"{plain}_1_2": beacon})
+        with patch("custom_components.bermuda.services.monotonic_time_coarse", return_value=100.0):
+            handler.redaction_list_update()
+        handler.stamp_redactions_expiry = 200.0
+
+        with patch("custom_components.bermuda.services.monotonic_time_coarse", return_value=100.0):
+            text = handler.redact_data(f"uuid {hyphen.upper()} seen")
+            obj = handler.redact_data({"u": uuid_mod.UUID(hyphen)})["u"]
+
+        assert hyphen not in text.lower()
+        assert hyphen not in obj["repr"].lower()
+        assert handler.redactions[hyphen] == handler.redactions[plain]
+
+    def test_redact_data_object_whose_attributes_fail(self, caplog: pytest.LogCaptureFixture) -> None:
+        """R2-F2/R2-F3: a raising as_dict lookup, a raising repr and a released memoryview do not abort."""
+
+        class RaisingLookup:
+            @property
+            def as_dict(self) -> None:
+                msg = "aa:bb:cc:dd:ee:ff"
+                raise ValueError(msg)
+
+            def __repr__(self) -> str:
+                return "RaisingLookup(aa:bb:cc:dd:ee:ff)"
+
+        class RaisingRepr:
+            def __repr__(self) -> str:
+                msg = "aa:bb:cc:dd:ee:ff"
+                raise RuntimeError(msg)
+
+        released = memoryview(b"\x01\x02")
+        released.release()
+        handler = self._create_handler()
+        handler.stamp_redactions_expiry = 200.0
+
+        with (
+            caplog.at_level("DEBUG", logger="custom_components.bermuda"),
+            patch("custom_components.bermuda.services.monotonic_time_coarse", return_value=100.0),
+        ):
+            result = handler.redact_data({"a": RaisingLookup(), "b": RaisingRepr(), "c": released})
+
+        assert set(result["a"]) == {"__type", "repr"}
+        assert "aa:bb:cc:dd:ee:ff" not in result["a"]["repr"]
+        assert set(result["b"]) == {"__type", "repr"}
+        assert "aa:bb:cc:dd:ee:ff" not in result["b"]["repr"]
+        assert set(result["c"]) == {"__type", "repr"}
+        assert "RaisingLookup" in caplog.text
+        assert "RaisingRepr" in caplog.text
+        # The exception text may carry an identifier, so it is never logged.
+        assert "aa:bb:cc:dd:ee:ff" not in caplog.text
+
+    def test_redact_data_advert_bytes_scanned_per_byte(self) -> None:
+        """R2-F5: inside advert bytes a key is only matched on a byte boundary, not between nibbles."""
+        device = MagicMock()
+        device.address_type = "public"
+        handler = self._create_handler(devices={"a4:c1:38:12:34:56": device})
+        with patch("custom_components.bermuda.services.monotonic_time_coarse", return_value=100.0):
+            handler.redaction_list_update()
+        handler.stamp_redactions_expiry = 200.0
+        aligned = bytes.fromhex("01a4c138123456ff")
+        shifted = bytes.fromhex("0a4c138123456fff")  # same digits, shifted by one nibble
+
+        with patch("custom_components.bermuda.services.monotonic_time_coarse", return_value=100.0):
+            out = handler.redact_data([aligned, shifted])
+
+        assert "a4c138123456" not in out[0]
+        assert out[1] == shifted.hex()
+
+    def test_redact_data_advert_bytes_odd_key_keeps_byte_grid(self) -> None:
+        """R2-F5: a key of odd length cannot be whole bytes; matching it would shift the grid and miss a MAC."""
+        mac_dev = MagicMock()
+        mac_dev.address_type = "public"
+        odd_dev = MagicMock()
+        odd_dev.address_type = "public"
+        handler = self._create_handler(devices={"a4:c1:38:12:34:56": mac_dev, "abcde": odd_dev})
+        with patch("custom_components.bermuda.services.monotonic_time_coarse", return_value=100.0):
+            handler.redaction_list_update()
+        handler.stamp_redactions_expiry = 200.0
+        advert = bytes.fromhex("abcde0" + "a4c138123456")
+
+        with patch("custom_components.bermuda.services.monotonic_time_coarse", return_value=100.0):
+            out = handler.redact_data(advert)
+
+        assert "a4c138123456" not in out
+        assert out.startswith("abcde0")
+
+    def test_mac_and_uuid_keys_fallbacks_and_cache(self) -> None:
+        """R3-F1/R3-F6/R3-F7: the cached MAC formats stay untouched; non-MACs and non-UUIDs keep one key."""
+        from custom_components.bermuda.services import _mac_keys, _uuid_keys  # noqa: PLC0415
+        from custom_components.bermuda.util import mac_explode_formats  # noqa: PLC0415
+
+        before = set(mac_explode_formats("a4:c1:38:12:34:56"))
+        assert "56341238c1a4" in _mac_keys("a4:c1:38:12:34:56")
+        assert set(mac_explode_formats("a4:c1:38:12:34:56")) == before
+        assert _mac_keys("not-a-mac-17-char") == mac_explode_formats("not-a-mac-17-char")
+        assert _uuid_keys("1234") == {"1234"}
+        assert _uuid_keys("fda50693.a4e24fb1afcfc6eb0764782") == {"fda50693.a4e24fb1afcfc6eb0764782"}
+
+    def test_redaction_list_reads_fmdn_ids_from_devices(self) -> None:
+        """FMDN ids of a device enter the list without the manager; non-string attributes are ignored."""
+        from custom_components.bermuda.const import ADDR_TYPE_FMDN_DEVICE  # noqa: PLC0415
+
+        device = MagicMock()
+        device.address_type = ADDR_TYPE_FMDN_DEVICE
+        device.fmdn_device_id = "DevQuiet0815"
+        device.fmdn_canonical_id = None
+        unset = MagicMock()  # attributes never set: MagicMock children, not strings
+        unset.address_type = ADDR_TYPE_FMDN_DEVICE
+        other = MagicMock()
+        other.address_type = "public"
+        other.fmdn_device_id = "devnotfmdn99"
+        handler = self._create_handler(devices={"fmdn:k": device, "fmdn:u": unset, "aa:bb:cc:dd:ee:01": other})
+
+        with patch("custom_components.bermuda.services.monotonic_time_coarse", return_value=100.0):
+            handler.redaction_list_update()
+
+        assert handler.redactions["devquiet0815"].startswith("FMDN_DEV_")
+        assert all(isinstance(k, str) for k in handler.redactions)
+        assert "devnotfmdn99" not in handler.redactions
+
     def test_redact_data_generic_mac_redaction(self) -> None:
         """Test that redact_data handles generic MAC addresses."""
         handler = self._create_handler()
