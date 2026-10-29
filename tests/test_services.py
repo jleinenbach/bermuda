@@ -400,6 +400,18 @@ class TestBermudaServiceHandler:
         assert "a4c138123456" not in out
         assert out.startswith("abcde0")
 
+    def test_mac_and_uuid_keys_fallbacks_and_cache(self) -> None:
+        """R3-F1/R3-F6/R3-F7: the cached MAC formats stay untouched; non-MACs and non-UUIDs keep one key."""
+        from custom_components.bermuda.services import _mac_keys, _uuid_keys  # noqa: PLC0415
+        from custom_components.bermuda.util import mac_explode_formats  # noqa: PLC0415
+
+        before = set(mac_explode_formats("a4:c1:38:12:34:56"))
+        assert "56341238c1a4" in _mac_keys("a4:c1:38:12:34:56")
+        assert set(mac_explode_formats("a4:c1:38:12:34:56")) == before
+        assert _mac_keys("not-a-mac-17-char") == mac_explode_formats("not-a-mac-17-char")
+        assert _uuid_keys("1234") == {"1234"}
+        assert _uuid_keys("fda50693.a4e24fb1afcfc6eb0764782") == {"fda50693.a4e24fb1afcfc6eb0764782"}
+
     def test_redaction_list_reads_fmdn_ids_from_devices(self) -> None:
         """FMDN ids of a device enter the list without the manager; non-string attributes are ignored."""
         from custom_components.bermuda.const import ADDR_TYPE_FMDN_DEVICE  # noqa: PLC0415

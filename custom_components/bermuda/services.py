@@ -79,6 +79,7 @@ _SEQUENCE_KINDS: tuple[tuple[type, Any], ...] = (
 # A "run" is a hex sequence with optional single separators, the shape of every
 # MAC spelling, UUID, IRK, EID and HA device id in the redaction list.
 _RUN_SHAPE = re.compile(r"[0-9a-f]+(?:[:._-][0-9a-f]+)*\Z")
+_HEX32 = re.compile(r"[0-9a-f]{32}")
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -161,7 +162,7 @@ def _mac_keys(address: str) -> set[str]:
     separators: some service data (Xiaomi fe95, pvvx 181a) carries the MAC
     little-endian.
     """
-    keys = mac_explode_formats(address)
+    keys = set(mac_explode_formats(address))  # a copy: the result is lru-cached and shared
     if is_mac_address(address):
         keys.add("".join(reversed(normalize_mac(address).split(":"))))
     return keys
@@ -170,7 +171,7 @@ def _mac_keys(address: str) -> set[str]:
 def _uuid_keys(uuid: str) -> set[str]:
     """A beacon UUID as found in adverts (plain hex) and in text or uuid.UUID (with hyphens)."""
     plain = uuid.replace("-", "")
-    if len(plain) != 32 or not _RUN_SHAPE.match(plain):
+    if not _HEX32.fullmatch(plain):
         return {uuid}
     return {plain, f"{plain[:8]}-{plain[8:12]}-{plain[12:16]}-{plain[16:20]}-{plain[20:]}"}
 
