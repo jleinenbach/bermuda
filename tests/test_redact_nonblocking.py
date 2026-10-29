@@ -458,12 +458,16 @@ def test_walk_still_aborts_on_lasting_copy_failure() -> None:
 
     class AlwaysChanging(dict[str, str]):
         def items(self) -> Any:
-            msg = "dictionary changed size during iteration"
+            msg = "changed size near aa:bb:cc:dd:ee:ff"
             raise RuntimeError(msg)
 
     table = services._build_table({})
-    with pytest.raises(RuntimeError, match="changed"):
+    with pytest.raises(RuntimeError, match="changed") as err:
         services._redact_walk(table, re.compile(r"(?!x)x"), "", {"outer": [AlwaysChanging(k="v")]})
+    # Home Assistant logs the traceback with its chain; the container's text must not be in it.
+    assert "aa:bb:cc:dd:ee:ff" not in str(err.value)
+    assert err.value.__cause__ is None
+    assert err.value.__suppress_context__
 
 
 @pytest.mark.asyncio
