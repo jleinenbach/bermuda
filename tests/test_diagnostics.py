@@ -317,3 +317,38 @@ class TestDiagnosticsRedaction:
 
         assert "ab:cd:ef:01:23:45" not in text
         assert "bledevice(" in text
+
+    @pytest.mark.asyncio
+    async def test_diagnostics_advert_bytes_redacted_for_endpoint_encoder(self, hass: HomeAssistant) -> None:
+        """T-R18: iBeacon UUID and EID inside advert bytes of the Bluetooth history are redacted."""
+        import json  # noqa: PLC0415
+
+        from homeassistant.helpers.json import ExtendedJSONEncoder  # noqa: PLC0415
+
+        uuid = "fda50693a4e24fb1afcfc6eb07647825"
+        eid = bytes.fromhex("0f1e2d3c4b5a69788796a5b4c3d2e1f00102030a")
+        beacon = MagicMock()
+        beacon.address_type = "ibeacon"
+        beacon.to_dict = MagicMock(return_value={"name": "beacon"})
+        coord = _real_diag_coordinator(hass, devices={f"{uuid}_1_2": beacon})
+        coord.fmdn.manager.record_eid_seen(
+            eid, "c1:d2:e3:f4:a5:b6", resolution_status="dev1", device_id="dev1", canonical_id="canon1"
+        )
+        advert = {
+            "manufacturer_data": {76: bytes.fromhex("0215" + uuid + "00010002c5")},
+            "service_data": {"0000feaa-0000-1000-8000-00805f9b34fb": bytes.fromhex("41") + eid},
+        }
+        coord._manager.async_diagnostics = AsyncMock(return_value={"all_history": [advert]})
+
+        entry = MagicMock()
+        entry.runtime_data.coordinator = coord
+        result = await async_get_config_entry_diagnostics(hass, entry)
+        text = json.dumps(result, cls=ExtendedJSONEncoder).lower()
+
+        # An escaped bytes repr hides the hex run from a text search but not from a reader.
+        assert "\\\\x" not in text
+        assert uuid not in text
+        assert eid.hex() not in text
+        handler = coord.service_handler
+        assert handler.redactions[uuid].lower() in text
+        assert handler.redactions[eid.hex()].lower() in text

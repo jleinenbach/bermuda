@@ -240,6 +240,51 @@ class TestBermudaServiceHandler:
                 assert result["repr"].startswith("Plain(")
                 assert "aa:bb:cc:dd:ee:ff" not in result["repr"]
 
+    def test_redact_data_object_as_dict_unusable(self) -> None:
+        """A class object or an as_dict() that raises falls back to the redacted repr instead of aborting."""
+
+        class WithAsDict:
+            def as_dict(self) -> dict:
+                return {"address": "aa:bb:cc:dd:ee:ff"}
+
+            def __repr__(self) -> str:
+                return "WithAsDict(aa:bb:cc:dd:ee:ff)"
+
+        class Broken(WithAsDict):
+            def as_dict(self) -> dict:
+                msg = "aa:bb:cc:dd:ee:ff"
+                raise TypeError(msg)
+
+        handler = self._create_handler()
+        handler.stamp_redactions_expiry = 200.0
+
+        with patch("custom_components.bermuda.services.monotonic_time_coarse", return_value=100.0):
+            for obj in (WithAsDict, Broken()):
+                result = handler.redact_data({"x": obj})["x"]
+                assert set(result) == {"__type", "repr"}
+                assert "aa:bb:cc:dd:ee:ff" not in result["repr"]
+
+    def test_redact_data_bytes_as_redacted_hex(self) -> None:
+        """Bytes (manufacturer and service data) become hex with known ids redacted, not an escaped repr."""
+        uuid = "fda50693a4e24fb1afcfc6eb07647825"
+        beacon = MagicMock()
+        beacon.address_type = "ibeacon"
+        handler = self._create_handler(devices={f"{uuid}_1_2": beacon})
+        with patch("custom_components.bermuda.services.monotonic_time_coarse", return_value=100.0):
+            handler.redaction_list_update()
+        handler.stamp_redactions_expiry = 200.0
+        advert = bytes.fromhex("0215" + uuid + "00010002c5")
+
+        with patch("custom_components.bermuda.services.monotonic_time_coarse", return_value=100.0):
+            for value in (advert, bytearray(advert), memoryview(advert)):
+                result = handler.redact_data({"manufacturer_data": {76: value}})["manufacturer_data"][76]
+                assert isinstance(result, str)
+                assert uuid not in result.lower()
+                assert result.startswith("0215")
+            unknown = handler.redact_data(bytes.fromhex("0a0b0c"))
+
+        assert unknown == "0a0b0c"
+
     def test_redaction_list_reads_fmdn_ids_from_devices(self) -> None:
         """FMDN ids of a device enter the list without the manager; non-string attributes are ignored."""
         from custom_components.bermuda.const import ADDR_TYPE_FMDN_DEVICE  # noqa: PLC0415
