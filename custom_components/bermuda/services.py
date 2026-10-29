@@ -390,7 +390,9 @@ def _redact_object(table: RedactionTable, generic_re: re.Pattern[str], generic_s
     # Any failure of a foreign object (a raising property, as_dict or repr) falls back
     # to a redacted placeholder instead of aborting the dump. The exception text is not
     # logged: it may carry the very identifiers this function removes. A RecursionError
-    # is passed on to _redact_walk, which aborts the walk (see there).
+    # from as_dict() is passed on to _redact_walk, which aborts the walk (see there):
+    # a cycle can run through as_dict(). repr() does not enter the walk again, so a
+    # RecursionError there is the object's own and gets the replacement form.
     try:
         as_dict = getattr(data, "as_dict", None)
         mapped = as_dict() if callable(as_dict) else None
@@ -403,8 +405,6 @@ def _redact_object(table: RedactionTable, generic_re: re.Pattern[str], generic_s
         return _redact_walk(table, generic_re, generic_sub, mapped)
     try:
         text = repr(data)
-    except RecursionError:
-        raise
     except Exception as err:  # noqa: BLE001 - see above
         _LOGGER.debug("repr of %s failed (%s)", type(data).__name__, type(err).__name__)
         text = f"<{type(data).__name__} without repr>"
