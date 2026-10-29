@@ -34,7 +34,7 @@ from .const import (
     DOMAIN,
     PRUNE_TIME_REDACTIONS,
 )
-from .util import mac_explode_formats
+from .util import is_mac_address, mac_explode_formats, normalize_mac
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator
@@ -153,30 +153,63 @@ def _build_table(source: Mapping[str, str]) -> RedactionTable:
     return RedactionTable(source=dict(source), mapping=mapping, runs=runs, run_lengths=run_lengths, other=other)
 
 
-def _redact_run(table: RedactionTable, run: str) -> str:
+def _mac_keys(address: str) -> set[str]:
+    """
+    Spellings of a MAC as found in device info, adverts and logs.
+
+    The forms of mac_explode_formats, plus the reversed byte order without
+    separators: some service data (Xiaomi fe95, pvvx 181a) carries the MAC
+    little-endian.
+    """
+    keys = mac_explode_formats(address)
+    if is_mac_address(address):
+        keys.add("".join(reversed(normalize_mac(address).split(":"))))
+    return keys
+
+
+def _uuid_keys(uuid: str) -> set[str]:
+    """A beacon UUID as found in adverts (plain hex) and in text or uuid.UUID (with hyphens)."""
+    plain = uuid.replace("-", "")
+    if len(plain) != 32 or not _RUN_SHAPE.match(plain):
+        return {uuid}
+    return {plain, f"{plain[:8]}-{plain[8:12]}-{plain[12:16]}-{plain[16:20]}-{plain[20:]}"}
+
+
+def _add_ibeacon(work: dict[str, str], address: str, tag: str) -> None:
+    """Enter an iBeacon address (``uuid_major_minor``) and its raw UUID, plain and with hyphens."""
+    work[address] = f"{address[:4]}::{tag}::{address[32:]}"
+    for uuid_key in _uuid_keys(address.split("_", maxsplit=1)[0]):
+        work[uuid_key] = f"{address[:4]}::{tag}_{address[32:]}::"
+
+
+def _redact_run(table: RedactionTable, run: str, step: int = 1) -> str:
     """
     Replace the keys inside one run, leftmost and longest first.
 
     Most runs are a key (a MAC, a UUID) and need one lookup. A longer run,
     such as manufacturer data, may contain a key anywhere; it is scanned
-    with one lookup per position and key length.
+    with one lookup per position and key length. ``step`` 2 is for the hex of
+    bytes: a key embedded in bytes starts on a byte boundary and is whole
+    bytes long, so odd positions and odd lengths are skipped. Text runs keep
+    step 1, since text may place a key at any digit.
     """
     low = run.lower()
     whole = table.mapping.get(low)
     if whole is not None:
         return whole
+    lengths = table.run_lengths if step == 1 else tuple(n for n in table.run_lengths if n % step == 0)
     parts: list[str] = []
     size = len(run)
     start = done = 0
     while start < size:
-        for length in table.run_lengths:
+        for length in lengths:
             end = start + length
             if end <= size and (hit := table.mapping.get(low[start:end])) is not None:
                 parts.extend((run[done:start], hit))
                 start = done = end
                 break
         else:
-            start += 1
+            start += step
     if not parts:
         return run
     parts.append(run[done:])
@@ -291,17 +324,32 @@ def _redact_object(table: RedactionTable, generic_re: re.Pattern[str], generic_s
     if isinstance(data, (bytes, bytearray, memoryview)):
         # Manufacturer and service data carry iBeacon UUIDs and FMDN EIDs. Their repr
         # (b'\x02\x15...') hides the hex run from the lookup but not from a reader,
-        # so they are rendered as hex and redacted like any other string.
-        return _redact_str(table, generic_re, generic_sub, bytes(data).hex())
-    as_dict = getattr(data, "as_dict", None)
-    if callable(as_dict):
+        # so they are rendered as hex and redacted. Plain hex has no separator and no
+        # other character, so neither the non-run keys nor the generic MAC pattern
+        # can match in it; the run scan alone is the whole redaction.
         try:
-            mapped = as_dict()
-        except Exception:  # noqa: BLE001 - any failure falls back to the redacted repr
-            mapped = None
-        if isinstance(mapped, Mapping):
-            return _redact_walk(table, generic_re, generic_sub, mapped)
-    return {"__type": str(type(data)), "repr": _redact_str(table, generic_re, generic_sub, repr(data))}
+            raw = bytes(data)
+        except ValueError:  # a released memoryview; its repr names no content
+            raw = None
+        if raw is not None:
+            return _redact_run(table, raw.hex(), step=2)
+    # Any failure of a foreign object (a raising property, as_dict or repr) falls back
+    # to a redacted placeholder instead of aborting the dump. The exception text is not
+    # logged: it may carry the very identifiers this function removes.
+    try:
+        as_dict = getattr(data, "as_dict", None)
+        mapped = as_dict() if callable(as_dict) else None
+    except Exception as err:  # noqa: BLE001 - see above
+        _LOGGER.debug("as_dict of %s failed (%s), using the redacted repr", type(data).__name__, type(err).__name__)
+        mapped = None
+    if isinstance(mapped, Mapping):
+        return _redact_walk(table, generic_re, generic_sub, mapped)
+    try:
+        text = repr(data)
+    except Exception as err:  # noqa: BLE001 - see above
+        _LOGGER.debug("repr of %s failed (%s)", type(data).__name__, type(err).__name__)
+        text = f"<{type(data).__name__} without repr>"
+    return {"__type": str(type(data)), "repr": _redact_str(table, generic_re, generic_sub, text)}
 
 
 @callback
@@ -510,7 +558,7 @@ class BermudaServiceHandler:
             address = non_lower_address.lower()
             if address not in work:
                 i += 1
-                for altmac in mac_explode_formats(address):
+                for altmac in _mac_keys(address):
                     work[altmac] = f"{address[:2]}::SCANNER_{i}::{address[-2:]}"
         _LOGGER.debug("Redact scanners: %ss, %d items", monotonic_time_coarse() - _stamp, len(work))
 
@@ -520,11 +568,9 @@ class BermudaServiceHandler:
             if address not in work:
                 i += 1
                 if address.count("_") == 2:
-                    work[address] = f"{address[:4]}::CFG_iBea_{i}::{address[32:]}"
-                    # Raw uuid in advert
-                    work[address.split("_")[0]] = f"{address[:4]}::CFG_iBea_{i}_{address[32:]}::"
+                    _add_ibeacon(work, address, f"CFG_iBea_{i}")
                 elif len(address) == 17:
-                    for altmac in mac_explode_formats(address):
+                    for altmac in _mac_keys(address):
                         work[altmac] = f"{address[:2]}::CFG_MAC_{i}::{address[-2:]}"
                 else:
                     # Don't know what it is, but not a mac.
@@ -542,11 +588,9 @@ class BermudaServiceHandler:
                 if device.address_type == ADDR_TYPE_PRIVATE_BLE_DEVICE:
                     work[address] = f"{address[:4]}::IRK_DEV_{i}"
                 elif address.count("_") == 2:
-                    work[address] = f"{address[:4]}::OTHER_iBea_{i}::{address[32:]}"
-                    # Raw uuid in advert
-                    work[address.split("_")[0]] = f"{address[:4]}::OTHER_iBea_{i}_{address[32:]}::"
+                    _add_ibeacon(work, address, f"OTHER_iBea_{i}")
                 elif len(address) == 17:  # a MAC
-                    for altmac in mac_explode_formats(address):
+                    for altmac in _mac_keys(address):
                         work[altmac] = f"{address[:2]}::OTHER_MAC_{i}::{address[-2:]}"
                 else:
                     # Don't know what it is.

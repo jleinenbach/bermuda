@@ -382,6 +382,24 @@ class TestBermudaServiceHandler:
         assert "a4c138123456" not in out[0]
         assert out[1] == shifted.hex()
 
+    def test_redact_data_advert_bytes_odd_key_keeps_byte_grid(self) -> None:
+        """R2-F5: a key of odd length cannot be whole bytes; matching it would shift the grid and miss a MAC."""
+        mac_dev = MagicMock()
+        mac_dev.address_type = "public"
+        odd_dev = MagicMock()
+        odd_dev.address_type = "public"
+        handler = self._create_handler(devices={"a4:c1:38:12:34:56": mac_dev, "abcde": odd_dev})
+        with patch("custom_components.bermuda.services.monotonic_time_coarse", return_value=100.0):
+            handler.redaction_list_update()
+        handler.stamp_redactions_expiry = 200.0
+        advert = bytes.fromhex("abcde0" + "a4c138123456")
+
+        with patch("custom_components.bermuda.services.monotonic_time_coarse", return_value=100.0):
+            out = handler.redact_data(advert)
+
+        assert "a4c138123456" not in out
+        assert out.startswith("abcde0")
+
     def test_redaction_list_reads_fmdn_ids_from_devices(self) -> None:
         """FMDN ids of a device enter the list without the manager; non-string attributes are ignored."""
         from custom_components.bermuda.const import ADDR_TYPE_FMDN_DEVICE  # noqa: PLC0415
