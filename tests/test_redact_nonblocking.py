@@ -453,6 +453,19 @@ def test_copy_retries_then_raises() -> None:
         services._copy(broken, [1])
 
 
+def test_walk_still_aborts_on_lasting_copy_failure() -> None:
+    """A container that keeps changing while it is copied aborts the dump; it is not replaced by a placeholder."""
+
+    class AlwaysChanging(dict[str, str]):
+        def items(self) -> Any:
+            msg = "dictionary changed size during iteration"
+            raise RuntimeError(msg)
+
+    table = services._build_table({})
+    with pytest.raises(RuntimeError, match="changed"):
+        services._redact_walk(table, re.compile(r"(?!x)x"), "", {"outer": [AlwaysChanging(k="v")]})
+
+
 @pytest.mark.asyncio
 async def test_list_update_in_batches_covers_every_device(hass: HomeAssistant) -> None:
     """More devices than one batch: the async list update still names every device."""
