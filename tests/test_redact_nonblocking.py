@@ -471,6 +471,18 @@ def test_walk_still_aborts_on_lasting_copy_failure() -> None:
     assert err.value.__suppress_context__
 
 
+def test_copy_passes_recursion_error_through() -> None:
+    """R5-F3: a RecursionError while copying is not reported as a container that changed."""
+
+    def too_deep(_container: list[int]) -> tuple[int, ...]:
+        msg = "maximum recursion depth exceeded"
+        raise RecursionError(msg)
+
+    with pytest.raises(RecursionError) as err:
+        services._copy(too_deep, [1])
+    assert not isinstance(err.value, services._CopyChangedError)
+
+
 def _stack_depth() -> int:
     frame, depth = sys._getframe(), 0  # noqa: SLF001 - frame count for a tight recursion limit
     while frame is not None:
