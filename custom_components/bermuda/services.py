@@ -217,6 +217,10 @@ def _redact_run(table: RedactionTable, run: str, step: int = 1) -> str:
     return "".join(parts)
 
 
+class _CopyChangedError(RuntimeError):
+    """A container kept changing while it was copied; the walk is aborted, not patched over."""
+
+
 def _copy(make: Any, container: Any) -> Any:
     """
     Copy ``container`` with ``make`` before iterating it.
@@ -224,14 +228,17 @@ def _copy(make: Any, container: Any) -> Any:
     ``list(d.items())`` and ``tuple(seq)`` run as one C call and do not let the
     loop thread in between, so the walk never iterates a container that changes
     under it. A garbage collector run or a finalizer can still release the GIL
-    in rare cases, hence the retry.
+    in rare cases, hence the retry. A lasting failure raises ``_CopyChangedError``
+    with a fixed message and without the original exception attached: its text
+    comes from the container and may carry an identifier.
     """
     for attempt in range(_COPY_ATTEMPTS):
         try:
             return make(container)
         except RuntimeError:
             if attempt == _COPY_ATTEMPTS - 1:
-                raise
+                msg = "container changed while it was copied for redaction"
+                raise _CopyChangedError(msg) from None
     return make(container)  # pragma: no cover - loop above always returns or raises
 
 
@@ -286,7 +293,26 @@ def _redact_walk(table: RedactionTable, generic_re: re.Pattern[str], generic_sub
 
     Pure function of its arguments, so it may run in the executor. Every
     mutable container is copied before it is iterated (see ``_copy``).
+
+    Each value is redacted on its own: a value whose redaction raises, such as
+    an object that fails already at ``isinstance`` (a raising ``__class__`` or
+    ``__getattribute__``), is replaced by a placeholder and the walk goes on
+    with its neighbours. The exception text is not logged, it may carry the
+    very identifiers removed here. A container that keeps changing while it
+    is copied still aborts the walk (``_CopyChangedError``).
     """
+    try:
+        return _redact_value(table, generic_re, generic_sub, data)
+    except _CopyChangedError:
+        raise
+    except Exception as err:  # noqa: BLE001 - see above
+        name = type(err).__name__
+        _LOGGER.debug("redaction failed (%s), using a placeholder", name)
+        return {"__type": "<unavailable>", "repr": f"<redaction failed: {name}>"}
+
+
+def _redact_value(table: RedactionTable, generic_re: re.Pattern[str], generic_sub: str, data: Any) -> Any:
+    """Redact one value by its kind; containers recurse through ``_redact_walk``."""
     if isinstance(data, str):
         return _redact_str(table, generic_re, generic_sub, data)
     if isinstance(data, Mapping):
