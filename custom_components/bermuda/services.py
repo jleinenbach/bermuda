@@ -217,6 +217,10 @@ def _redact_run(table: RedactionTable, run: str, step: int = 1) -> str:
     return "".join(parts)
 
 
+class _CopyChangedError(RuntimeError):
+    """A container kept changing while it was copied; the walk is aborted, not patched over."""
+
+
 def _copy(make: Any, container: Any) -> Any:
     """
     Copy ``container`` with ``make`` before iterating it.
@@ -224,14 +228,20 @@ def _copy(make: Any, container: Any) -> Any:
     ``list(d.items())`` and ``tuple(seq)`` run as one C call and do not let the
     loop thread in between, so the walk never iterates a container that changes
     under it. A garbage collector run or a finalizer can still release the GIL
-    in rare cases, hence the retry.
+    in rare cases, hence the retry. A lasting failure raises ``_CopyChangedError``
+    with a fixed message, and ``from None`` keeps the original exception out of
+    the logged traceback (it stays reachable as ``__context__``): its text comes
+    from the container and may carry an identifier.
     """
     for attempt in range(_COPY_ATTEMPTS):
         try:
             return make(container)
+        except RecursionError:
+            raise  # data nested too deep or cyclic, not a concurrent change
         except RuntimeError:
             if attempt == _COPY_ATTEMPTS - 1:
-                raise
+                msg = "container changed while it was copied for redaction"
+                raise _CopyChangedError(msg) from None
     return make(container)  # pragma: no cover - loop above always returns or raises
 
 
@@ -248,6 +258,20 @@ def _redact_str(table: RedactionTable, generic_re: re.Pattern[str], generic_sub:
         if table.runs is not None:
             text = table.runs.sub(lambda m: _redact_run(table, m.group(0)), text)
     return generic_re.sub(generic_sub, text)
+
+
+def _hashable(value: Any) -> Any:
+    """
+    A redacted key or set member as something hashable.
+
+    A placeholder or the ``{"__type", "repr"}`` form of an object is a dict;
+    as a key or set member it becomes its repr, which holds only redacted text.
+    """
+    try:
+        hash(value)
+    except TypeError:
+        return repr(value)
+    return value
 
 
 def _redact_mapping(
@@ -269,7 +293,7 @@ def _redact_mapping(
         time.sleep(0)
     out: dict[Any, Any] = {}
     for key, value in items:
-        new_key = _redact_walk(table, generic_re, generic_sub, key)
+        new_key = _hashable(_redact_walk(table, generic_re, generic_sub, key))
         if new_key in out:
             base = new_key if isinstance(new_key, str) else repr(new_key)
             n = 2
@@ -286,7 +310,33 @@ def _redact_walk(table: RedactionTable, generic_re: re.Pattern[str], generic_sub
 
     Pure function of its arguments, so it may run in the executor. Every
     mutable container is copied before it is iterated (see ``_copy``).
+
+    Each value is redacted on its own: a value whose redaction raises, such as
+    an object that fails already at ``isinstance`` (a raising ``__class__`` or
+    ``__getattribute__``), is replaced by a placeholder and the walk goes on
+    with its neighbours. The exception text is not logged, it may carry the
+    very identifiers removed here. A container that keeps changing while it
+    is copied (``_CopyChangedError``) and data nested too deep or cyclic
+    (``RecursionError``) still abort the walk: caught per value, a cycle with
+    two back references per level would grow with 2 ** depth. The
+    RecursionError leaves with a fixed text, as a foreign one may carry an
+    identifier.
     """
+    try:
+        return _redact_value(table, generic_re, generic_sub, data)
+    except _CopyChangedError:
+        raise
+    except RecursionError:
+        msg = "data nested too deeply or cyclic for redaction"
+        raise RecursionError(msg) from None
+    except Exception as err:  # noqa: BLE001 - see above
+        name = type(err).__name__
+        _LOGGER.debug("redaction failed (%s), using a placeholder", name)
+        return {"__type": "<unavailable>", "repr": f"<redaction failed: {name}>"}
+
+
+def _redact_value(table: RedactionTable, generic_re: re.Pattern[str], generic_sub: str, data: Any) -> Any:
+    """Redact one value by its kind; containers recurse through ``_redact_walk``."""
     if isinstance(data, str):
         return _redact_str(table, generic_re, generic_sub, data)
     if isinstance(data, Mapping):
@@ -296,7 +346,10 @@ def _redact_walk(table: RedactionTable, generic_re: re.Pattern[str], generic_sub
         if isinstance(data, kind):
             # Redacted members of a set may coincide; a set has no place to keep both.
             # tuple() of a tuple returns the same object, so this copies only what can change.
-            return make(_redact_walk(table, generic_re, generic_sub, v) for v in _copy(tuple, data))
+            members = (_redact_walk(table, generic_re, generic_sub, v) for v in _copy(tuple, data))
+            if make is set or make is frozenset:
+                members = (_hashable(m) for m in members)
+            return make(members)
     if dataclasses.is_dataclass(data) and not isinstance(data, type):
         # Dataclass values (e.g. AreaTests in BermudaDevice.to_dict) would otherwise be
         # serialized with their fields untouched, MAC addresses included. A shallow field
@@ -336,10 +389,15 @@ def _redact_object(table: RedactionTable, generic_re: re.Pattern[str], generic_s
             return _redact_run(table, raw.hex(), step=2)
     # Any failure of a foreign object (a raising property, as_dict or repr) falls back
     # to a redacted placeholder instead of aborting the dump. The exception text is not
-    # logged: it may carry the very identifiers this function removes.
+    # logged: it may carry the very identifiers this function removes. A RecursionError
+    # from as_dict() is passed on to _redact_walk, which aborts the walk (see there):
+    # a cycle can run through as_dict(). repr() does not enter the walk again, so a
+    # RecursionError there is the object's own and gets the replacement form.
     try:
         as_dict = getattr(data, "as_dict", None)
         mapped = as_dict() if callable(as_dict) else None
+    except RecursionError:
+        raise
     except Exception as err:  # noqa: BLE001 - see above
         _LOGGER.debug("as_dict of %s failed (%s), using the redacted repr", type(data).__name__, type(err).__name__)
         mapped = None

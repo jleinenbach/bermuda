@@ -365,6 +365,115 @@ class TestBermudaServiceHandler:
         # The exception text may carry an identifier, so it is never logged.
         assert "aa:bb:cc:dd:ee:ff" not in caplog.text
 
+    def test_redact_data_object_failing_type_check(self, caplog: pytest.LogCaptureFixture) -> None:
+        """
+        R3-F2: an object that fails already at isinstance is replaced; the dump and its neighbours go on.
+
+        A raising ``__getattribute__`` fails the type check on every Python only with an error
+        other than AttributeError: since CPython 3.14.9 the ABC check looks up ``__class__``
+        as an optional attribute and falls back to the type on AttributeError (``_abc.c``).
+        """
+
+        class RaisingGetattribute:
+            def __init__(self, error: type[Exception]) -> None:
+                object.__setattr__(self, "error", error)
+
+            def __getattribute__(self, name: str) -> object:
+                msg = f"no {name} for aa:bb:cc:dd:ee:ff"
+                raise object.__getattribute__(self, "error")(msg)
+
+        class RaisingClass:
+            @property  # type: ignore[misc]
+            def __class__(self) -> type:
+                msg = "aa:bb:cc:dd:ee:ff"
+                raise RuntimeError(msg)
+
+        device = MagicMock()
+        device.address_type = "public"
+        handler = self._create_handler(devices={"aa:bb:cc:dd:ee:ff": device})
+        with patch("custom_components.bermuda.services.monotonic_time_coarse", return_value=100.0):
+            handler.redaction_list_update()
+        handler.stamp_redactions_expiry = 200.0
+
+        with (
+            caplog.at_level("DEBUG", logger="custom_components.bermuda"),
+            patch("custom_components.bermuda.services.monotonic_time_coarse", return_value=100.0),
+        ):
+            result = handler.redact_data(
+                {
+                    "a": RaisingGetattribute(ValueError),
+                    "b": [RaisingClass()],
+                    "c": "seen aa:bb:cc:dd:ee:ff",
+                    "d": RaisingGetattribute(AttributeError),
+                }
+            )
+
+        assert result["a"] == {"__type": "<unavailable>", "repr": "<redaction failed: ValueError>"}
+        assert result["b"] == [{"__type": "<unavailable>", "repr": "<redaction failed: RuntimeError>"}]
+        assert "aa:bb:cc:dd:ee:ff" not in result["c"]
+        # Placeholder up to CPython 3.14.8, the repr form from 3.14.9 on; either way no abort and no MAC.
+        assert set(result["d"]) == {"__type", "repr"}
+        assert "aa:bb:cc:dd:ee:ff" not in str(result["d"])
+        assert "redaction failed (ValueError)" in caplog.text
+        assert "redaction failed (RuntimeError)" in caplog.text
+        # The exception text may carry an identifier, so it is never logged.
+        assert "aa:bb:cc:dd:ee:ff" not in caplog.text
+
+    def test_redact_data_failing_key_and_set_member_keep_their_neighbours(self) -> None:
+        """R5-F2/R5-F4: a raising key or set member becomes a placeholder text; its mapping or set stays."""
+
+        class RaisingClass:
+            def __init__(self, error: type[Exception]) -> None:
+                self.error = error
+
+            def __hash__(self) -> int:
+                return 1
+
+            @property  # type: ignore[misc]
+            def __class__(self) -> type:
+                raise object.__getattribute__(self, "error")("aa:bb:cc:dd:ee:ff")
+
+        device = MagicMock()
+        device.address_type = "public"
+        handler = self._create_handler(devices={"aa:bb:cc:dd:ee:ff": device})
+        with patch("custom_components.bermuda.services.monotonic_time_coarse", return_value=100.0):
+            handler.redaction_list_update()
+        handler.stamp_redactions_expiry = 200.0
+
+        with patch("custom_components.bermuda.services.monotonic_time_coarse", return_value=100.0):
+            result = handler.redact_data(
+                {"ok": "aa:bb:cc:dd:ee:ff", RaisingClass(ValueError): 1, "s": {"x", RaisingClass(KeyError)}}
+            )
+
+        placeholder = "<redaction failed: {}>"
+        assert "aa:bb:cc:dd:ee:ff" not in result["ok"]
+        (key,) = (k for k in result if k not in {"ok", "s"})
+        assert placeholder.format("ValueError") in key
+        assert result[key] == 1
+        assert isinstance(result["s"], set)
+        assert "x" in result["s"]
+        assert any(placeholder.format("KeyError") in member for member in result["s"])
+        assert "aa:bb:cc:dd:ee:ff" not in repr(result)
+
+    def test_redact_data_does_not_swallow_base_exceptions(self) -> None:
+        """R5-F4: only Exception becomes a placeholder; a BaseException such as a cancellation passes."""
+
+        class Stop(BaseException):
+            pass
+
+        class RaisingClass:
+            @property  # type: ignore[misc]
+            def __class__(self) -> type:
+                raise Stop
+
+        handler = self._create_handler()
+        handler.stamp_redactions_expiry = 200.0
+        with (
+            patch("custom_components.bermuda.services.monotonic_time_coarse", return_value=100.0),
+            pytest.raises(Stop),
+        ):
+            handler.redact_data({"a": RaisingClass()})
+
     def test_redact_data_advert_bytes_scanned_per_byte(self) -> None:
         """R2-F5: inside advert bytes a key is only matched on a byte boundary, not between nibbles."""
         device = MagicMock()
@@ -405,10 +514,16 @@ class TestBermudaServiceHandler:
         from custom_components.bermuda.services import _mac_keys, _uuid_keys  # noqa: PLC0415
         from custom_components.bermuda.util import mac_explode_formats  # noqa: PLC0415
 
-        before = set(mac_explode_formats("a4:c1:38:12:34:56"))
-        assert "56341238c1a4" in _mac_keys("a4:c1:38:12:34:56")
-        assert set(mac_explode_formats("a4:c1:38:12:34:56")) == before
-        assert _mac_keys("not-a-mac-17-char") == mac_explode_formats("not-a-mac-17-char")
+        # R4-F1: an earlier test may already have cached this MAC; start from an empty cache
+        # so that a shared (mutated) result is seen here and not hidden by an older entry.
+        mac_explode_formats.cache_clear()
+        mac = "a4:c1:38:12:34:56"
+        forward = {"a4:c1:38:12:34:56", "a4c138123456", "a4-c1-38-12-34-56", "a4_c1_38_12_34_56", "a4.c1.38.12.34.56"}
+        assert mac_explode_formats(mac) == forward
+        assert _mac_keys(mac) == forward | {"56341238c1a4"}
+        assert mac_explode_formats(mac) == forward
+        # R4-F2: against the literal, not against the function the fallback delegates to.
+        assert _mac_keys("not-a-mac-17-char") == {"not-a-mac-17-char"}
         assert _uuid_keys("1234") == {"1234"}
         assert _uuid_keys("fda50693.a4e24fb1afcfc6eb0764782") == {"fda50693.a4e24fb1afcfc6eb0764782"}
 
